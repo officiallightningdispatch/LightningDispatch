@@ -25,6 +25,7 @@ import {
   ACTIVE_STATUSES,
   CONFIDENCE_META,
   fmtDuration,
+  HISTORY_STATUSES,
   JOB_LIFECYCLE,
   JOB_STATUS_META,
   nextStatus,
@@ -167,8 +168,10 @@ export function ActiveJobsView() {
 
 /* --------------------------------- history --------------------------------- */
 
-/** Data-backed history tab: completed jobs, each with its status timeline drawn
- *  from status_events (org-scoped, real history). */
+/** Data-backed history tab: terminal jobs (completed + cancelled), each with its
+ *  status timeline drawn from status_events (org-scoped, real history). Cancelled
+ *  jobs (Towbook 255 imports) belong here for PO/invoice reconciliation — never
+ *  in Active. */
 export function HistoryView() {
   const { state, loading } = useDispatchStore();
   const [events, setEvents] = useState<StatusEvent[]>([]);
@@ -182,11 +185,11 @@ export function HistoryView() {
     }).catch(() => { if (live) setEventsLoading(false); });
     return () => { live = false; };
   }, []);
-  const completed = useMemo(
+  const history = useMemo(
     () =>
       state.jobs
-        .filter((j) => j.status === "completed")
-        .sort((a, b) => (b.completedAt ?? "").localeCompare(a.completedAt ?? "")),
+        .filter((j) => HISTORY_STATUSES.includes(j.status))
+        .sort((a, b) => (b.completedAt ?? b.createdAt).localeCompare(a.completedAt ?? a.createdAt)),
     [state.jobs],
   );
   const byJob = useMemo(() => {
@@ -204,16 +207,17 @@ export function HistoryView() {
 
   return (
     <div className="space-y-4">
-      {completed.length === 0 ? (
+      {history.length === 0 ? (
         <EmptyState
           icon={History}
-          title="No completed jobs yet"
-          body="When a job finishes, it lands here with its full status timeline."
+          title="No finished jobs yet"
+          body="Completed jobs land here with their full status timeline — cancelled jobs (from Towbook) too."
         />
       ) : (
-        completed.map((job) => {
+        history.map((job) => {
           const contractor = contractorById(state.contractors, job.assignedContractorId);
           const timeline = byJob.get(job.id) ?? [];
+          const meta = JOB_STATUS_META[job.status];
           return (
             <Card key={job.id} className="p-4">
               <div className="flex items-start gap-3">
@@ -221,13 +225,15 @@ export function HistoryView() {
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                     <h3 className="font-bold leading-tight">{job.customerName}</h3>
-                    <StatusBadge className={JOB_STATUS_META.completed.badge}>Completed</StatusBadge>
+                    <StatusBadge className={meta.badge}>{meta.label}</StatusBadge>
                   </div>
                   <p className="mt-0.5 text-sm text-ink-600">
                     {SERVICE_LABELS[job.serviceType]} · {job.location.area}
                   </p>
                   <p className="mt-1 text-xs tabular-nums text-ink-400">
-                    {contractor?.name ?? "Unassigned"} · {fmtDuration(job.createdAt, job.completedAt)} · completed {timeAgo(job.completedAt)}
+                    {job.status === "cancelled"
+                      ? `${contractor?.name ?? "Unassigned"} · cancelled ${timeAgo(job.createdAt)}`
+                      : `${contractor?.name ?? "Unassigned"} · ${fmtDuration(job.createdAt, job.completedAt)} · completed ${timeAgo(job.completedAt)}`}
                   </p>
                 </div>
               </div>
@@ -343,8 +349,12 @@ export function PerformanceView() {
   const jobs = state.jobs;
   const total = jobs.length;
   const completed = jobs.filter((j) => j.status === "completed");
-  const completionRate = total ? Math.round((completed.length / total) * 100) : 0;
-  const counts = JOB_LIFECYCLE.map((status) => ({ status, count: jobs.filter((j) => j.status === status).length }));
+  const cancelled = jobs.filter((j) => j.status === "cancelled");
+  // Cancelled jobs (Towbook 255 imports) are NOT completions and NOT failures —
+  // excluded from both the numerator and the denominator of the completion rate.
+  const eligible = jobs.filter((j) => j.status !== "cancelled");
+  const completionRate = eligible.length ? Math.round((completed.length / eligible.length) * 100) : 0;
+  const counts = [...JOB_LIFECYCLE, "cancelled"].map((status) => ({ status, count: jobs.filter((j) => j.status === status).length }));
   // Avg time-to-complete from status_events: per completed job, the elapsed
   // time between its first recorded event and its completed event.
   const byJob = useMemo(() => {
@@ -388,7 +398,7 @@ export function PerformanceView() {
     <div className="space-y-8">
       <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard label="Total jobs" value={total} detail="all jobs in the system" topBar />
-        <StatCard label="Completion rate" value={`${completionRate}%`} detail={`${completed.length} of ${total} completed`} />
+        <StatCard label="Completion rate" value={`${completionRate}%`} detail={`${completed.length} of ${eligible.length} completed${cancelled.length ? ` · ${cancelled.length} cancelled` : ""}`} />
         <StatCard label="Avg time to complete" value={`${avgMinutes} min`} detail="from first event to completed" />
         <StatCard label="Contractors" value={state.contractors.length} detail="on the roster" />
       </section>
@@ -410,7 +420,7 @@ export function PerformanceView() {
                 ) : null,
               )}
             </div>
-            <div className="mt-4 grid grid-cols-3 gap-x-3 gap-y-3 sm:grid-cols-6">
+            <div className="mt-4 grid grid-cols-3 gap-x-3 gap-y-3 sm:grid-cols-7">
               {counts.map(({ status, count }) => (
                 <div key={status} className="flex items-center gap-1.5 text-xs">
                   <span aria-hidden="true" className={`size-2 rounded-full ${JOB_STATUS_META[status].dot}`} />

@@ -272,18 +272,18 @@ export function mapTowbookStatus(raw: string): JobStatus | null {
 }
 
 /** Numeric Towbook status id → dispatch lifecycle (the /api/calls JSON surface).
- *  PROVISIONAL mapping (2026-08-10, owner's real run): the real call objects carry
- *  status as an OBJECT — observed shapes {"id":1,"next":{"waypointId":0,"statusId":2}},
- *  {"id":5}, {"id":252} — plus a per-call allowed-status list [0,1,2,3,4,5]. The
- *  0..5 list is a 6-state workflow that maps 1:1 onto our own lifecycle
- *  (new → offered → accepted → en_route → arrived → completed), so 0..5 are mapped
- *  in order. Only ids with a defensible meaning are mapped: 252 is NOT in the
- *  workflow range (a sentinel/void value, not a lifecycle state) and stays
- *  UNMAPPED — those calls are skipped and counted, never mislabeled. Confirm the
- *  exact meaning of each id against the `sample`/`statusShapes`/`sampleByStatus`
- *  captured in towbook_sessions.last_result on the next sync run (sampleByStatus
- *  holds one full raw call per status id — its statuses history, timestamps,
- *  availableActions — enough to resolve 255 definitively), then adjust this const. */
+ *  CONFIRMED mapping (2026-08-10): 0..5 map 1:1 onto our own lifecycle
+ *  (new → offered → accepted → en_route → arrived → completed) — the real call
+ *  objects carry status as an OBJECT ({id}) plus a per-call allowed-status list
+ *  [0,1,2,3,4,5]. 255 = CANCELLED (lead-verified 2026-08-10 from the owner's
+ *  real run): the captured 255 call has the FULL workflow chain statuses
+ *  [0,1,2,3,4,5], a set completionTime, and availableActions incl. UNDO_CANCEL
+ *  and DELETE — i.e. a completed call that was subsequently cancelled. 255
+ *  imports as the terminal 'cancelled' state (belongs in the system for
+ *  PO/invoice reconciliation, never active, never counted as a completion).
+ *  252 is NOT in the workflow range (a sentinel/void value, not a lifecycle
+ *  state) and stays UNMAPPED — those calls are skipped and counted, never
+ *  mislabeled. */
 export const TOWBOOK_STATUS_ID_TO_LIFECYCLE: Readonly<Record<number, JobStatus>> = {
   0: "new", // workflow start — call created / not yet dispatched
   1: "offered", // dispatched to a driver (observed next.statusId = 2)
@@ -291,6 +291,7 @@ export const TOWBOOK_STATUS_ID_TO_LIFECYCLE: Readonly<Record<number, JobStatus>>
   3: "en_route", // driver heading to the scene
   4: "arrived", // on scene
   5: "completed", // workflow end (observed; terminal)
+  255: "cancelled", // completed-then-cancelled / cancelled call (terminal, import-only)
 };
 /** Known ids that are deliberately NOT mapped (documented so the next run knows
  *  they were considered). 252 is outside the observed [0..5] workflow — a
@@ -810,6 +811,37 @@ async function resolveOrgActor(orgId: string): Promise<{ id: string; role: AuthU
   return { id: String(rows[0].user_id), role: String(rows[0].role) as AuthUser["role"] };
 }
 
+/** Best-effort previous lifecycle state for an IMPORT's status_event, derived
+ *  from the call's own statuses field when that field is the call's JOURNEY
+ *  rather than its expected workflow.
+ *
+ *  For in-chain statuses (0..5) the statuses array is the call's ALLOWED
+ *  workflow — a first-seen status-0 call carries [0,1,2,3,4,5] without having
+ *  passed through any of them, so the event stays import→<current>.
+ *
+ *  Only when the current status is OUTSIDE the chain — the 255=cancelled case —
+ *  is the chain the journey the call actually took ([0,1,2,3,4,5] then 255), so
+ *  the previous lifecycle state is its last mapped step: completed→cancelled
+ *  instead of import→cancelled. Falls back to 'import' when there is no chain
+ *  or no mapped step. */
+function previousStatusFromHistory(raw: Record<string, unknown>, current: JobStatus): JobStatus {
+  const statuses = Array.isArray(raw.statuses) ? (raw.statuses as unknown[]) : [];
+  const chainIds: number[] = [];
+  for (const s of statuses) {
+    const n = numericStatusId(s);
+    if (n != null) chainIds.push(n);
+  }
+  if (!chainIds.length) return "import";
+  const currentId = (Object.entries(TOWBOOK_STATUS_ID_TO_LIFECYCLE) as [string, JobStatus][]).find(([, s]) => s === current)?.[0];
+  if (currentId != null && chainIds.some((n) => String(n) === currentId)) return "import";
+  let prev: JobStatus | null = null;
+  for (const n of chainIds) {
+    const mapped = TOWBOOK_STATUS_ID_TO_LIFECYCLE[n];
+    if (mapped) prev = mapped;
+  }
+  return prev ?? "import";
+}
+
 /** Org-scoped upsert of normalized Towbook jobs (exported for the fixture test;
  *  INSERT first-seen ids, UPDATE re-synced ids in place — never duplicates). */
 export async function upsertPulledJobs(
@@ -834,7 +866,7 @@ export async function upsertPulledJobs(
         await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, customer_phone, vehicle_desc, pickup, dropoff, towbook_status, raw_json)
           VALUES(${jobId}, ${orgId}, ${job.customer}, ${job.phone || ""}, 0, 0, ${job.pickup || "Unknown"}, ${job.serviceType}, ${job.status}, ${job.createdAt}, ${job.note}, ${job.towbookJobId}, ${job.phone || ""}, ${job.vehicle}, ${job.pickup}, ${job.dropoff}, ${job.towbookStatus}, ${JSON.stringify(job.raw)}::jsonb)`;
         await q`INSERT INTO status_events(id, org_id, job_id, from_status, to_status, actor_user_id, actor_role, note)
-          SELECT gen_random_uuid()::text, ${orgId}, ${jobId}, 'import', ${job.status}, ${actor.id}, ${actor.role}, ${`imported from Towbook (${trigger})`}`;
+          SELECT gen_random_uuid()::text, ${orgId}, ${jobId}, ${previousStatusFromHistory(job.raw, job.status)}, ${job.status}, ${actor.id}, ${actor.role}, ${`imported from Towbook (${trigger})`}`;
         await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
           SELECT gen_random_uuid()::text, ${orgId}, ${actor.id}, ${actor.role}, 'towbook_import', 'job', ${jobId}, ${JSON.stringify({ towbookJobId: job.towbookJobId, towbookStatus: job.towbookStatus, status: job.status, source: job.raw.sourceUrl })}::jsonb, ${trigger}`;
         existing.set(job.towbookJobId, { id: jobId, status: job.status, customer_name: job.customer, phone: job.phone, pickup: job.pickup, dropoff: job.dropoff, towbook_status: job.towbookStatus });

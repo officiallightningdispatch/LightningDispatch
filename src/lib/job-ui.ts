@@ -59,9 +59,19 @@ export const JOB_STATUS_META: Record<
     step: "bg-ink-300 border-ink-300 text-white",
     ring: "ring-ink-100",
   },
+  cancelled: {
+    label: "Cancelled",
+    badge: "bg-ink-50 text-ink-600",
+    dot: "bg-ink-400",
+    step: "bg-ink-400 border-ink-400 text-white",
+    ring: "ring-ink-100",
+  },
 };
 
-/** Ordered lifecycle — index in this array is the job's position on the stepper. */
+/** Ordered lifecycle — index in this array is the job's position on the stepper.
+ *  `cancelled` is deliberately NOT here: it is a terminal, import-only state
+ *  (Towbook status 255) with no stepper position and no UI command that
+ *  transitions into or out of it. */
 export const JOB_LIFECYCLE: JobStatus[] = [
   "new",
   "offered",
@@ -71,6 +81,8 @@ export const JOB_LIFECYCLE: JobStatus[] = [
   "completed",
 ];
 export const ACTIVE_STATUSES: JobStatus[] = ["offered", "accepted", "en_route", "arrived"];
+/** Terminal states shown in History (completed + cancelled). */
+export const HISTORY_STATUSES: JobStatus[] = ["completed", "cancelled"];
 export const SERVICE_LABELS: Record<ServiceType, string> = {
   jump_start: "Jump start",
   tire_change: "Tire change",

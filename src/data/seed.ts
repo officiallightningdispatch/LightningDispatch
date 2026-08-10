@@ -5,7 +5,8 @@ export type JobStatus =
   | "accepted"
   | "en_route"
   | "arrived"
-  | "completed";
+  | "completed"
+  | "cancelled";
 export type ServiceType =
   | "jump_start"
   | "tire_change"
