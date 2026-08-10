@@ -52,6 +52,11 @@ export const declineJob=createServerFn({method:"POST"}).validator(passthrough).h
 
 export const setContractorStatus=createServerFn({method:"POST"}).validator(passthrough).handler(async({data})=>{const e=invalid(data,z.object({contractorId:id,status:z.enum(["online","offline"])}).strict());if(e)return e;if(!configured())return unavailable("Database mode is not active — status changes work in the live demo only.");const { currentUser } = await import("./auth-server"); const u=await currentUser();if(!u)return fail("unauthorized","Sign in required.");const d=data as {contractorId:string;status:ContractorStatus};if(u.role==="contractor"&&u.contractorId!==d.contractorId)return fail("unauthorized","You can only change your own status.");if(!can(u,["owner","admin","dispatcher","contractor"]))return fail("unauthorized","You cannot change contractor status.");try{await prepare();const rows=await sql().transaction([sql()`WITH changed AS (UPDATE dispatch_contractors SET status=${d.status} WHERE id=${d.contractorId} AND org_id=${u.orgId} RETURNING id) INSERT INTO audit_log(id,org_id,actor_user_id,actor_role,action,entity_type,entity_id,detail) SELECT gen_random_uuid()::text,${u.orgId},${u.id},${u.role},'set_contractor_status','contractor',id,jsonb_build_object('status',${d.status}) FROM changed RETURNING entity_id`,sql()`SELECT 1`]);if(!rows[0]?.length)return fail("not_found","Contractor not found.");return result(u);}catch{return unavailable("Unable to change contractor status.");}});
 
+export type StatusEvent = { jobId: string; fromStatus: string | null; toStatus: string; actorRole: string | null; note: string | null; occurredAt: string };
+/** Org-scoped status timeline (real history only). Powers the history tab and
+ *  the performance tab's avg time-to-complete. */
+export const getStatusEvents=createServerFn({method:"GET"}).handler(async()=>{ if(!configured())return []; const { currentUser } = await import("./auth-server"); const u=await currentUser(); if(!u)return []; if(!can(u,["owner","admin","dispatcher"]))return []; try { await prepare(); const q=sql(); const rows=await q`SELECT job_id,from_status,to_status,actor_role,note,occurred_at FROM status_events WHERE org_id=${u.orgId} ORDER BY occurred_at DESC LIMIT 1000`; return rows.map((r: Record<string,unknown>)=>({jobId:String(r.job_id),fromStatus:r.from_status?String(r.from_status):null,toStatus:String(r.to_status),actorRole:r.actor_role?String(r.actor_role):null,note:r.note?String(r.note):null,occurredAt:new Date(String(r.occurred_at)).toISOString()})); } catch { return []; } });
+
 const towbookFail = (code: "invalid_credentials"|"towbook_unreachable"|"towbook_blocked", message: string) => ({ok:false as const,error:{code,message}});
 // --- Towbook login: request shape byte-matched to a real browser (see /home/team/shared/towbook-recon.md) ---
 const TOWBOOK_ORIGIN = "https://app.towbook.com";
@@ -148,7 +153,7 @@ async function persistTowbookFailure(orgId: string, f: TowbookFacts) {
     await sql()`INSERT INTO towbook_sessions(org_id,encrypted_session,status,error,updated_at) VALUES(${orgId},'','error',${towbookDetail(f)},NOW()) ON CONFLICT(org_id) DO UPDATE SET status='error',error=EXCLUDED.error,updated_at=NOW(),encrypted_session=towbook_sessions.encrypted_session`;
   } catch { /* never mask the real connect result with a diagnostics-write failure */ }
 }
-export const towbookStatus=createServerFn({method:"GET"}).handler(async()=>{ if(!configured()) return {ok:true as const,connected:false,lastSyncAt:null}; const {currentUser}=await import("./auth-server"); const u=await currentUser(); if(!u)return towbookFail("towbook_unreachable","Sign in required."); if(!can(u,["owner","admin"]))return towbookFail("towbook_blocked","You cannot view Towbook status."); try { await prepare(); const r=await sql()`SELECT status,last_sync_at FROM towbook_sessions WHERE org_id=${u.orgId}`; return {ok:true as const,connected:Boolean(r.length && r[0].status==='connected'),lastSyncAt:r.length&&r[0].last_sync_at?new Date(String(r[0].last_sync_at)).toISOString():null}; } catch { return towbookFail("towbook_unreachable","Towbook status unavailable."); }});
+export const towbookStatus=createServerFn({method:"GET"}).handler(async()=>{ if(!configured()) return {ok:true as const,connected:false,lastSyncAt:null,lastResult:null}; const {currentUser}=await import("./auth-server"); const u=await currentUser(); if(!u)return towbookFail("towbook_unreachable","Sign in required."); if(!can(u,["owner","admin"]))return towbookFail("towbook_blocked","You cannot view Towbook status."); try { await prepare(); const r=await sql()`SELECT status,last_sync_at,last_result FROM towbook_sessions WHERE org_id=${u.orgId}`; const row=r[0] as Record<string,unknown>|undefined; let lastResult: TowbookSyncResult | null = null; if(row?.last_result){ try { const p=row.last_result as Record<string,unknown>; lastResult={ok:String(p.code)==="ok",code:p.code as TowbookSyncCode,message:String(p.message??""),added:Number(p.added??0),updated:Number(p.updated??0),failed:Number(p.failed??0),diagnostics:Array.isArray(p.diagnostics)?p.diagnostics as TowbookSyncDiag[]:[],ranAt:String(p.ranAt??"")}; } catch { lastResult=null; } } return {ok:true as const,connected:Boolean(row && row.status==='connected'),lastSyncAt:row&&row.last_sync_at?new Date(String(row.last_sync_at)).toISOString():null,lastResult}; } catch { return towbookFail("towbook_unreachable","Towbook status unavailable."); }});
 export const connectTowbook=createServerFn({method:"POST"}).validator(passthrough).handler(async({data})=>{
   const e=invalid(data,z.object({username:z.string().min(1).max(256),password:z.string().min(1).max(256)}).strict());
   if(e)return e;
@@ -245,8 +250,8 @@ export const resetDemo=createServerFn({method:"POST"}).validator(passthrough).ha
 
 export type TowbookSyncCode = "ok" | "not_connected" | "session_unavailable" | "session_expired" | "no_jobs" | "unauthorized" | "error";
 export type TowbookSyncDiag = { url: string; status: number | null; contentType: string | null; hint: string };
-export type TowbookSyncResult = { ok: boolean; code: TowbookSyncCode; message: string; added: number; updated: number; failed: number; diagnostics: TowbookSyncDiag[] };
-const syncResult = (code: TowbookSyncCode, message: string, extra?: Partial<TowbookSyncResult>): TowbookSyncResult => ({ ok: code === "ok", code, message, added: 0, updated: 0, failed: 0, diagnostics: [], ...extra });
+export type TowbookSyncResult = { ok: boolean; code: TowbookSyncCode; message: string; added: number; updated: number; failed: number; diagnostics: TowbookSyncDiag[]; ranAt: string };
+const syncResult = (code: TowbookSyncCode, message: string, extra?: Partial<TowbookSyncResult>): TowbookSyncResult => ({ ok: code === "ok", code, message, added: 0, updated: 0, failed: 0, diagnostics: [], ranAt: new Date().toISOString(), ...extra });
 
 /** Data-driven Towbook status → dispatch lifecycle mapping (first match wins; order
  *  matters — specific negations before the generic bucket). Unmapped statuses are
@@ -282,14 +287,37 @@ export function mapTowbookService(raw: string): ServiceType {
   return "flatbed_tow";
 }
 
-/** Candidate job-list surfaces (ASP.NET Core MVC paths). The puller tries them in
- *  order with the stored session and records what each returns. */
+/** Candidate job-list surfaces. The puller tries them in order with the stored
+ *  session and records what each returns (URL, status, contentType, hint).
+ *
+ *  Recon (2026-08-10, see /home/team/shared/towbook-recon.md): every MVC path
+ *  below 302s to /Security/Login?ReturnUrl=… when unauthenticated, i.e. they all
+ *  EXIST as authenticated routes — with the owner's real session cookie they
+ *  should render 200 + job rows. The app's own terminology is "Calls" (support
+ *  KB: "How to Complete a Call", "out-of-network-calls"), hence the /Calls/*
+ *  family. The /api/* family is the "Extric-Towbook/5.0 Service Platform API"
+ *  (x-powered-by + x-twbk-version headers observed) — every /api/* path returns
+ *  401 "Invalid Security Token. Please re-authenticate" when unauthenticated
+ *  (catch-all middleware, so 401 ≠ endpoint exists), so with a valid session
+ *  cookie those same paths may return JSON job payloads. The diagnostics of the
+ *  first live run show which family actually returns 200 content.
+ */
 const TOWBOOK_JOB_PATHS = [
+  // HTML/MVC surfaces (server-rendered grids)
   "", "/Dispatch", "/Dispatch/Index", "/Dispatch/Active", "/Dispatch/History",
-  "/Dispatch/Completed", "/Jobs", "/Jobs/Index", "/Job", "/Job/Index",
+  "/Dispatch/Completed", "/Dispatch/Board", "/DispatchBoard", "/Board",
+  "/Jobs", "/Jobs/Index", "/Job", "/Job/Index",
+  "/Calls", "/Calls/Index", "/Calls/Active", "/Calls/History", "/Calls/Open",
+  "/Calls/Closed", "/Calls/Completed", "/Calls/Today", "/Calls/All", "/Calls/List",
+  "/Call", "/Call/Index", "/Call/Get", "/Calls/GetCalls", "/Calls/Grid",
   "/Orders", "/Order", "/Orders/Index", "/Agero", "/Agero/Index",
   "/MotorClub", "/MotorClubs", "/MotorClub/Index", "/Incoming", "/History",
   "/Completed", "/CompletedJobs", "/Today", "/TodaysJobs", "/Dashboard",
+  // Service-Platform API (JSON). 401-with-cookie in diagnostics tells us the
+  // session cookie is NOT the API token; 200/JSON is the jackpot.
+  "/api/jobs", "/api/calls", "/api/orders", "/api/dispatch", "/api/dispatches",
+  "/api/jobs/current", "/api/jobs/open", "/api/jobs/active", "/api/jobs/completed",
+  "/api/Calls", "/api/Job/Get", "/api/jobs/list",
 ];
 
 const stripHtml = (s: string) => s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
@@ -622,10 +650,23 @@ async function doSyncForOrg(orgId: string, trigger: string, actorHint?: { id: st
 /** Per-org in-flight guard: concurrent triggers (manual button, pull-on-read,
  *  interval) share one sync per org instead of overlapping. */
 const syncInFlight = new Map<string, Promise<TowbookSyncResult>>();
+
+/** Persist the result of EVERY sync run (self-documenting): counts + code +
+ *  message + diagnostics, so a run that finds nothing is explainable from the
+ *  DB after the fact. Diagnostics contain only URLs/statuses/hints — never
+ *  cookies, passwords, or the session. Capped to keep the JSONB row small.
+ *  Best-effort: a persistence failure must never mask the sync result. */
+async function persistSyncResult(orgId: string, r: TowbookSyncResult): Promise<void> {
+  try {
+    const diagnostics = r.diagnostics.slice(0, 80);
+    await sql()`UPDATE towbook_sessions SET last_result=${JSON.stringify({ ranAt: r.ranAt, code: r.code, message: r.message, added: r.added, updated: r.updated, failed: r.failed, diagnostics })}::jsonb WHERE org_id=${orgId}`;
+  } catch { /* never mask the sync result with a diagnostics-write failure */ }
+}
+
 function syncForOrg(orgId: string, trigger: string, actor?: { id: string; role: AuthUser["role"] }): Promise<TowbookSyncResult> {
   const running = syncInFlight.get(orgId);
   if (running) return running;
-  const p = doSyncForOrg(orgId, trigger, actor).finally(() => { syncInFlight.delete(orgId); });
+  const p = doSyncForOrg(orgId, trigger, actor).then(async (r) => { await persistSyncResult(orgId, r); return r; }).finally(() => { syncInFlight.delete(orgId); });
   syncInFlight.set(orgId, p);
   return p;
 }

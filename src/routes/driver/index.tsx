@@ -58,7 +58,7 @@ const ACTIVE_JOB_STATUSES: JobStatus[] = ["accepted", "en_route", "arrived"];
 
 function ContractorView() {
   return (
-    <AppShell title="Contractor home" description="Go online, accept offers, and work jobs from the road.">
+    <AppShell portal="driver" title="Contractor home" description="Go online, accept offers, and work jobs from the road.">
       <ContractorWorkspace />
     </AppShell>
   );

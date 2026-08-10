@@ -43,6 +43,13 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`ALTER TABLE users ADD COLUMN IF NOT EXISTS login_handle TEXT`;
     await q`CREATE UNIQUE INDEX IF NOT EXISTS users_login_handle_idx ON users(login_handle) WHERE login_handle IS NOT NULL`;
   }],
+  [7, async (q) => {
+    // Sync self-documentation: every Towbook sync run persists its full result
+    // (ranAt + code + counts + diagnostics) so a run that finds nothing is
+    // explainable from the DB after the fact — no UI drawer needed. Diagnostics
+    // contain only URLs/statuses/hints, never cookies or credentials.
+    await q`ALTER TABLE towbook_sessions ADD COLUMN IF NOT EXISTS last_result JSONB`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

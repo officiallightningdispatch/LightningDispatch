@@ -22,8 +22,11 @@ import { Route as OpsIndexRouteImport } from './routes/ops/index'
 import { Route as DriverIndexRouteImport } from './routes/driver/index'
 import { Route as OwnerTeamRouteImport } from './routes/owner/team'
 import { Route as OwnerSettingsRouteImport } from './routes/owner/settings'
+import { Route as OwnerQueueRouteImport } from './routes/owner/queue'
 import { Route as OwnerPerformanceRouteImport } from './routes/owner/performance'
 import { Route as OwnerMoneyRouteImport } from './routes/owner/money'
+import { Route as OwnerHistoryRouteImport } from './routes/owner/history'
+import { Route as OwnerActiveRouteImport } from './routes/owner/active'
 import { Route as OpsHistoryRouteImport } from './routes/ops/history'
 import { Route as OpsContractorsRouteImport } from './routes/ops/contractors'
 import { Route as OpsActiveRouteImport } from './routes/ops/active'
@@ -97,6 +100,11 @@ const OwnerSettingsRoute = OwnerSettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => OwnerRoute,
 } as any)
+const OwnerQueueRoute = OwnerQueueRouteImport.update({
+  id: '/queue',
+  path: '/queue',
+  getParentRoute: () => OwnerRoute,
+} as any)
 const OwnerPerformanceRoute = OwnerPerformanceRouteImport.update({
   id: '/performance',
   path: '/performance',
@@ -105,6 +113,16 @@ const OwnerPerformanceRoute = OwnerPerformanceRouteImport.update({
 const OwnerMoneyRoute = OwnerMoneyRouteImport.update({
   id: '/money',
   path: '/money',
+  getParentRoute: () => OwnerRoute,
+} as any)
+const OwnerHistoryRoute = OwnerHistoryRouteImport.update({
+  id: '/history',
+  path: '/history',
+  getParentRoute: () => OwnerRoute,
+} as any)
+const OwnerActiveRoute = OwnerActiveRouteImport.update({
+  id: '/active',
+  path: '/active',
   getParentRoute: () => OwnerRoute,
 } as any)
 const OpsHistoryRoute = OpsHistoryRouteImport.update({
@@ -159,8 +177,11 @@ export interface FileRoutesByFullPath {
   '/ops/active': typeof OpsActiveRoute
   '/ops/contractors': typeof OpsContractorsRoute
   '/ops/history': typeof OpsHistoryRoute
+  '/owner/active': typeof OwnerActiveRoute
+  '/owner/history': typeof OwnerHistoryRoute
   '/owner/money': typeof OwnerMoneyRoute
   '/owner/performance': typeof OwnerPerformanceRoute
+  '/owner/queue': typeof OwnerQueueRoute
   '/owner/settings': typeof OwnerSettingsRoute
   '/owner/team': typeof OwnerTeamRoute
   '/driver/': typeof DriverIndexRoute
@@ -180,8 +201,11 @@ export interface FileRoutesByTo {
   '/ops/active': typeof OpsActiveRoute
   '/ops/contractors': typeof OpsContractorsRoute
   '/ops/history': typeof OpsHistoryRoute
+  '/owner/active': typeof OwnerActiveRoute
+  '/owner/history': typeof OwnerHistoryRoute
   '/owner/money': typeof OwnerMoneyRoute
   '/owner/performance': typeof OwnerPerformanceRoute
+  '/owner/queue': typeof OwnerQueueRoute
   '/owner/settings': typeof OwnerSettingsRoute
   '/owner/team': typeof OwnerTeamRoute
   '/driver': typeof DriverIndexRoute
@@ -205,8 +229,11 @@ export interface FileRoutesById {
   '/ops/active': typeof OpsActiveRoute
   '/ops/contractors': typeof OpsContractorsRoute
   '/ops/history': typeof OpsHistoryRoute
+  '/owner/active': typeof OwnerActiveRoute
+  '/owner/history': typeof OwnerHistoryRoute
   '/owner/money': typeof OwnerMoneyRoute
   '/owner/performance': typeof OwnerPerformanceRoute
+  '/owner/queue': typeof OwnerQueueRoute
   '/owner/settings': typeof OwnerSettingsRoute
   '/owner/team': typeof OwnerTeamRoute
   '/driver/': typeof DriverIndexRoute
@@ -231,8 +258,11 @@ export interface FileRouteTypes {
     | '/ops/active'
     | '/ops/contractors'
     | '/ops/history'
+    | '/owner/active'
+    | '/owner/history'
     | '/owner/money'
     | '/owner/performance'
+    | '/owner/queue'
     | '/owner/settings'
     | '/owner/team'
     | '/driver/'
@@ -252,8 +282,11 @@ export interface FileRouteTypes {
     | '/ops/active'
     | '/ops/contractors'
     | '/ops/history'
+    | '/owner/active'
+    | '/owner/history'
     | '/owner/money'
     | '/owner/performance'
+    | '/owner/queue'
     | '/owner/settings'
     | '/owner/team'
     | '/driver'
@@ -276,8 +309,11 @@ export interface FileRouteTypes {
     | '/ops/active'
     | '/ops/contractors'
     | '/ops/history'
+    | '/owner/active'
+    | '/owner/history'
     | '/owner/money'
     | '/owner/performance'
+    | '/owner/queue'
     | '/owner/settings'
     | '/owner/team'
     | '/driver/'
@@ -389,6 +425,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OwnerSettingsRouteImport
       parentRoute: typeof OwnerRoute
     }
+    '/owner/queue': {
+      id: '/owner/queue'
+      path: '/queue'
+      fullPath: '/owner/queue'
+      preLoaderRoute: typeof OwnerQueueRouteImport
+      parentRoute: typeof OwnerRoute
+    }
     '/owner/performance': {
       id: '/owner/performance'
       path: '/performance'
@@ -401,6 +444,20 @@ declare module '@tanstack/react-router' {
       path: '/money'
       fullPath: '/owner/money'
       preLoaderRoute: typeof OwnerMoneyRouteImport
+      parentRoute: typeof OwnerRoute
+    }
+    '/owner/history': {
+      id: '/owner/history'
+      path: '/history'
+      fullPath: '/owner/history'
+      preLoaderRoute: typeof OwnerHistoryRouteImport
+      parentRoute: typeof OwnerRoute
+    }
+    '/owner/active': {
+      id: '/owner/active'
+      path: '/active'
+      fullPath: '/owner/active'
+      preLoaderRoute: typeof OwnerActiveRouteImport
       parentRoute: typeof OwnerRoute
     }
     '/ops/history': {
@@ -491,16 +548,22 @@ const OpsRouteChildren: OpsRouteChildren = {
 const OpsRouteWithChildren = OpsRoute._addFileChildren(OpsRouteChildren)
 
 interface OwnerRouteChildren {
+  OwnerActiveRoute: typeof OwnerActiveRoute
+  OwnerHistoryRoute: typeof OwnerHistoryRoute
   OwnerMoneyRoute: typeof OwnerMoneyRoute
   OwnerPerformanceRoute: typeof OwnerPerformanceRoute
+  OwnerQueueRoute: typeof OwnerQueueRoute
   OwnerSettingsRoute: typeof OwnerSettingsRoute
   OwnerTeamRoute: typeof OwnerTeamRoute
   OwnerIndexRoute: typeof OwnerIndexRoute
 }
 
 const OwnerRouteChildren: OwnerRouteChildren = {
+  OwnerActiveRoute: OwnerActiveRoute,
+  OwnerHistoryRoute: OwnerHistoryRoute,
   OwnerMoneyRoute: OwnerMoneyRoute,
   OwnerPerformanceRoute: OwnerPerformanceRoute,
+  OwnerQueueRoute: OwnerQueueRoute,
   OwnerSettingsRoute: OwnerSettingsRoute,
   OwnerTeamRoute: OwnerTeamRoute,
   OwnerIndexRoute: OwnerIndexRoute,

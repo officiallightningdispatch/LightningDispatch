@@ -57,7 +57,7 @@ function OwnerDashboard() {
   };
 
   return (
-    <AppShell
+    <AppShell portal="owner"
       title="Owner dashboard"
       description="A live, at-a-glance view of the operation and team performance."
     >

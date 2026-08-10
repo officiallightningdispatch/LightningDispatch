@@ -1,5 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Users } from "lucide-react";
 import { AppShell } from "~/components/app-shell";
-import { EmptyState } from "~/components/ui";
-export const Route = createFileRoute("/ops/contractors")({ component: () => <AppShell title="Contractors" description="Availability and dispatch coverage."><EmptyState icon={Users} title="Add your first contractor" body="The owner can invite contractors to the fleet." /></AppShell> });
+import { ContractorsView } from "~/components/ops-views";
+
+export const Route = createFileRoute("/ops/contractors")({ component: Contractors });
+function Contractors() {
+  return (
+    <AppShell portal="ops" title="Contractors" description="Who's on the fleet, who's online, and what they're doing.">
+      <ContractorsView />
+    </AppShell>
+  );
+}

@@ -1,1 +1,2 @@
+$ bun run serve.ts
 team-site serving on http://0.0.0.0:3000

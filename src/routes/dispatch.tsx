@@ -38,7 +38,7 @@ export const Route = createFileRoute("/dispatch")({ component: () => <OpsGate><D
 
 function DispatchConsole() {
   return (
-    <AppShell
+    <AppShell portal="ops"
       title="Dispatcher console"
       description="Review incoming requests, see the AI recommendation, and keep every assignment moving."
     >
