@@ -253,6 +253,14 @@ export type TowbookSyncDiag = { url: string; status: number | null; contentType:
 export type TowbookSyncResult = { ok: boolean; code: TowbookSyncCode; message: string; added: number; updated: number; failed: number; diagnostics: TowbookSyncDiag[]; ranAt: string; sample?: Record<string, unknown>[]; statusShapes?: string[]; sampleByStatus?: Record<string, Record<string, unknown>> };
 const syncResult = (code: TowbookSyncCode, message: string, extra?: Partial<TowbookSyncResult>): TowbookSyncResult => ({ ok: code === "ok", code, message, added: 0, updated: 0, failed: 0, diagnostics: [], ranAt: new Date().toISOString(), ...extra });
 
+/** Sync result message with EXACT arithmetic: found = added + updated +
+ *  unchanged + failed. (Bug fixed 2026-08-10: the message used the normalized
+ *  count as "Synced N" while failed also included skipped jobs, so N did not
+ *  reconcile with A+U+F — e.g. "Synced 20 … 21 failed".) */
+export function buildSyncMessage(found: number, added: number, updated: number, unchanged: number, failed: number): string {
+  return `Synced ${found} Towbook job(s): ${added} added, ${updated} updated, ${unchanged} unchanged, ${failed} failed.`;
+}
+
 /** Data-driven Towbook status → dispatch lifecycle mapping (first match wins; order
  *  matters — specific negations before the generic bucket). Unmapped statuses are
  *  skipped, not silently coerced. */
@@ -281,9 +289,15 @@ export function mapTowbookStatus(raw: string): JobStatus | null {
  *  and DELETE — i.e. a completed call that was subsequently cancelled. 255
  *  imports as the terminal 'cancelled' state (belongs in the system for
  *  PO/invoice reconciliation, never active, never counted as a completion).
- *  252 is NOT in the workflow range (a sentinel/void value, not a lifecycle
- *  state) and stays UNMAPPED — those calls are skipped and counted, never
- *  mislabeled. */
+ *  252 = COMPLETED (owner-verified 2026-08-10, real-data evidence): the live
+ *  call 279656932 carried status {"id":252} with the FULL chain statuses
+ *  [0,1,2,3,4,5], a set completionTime (2026-08-10T20:33), and availableActions
+ *  incl. ACKNOWLEDGE_COMPLETE/UPDATE_STATUS/CANCEL/DELETE (vs status-5 calls'
+ *  UNDO_COMPLETE/LOCK/PUSH_TO_QUICKBOOKS/AUDIT) — 252 is Towbook's
+ *  completed-awaiting-acknowledgement terminal, 5 is the fully-closed terminal;
+ *  both import as our terminal 'completed'. (The call flip-flopped 252→2→252
+ *  across syncs — Towbook-side reopen/acknowledge — and our upsert simply
+ *  follows whatever Towbook says, which is correct.) */
 export const TOWBOOK_STATUS_ID_TO_LIFECYCLE: Readonly<Record<number, JobStatus>> = {
   0: "new", // workflow start — call created / not yet dispatched
   1: "offered", // dispatched to a driver (observed next.statusId = 2)
@@ -291,12 +305,14 @@ export const TOWBOOK_STATUS_ID_TO_LIFECYCLE: Readonly<Record<number, JobStatus>>
   3: "en_route", // driver heading to the scene
   4: "arrived", // on scene
   5: "completed", // workflow end (observed; terminal)
+  252: "completed", // completed-awaiting-acknowledgement (owner-verified 2026-08-10)
   255: "cancelled", // completed-then-cancelled / cancelled call (terminal, import-only)
 };
 /** Known ids that are deliberately NOT mapped (documented so the next run knows
- *  they were considered). 252 is outside the observed [0..5] workflow — a
- *  sentinel ("no status"/void) rather than a lifecycle state. */
-export const TOWBOOK_STATUS_ID_UNMAPPED: ReadonlySet<number> = new Set([252]);
+ *  they were considered). Currently empty: every observed id (0..5, 252, 255)
+ *  now maps. Any id that shows up later lands here only after the sampleByStatus
+ *  evidence proves it is NOT a lifecycle state. */
+export const TOWBOOK_STATUS_ID_UNMAPPED: ReadonlySet<number> = new Set<number>();
 
 const numericStatusId = (v: unknown): number | null =>
   typeof v === "number" ? (Number.isInteger(v) ? v : null)
@@ -823,8 +839,14 @@ async function resolveOrgActor(orgId: string): Promise<{ id: string; role: AuthU
  *  is the chain the journey the call actually took ([0,1,2,3,4,5] then 255), so
  *  the previous lifecycle state is its last mapped step: completed→cancelled
  *  instead of import→cancelled. Falls back to 'import' when there is no chain
- *  or no mapped step. */
-function previousStatusFromHistory(raw: Record<string, unknown>, current: JobStatus): JobStatus {
+ *  or no mapped step.
+ *
+ *  Guard: when the derived previous EQUALS the mapped current (possible once 252
+ *  maps to the same lifecycle state as an in-chain id — e.g. a 252 call whose
+ *  statuses history is [0,252], or any out-of-chain id sharing a state with the
+ *  chain's last step), fall back to import→<current>. A first-seen job must
+ *  never write a spurious completed→completed (or cancelled→cancelled) event. */
+export function previousStatusFromHistory(raw: Record<string, unknown>, current: JobStatus): JobStatus | "import" {
   const statuses = Array.isArray(raw.statuses) ? (raw.statuses as unknown[]) : [];
   const chainIds: number[] = [];
   for (const s of statuses) {
@@ -839,24 +861,34 @@ function previousStatusFromHistory(raw: Record<string, unknown>, current: JobSta
     const mapped = TOWBOOK_STATUS_ID_TO_LIFECYCLE[n];
     if (mapped) prev = mapped;
   }
+  if (prev === current) return "import";
   return prev ?? "import";
 }
 
 /** Org-scoped upsert of normalized Towbook jobs (exported for the fixture test;
- *  INSERT first-seen ids, UPDATE re-synced ids in place — never duplicates). */
+ *  INSERT first-seen ids, UPDATE re-synced ids in place — never duplicates).
+ *
+ *  TRANSITION POLICY (deliberate, 2026-08-10): the UPDATE path applies ANY
+ *  status change Towbook reports — including between terminal states (e.g.
+ *  255=cancelled → 252=completed, or completed → cancelled). Towbook is the
+ *  system of record for customer/billing records, and its statuses flip-flop
+ *  (reopen/acknowledge); the sync MUST be able to correct an imported status, so
+ *  sync-driven terminal→terminal transitions are allowed and always fire a
+ *  status_events transition + audit row (human-driven commands still enforce
+ *  their own stricter state machine elsewhere). */
 export async function upsertPulledJobs(
   orgId: string,
   actor: { id: string; role: AuthUser["role"] },
   jobs: NormalizedJob[],
   trigger: string,
-): Promise<{ added: number; updated: number; failed: number }> {
+): Promise<{ added: number; updated: number; unchanged: number; failed: number }> {
   const q = sql();
   // NOTE: towbook_job_id MUST be in the select list — it is the existing-map key.
   // (Bug fixed 2026-08-10: it was omitted, so every row was keyed "undefined" and
   // re-syncs re-INSERTed → pkey violation → all counted as failed.)
   const existingRows = await q`SELECT id, status, customer_name, phone, pickup, dropoff, towbook_status, towbook_job_id FROM dispatch_jobs WHERE org_id=${orgId} AND towbook_job_id IS NOT NULL`;
   const existing = new Map(existingRows.map((r) => [String(r.towbook_job_id), r as Record<string, unknown>]));
-  let added = 0, updated = 0, failed = 0;
+  let added = 0, updated = 0, unchanged = 0, failed = 0;
   for (const job of jobs) {
     const cur = existing.get(job.towbookJobId);
     try {
@@ -879,7 +911,7 @@ export async function upsertPulledJobs(
           String(cur.pickup ?? "") !== job.pickup ||
           String(cur.dropoff ?? "") !== job.dropoff ||
           String(cur.towbook_status ?? "") !== job.towbookStatus;
-        if (!statusChanged && !fieldsChanged) continue; // already current — no churn
+        if (!statusChanged && !fieldsChanged) { unchanged++; continue; } // already current — no churn
         await q`UPDATE dispatch_jobs SET customer_name=${job.customer}, phone=${job.phone || ""}, area=${job.pickup || "Unknown"}, service_type=${job.serviceType}, status=${job.status}, note=${job.note}, towbook_status=${job.towbookStatus}, customer_phone=${job.phone || ""}, vehicle_desc=${job.vehicle}, pickup=${job.pickup}, dropoff=${job.dropoff}, raw_json=${JSON.stringify(job.raw)}::jsonb,
           completed_at=CASE WHEN ${job.status}='completed' AND completed_at IS NULL THEN NOW() ELSE completed_at END,
           assigned_at=CASE WHEN ${job.status}='offered' AND assigned_at IS NULL THEN NOW() ELSE assigned_at END
@@ -897,7 +929,7 @@ export async function upsertPulledJobs(
       failed++;
     }
   }
-  return { added, updated, failed };
+  return { added, updated, unchanged, failed };
 }
 
 /* ----------------------------------- core sync ----------------------------------- */
@@ -985,10 +1017,11 @@ async function doSyncForOrg(orgId: string, trigger: string, actorHint?: { id: st
     diagnostics.push({ url: "<status-map>", status: null, contentType: null, hint: `skipped ${skipped.length} job(s): ${sample}${skipped.length > 5 ? " …" : ""} — status ids seen: ${seen || "none"}; unmapped: ${unmappedIds.join(",") || "none"}` });
   }
   const failed = res.failed + skipped.length;
+  const found = normalized.length + skipped.length;
   return {
     ok: true,
     code: "ok",
-    message: `Synced ${normalized.length} Towbook job(s): ${res.added} added, ${res.updated} updated, ${failed} failed.`,
+    message: buildSyncMessage(found, res.added, res.updated, res.unchanged, failed),
     added: res.added,
     updated: res.updated,
     failed,
