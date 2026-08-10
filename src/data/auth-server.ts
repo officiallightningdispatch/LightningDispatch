@@ -34,5 +34,5 @@ export async function currentUser(): Promise<AuthUser | null> {
 }
 export async function requireRole(roles: Role[]) { const user = await currentUser(); return user && roles.includes(user.role) ? user : null; }
 
-export { configured, hash, verify, cookieValue, writeCookie, type Role, type AuthUser };
+export { configured, hash, verify, cookieValue, writeCookie };
 export const makeId=id; export async function startSession(userId:string){const token=id();await sql()`INSERT INTO sessions(id,user_id,expires_at) VALUES(${token},${userId},NOW()+INTERVAL '30 days')`;await writeCookie(token,60*60*24*30);}
