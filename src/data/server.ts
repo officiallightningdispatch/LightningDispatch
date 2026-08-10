@@ -153,7 +153,7 @@ async function persistTowbookFailure(orgId: string, f: TowbookFacts) {
     await sql()`INSERT INTO towbook_sessions(org_id,encrypted_session,status,error,updated_at) VALUES(${orgId},'','error',${towbookDetail(f)},NOW()) ON CONFLICT(org_id) DO UPDATE SET status='error',error=EXCLUDED.error,updated_at=NOW(),encrypted_session=towbook_sessions.encrypted_session`;
   } catch { /* never mask the real connect result with a diagnostics-write failure */ }
 }
-export const towbookStatus=createServerFn({method:"GET"}).handler(async()=>{ if(!configured()) return {ok:true as const,connected:false,lastSyncAt:null,lastResult:null}; const {currentUser}=await import("./auth-server"); const u=await currentUser(); if(!u)return towbookFail("towbook_unreachable","Sign in required."); if(!can(u,["owner","admin"]))return towbookFail("towbook_blocked","You cannot view Towbook status."); try { await prepare(); const r=await sql()`SELECT status,last_sync_at,last_result FROM towbook_sessions WHERE org_id=${u.orgId}`; const row=r[0] as Record<string,unknown>|undefined; let lastResult: TowbookSyncResult | null = null; if(row?.last_result){ try { const p=row.last_result as Record<string,unknown>; lastResult={ok:String(p.code)==="ok",code:p.code as TowbookSyncCode,message:String(p.message??""),added:Number(p.added??0),updated:Number(p.updated??0),failed:Number(p.failed??0),diagnostics:Array.isArray(p.diagnostics)?p.diagnostics as TowbookSyncDiag[]:[],ranAt:String(p.ranAt??"")}; } catch { lastResult=null; } } return {ok:true as const,connected:Boolean(row && row.status==='connected'),lastSyncAt:row&&row.last_sync_at?new Date(String(row.last_sync_at)).toISOString():null,lastResult}; } catch { return towbookFail("towbook_unreachable","Towbook status unavailable."); }});
+export const towbookStatus=createServerFn({method:"GET"}).handler(async()=>{ if(!configured()) return {ok:true as const,connected:false,lastSyncAt:null,lastResult:null}; const {currentUser}=await import("./auth-server"); const u=await currentUser(); if(!u)return towbookFail("towbook_unreachable","Sign in required."); if(!can(u,["owner","admin"]))return towbookFail("towbook_blocked","You cannot view Towbook status."); try { await prepare(); const r=await sql()`SELECT status,last_sync_at,last_result FROM towbook_sessions WHERE org_id=${u.orgId}`; const row=r[0] as Record<string,unknown>|undefined; let lastResult: TowbookSyncResult | null = null; if(row?.last_result){ try { const p=row.last_result as Record<string,unknown>; lastResult={ok:String(p.code)==="ok",code:p.code as TowbookSyncCode,message:String(p.message??""),added:Number(p.added??0),updated:Number(p.updated??0),failed:Number(p.failed??0),diagnostics:Array.isArray(p.diagnostics)?p.diagnostics as TowbookSyncDiag[]:[],ranAt:String(p.ranAt??""),...(p.sample!==undefined?{sample:String(p.sample)}:{}),...(Array.isArray(p.statusShapes)?{statusShapes:p.statusShapes as string[]}:{})}; } catch { lastResult=null; } } return {ok:true as const,connected:Boolean(row && row.status==='connected'),lastSyncAt:row&&row.last_sync_at?new Date(String(row.last_sync_at)).toISOString():null,lastResult}; } catch { return towbookFail("towbook_unreachable","Towbook status unavailable."); }});
 export const connectTowbook=createServerFn({method:"POST"}).validator(passthrough).handler(async({data})=>{
   const e=invalid(data,z.object({username:z.string().min(1).max(256),password:z.string().min(1).max(256)}).strict());
   if(e)return e;
@@ -250,7 +250,7 @@ export const resetDemo=createServerFn({method:"POST"}).validator(passthrough).ha
 
 export type TowbookSyncCode = "ok" | "not_connected" | "session_unavailable" | "session_expired" | "no_jobs" | "unauthorized" | "error";
 export type TowbookSyncDiag = { url: string; status: number | null; contentType: string | null; hint: string };
-export type TowbookSyncResult = { ok: boolean; code: TowbookSyncCode; message: string; added: number; updated: number; failed: number; diagnostics: TowbookSyncDiag[]; ranAt: string };
+export type TowbookSyncResult = { ok: boolean; code: TowbookSyncCode; message: string; added: number; updated: number; failed: number; diagnostics: TowbookSyncDiag[]; ranAt: string; sample?: string; statusShapes?: string[] };
 const syncResult = (code: TowbookSyncCode, message: string, extra?: Partial<TowbookSyncResult>): TowbookSyncResult => ({ ok: code === "ok", code, message, added: 0, updated: 0, failed: 0, diagnostics: [], ranAt: new Date().toISOString(), ...extra });
 
 /** Data-driven Towbook status → dispatch lifecycle mapping (first match wins; order
@@ -270,6 +270,74 @@ export function mapTowbookStatus(raw: string): JobStatus | null {
   for (const { match, to } of TOWBOOK_STATUS_TO_LIFECYCLE) if (match.test(s)) return to;
   return null;
 }
+
+/** Numeric Towbook status id → dispatch lifecycle (the /api/calls JSON surface).
+ *  PROVISIONAL mapping (2026-08-10, owner's real run): the real call objects carry
+ *  status as an OBJECT — observed shapes {"id":1,"next":{"waypointId":0,"statusId":2}},
+ *  {"id":5}, {"id":252} — plus a per-call allowed-status list [0,1,2,3,4,5]. The
+ *  0..5 list is a 6-state workflow that maps 1:1 onto our own lifecycle
+ *  (new → offered → accepted → en_route → arrived → completed), so 0..5 are mapped
+ *  in order. Only ids with a defensible meaning are mapped: 252 is NOT in the
+ *  workflow range (a sentinel/void value, not a lifecycle state) and stays
+ *  UNMAPPED — those calls are skipped and counted, never mislabeled. Confirm the
+ *  exact meaning of each id against the `sample`/`statusShapes` captured in
+ *  towbook_sessions.last_result on the next sync run, then adjust this const. */
+export const TOWBOOK_STATUS_ID_TO_LIFECYCLE: Readonly<Record<number, JobStatus>> = {
+  0: "new", // workflow start — call created / not yet dispatched
+  1: "offered", // dispatched to a driver (observed next.statusId = 2)
+  2: "accepted", // driver accepted
+  3: "en_route", // driver heading to the scene
+  4: "arrived", // on scene
+  5: "completed", // workflow end (observed; terminal)
+};
+/** Known ids that are deliberately NOT mapped (documented so the next run knows
+ *  they were considered). 252 is outside the observed [0..5] workflow — a
+ *  sentinel ("no status"/void) rather than a lifecycle state. */
+export const TOWBOOK_STATUS_ID_UNMAPPED: ReadonlySet<number> = new Set([252]);
+
+const numericStatusId = (v: unknown): number | null =>
+  typeof v === "number" ? (Number.isInteger(v) ? v : null)
+  : typeof v === "string" && v.trim() !== "" ? (Number.isInteger(Number(v.trim())) ? Number(v.trim()) : null)
+  : null;
+
+/** Defensively derive a numeric Towbook status id from a call's status field,
+ *  which may be an object ({id}, {id,next:{statusId}}, {next:{waypointId,statusId}}),
+ *  a plain number, a numeric string, an array ([] / [id]), or null. Prefers
+ *  status.id, then status.next.statusId, then status.statusId/stateId, then any
+ *  single small numeric field of the status object. Returns null when no numeric
+ *  id can be derived — callers must then SKIP the call (never guess a status). */
+export function extractTowbookStatusId(status: unknown): number | null {
+  if (status == null) return null;
+  if (typeof status === "number" || typeof status === "string") return numericStatusId(status);
+  if (Array.isArray(status)) return status.length === 1 ? extractTowbookStatusId(status[0]) : null;
+  if (typeof status === "object") {
+    const o = status as Record<string, unknown>;
+    const byId = numericStatusId(o.id);
+    if (byId != null) return byId;
+    const next = o.next && typeof o.next === "object" && !Array.isArray(o.next) ? (o.next as Record<string, unknown>) : null;
+    if (next) {
+      const byNext = numericStatusId(next.statusId);
+      if (byNext != null) return byNext;
+    }
+    const byField = numericStatusId(o.statusId) ?? numericStatusId(o.stateId);
+    if (byField != null) return byField;
+    // Last resort: status objects are tiny and shape-known — a lone small
+    // numeric field is the status id. (Never applied to whole call objects.)
+    for (const v of Object.values(o)) {
+      const n = numericStatusId(v);
+      if (n != null && n >= 0 && n <= 10000) return n;
+    }
+  }
+  return null;
+}
+
+/** Compact, bounded stringification of a raw status value for diagnostics and
+ *  the persisted statusShapes — never rendered raw in the UI. */
+const stringifyStatus = (s: unknown): string => {
+  if (s == null) return "";
+  const j = typeof s === "string" ? s : JSON.stringify(s);
+  return (j ?? String(s)).slice(0, 200);
+};
 
 /** Data-driven Towbook service text → dispatch service type. Anything unrecognized
  *  falls back to flatbed_tow (generic roadside/tow) rather than breaking the UI,
@@ -437,6 +505,143 @@ export function parseJsonJobs(payload: string): RawJob[] {
   return out;
 }
 
+/** Recursively harvest call-like objects (any object with an `id` field) from a
+ *  JSON payload — the /api/calls surface returns a flat array of call objects, but
+ *  this also tolerates wrappers like {"calls":[...]}. Once an object with an id is
+ *  found it is collected WITHOUT recursing into it, so nested DTOs (account,
+ *  vehicle, …) can never be mistaken for calls. */
+export function parseJsonObjects(payload: string): Record<string, unknown>[] {
+  let data: unknown;
+  try { data = JSON.parse(payload); } catch { return []; }
+  const out: Record<string, unknown>[] = [];
+  const walk = (node: unknown) => {
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        if (item && typeof item === "object" && !Array.isArray(item)) {
+          const o = item as Record<string, unknown>;
+          if (o.id != null || o.callNumber != null) { out.push(o); continue; }
+          walk(item);
+        } else walk(item);
+      }
+    } else if (node && typeof node === "object") {
+      for (const v of Object.values(node as Record<string, unknown>)) walk(v);
+    }
+  };
+  walk(data);
+  return out;
+}
+
+/* --------------------------- JSON call normalization --------------------------- */
+
+const pickString = (o: Record<string, unknown>, ...keys: string[]): string => {
+  for (const k of keys) {
+    const v = o[k];
+    if (v == null) continue;
+    if (typeof v === "string") { const t = v.trim(); if (t) return t; }
+    if (typeof v === "number") return String(v);
+  }
+  return "";
+};
+/** Find the first non-empty text at o[k] (string/number), recursing into object
+ *  values with nestedKeys. Used to read call fields that may be flat strings or
+ *  nested DTOs (e.g. account → account.company). */
+const findText = (o: Record<string, unknown>, keys: string[], nestedKeys: string[] = []): string => {
+  for (const k of keys) {
+    const v = o[k];
+    if (v == null) continue;
+    if (typeof v === "string") { const t = v.trim(); if (t) return t; }
+    if (typeof v === "number") return String(v);
+    if (typeof v === "object" && !Array.isArray(v) && nestedKeys.length) {
+      const t = findText(v as Record<string, unknown>, nestedKeys);
+      if (t) return t;
+    }
+  }
+  return "";
+};
+/** Best-effort human vehicle description from whatever shape the call uses. */
+const vehicleText = (v: unknown): string => {
+  if (v == null) return "";
+  if (typeof v === "string" || typeof v === "number") return String(v).trim();
+  if (typeof v === "object" && !Array.isArray(v)) {
+    const parts: string[] = [];
+    for (const k of ["year", "make", "model", "color", "plate", "description", "name", "label"]) {
+      const s = pickString(v as Record<string, unknown>, k);
+      if (s) parts.push(s);
+    }
+    return parts.join(" ");
+  }
+  return "";
+};
+/** Derive a status id from the CALL OBJECT itself (fallback when call.status is
+ *  missing). Only explicit status keys — never a numeric sweep of the whole call,
+ *  whose type/companyId/version fields would poison the guess. */
+const callLevelStatusId = (call: Record<string, unknown>): number | null =>
+  numericStatusId(call.statusId) ?? numericStatusId(call.currentStatusId) ?? numericStatusId(call.stateId) ?? null;
+
+type JsonCallResult = { ok: true; job: NormalizedJob } | { ok: false; reason: string };
+/** Normalize one Towbook /api/calls array item (the raw JSON object) into a
+ *  dispatch job. Field names are read DIRECTLY from the real call object
+ *  (id/callNumber, status, account.company, vehicle, addresses, notes…) and the
+ *  whole object is kept as raw_json for reconciliation. Returns ok:false with a
+ *  human reason when the call must be skipped (no id, or an unmapped status id —
+ *  unknown status ids are NEVER imported). */
+export function normalizeJsonCall(call: Record<string, unknown>, sourceUrl: string): JsonCallResult {
+  const idRaw = call.id ?? call.callNumber;
+  if (idRaw == null) return { ok: false, reason: "no id/status" };
+  const towbookJobId = String(idRaw).trim();
+  if (!towbookJobId) return { ok: false, reason: "no id/status" };
+  const statusId = extractTowbookStatusId(call.status) ?? callLevelStatusId(call);
+  const status = statusId == null ? null : TOWBOOK_STATUS_ID_TO_LIFECYCLE[statusId] ?? null;
+  if (statusId == null || !status) {
+    return { ok: false, reason: `unmapped status ${stringifyStatus(call.status)} (statusId=${statusId ?? "none"})` };
+  }
+  const customer =
+    findText(call, ["account", "customer", "member", "caller", "client", "customerName", "memberName"], ["company", "name"]) ||
+    `Towbook job ${towbookJobId}`;
+  const phone = findText(call, ["phone", "customerPhone", "callerPhone", "mobile", "telephone", "account", "accountPhone"], ["phone", "mobile", "telephone"]);
+  const pickup = findText(call, ["pickup", "pickupAddress", "fromAddress", "origin", "source", "address"], ["street", "address", "city", "state", "zip", "postalCode"]);
+  const dropoff = findText(call, ["dropoff", "dropoffAddress", "toAddress", "destination", "dest"], ["street", "address", "city", "state", "zip", "postalCode"]);
+  // call.type is a numeric enum we do not know yet — derive service from TEXT only.
+  const serviceText = findText(call, ["service", "serviceType", "workType", "jobType", "serviceDescription", "category", "reason"], ["name", "label", "description"]);
+  const note = pickString(call, "notes", "note", "comment", "comments", "instructions");
+  const dateTxt = pickString(call, "createdAt", "created", "createdOn", "date", "openDate", "receivedAt", "startTime", "createdDate");
+  const parsed = dateTxt ? Date.parse(dateTxt) : NaN;
+  return {
+    ok: true,
+    job: {
+      towbookJobId,
+      customer,
+      phone,
+      vehicle: vehicleText(call.vehicle),
+      pickup,
+      dropoff,
+      status,
+      towbookStatus: String(statusId),
+      serviceType: mapTowbookService(serviceText || ""),
+      createdAt: Number.isNaN(parsed) ? new Date().toISOString() : new Date(parsed).toISOString(),
+      note,
+      raw: { sourceUrl, ...call },
+    },
+  };
+}
+
+/** Self-documenting capture for the next sync run: raw JSON of the first 2 call
+ *  objects (trimmed to ~sampleCapBytes) plus the deduped, bounded set of raw
+ *  status VALUES seen across all calls — enough to finish or verify the status
+ *  mapping in one shot without another round-trip. Persisted (DB-only) via
+ *  persistSyncResult; never rendered in the UI. */
+export function buildTowbookSample(calls: Record<string, unknown>[], sampleCapBytes = 6000, shapeCap = 20): { sample: string; statusShapes: string[] } {
+  const sample = JSON.stringify(calls.slice(0, 2)).slice(0, sampleCapBytes);
+  const statusShapes: string[] = [];
+  for (const c of calls) {
+    const s = stringifyStatus(c.status);
+    if (!s) continue;
+    if (!statusShapes.includes(s)) statusShapes.push(s);
+    if (statusShapes.length >= shapeCap) break;
+  }
+  return { sample, statusShapes };
+}
+
 /* -------------------------------- normalization -------------------------------- */
 
 type NormalizedJob = {
@@ -525,14 +730,19 @@ async function resolveOrgActor(orgId: string): Promise<{ id: string; role: AuthU
   return { id: String(rows[0].user_id), role: String(rows[0].role) as AuthUser["role"] };
 }
 
-async function upsertPulledJobs(
+/** Org-scoped upsert of normalized Towbook jobs (exported for the fixture test;
+ *  INSERT first-seen ids, UPDATE re-synced ids in place — never duplicates). */
+export async function upsertPulledJobs(
   orgId: string,
   actor: { id: string; role: AuthUser["role"] },
   jobs: NormalizedJob[],
   trigger: string,
 ): Promise<{ added: number; updated: number; failed: number }> {
   const q = sql();
-  const existingRows = await q`SELECT id, status, customer_name, phone, pickup, dropoff, towbook_status FROM dispatch_jobs WHERE org_id=${orgId} AND towbook_job_id IS NOT NULL`;
+  // NOTE: towbook_job_id MUST be in the select list — it is the existing-map key.
+  // (Bug fixed 2026-08-10: it was omitted, so every row was keyed "undefined" and
+  // re-syncs re-INSERTed → pkey violation → all counted as failed.)
+  const existingRows = await q`SELECT id, status, customer_name, phone, pickup, dropoff, towbook_status, towbook_job_id FROM dispatch_jobs WHERE org_id=${orgId} AND towbook_job_id IS NOT NULL`;
   const existing = new Map(existingRows.map((r) => [String(r.towbook_job_id), r as Record<string, unknown>]));
   let added = 0, updated = 0, failed = 0;
   for (const job of jobs) {
@@ -604,19 +814,39 @@ async function doSyncForOrg(orgId: string, trigger: string, actorHint?: { id: st
     await q`UPDATE towbook_sessions SET last_sync_at=NOW() WHERE org_id=${orgId}`;
     return syncResult("no_jobs", "Synced, but no job list was found on the discovered pages. The diagnostics below show what each URL returned.", { diagnostics });
   }
-  const rawJobs: RawJob[] = [];
+  const jsonCalls: Record<string, unknown>[] = [];
+  const htmlJobs: RawJob[] = [];
   for (const p of pages) {
     const looksJson = (p.contentType && p.contentType.includes("json")) || /^\s*[\[{]/.test(p.body);
-    rawJobs.push(...(looksJson ? parseJsonJobs(p.body) : parseTables(p.body)));
+    if (looksJson) jsonCalls.push(...parseJsonObjects(p.body));
+    else htmlJobs.push(...parseTables(p.body));
   }
-  const byId = new Map<string, RawJob>();
-  for (const r of rawJobs) {
-    const rid = (r.id || "").trim();
-    if (rid && !byId.has(rid)) byId.set(rid, r);
+  // Dedupe JSON calls by id: /api/calls and /api/Calls return the SAME array, so
+  // first occurrence wins (keeps counts, sample and statusShapes honest).
+  const callsById = new Map<string, Record<string, unknown>>();
+  for (const call of jsonCalls) {
+    const idRaw = call.id ?? call.callNumber;
+    if (idRaw == null) continue;
+    const rid = String(idRaw).trim();
+    if (rid && !callsById.has(rid)) callsById.set(rid, call);
   }
+  const calls = [...callsById.values()];
   const normalized: NormalizedJob[] = [];
   const skipped: Array<{ id: string; reason: string }> = [];
+  const statusIdCounts = new Map<string, number>();
+  for (const call of calls) {
+    const rid = String(call.id ?? call.callNumber).trim();
+    const sid = extractTowbookStatusId(call.status) ?? callLevelStatusId(call);
+    if (sid != null) statusIdCounts.set(String(sid), (statusIdCounts.get(String(sid)) ?? 0) + 1);
+    const n = normalizeJsonCall(call, "");
+    if (!n.ok) { skipped.push({ id: rid, reason: n.reason }); continue; }
+    normalized.push(n.job);
+  }
+  // HTML tables (fallback surface): only fill ids the JSON path did not cover.
+  const byId = new Map<string, RawJob>();
+  for (const r of htmlJobs) { const rid = (r.id || "").trim(); if (rid && !byId.has(rid)) byId.set(rid, r); }
   for (const [rid, rec] of byId) {
+    if (callsById.has(rid)) continue;
     const n = normalizeRawJob(rec, "");
     if (!n) {
       skipped.push({ id: rid, reason: (rec.status || "").trim() ? `unmapped status "${(rec.status || "").trim()}"` : "no id/status" });
@@ -624,6 +854,10 @@ async function doSyncForOrg(orgId: string, trigger: string, actorHint?: { id: st
     }
     normalized.push(n);
   }
+  // Self-documenting capture (persisted to last_result by persistSyncResult so
+  // the next mapping pass needs no round-trip): the first 2 raw call objects +
+  // every distinct status value seen across all calls. DB-only — never rendered.
+  const capture = calls.length ? buildTowbookSample(calls) : null;
   const actor = actorHint ?? (await resolveOrgActor(orgId));
   if (!actor) {
     await q`UPDATE towbook_sessions SET last_sync_at=NOW() WHERE org_id=${orgId}`;
@@ -633,7 +867,9 @@ async function doSyncForOrg(orgId: string, trigger: string, actorHint?: { id: st
   await q`UPDATE towbook_sessions SET last_sync_at=NOW() WHERE org_id=${orgId}`;
   if (skipped.length) {
     const sample = skipped.slice(0, 5).map((s) => `${s.id} (${s.reason})`).join(", ");
-    diagnostics.push({ url: "<status-map>", status: null, contentType: null, hint: `skipped ${skipped.length} job(s): ${sample}${skipped.length > 5 ? " …" : ""} — extend the status map in src/data/server.ts (TOWBOOK_STATUS_TO_LIFECYCLE)` });
+    const unmappedIds = [...statusIdCounts.keys()].filter((s) => !TOWBOOK_STATUS_ID_TO_LIFECYCLE[Number(s)]).sort();
+    const seen = [...statusIdCounts.entries()].map(([id, c]) => `${id}×${c}`).join(",");
+    diagnostics.push({ url: "<status-map>", status: null, contentType: null, hint: `skipped ${skipped.length} job(s): ${sample}${skipped.length > 5 ? " …" : ""} — status ids seen: ${seen || "none"}; unmapped: ${unmappedIds.join(",") || "none"}` });
   }
   const failed = res.failed + skipped.length;
   return {
@@ -644,6 +880,8 @@ async function doSyncForOrg(orgId: string, trigger: string, actorHint?: { id: st
     updated: res.updated,
     failed,
     diagnostics,
+    ranAt: new Date().toISOString(),
+    ...(capture ? { sample: capture.sample, statusShapes: capture.statusShapes } : {}),
   };
 }
 
@@ -655,11 +893,16 @@ const syncInFlight = new Map<string, Promise<TowbookSyncResult>>();
  *  message + diagnostics, so a run that finds nothing is explainable from the
  *  DB after the fact. Diagnostics contain only URLs/statuses/hints — never
  *  cookies, passwords, or the session. Capped to keep the JSONB row small.
- *  Best-effort: a persistence failure must never mask the sync result. */
-async function persistSyncResult(orgId: string, r: TowbookSyncResult): Promise<void> {
+ *  Best-effort: a persistence failure must never mask the sync result.
+ *  Exported for the fixture test (persistence wrapper check). */
+export async function persistSyncResult(orgId: string, r: TowbookSyncResult): Promise<void> {
   try {
     const diagnostics = r.diagnostics.slice(0, 80);
-    await sql()`UPDATE towbook_sessions SET last_result=${JSON.stringify({ ranAt: r.ranAt, code: r.code, message: r.message, added: r.added, updated: r.updated, failed: r.failed, diagnostics })}::jsonb WHERE org_id=${orgId}`;
+    await sql()`UPDATE towbook_sessions SET last_result=${JSON.stringify({
+      ranAt: r.ranAt, code: r.code, message: r.message, added: r.added, updated: r.updated, failed: r.failed, diagnostics,
+      ...(r.sample ? { sample: r.sample } : {}),
+      ...(r.statusShapes && r.statusShapes.length ? { statusShapes: r.statusShapes } : {}),
+    })}::jsonb WHERE org_id=${orgId}`;
   } catch { /* never mask the sync result with a diagnostics-write failure */ }
 }
 
