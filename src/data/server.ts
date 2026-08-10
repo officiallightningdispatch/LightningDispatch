@@ -153,7 +153,7 @@ async function persistTowbookFailure(orgId: string, f: TowbookFacts) {
     await sql()`INSERT INTO towbook_sessions(org_id,encrypted_session,status,error,updated_at) VALUES(${orgId},'','error',${towbookDetail(f)},NOW()) ON CONFLICT(org_id) DO UPDATE SET status='error',error=EXCLUDED.error,updated_at=NOW(),encrypted_session=towbook_sessions.encrypted_session`;
   } catch { /* never mask the real connect result with a diagnostics-write failure */ }
 }
-export const towbookStatus=createServerFn({method:"GET"}).handler(async()=>{ if(!configured()) return {ok:true as const,connected:false,lastSyncAt:null,lastResult:null}; const {currentUser}=await import("./auth-server"); const u=await currentUser(); if(!u)return towbookFail("towbook_unreachable","Sign in required."); if(!can(u,["owner","admin"]))return towbookFail("towbook_blocked","You cannot view Towbook status."); try { await prepare(); const r=await sql()`SELECT status,last_sync_at,last_result FROM towbook_sessions WHERE org_id=${u.orgId}`; const row=r[0] as Record<string,unknown>|undefined; let lastResult: TowbookSyncResult | null = null; if(row?.last_result){ try { const p=row.last_result as Record<string,unknown>; lastResult={ok:String(p.code)==="ok",code:p.code as TowbookSyncCode,message:String(p.message??""),added:Number(p.added??0),updated:Number(p.updated??0),failed:Number(p.failed??0),diagnostics:Array.isArray(p.diagnostics)?p.diagnostics as TowbookSyncDiag[]:[],ranAt:String(p.ranAt??""),...(p.sample!==undefined?{sample:String(p.sample)}:{}),...(Array.isArray(p.statusShapes)?{statusShapes:p.statusShapes as string[]}:{})}; } catch { lastResult=null; } } return {ok:true as const,connected:Boolean(row && row.status==='connected'),lastSyncAt:row&&row.last_sync_at?new Date(String(row.last_sync_at)).toISOString():null,lastResult}; } catch { return towbookFail("towbook_unreachable","Towbook status unavailable."); }});
+export const towbookStatus=createServerFn({method:"GET"}).handler(async()=>{ if(!configured()) return {ok:true as const,connected:false,lastSyncAt:null,lastResult:null}; const {currentUser}=await import("./auth-server"); const u=await currentUser(); if(!u)return towbookFail("towbook_unreachable","Sign in required."); if(!can(u,["owner","admin"]))return towbookFail("towbook_blocked","You cannot view Towbook status."); try { await prepare(); const r=await sql()`SELECT status,last_sync_at,last_result FROM towbook_sessions WHERE org_id=${u.orgId}`; const row=r[0] as Record<string,unknown>|undefined; let lastResult: TowbookSyncResult | null = null; if(row?.last_result){ try { const p=row.last_result as Record<string,unknown>; lastResult={ok:String(p.code)==="ok",code:p.code as TowbookSyncCode,message:String(p.message??""),added:Number(p.added??0),updated:Number(p.updated??0),failed:Number(p.failed??0),diagnostics:Array.isArray(p.diagnostics)?p.diagnostics as TowbookSyncDiag[]:[],ranAt:String(p.ranAt??""),...(Array.isArray(p.sample)?{sample:p.sample as Record<string, unknown>[]}:{}),...(Array.isArray(p.statusShapes)?{statusShapes:p.statusShapes as string[]}:{}),...(p.sampleByStatus&&typeof p.sampleByStatus==="object"&&!Array.isArray(p.sampleByStatus)?{sampleByStatus:p.sampleByStatus as Record<string, Record<string, unknown>>}:{})}; } catch { lastResult=null; } } return {ok:true as const,connected:Boolean(row && row.status==='connected'),lastSyncAt:row&&row.last_sync_at?new Date(String(row.last_sync_at)).toISOString():null,lastResult}; } catch { return towbookFail("towbook_unreachable","Towbook status unavailable."); }});
 export const connectTowbook=createServerFn({method:"POST"}).validator(passthrough).handler(async({data})=>{
   const e=invalid(data,z.object({username:z.string().min(1).max(256),password:z.string().min(1).max(256)}).strict());
   if(e)return e;
@@ -250,7 +250,7 @@ export const resetDemo=createServerFn({method:"POST"}).validator(passthrough).ha
 
 export type TowbookSyncCode = "ok" | "not_connected" | "session_unavailable" | "session_expired" | "no_jobs" | "unauthorized" | "error";
 export type TowbookSyncDiag = { url: string; status: number | null; contentType: string | null; hint: string };
-export type TowbookSyncResult = { ok: boolean; code: TowbookSyncCode; message: string; added: number; updated: number; failed: number; diagnostics: TowbookSyncDiag[]; ranAt: string; sample?: string; statusShapes?: string[] };
+export type TowbookSyncResult = { ok: boolean; code: TowbookSyncCode; message: string; added: number; updated: number; failed: number; diagnostics: TowbookSyncDiag[]; ranAt: string; sample?: Record<string, unknown>[]; statusShapes?: string[]; sampleByStatus?: Record<string, Record<string, unknown>> };
 const syncResult = (code: TowbookSyncCode, message: string, extra?: Partial<TowbookSyncResult>): TowbookSyncResult => ({ ok: code === "ok", code, message, added: 0, updated: 0, failed: 0, diagnostics: [], ranAt: new Date().toISOString(), ...extra });
 
 /** Data-driven Towbook status → dispatch lifecycle mapping (first match wins; order
@@ -280,8 +280,10 @@ export function mapTowbookStatus(raw: string): JobStatus | null {
  *  in order. Only ids with a defensible meaning are mapped: 252 is NOT in the
  *  workflow range (a sentinel/void value, not a lifecycle state) and stays
  *  UNMAPPED — those calls are skipped and counted, never mislabeled. Confirm the
- *  exact meaning of each id against the `sample`/`statusShapes` captured in
- *  towbook_sessions.last_result on the next sync run, then adjust this const. */
+ *  exact meaning of each id against the `sample`/`statusShapes`/`sampleByStatus`
+ *  captured in towbook_sessions.last_result on the next sync run (sampleByStatus
+ *  holds one full raw call per status id — its statuses history, timestamps,
+ *  availableActions — enough to resolve 255 definitively), then adjust this const. */
 export const TOWBOOK_STATUS_ID_TO_LIFECYCLE: Readonly<Record<number, JobStatus>> = {
   0: "new", // workflow start — call created / not yet dispatched
   1: "offered", // dispatched to a driver (observed next.statusId = 2)
@@ -625,21 +627,99 @@ export function normalizeJsonCall(call: Record<string, unknown>, sourceUrl: stri
   };
 }
 
-/** Self-documenting capture for the next sync run: raw JSON of the first 2 call
- *  objects (trimmed to ~sampleCapBytes) plus the deduped, bounded set of raw
- *  status VALUES seen across all calls — enough to finish or verify the status
- *  mapping in one shot without another round-trip. Persisted (DB-only) via
- *  persistSyncResult; never rendered in the UI. */
-export function buildTowbookSample(calls: Record<string, unknown>[], sampleCapBytes = 6000, shapeCap = 20): { sample: string; statusShapes: string[] } {
-  const sample = JSON.stringify(calls.slice(0, 2)).slice(0, sampleCapBytes);
+/** Keys that are large and not needed for a status-id decision; dropped first when
+ *  a raw call object must be trimmed to the per-shape byte cap. */
+const SAMPLE_DROP_FIRST: readonly string[] = [
+  "invoiceItems", "invoiceTax", "invoiceTotal", "invoiceSubtotal", "balanceByClass",
+  "statements", "contacts", "insights", "payments", "paymentsApplied", "channels",
+  "assets", "groups", "tags", "attributes", "notes",
+];
+/** If the object is still over the cap after SAMPLE_DROP_FIRST, fall back to this
+ *  diagnostic allowlist — everything needed to resolve a status id's meaning
+ *  (status, statuses history, timestamps, availableActions, account, waypoints). */
+const SAMPLE_ALLOWLIST: readonly string[] = [
+  "id", "callNumber", "status", "statuses", "createDate", "dispatchTime", "enrouteTime",
+  "arrivalTime", "completionTime", "cancelledAt", "canceledAt", "voidedAt", "closedAt",
+  "availableActions", "account", "waypoints", "reason", "callType", "towSource",
+  "sourceUrl", "referenceUrl", "impound", "owner", "priority", "purchaseOrderNumber",
+  "version", "companyId", "type", "tags", "notes", "arrivalETA", "balanceDue",
+  "invoiceStatusId", "invoiceNumber",
+];
+
+/** Cap a raw call object so its JSON form stays under ~perObjectCapBytes while
+ *  keeping the fields needed to interpret its status id. Always returns a plain
+ *  object (never a string, never undefined) so the value round-trips through JSONB. */
+export function trimRawCall(call: Record<string, unknown>, perObjectCapBytes = 6000): Record<string, unknown> {
+  const fits = (o: Record<string, unknown>): boolean => {
+    try { return JSON.stringify(o).length <= perObjectCapBytes; } catch { return false; }
+  };
+  if (fits(call)) return call;
+  const slim: Record<string, unknown> = { ...call };
+  for (const k of SAMPLE_DROP_FIRST) {
+    if (k in slim) delete slim[k];
+    if (fits(slim)) return slim;
+  }
+  const allow: Record<string, unknown> = {};
+  for (const k of SAMPLE_ALLOWLIST) if (call[k] !== undefined) allow[k] = call[k];
+  if (fits(allow)) return allow;
+  const core: Record<string, unknown> = {};
+  for (const k of ["id", "callNumber", "status", "statuses", "createDate"]) if (call[k] !== undefined) core[k] = call[k];
+  return core; // tiny by construction — always under the cap
+}
+
+/** Best-effort "newness" score for a call — used to prefer the newest call per
+ *  status shape in sampleByStatus. Real calls carry createDate (ISO timestamp);
+ *  higher numeric ids are newer in Towbook, so the id is the fallback key. */
+const callFreshness = (call: Record<string, unknown>): number => {
+  for (const k of ["createDate", "createdAt", "updatedAt", "arrivalTime", "completionTime", "dispatchTime", "enrouteTime"]) {
+    const v = call[k];
+    if (typeof v === "string") {
+      const t = Date.parse(v);
+      if (!Number.isNaN(t)) return t;
+    }
+  }
+  const id = Number(call.id ?? call.callNumber);
+  return Number.isFinite(id) ? id : 0;
+};
+
+/** Self-documenting capture for the next sync run — DB-only (persisted to
+ *  towbook_sessions.last_result by persistSyncResult), never rendered in the UI:
+ *  - sample: the first 2 raw call objects (JSONB array; each object trimmed to
+ *    ~perObjectCapBytes) — a small, always-parseable window into the payload.
+ *  - statusShapes: deduped raw status VALUES seen across all calls (cap shapeCap),
+ *    in arrival order — what the status field looks like at rest.
+ *  - sampleByStatus: one full raw call object per distinct status id
+ *    ({ [statusId]: callObject }, newest call preferred per shape, each trimmed
+ *    to ~perObjectCapBytes) — enough to decide the MEANING of every status id
+ *    (including 255) in one read: its statuses history, timestamps,
+ *    availableActions, account, waypoints. Values are plain objects, so the
+ *    JSONB round-trips natively.
+ * Every field is guaranteed a real value (never undefined, never the string
+ * "undefined") — the 2026-08-10 bug stored a coerced serialization of undefined
+ * as the literal string "undefined", which this shape makes impossible. */
+export function buildTowbookSample(calls: Record<string, unknown>[], perObjectCapBytes = 6000, shapeCap = 20): { sample: Record<string, unknown>[]; statusShapes: string[]; sampleByStatus: Record<string, Record<string, unknown>> } {
+  const sample: Record<string, unknown>[] = [];
   const statusShapes: string[] = [];
+  const sampleByStatus: Record<string, Record<string, unknown>> = {};
   for (const c of calls) {
     const s = stringifyStatus(c.status);
     if (!s) continue;
     if (!statusShapes.includes(s)) statusShapes.push(s);
     if (statusShapes.length >= shapeCap) break;
   }
-  return { sample, statusShapes };
+  for (const c of calls.slice(0, 2)) sample.push(trimRawCall(c, perObjectCapBytes));
+  const newestFirst = [...calls].sort((a, b) => callFreshness(b) - callFreshness(a));
+  const shapeKeys = new Set<string>();
+  for (const c of newestFirst) {
+    const sid = extractTowbookStatusId(c.status) ?? callLevelStatusId(c);
+    if (sid == null) continue;
+    const key = String(sid);
+    if (sampleByStatus[key] !== undefined) continue; // newest already captured
+    sampleByStatus[key] = trimRawCall(c, perObjectCapBytes);
+    shapeKeys.add(key);
+    if (shapeKeys.size >= shapeCap) break;
+  }
+  return { sample, statusShapes, sampleByStatus };
 }
 
 /* -------------------------------- normalization -------------------------------- */
@@ -855,8 +935,9 @@ async function doSyncForOrg(orgId: string, trigger: string, actorHint?: { id: st
     normalized.push(n);
   }
   // Self-documenting capture (persisted to last_result by persistSyncResult so
-  // the next mapping pass needs no round-trip): the first 2 raw call objects +
-  // every distinct status value seen across all calls. DB-only — never rendered.
+  // the next mapping pass needs no round-trip): the first 2 raw call objects,
+  // every distinct status value seen across all calls, and one full raw call
+  // per distinct status id (newest preferred). DB-only — never rendered.
   const capture = calls.length ? buildTowbookSample(calls) : null;
   const actor = actorHint ?? (await resolveOrgActor(orgId));
   if (!actor) {
@@ -881,7 +962,7 @@ async function doSyncForOrg(orgId: string, trigger: string, actorHint?: { id: st
     failed,
     diagnostics,
     ranAt: new Date().toISOString(),
-    ...(capture ? { sample: capture.sample, statusShapes: capture.statusShapes } : {}),
+    ...(capture ? { sample: capture.sample, statusShapes: capture.statusShapes, sampleByStatus: capture.sampleByStatus } : {}),
   };
 }
 
@@ -898,11 +979,18 @@ const syncInFlight = new Map<string, Promise<TowbookSyncResult>>();
 export async function persistSyncResult(orgId: string, r: TowbookSyncResult): Promise<void> {
   try {
     const diagnostics = r.diagnostics.slice(0, 80);
-    await sql()`UPDATE towbook_sessions SET last_result=${JSON.stringify({
-      ranAt: r.ranAt, code: r.code, message: r.message, added: r.added, updated: r.updated, failed: r.failed, diagnostics,
-      ...(r.sample ? { sample: r.sample } : {}),
+    const payload = {
+      ranAt: typeof r.ranAt === "string" && r.ranAt ? r.ranAt : new Date().toISOString(),
+      code: r.code, message: r.message, added: r.added, updated: r.updated, failed: r.failed, diagnostics,
+      ...(Array.isArray(r.sample) && r.sample.length ? { sample: r.sample } : {}),
       ...(r.statusShapes && r.statusShapes.length ? { statusShapes: r.statusShapes } : {}),
-    })}::jsonb WHERE org_id=${orgId}`;
+      ...(r.sampleByStatus && Object.keys(r.sampleByStatus).length ? { sampleByStatus: r.sampleByStatus } : {}),
+    };
+    // JSON round-trip before persist: guarantees the JSONB never contains an
+    // undefined value (JSON.stringify drops them silently) — the 2026-08-10 bug
+    // persisted a coerced "undefined" STRING; this makes that class of bug
+    // impossible and keeps every field a real JSON value.
+    await sql()`UPDATE towbook_sessions SET last_result=${JSON.stringify(JSON.parse(JSON.stringify(payload)))}::jsonb WHERE org_id=${orgId}`;
   } catch { /* never mask the sync result with a diagnostics-write failure */ }
 }
 
