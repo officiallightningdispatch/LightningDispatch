@@ -36,6 +36,13 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     // towbook_job_id) are unaffected. Partial index: only rows with a Towbook id.
     await q`CREATE UNIQUE INDEX IF NOT EXISTS dispatch_jobs_org_towbook_job_idx ON dispatch_jobs(org_id, towbook_job_id) WHERE towbook_job_id IS NOT NULL`;
   }],
+  [6, async (q) => {
+    // Plain-username login (AI dispatcher): users get an optional login_handle
+    // alongside their canonical unique email. Partial unique index — handles are
+    // unique only where set; email stays the NOT NULL unique key.
+    await q`ALTER TABLE users ADD COLUMN IF NOT EXISTS login_handle TEXT`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS users_login_handle_idx ON users(login_handle) WHERE login_handle IS NOT NULL`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();
