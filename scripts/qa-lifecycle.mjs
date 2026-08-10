@@ -1,63 +1,15 @@
 #!/usr/bin/env bun
-/**
- * Repeatable published-build lifecycle QA. The server-function ids below are for
- * the current published build and MUST be re-derived from the client bundle after
- * every republish. This script never touches the owner's account or organization.
- */
 import { neon } from "../node_modules/@neondatabase/serverless/index.js";
 import { scryptSync } from "node:crypto";
-
-const args = process.argv.slice(2);
-const value = (name, fallback) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : fallback; };
-const BASE = value("--base", process.env.BASE_URL || "https://909fd9d2fde94962cd798bdcbee436ba.ctonew.app").replace(/\/$/, "");
-const SMOKE = args.includes("--smoke");
-if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is required (owner account is never modified).");
-const q = neon(process.env.DATABASE_URL);
-const EP = {
-  login: "a21bcef864572157b7c71b92580138911fceb4fe3e2eaabadbf5ce67f5f3e505",
-  read: "89518d4c673b0295fb56b9e814b221c6e8271b62f998a38e4f08c1f9111858d3",
-  assign: "a994e08ee2d5ce012147c7b6548edfd5ed5392f4ed8bcd61efcf116e0c42b177",
-  advance: "75582629468485153fd4bc861fd5ae8ec339c0b57dce4e36d2bb459eb8319310",
-  decline: "e5bd0397b8f783be18097b4a8296b4271197bef50aa32c6a035494c3372f4b6",
-};
-// Correct the published decline id supplied by the QA brief (kept explicit for easy re-derivation).
-EP.decline = "e5bd0397b8f783be18097b4ca8296b4271197bef50aa32c6a035494c3372f4b6";
-const A = "qa-org-a-r8", B = "qa-org-b-r8", C = "qa-contractor-r8";
-const ids = { oa: "qa-user-owner-r8", ca: "qa-user-contractor-r8", ob: "qa-user-owner-r8b", j1: "qa-job-r8", j2: "qa-job-decline-r8" };
-const password = "QaLifecycleR8!";
-const hash = `qa-salt-r8:${scryptSync(password, "qa-salt-r8", 64).toString("hex")}`;
-const baseline = { users: 1, organizations: 1, dispatch_contractors: 0, dispatch_jobs: 0, status_events: 0, audit_log: 0, schema_migrations: 3 };
-const counts = async () => (await q`SELECT (SELECT count(*)::int FROM users) users,(SELECT count(*)::int FROM organizations) organizations,(SELECT count(*)::int FROM dispatch_contractors) dispatch_contractors,(SELECT count(*)::int FROM dispatch_jobs) dispatch_jobs,(SELECT count(*)::int FROM status_events) status_events,(SELECT count(*)::int FROM audit_log) audit_log,(SELECT count(*)::int FROM schema_migrations) schema_migrations`)[0];
-const checkCounts = async (label) => { const x = await counts(); const ok = Object.keys(baseline).every(k => Number(x[k]) === baseline[k]); console.log(`${ok ? "PASS" : "FAIL"} ${label}:`, x); if (!ok) throw new Error(`${label} is not pristine`); };
-const seed = async () => {
-  await q`INSERT INTO organizations(id,name) VALUES (${A},'QA Org A R8'),(${B},'QA Org B R8')`;
-  await q`INSERT INTO users(id,name,email,password_hash) VALUES (${ids.oa},'QA Owner R8','qa-owner-r8@lightning.test',${hash}),(${ids.ca},'QA Contractor R8','qa-contractor-r8@lightning.test',${hash}),(${ids.ob},'QA Owner R8B','qa-owner-r8b@lightning.test',${hash})`;
-  await q`INSERT INTO organization_memberships(org_id,user_id,role,contractor_id) VALUES (${A},${ids.oa},'owner',NULL),(${A},${ids.ca},'contractor',${C}),(${B},${ids.ob},'owner',NULL)`;
-  await q`INSERT INTO dispatch_contractors(id,name,status,lat,lng,area,vehicle_types,rating,completed_job_count,response_time_history_minutes,org_id) VALUES (${C},'QA Contractor R8','online',40,-75,'QA','["tow"]',5,0,'[]',${A})`;
-  await q`INSERT INTO dispatch_jobs(id,customer_name,phone,lat,lng,area,service_type,status,created_at,note,org_id) VALUES (${ids.j1},'QA Customer R8','555-0100',40,-75,'QA','jump_start','new',NOW(),'lifecycle',${A}),(${ids.j2},'QA Decline R8','555-0101',40,-75,'QA','jump_start','new',NOW(),'decline',${A})`;
-  console.log("Seeded ids:", { orgA:A, orgB:B, ownerA:ids.oa, contractorUser:ids.ca, ownerB:ids.ob, contractor:C, job:ids.j1, declineJob:ids.j2 });
-};
-const cookieFrom = (r) => { const s = r.headers.get("set-cookie") || ""; const m = s.match(/(?:^|,\s*)lightning_session=([^;]+)/); return m ? `lightning_session=${m[1]}` : ""; };
-const call = async (ep, method, data, cookie = "") => {
-  const h = { "x-tsr-serverFn": "true", accept: "application/json, application/x-ndjson" }; if (cookie) h.cookie = cookie;
-  const u = `${BASE}/_serverFn/${EP[ep]}`;
-  let url = u, body;
-  if (method === "GET") url += `?data=${encodeURIComponent(JSON.stringify({ data }))}`;
-  else { h["content-type"] = "application/json"; body = JSON.stringify({ data }); }
-  const r = await fetch(url, { method, headers: h, body }); const text = await r.text(); let result; try { result = JSON.parse(text); } catch { throw new Error(`${ep} HTTP ${r.status}: ${text.slice(0,200)}`); }
-  return { result, cookie: cookieFrom(r), status: r.status };
-};
-const expect = (label, actual, predicate) => { const ok = predicate(actual); console.log(`${ok ? "PASS" : "FAIL"} ${label}:`, JSON.stringify(actual)); return ok; };
-let passed = true, seeded = false, sessions = {};
-try {
-  await checkCounts("pre-flight"); await seed(); seeded = true;
-  for (const [key,email] of [["ownerA","qa-owner-r8@lightning.test"],["contractorA","qa-contractor-r8@lightning.test"],["ownerB","qa-owner-r8b@lightning.test"]]) { const x = await call("login","POST",{email,password}); sessions[key] = x.cookie; passed &&= expect(`login ${key}`, x.result, x => x?.ok === true && !!sessions[key]); }
-  const read = await call("read","GET",undefined,sessions.ownerA); const jobs = read.result?.data?.jobs || read.result?.result?.data?.jobs || []; passed &&= expect("owner A read sees seeded job", read.result, () => jobs.some(j => j.id === ids.j1));
-  if (SMOKE) { console.log("SMOKE PASS (seed → login → read)"); }
-  else { console.log("FULL MATRIX NOT RUN: invoke without --smoke next session"); }
-} catch (e) { passed = false; console.error("FAIL harness:", e.message); }
-finally {
-  if (seeded) { try { await q`DELETE FROM organizations WHERE id IN (${A},${B})`; await q`DELETE FROM users WHERE id IN (${ids.oa},${ids.ca},${ids.ob})`; } catch (e) { passed = false; console.error("FAIL cleanup:", e.message); } }
-  try { await checkCounts("cleanup"); } catch (e) { passed = false; console.error("FAIL cleanup counts:", e.message); }
-}
-process.exit(passed ? 0 : 1);
+const args=process.argv.slice(2), value=(n,f)=>{let i=args.indexOf(n);return i>=0?args[i+1]:f}; const BASE=value('--base',process.env.BASE_URL||'https://909fd9d2fde94962cd798bdcbee436ba.ctonew.app').replace(/\/$/,''); const SMOKE=args.includes('--smoke'); if(!process.env.DATABASE_URL)throw Error('DATABASE_URL is required'); const q=neon(process.env.DATABASE_URL);
+const EP={login:'a21bcef864572157b7c71b92580138911fceb4fe3e2eaabadbf5ce67f5f3e505',read:'89518d4c673b0295fb56b9e814b221c6e8271b62f998a38e4f08c1f9111858d3',assign:'a994e08ee2d5ce012147c7b6548edfd5ed5392f4ed8bcd61efcf116e0c42b177',advance:'75582629468485153fd4bc861fd5ae8ec339c0b57dce4e36d2bb459eb8319310',decline:'e5bd0397b8f783be18097b4ca8296b4271197bef50aa32c6a035494c3372f4b6'};
+const A='qa-org-a-r8',B='qa-org-b-r8',C='qa-contractor-r8',ids={oa:'qa-user-owner-r8',ca:'qa-user-contractor-r8',ob:'qa-user-owner-r8b',j1:'qa-job-r8',j2:'qa-job-decline-r8'},password='QaLifecycleR8!',hash=`qa-salt-r8:${scryptSync(password,'qa-salt-r8',64).toString('hex')}`,baseline={users:1,organizations:1,dispatch_contractors:0,dispatch_jobs:0,status_events:0,audit_log:0,schema_migrations:3};
+const counts=async()=> (await q`SELECT (SELECT count(*)::int FROM users) users,(SELECT count(*)::int FROM organizations) organizations,(SELECT count(*)::int FROM dispatch_contractors) dispatch_contractors,(SELECT count(*)::int FROM dispatch_jobs) dispatch_jobs,(SELECT count(*)::int FROM status_events) status_events,(SELECT count(*)::int FROM audit_log) audit_log,(SELECT count(*)::int FROM schema_migrations) schema_migrations`)[0];
+const check=async(label)=>{let x=await counts(),ok=Object.keys(baseline).every(k=>+x[k]===baseline[k]);console.log(ok?'PASS':'FAIL',label,x);if(!ok)throw Error(label+' not pristine')};
+const seed=async()=>{await q`INSERT INTO organizations(id,name) VALUES (${A},'QA Org A R8'),(${B},'QA Org B R8')`;await q`INSERT INTO users(id,name,email,password_hash) VALUES (${ids.oa},'QA Owner R8','qa-owner-r8@lightning.test',${hash}),(${ids.ca},'QA Contractor R8','qa-contractor-r8@lightning.test',${hash}),(${ids.ob},'QA Owner R8B','qa-owner-r8b@lightning.test',${hash})`;await q`INSERT INTO organization_memberships(org_id,user_id,role,contractor_id) VALUES (${A},${ids.oa},'owner',NULL),(${A},${ids.ca},'contractor',${C}),(${B},${ids.ob},'owner',NULL)`;await q`INSERT INTO dispatch_contractors(id,name,status,lat,lng,area,vehicle_types,rating,completed_job_count,response_time_history_minutes,org_id) VALUES (${C},'QA Contractor R8','online',40,-75,'QA','["tow"]',5,0,'[]',${A})`;await q`INSERT INTO dispatch_jobs(id,customer_name,phone,lat,lng,area,service_type,status,created_at,note,org_id) VALUES (${ids.j1},'QA Customer R8','555-0100',40,-75,'QA','jump_start','new',NOW(),'lifecycle',${A}),(${ids.j2},'QA Decline R8','555-0101',40,-75,'QA','jump_start','new',NOW(),'decline',${A})`;console.log('Seeded',ids)};
+// TanStack Start payload: captured from the real browser (Seroval payload wrapper).
+const str=s=>JSON.stringify({t:1,s:String(s)}), obj=(keys,vals)=>`{"t":10,"i":1,"p":{"k":${JSON.stringify(keys)},"v":[${vals.join(',')}]},"o":0}`; const payload=data=>JSON.stringify({t:{t:10,i:0,p:{k:['data'],v:[obj(Object.keys(data),Object.values(data).map(str))]},o:0},f:63,m:[]});
+const cookieFrom=r=>{let s=r.headers.get('set-cookie')||'',m=s.match(/(?:^|,\s*)lightning_session=([^;]+)/);return m?`lightning_session=${m[1]}`:''};
+const call=async(ep,method,data,cookie='')=>{let h={'x-tsr-serverFn':'true','accept':'application/x-tss-framed, application/x-ndjson, application/json','origin':BASE,'referer':`${BASE}/login`,'user-agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36'};if(cookie)h.cookie=cookie;let u=`${BASE}/_serverFn/${EP[ep]}`,body;if(method==='GET'){if(data!==undefined)u+=`?data=${encodeURIComponent(payload(data))}`}else{h['content-type']='application/json';body=payload(data||{})}let r=await fetch(u,{method,headers:h,body});let text=await r.text(),result;try{result=JSON.parse(text)}catch{throw Error(`${ep} HTTP ${r.status}: ${text.slice(0,200)}`)};return {result,cookie:cookieFrom(r)||cookie,status:r.status,text}};
+const unwrap=x=>x?.data||x?.result?.data||x?.data?.data||x?.result||x; const expect=(label,a,p)=>{let ok=false;try{ok=p(a)}catch{}console.log(ok?'PASS':'FAIL',label,JSON.stringify(a));passed&&=ok;return ok}; let passed=true,seeded=false,sessions={};
+try{await check('pre-flight');await seed();seeded=true;for(let [k,email] of [['ownerA','qa-owner-r8@lightning.test'],['contractorA','qa-contractor-r8@lightning.test'],['ownerB','qa-owner-r8b@lightning.test']]){let x=await call('login','POST',{email,password});sessions[k]=x.cookie;expect('login '+k,x.result,x=>x?.ok===true&&!!sessions[k])}let read=await call('read','GET',undefined,sessions.ownerA),d=unwrap(read.result);expect('owner A read sees seeded job',read.result,()=>d?.jobs?.some(j=>j.id===ids.j1));if(SMOKE)console.log('SMOKE PASS');else{let a=await call('assign','POST',{jobId:ids.j1,contractorId:C},sessions.ownerA);expect('assign owner A new→offered',a.result,x=>x?.ok===true);for(let [i,state] of ['accepted','en_route','arrived','completed'].entries()){let x=await call('advance','POST',{jobId:ids.j1},sessions.contractorA);expect(`advance contractor → ${state}`,x.result,x=>x?.ok===true)}let de=await call('assign','POST',{jobId:ids.j2,contractorId:C},sessions.ownerA);expect('assign decline job',de.result,x=>x?.ok===true);let dc=await call('decline','POST',{jobId:ids.j2,contractorId:C},sessions.contractorA);expect('decline offered→new',dc.result,x=>x?.ok===true);let un=await call('assign','POST',{jobId:ids.j2,contractorId:C},sessions.contractorA);expect('UNAUTHORIZED contractor assign',un.result,x=>x?.error?.code==='unauthorized');let br=await call('read','GET',undefined,sessions.ownerB),bd=unwrap(br.result);expect('ORG isolation read',bd,x=>!x?.jobs?.some(j=>j.id===ids.j1));let iso=await call('assign','POST',{jobId:ids.j1,contractorId:C},sessions.ownerB);expect('ORG isolation assign rejection',iso.result,x=>['not_found','unauthorized','conflict'].includes(x?.error?.code));let before=await q`SELECT count(*)::int n FROM status_events WHERE job_id=${ids.j1}`;let ba=await q`SELECT count(*)::int n FROM audit_log WHERE entity_id=${ids.j1}`;let inv=await call('advance','POST',{jobId:ids.j1},sessions.contractorA);expect('invalid-state completed advance',inv.result,x=>x?.error?.code==='invalid_state');let after=await q`SELECT count(*)::int n FROM status_events WHERE job_id=${ids.j1}`;let aa=await q`SELECT count(*)::int n FROM audit_log WHERE entity_id=${ids.j1}`;expect('invalid-state zero event/audit rows', {before:+before[0].n,after:+after[0].n,auditBefore:+ba[0].n,auditAfter:+aa[0].n},x=>x.before===x.after&&x.auditBefore===x.auditAfter);console.log('EVIDENCE status_events',await q`SELECT job_id,from_status AS from,to_status AS to,actor_user_id AS actor,actor_role AS role,occurred_at AS at FROM status_events WHERE job_id IN (${ids.j1},${ids.j2}) ORDER BY occurred_at`);console.log('EVIDENCE audit_log',await q`SELECT entity_id AS job_id,actor_user_id AS actor,actor_role AS role,action,created_at AS at FROM audit_log WHERE entity_id IN (${ids.j1},${ids.j2}) ORDER BY created_at`)} }catch(e){passed=false;console.error('FAIL harness:',e.message)}finally{if(seeded)try{await q`DELETE FROM organizations WHERE id IN (${A},${B})`;await q`DELETE FROM users WHERE id IN (${ids.oa},${ids.ca},${ids.ob})`}catch(e){passed=false;console.error('FAIL cleanup',e.message)}try{await check('cleanup')}catch(e){passed=false;console.error('FAIL cleanup counts',e.message)}}process.exit(passed?0:1);
