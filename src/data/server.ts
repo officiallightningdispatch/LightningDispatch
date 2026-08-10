@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { sql } from "~/db";
-import { createCipheriv, randomBytes } from "node:crypto";
+import { encryptSession } from "./towbook-key";
 import { contractors as seedContractors, jobs as seedJobs } from "./seed";
 import type { AuthUser } from "./auth-server";
 import type { ContractorStatus, JobStatus, Contractor, Job } from "./seed";
@@ -52,15 +52,54 @@ export const declineJob=createServerFn({method:"POST"}).validator(passthrough).h
 export const setContractorStatus=createServerFn({method:"POST"}).validator(passthrough).handler(async({data})=>{const e=invalid(data,z.object({contractorId:id,status:z.enum(["online","offline"])}).strict());if(e)return e;if(!configured())return unavailable("Database mode is not active — status changes work in the live demo only.");const { currentUser } = await import("./auth-server"); const u=await currentUser();if(!u)return fail("unauthorized","Sign in required.");const d=data as {contractorId:string;status:ContractorStatus};if(u.role==="contractor"&&u.contractorId!==d.contractorId)return fail("unauthorized","You can only change your own status.");if(!can(u,["owner","admin","dispatcher","contractor"]))return fail("unauthorized","You cannot change contractor status.");try{await prepare();const rows=await sql().transaction([sql()`WITH changed AS (UPDATE dispatch_contractors SET status=${d.status} WHERE id=${d.contractorId} AND org_id=${u.orgId} RETURNING id) INSERT INTO audit_log(id,org_id,actor_user_id,actor_role,action,entity_type,entity_id,detail) SELECT gen_random_uuid()::text,${u.orgId},${u.id},${u.role},'set_contractor_status','contractor',id,jsonb_build_object('status',${d.status}) FROM changed RETURNING entity_id`,sql()`SELECT 1`]);if(!rows[0]?.length)return fail("not_found","Contractor not found.");return result(u);}catch{return unavailable("Unable to change contractor status.");}});
 
 const towbookFail = (code: "invalid_credentials"|"towbook_unreachable"|"towbook_blocked", message: string) => ({ok:false as const,error:{code,message}});
-function encryptSession(value: string) {
-  const key = process.env.TOWBOOK_SESSION_KEY;
-  if (!key) throw new Error("TOWBOOK_SESSION_KEY is not configured");
-  const k = Buffer.from(key, "base64"); if (k.length !== 32) throw new Error("Invalid TOWBOOK_SESSION_KEY");
-  const iv = randomBytes(12), cipher = createCipheriv("aes-256-gcm", k, iv);
-  const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
-  return `v1.${iv.toString("base64")}.${cipher.getAuthTag().toString("base64")}.${encrypted.toString("base64")}`;
-}
+// --- Towbook login response interpretation (mapped against the real login page, see /home/team/shared/towbook-recon.md) ---
+const TOWBOOK_LOGIN = "https://app.towbook.com/Security/Login.aspx";
+const getSetCookies = (h: Headers): string[] => {
+  const hd = h as Headers & { getSetCookie?: () => string[] };
+  if (typeof hd.getSetCookie === "function") return hd.getSetCookie();
+  const joined = h.get("set-cookie");
+  return joined ? [joined] : [];
+};
+const jar = (cs: string[]) => cs.map(c => c.split(";")[0].trim()).filter(Boolean).join("; ");
+// Session/auth cookies carry the authenticated state; the excluded names are
+// the non-auth cookies Towbook actually sends (antiforgery + TempData flash +
+// marketing), so a fake-credential 200/302 can never be mistaken for success.
+const isAuthCookie = (n: string) => /(\.ASPXAUTH|ASP\.NET_SessionId|\.AspNetCore\.Cookies|\.AspNetCore\.Identity|\.AspNet\.ApplicationCookie|ticket|session|auth)/i.test(n) && !/(TempData|Antiforgery|RequestVerificationToken|_ga|_gid|_gat|_hj|_zitok|hubspot|__cf|_hjid|_gcl)/i.test(n);
+const hasAuthCookie = (cs: string[]) => cs.some(c => isAuthCookie(c.split(";")[0].split("=")[0].trim()));
+// Full cookie set for later authenticated pulls: response Set-Cookie merged over
+// the pre-login cookies, response winning on name collisions.
+const mergeJars = (pre: string, resp: string) => {
+  const m = new Map<string, string>();
+  for (const part of pre.split("; ")) { const n = part.split("=")[0].trim(); if (part && n) m.set(n, part); }
+  for (const part of resp.split("; ")) { const n = part.split("=")[0].trim(); if (part && n) m.set(n, part); }
+  return [...m.values()].join("; ");
+};
 export const towbookStatus=createServerFn({method:"GET"}).handler(async()=>{ if(!configured()) return {ok:true as const,connected:false,lastSyncAt:null}; const {currentUser}=await import("./auth-server"); const u=await currentUser(); if(!u)return towbookFail("towbook_unreachable","Sign in required."); if(!can(u,["owner","admin"]))return towbookFail("towbook_blocked","You cannot view Towbook status."); try { await prepare(); const r=await sql()`SELECT status,last_sync_at FROM towbook_sessions WHERE org_id=${u.orgId}`; return {ok:true as const,connected:Boolean(r.length && r[0].status==='connected'),lastSyncAt:r.length&&r[0].last_sync_at?new Date(String(r[0].last_sync_at)).toISOString():null}; } catch { return towbookFail("towbook_unreachable","Towbook status unavailable."); }});
-export const connectTowbook=createServerFn({method:"POST"}).validator(passthrough).handler(async({data})=>{const e=invalid(data,z.object({email:z.string().email(),password:z.string().min(1).max(256)}).strict());if(e)return e;if(!configured())return towbookFail("towbook_unreachable","Towbook connection requires database mode."); const {currentUser}=await import("./auth-server"); const u=await currentUser(); if(!u)return towbookFail("towbook_blocked","Sign in required."); if(!can(u,["owner","admin"]))return towbookFail("towbook_blocked","Only owners and admins can connect Towbook."); const d=data as {email:string;password:string}; try { const page=await fetch("https://app.towbook.com/Security/Login.aspx",{signal:AbortSignal.timeout(10000)}); if(!page.ok)return towbookFail("towbook_unreachable","Towbook login is unavailable."); const html=await page.text(); const initialCookie=(page.headers.get("set-cookie")||"").split(",").map(v=>v.trim().split(";")[0]).filter(Boolean).join("; "); const token=html.match(/name=[\"']RequestVerificationToken[\"'][^>]*value=[\"']([^\"']+)/i)?.[1]; if(!token)return towbookFail("towbook_blocked","Towbook login requires a browser session or challenge."); const body=new URLSearchParams({Username:d.email,Password:d.password,bSignIn:"Log in",RequestVerificationToken:token}); const login=await fetch("https://app.towbook.com/Security/Login.aspx",{method:"POST",body,redirect:"manual",headers:{"content-type":"application/x-www-form-urlencoded",...(initialCookie?{cookie:initialCookie}:{})},signal:AbortSignal.timeout(10000)}); if(login.status===401||login.status===403)return towbookFail("invalid_credentials","Towbook rejected those credentials."); if(login.status>=300&&login.status<400)return towbookFail("towbook_blocked","Towbook requires an interactive browser session; reconnect from a supported browser."); if(!login.ok)return towbookFail("towbook_unreachable","Towbook login failed."); const setCookie=login.headers.get("set-cookie"); if(!setCookie)return towbookFail("towbook_blocked","Towbook did not return an authenticated session."); await prepare(); await sql()`INSERT INTO towbook_sessions(org_id,encrypted_session,status,error,updated_at) VALUES(${u.orgId},${encryptSession(JSON.stringify({cookies:setCookie,baseUrl:"https://app.towbook.com"}))},'connected',NULL,NOW()) ON CONFLICT(org_id) DO UPDATE SET encrypted_session=EXCLUDED.encrypted_session,status='connected',error=NULL,updated_at=NOW()`; return {ok:true as const}; } catch(err) { const msg=String(err); return towbookFail(msg.includes("timeout")||msg.includes("fetch")?"towbook_unreachable":"towbook_blocked", "Towbook could not be connected. Try again or use an interactive reconnect."); }});
+export const connectTowbook=createServerFn({method:"POST"}).validator(passthrough).handler(async({data})=>{const e=invalid(data,z.object({email:z.string().email(),password:z.string().min(1).max(256)}).strict());if(e)return e;if(!configured())return towbookFail("towbook_unreachable","Towbook connection requires database mode."); const {currentUser}=await import("./auth-server"); const u=await currentUser(); if(!u)return towbookFail("towbook_blocked","Sign in required."); if(!can(u,["owner","admin"]))return towbookFail("towbook_blocked","Only owners and admins can connect Towbook."); const d=data as {email:string;password:string}; try {
+  const page=await fetch(TOWBOOK_LOGIN,{signal:AbortSignal.timeout(10000)}); if(!page.ok)return towbookFail("towbook_unreachable","Towbook login is unavailable.");
+  const html=await page.text(); const preJar=jar(getSetCookies(page.headers));
+  const token=html.match(/name=["']RequestVerificationToken["'][^>]*value=["']([^"']+)/i)?.[1]; if(!token)return towbookFail("towbook_blocked","Towbook login requires a browser session or challenge.");
+  const body=new URLSearchParams({Username:d.email,Password:d.password,bSignIn:"Log in",RequestVerificationToken:token});
+  const login=await fetch(TOWBOOK_LOGIN,{method:"POST",body,redirect:"manual",headers:{"content-type":"application/x-www-form-urlencoded",...(preJar?{cookie:preJar}:{})},signal:AbortSignal.timeout(10000)});
+  const respCookies=getSetCookies(login.headers); const authed=hasAuthCookie(respCookies);
+  if(login.status===401||login.status===403)return towbookFail("invalid_credentials","Towbook rejected those credentials.");
+  if(login.status>=300&&login.status<400) {
+    // ASP.NET Core redirects on successful auth and carries the auth session
+    // cookie in that response's Set-Cookie; a redirect without one is a
+    // failed-login bounce back to the login page.
+    if(!authed)return towbookFail("invalid_credentials","Towbook rejected those credentials.");
+    const fullJar=mergeJars(preJar,jar(respCookies));
+    await prepare(); await sql()`INSERT INTO towbook_sessions(org_id,encrypted_session,status,error,updated_at) VALUES(${u.orgId},${await encryptSession(JSON.stringify({cookies:fullJar,baseUrl:"https://app.towbook.com"}))},'connected',NULL,NOW()) ON CONFLICT(org_id) DO UPDATE SET encrypted_session=EXCLUDED.encrypted_session,status='connected',error=NULL,updated_at=NOW()`;
+    return {ok:true as const};
+  }
+  if(login.status===200) {
+    if(authed) { const fullJar=mergeJars(preJar,jar(respCookies)); await prepare(); await sql()`INSERT INTO towbook_sessions(org_id,encrypted_session,status,error,updated_at) VALUES(${u.orgId},${await encryptSession(JSON.stringify({cookies:fullJar,baseUrl:"https://app.towbook.com"}))},'connected',NULL,NOW()) ON CONFLICT(org_id) DO UPDATE SET encrypted_session=EXCLUDED.encrypted_session,status='connected',error=NULL,updated_at=NOW()`; return {ok:true as const}; }
+    // Observed with fake credentials: 200 re-render of the login page.
+    const re=await login.text();
+    if(/<form/i.test(re)&&/RequestVerificationToken/i.test(re))return towbookFail("invalid_credentials","Towbook rejected those credentials.");
+    return towbookFail("towbook_blocked","Towbook returned an unexpected response; reconnect from a supported browser.");
+  }
+  return towbookFail("towbook_unreachable","Towbook login failed.");
+} catch(err) { const msg=String(err); return towbookFail(msg.includes("timeout")||msg.includes("fetch")?"towbook_unreachable":"towbook_blocked", "Towbook could not be connected. Try again or use an interactive reconnect."); }});
 export const disconnectTowbook=createServerFn({method:"POST"}).handler(async()=>{if(!configured())return {ok:true as const};const {currentUser}=await import("./auth-server");const u=await currentUser();if(!u||!can(u,["owner","admin"]))return towbookFail("towbook_blocked","You cannot disconnect Towbook.");try{await prepare();await sql()`DELETE FROM towbook_sessions WHERE org_id=${u.orgId}`;return {ok:true as const};}catch{return towbookFail("towbook_unreachable","Unable to disconnect Towbook.");}});
 export const resetDemo=createServerFn({method:"POST"}).validator(passthrough).handler(async()=>fail("unauthorized","Reset demo data is disabled in database mode."));
