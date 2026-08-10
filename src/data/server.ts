@@ -2,7 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { sql } from "~/db";
 import { decryptSession, encryptSession } from "./towbook-key";
-import { runAutoDispatch } from "./ai-dispatcher";
+import { runAutoDispatch, getOrgSettings } from "./ai-dispatcher";
 import { contractors as seedContractors, jobs as seedJobs } from "./seed";
 import type { AuthUser } from "./auth-server";
 import type { ContractorStatus, JobStatus, Contractor, Job, ServiceType } from "./seed";
@@ -1130,4 +1130,160 @@ export const towbookSyncNow = createServerFn({ method: "POST" }).handler(async (
   if (!can(u, ["owner", "admin"])) return syncResult("unauthorized", "Only owners and admins can sync Towbook.");
   await prepare();
   return syncForOrg(u.orgId, "sync:manual", { id: u.id, role: u.role });
+});
+
+/* ============================ AI dispatcher control panel ============================
+ * Owner-facing status/toggle + decision ledger reads (owner/admin can mutate the
+ * toggle; owner/admin/dispatcher can read). Every query is org-scoped from the
+ * session — the client never supplies an org id. Defaults when no org_settings
+ * row exists are the engine's lazy defaults (enabled, 06606 centroid, 30 mi, 45 min).
+ * Seroval rule: no object ever carries an undefined-valued property (nullable
+ * fields are omitted, never set to undefined).
+ * ---------------------------------------------------------------------------------- */
+
+export type AiDispatcherStatus = {
+  enabled: boolean;
+  zoneLat: number;
+  zoneLng: number;
+  zoneRadiusMiles: number;
+  maxEtaMinutes: number;
+  lastDecisionAt: string | null;
+  decisionsLast24h: number;
+  escalationsOpen: number;
+  lastSyncAt: string | null;
+  connected: boolean;
+};
+
+/** One decision row for list views — LIGHT on purpose (raw_response is excluded;
+ *  the per-row detail fetch returns it on demand). Nullable fields are omitted. */
+export type AiDispatcherDecisionRow = {
+  id: string;
+  callRequestId: string;
+  decision: string;
+  escalated: boolean;
+  reason: string;
+  createdAt: string;
+  callId?: string;
+  driverName?: string;
+  etaMinutes?: number;
+  zoneDistanceMiles?: number;
+};
+
+const aiDispatcherReader = (u: AuthUser): boolean => can(u, ["owner", "admin", "dispatcher"]);
+const aiDispatcherWriter = (u: AuthUser): boolean => can(u, ["owner", "admin"]);
+
+/** Engine status for the control panel: settings (defaults when no row), the
+ *  last decision, 24h volume, open escalations, and Towbook sync state. */
+export const getAiDispatcherStatus = createServerFn({ method: "GET" }).handler(async () => {
+  if (!configured()) return null;
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u || !aiDispatcherReader(u)) return null;
+  try {
+    await prepare();
+    const q = sql();
+    const settings = await getOrgSettings(u.orgId);
+    const agg = await q`SELECT MAX(created_at) AS last_decision_at,
+      COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours')::int AS last24h,
+      COUNT(*) FILTER (WHERE escalated)::int AS escalations_open
+      FROM ai_dispatcher_decisions WHERE org_id=${u.orgId}`;
+    const sess = await q`SELECT status, last_sync_at FROM towbook_sessions WHERE org_id=${u.orgId}`;
+    const a = (agg[0] ?? {}) as Record<string, unknown>;
+    const s = sess[0] as Record<string, unknown> | undefined;
+    const st: AiDispatcherStatus = {
+      enabled: settings.aiDispatcherEnabled,
+      zoneLat: settings.zoneLat,
+      zoneLng: settings.zoneLng,
+      zoneRadiusMiles: settings.zoneRadiusMiles,
+      maxEtaMinutes: settings.maxEtaMinutes,
+      lastDecisionAt: a.last_decision_at ? new Date(String(a.last_decision_at)).toISOString() : null,
+      decisionsLast24h: Number(a.last24h ?? 0),
+      escalationsOpen: Number(a.escalations_open ?? 0),
+      lastSyncAt: s && s.last_sync_at ? new Date(String(s.last_sync_at)).toISOString() : null,
+      connected: Boolean(s && String(s.status) === "connected"),
+    };
+    return st;
+  } catch {
+    return null;
+  }
+});
+
+/** Flip the engine on/off for the org (owner/admin only). Upserts org_settings
+ *  and writes an audit row so every toggle is attributable. */
+export const setAiDispatcherEnabled = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }) => {
+  const v = z.object({ enabled: z.boolean() }).strict().safeParse(data);
+  if (!v.success) return { ok: false as const, error: { code: "validation" as const, message: v.error.issues[0]?.message ?? "Invalid input." } };
+  if (!configured()) return { ok: false as const, error: { code: "database_unavailable" as const, message: "Database mode is not active." } };
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u) return { ok: false as const, error: { code: "unauthorized" as const, message: "Sign in required." } };
+  if (!aiDispatcherWriter(u)) return { ok: false as const, error: { code: "unauthorized" as const, message: "Only owners and admins can change AI dispatcher settings." } };
+  try {
+    await prepare();
+    const q = sql();
+    const enabled = v.data.enabled;
+    await q`INSERT INTO org_settings(org_id, ai_dispatcher_enabled) VALUES(${u.orgId}, ${enabled})
+      ON CONFLICT(org_id) DO UPDATE SET ai_dispatcher_enabled=${enabled}, updated_at=NOW()`;
+    await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail)
+      SELECT gen_random_uuid()::text, ${u.orgId}, ${u.id}, ${u.role}, 'ai_dispatcher_toggle', 'org_settings', ${u.orgId}, jsonb_build_object('enabled', ${enabled}::boolean)`;
+    return { ok: true as const, enabled };
+  } catch {
+    return { ok: false as const, error: { code: "database_unavailable" as const, message: "Unable to update AI dispatcher settings." } };
+  }
+});
+
+/** Recent decision rows, newest first, LIGHT (no raw_response). Optional filters:
+ *  limit (default 20, max 100) and escalatedOnly. Owner/admin/dispatcher. */
+export const listAiDispatcherDecisions = createServerFn({ method: "GET" }).validator(passthrough).handler(async ({ data }) => {
+  const v = z.object({ limit: z.number().int().min(1).max(100).optional(), escalatedOnly: z.boolean().optional() }).safeParse(data ?? {});
+  if (!v.success) return [];
+  if (!configured()) return [];
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u || !aiDispatcherReader(u)) return [];
+  try {
+    await prepare();
+    const q = sql();
+    const limit = v.data.limit ?? 20;
+    const rows = await q`SELECT id, call_request_id, call_id, decision, escalated, driver_name, eta_minutes, zone_distance_miles, reason, created_at
+      FROM ai_dispatcher_decisions WHERE org_id=${u.orgId} ${v.data.escalatedOnly ? q`AND escalated=TRUE` : q``}
+      ORDER BY created_at DESC LIMIT ${limit}`;
+    return rows.map((r: Record<string, unknown>) => {
+      const row: AiDispatcherDecisionRow = {
+        id: String(r.id), callRequestId: String(r.call_request_id), decision: String(r.decision),
+        escalated: Boolean(r.escalated), reason: String(r.reason), createdAt: new Date(String(r.created_at)).toISOString(),
+      };
+      if (r.call_id != null && String(r.call_id) !== "") row.callId = String(r.call_id);
+      if (r.driver_name != null && String(r.driver_name) !== "") row.driverName = String(r.driver_name);
+      if (r.eta_minutes != null) row.etaMinutes = Number(r.eta_minutes);
+      if (r.zone_distance_miles != null) row.zoneDistanceMiles = Number(r.zone_distance_miles);
+      return row;
+    });
+  } catch {
+    return [];
+  }
+});
+
+/** Per-row detail: the full raw_response (pretty-printed JSON text) for the
+ *  collapsible viewer — kept out of the list to keep that payload light. */
+export const getAiDispatcherDecisionDetail = createServerFn({ method: "GET" }).validator(passthrough).handler(async ({ data }) => {
+  const v = z.object({ id: z.string().min(1).max(64) }).strict().safeParse(data ?? {});
+  if (!v.success || !configured()) return { ok: false as const, error: "Invalid request." };
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u || !aiDispatcherReader(u)) return { ok: false as const, error: "Sign in required." };
+  try {
+    await prepare();
+    const rows = await sql()`SELECT raw_response FROM ai_dispatcher_decisions WHERE id=${v.data.id} AND org_id=${u.orgId}`;
+    if (!rows.length) return { ok: false as const, error: "Decision not found." };
+    const raw = rows[0].raw_response as unknown;
+    let text: string | null = null;
+    if (raw != null) {
+      try { text = typeof raw === "string" ? JSON.stringify(JSON.parse(raw), null, 2) : JSON.stringify(raw, null, 2); }
+      catch { text = String(raw); }
+    }
+    return { ok: true as const, raw: text };
+  } catch {
+    return { ok: false as const, error: "Unable to load the raw response." };
+  }
 });

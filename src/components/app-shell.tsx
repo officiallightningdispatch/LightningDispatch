@@ -1,5 +1,5 @@
 import { Link, useLocation } from "@tanstack/react-router";
-import { Zap, Home, Inbox, Briefcase, DollarSign, User, List, Users, History, BarChart3, Settings, Wallet } from "lucide-react";
+import { Zap, Home, Inbox, Briefcase, DollarSign, User, List, Users, History, BarChart3, Settings, Wallet, Bot } from "lucide-react";
 import type { ReactNode } from "react";
 
 export type Portal = "driver" | "ops" | "owner";
@@ -23,6 +23,7 @@ const NAV: Record<Portal, { links: NavItem[]; mobile: NavItem[] }> = {
       { to: "/owner/performance", label: "Performance", icon: BarChart3 },
       { to: "/owner/money", label: "Money", icon: Wallet },
       { to: "/owner/team", label: "Team", icon: Users },
+      { to: "/owner/ai-dispatcher", label: "AI Dispatcher", icon: Bot },
       { to: "/owner/settings", label: "Settings", icon: Settings },
     ],
     // Bottom bar on phones — a subset so labels fit; all still /owner/*.
@@ -32,6 +33,7 @@ const NAV: Record<Portal, { links: NavItem[]; mobile: NavItem[] }> = {
       { to: "/owner/active", label: "Active", icon: Briefcase },
       { to: "/owner/performance", label: "Performance", icon: BarChart3 },
       { to: "/owner/money", label: "Money", icon: Wallet },
+      { to: "/owner/ai-dispatcher", label: "AI", icon: Bot },
       { to: "/owner/settings", label: "Settings", icon: Settings },
     ],
   },

@@ -26,6 +26,7 @@ import { Route as OwnerQueueRouteImport } from './routes/owner/queue'
 import { Route as OwnerPerformanceRouteImport } from './routes/owner/performance'
 import { Route as OwnerMoneyRouteImport } from './routes/owner/money'
 import { Route as OwnerHistoryRouteImport } from './routes/owner/history'
+import { Route as OwnerAiDispatcherRouteImport } from './routes/owner/ai-dispatcher'
 import { Route as OwnerActiveRouteImport } from './routes/owner/active'
 import { Route as OpsHistoryRouteImport } from './routes/ops/history'
 import { Route as OpsContractorsRouteImport } from './routes/ops/contractors'
@@ -120,6 +121,11 @@ const OwnerHistoryRoute = OwnerHistoryRouteImport.update({
   path: '/history',
   getParentRoute: () => OwnerRoute,
 } as any)
+const OwnerAiDispatcherRoute = OwnerAiDispatcherRouteImport.update({
+  id: '/ai-dispatcher',
+  path: '/ai-dispatcher',
+  getParentRoute: () => OwnerRoute,
+} as any)
 const OwnerActiveRoute = OwnerActiveRouteImport.update({
   id: '/active',
   path: '/active',
@@ -178,6 +184,7 @@ export interface FileRoutesByFullPath {
   '/ops/contractors': typeof OpsContractorsRoute
   '/ops/history': typeof OpsHistoryRoute
   '/owner/active': typeof OwnerActiveRoute
+  '/owner/ai-dispatcher': typeof OwnerAiDispatcherRoute
   '/owner/history': typeof OwnerHistoryRoute
   '/owner/money': typeof OwnerMoneyRoute
   '/owner/performance': typeof OwnerPerformanceRoute
@@ -202,6 +209,7 @@ export interface FileRoutesByTo {
   '/ops/contractors': typeof OpsContractorsRoute
   '/ops/history': typeof OpsHistoryRoute
   '/owner/active': typeof OwnerActiveRoute
+  '/owner/ai-dispatcher': typeof OwnerAiDispatcherRoute
   '/owner/history': typeof OwnerHistoryRoute
   '/owner/money': typeof OwnerMoneyRoute
   '/owner/performance': typeof OwnerPerformanceRoute
@@ -230,6 +238,7 @@ export interface FileRoutesById {
   '/ops/contractors': typeof OpsContractorsRoute
   '/ops/history': typeof OpsHistoryRoute
   '/owner/active': typeof OwnerActiveRoute
+  '/owner/ai-dispatcher': typeof OwnerAiDispatcherRoute
   '/owner/history': typeof OwnerHistoryRoute
   '/owner/money': typeof OwnerMoneyRoute
   '/owner/performance': typeof OwnerPerformanceRoute
@@ -259,6 +268,7 @@ export interface FileRouteTypes {
     | '/ops/contractors'
     | '/ops/history'
     | '/owner/active'
+    | '/owner/ai-dispatcher'
     | '/owner/history'
     | '/owner/money'
     | '/owner/performance'
@@ -283,6 +293,7 @@ export interface FileRouteTypes {
     | '/ops/contractors'
     | '/ops/history'
     | '/owner/active'
+    | '/owner/ai-dispatcher'
     | '/owner/history'
     | '/owner/money'
     | '/owner/performance'
@@ -310,6 +321,7 @@ export interface FileRouteTypes {
     | '/ops/contractors'
     | '/ops/history'
     | '/owner/active'
+    | '/owner/ai-dispatcher'
     | '/owner/history'
     | '/owner/money'
     | '/owner/performance'
@@ -453,6 +465,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OwnerHistoryRouteImport
       parentRoute: typeof OwnerRoute
     }
+    '/owner/ai-dispatcher': {
+      id: '/owner/ai-dispatcher'
+      path: '/ai-dispatcher'
+      fullPath: '/owner/ai-dispatcher'
+      preLoaderRoute: typeof OwnerAiDispatcherRouteImport
+      parentRoute: typeof OwnerRoute
+    }
     '/owner/active': {
       id: '/owner/active'
       path: '/active'
@@ -549,6 +568,7 @@ const OpsRouteWithChildren = OpsRoute._addFileChildren(OpsRouteChildren)
 
 interface OwnerRouteChildren {
   OwnerActiveRoute: typeof OwnerActiveRoute
+  OwnerAiDispatcherRoute: typeof OwnerAiDispatcherRoute
   OwnerHistoryRoute: typeof OwnerHistoryRoute
   OwnerMoneyRoute: typeof OwnerMoneyRoute
   OwnerPerformanceRoute: typeof OwnerPerformanceRoute
@@ -560,6 +580,7 @@ interface OwnerRouteChildren {
 
 const OwnerRouteChildren: OwnerRouteChildren = {
   OwnerActiveRoute: OwnerActiveRoute,
+  OwnerAiDispatcherRoute: OwnerAiDispatcherRoute,
   OwnerHistoryRoute: OwnerHistoryRoute,
   OwnerMoneyRoute: OwnerMoneyRoute,
   OwnerPerformanceRoute: OwnerPerformanceRoute,
