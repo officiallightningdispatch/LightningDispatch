@@ -50,6 +50,45 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     // contain only URLs/statuses/hints, never cookies or credentials.
     await q`ALTER TABLE towbook_sessions ADD COLUMN IF NOT EXISTS last_result JSONB`;
   }],
+  [8, async (q) => {
+    // AI dispatcher (owner-directed 2026-08-10): per-org dispatch-engine settings
+    // and the decision ledger. org_settings rows are lazily created with defaults
+    // (getOrgSettings); zone = 30-mile radius around the 06606 (Bridgeport, CT)
+    // centroid 41.208862,-73.207253 (Nominatim-verified). max_eta_minutes is the
+    // motor-club SLA default (45); a per-offer maxEta overrides when lower.
+    await q`CREATE TABLE IF NOT EXISTS org_settings (
+      org_id TEXT PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
+      ai_dispatcher_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      zone_lat DOUBLE PRECISION NOT NULL DEFAULT 41.208862,
+      zone_lng DOUBLE PRECISION NOT NULL DEFAULT -73.207253,
+      zone_radius_miles DOUBLE PRECISION NOT NULL DEFAULT 30,
+      max_eta_minutes INTEGER NOT NULL DEFAULT 45,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    // Every engine decision/action, append-only. raw_response ALWAYS captures
+    // the accept POST response (and the offer JSON for shape escalations) so
+    // every action is explainable from the DB after the fact.
+    await q`CREATE TABLE IF NOT EXISTS ai_dispatcher_decisions (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      call_request_id TEXT NOT NULL,
+      call_id TEXT,
+      decision TEXT NOT NULL,
+      escalated BOOLEAN NOT NULL DEFAULT FALSE,
+      driver_id TEXT,
+      driver_name TEXT,
+      eta_minutes INTEGER,
+      zone_distance_miles DOUBLE PRECISION,
+      reason TEXT NOT NULL,
+      raw_response JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    await q`CREATE INDEX IF NOT EXISTS ai_dispatcher_decisions_org_created_idx ON ai_dispatcher_decisions(org_id, created_at)`;
+    // Re-poll can never double-process an offer: one decision row per
+    // (org, callRequestId). The engine also SELECTs before acting; this index
+    // is the hard backstop.
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS ai_dispatcher_decisions_org_callreq_uidx ON ai_dispatcher_decisions(org_id, call_request_id) WHERE call_request_id IS NOT NULL`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

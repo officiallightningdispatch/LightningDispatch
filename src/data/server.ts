@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { sql } from "~/db";
 import { decryptSession, encryptSession } from "./towbook-key";
+import { runAutoDispatch } from "./ai-dispatcher";
 import { contractors as seedContractors, jobs as seedJobs } from "./seed";
 import type { AuthUser } from "./auth-server";
 import type { ContractorStatus, JobStatus, Contractor, Job, ServiceType } from "./seed";
@@ -821,7 +822,9 @@ async function discoverJobPages(cookieJar: string, baseUrl: string): Promise<{ d
 
 /* ----------------------------------- upsert ----------------------------------- */
 
-async function resolveOrgActor(orgId: string): Promise<{ id: string; role: AuthUser["role"] } | null> {
+/** Org's "system actor" for background attribution (AI dispatcher + sync):
+ *  the org's first owner. */
+export async function resolveOrgActor(orgId: string): Promise<{ id: string; role: AuthUser["role"] } | null> {
   const rows = await sql()`SELECT user_id, role FROM organization_memberships WHERE org_id=${orgId} ORDER BY (role='owner') DESC, role LIMIT 1`;
   if (!rows.length) return null;
   return { id: String(rows[0].user_id), role: String(rows[0].role) as AuthUser["role"] };
@@ -1068,21 +1071,25 @@ function syncForOrg(orgId: string, trigger: string, actor?: { id: string; role: 
 }
 
 /** Pull-on-read trigger: fire-and-forget refresh when the org's session is connected
- *  and the last sync is older than ~60s. Never throws — the read must never fail. */
+ *  and the last sync is older than ~30s (replication tightened 60s→30s per
+ *  owner direction: "whatever happens on Towbook should replicate on the portal").
+ *  Never throws — the read must never fail. */
 async function maybeAutoSync(orgId: string): Promise<void> {
   try {
     if (!configured()) return;
     const rows = await sql()`SELECT last_sync_at FROM towbook_sessions WHERE org_id=${orgId} AND status='connected' AND encrypted_session <> ''`;
     if (!rows.length) return;
     const last = rows[0].last_sync_at ? new Date(String(rows[0].last_sync_at)).getTime() : 0;
-    if (Date.now() - last > 60_000) void syncForOrg(orgId, "sync:pull-on-read");
+    if (Date.now() - last > 30_000) void syncForOrg(orgId, "sync:pull-on-read");
   } catch { /* best-effort — never fail the read */ }
 }
 
 /** Background interval (lives inside the served bundle's process, which is the same
  *  process that hosts the port-3000 server — serve.ts only wraps the built handler).
- *  Every 60s, sync every connected org whose last sync is stale; the per-org in-flight
- *  guard prevents overlap. */
+ *  Every 30s, sync every connected org whose last sync is stale, then run the AI
+ *  dispatcher for that org (auto-accept in-zone offers; gated on
+ *  ai_dispatcher_enabled in the engine itself); the per-org in-flight guard
+ *  prevents overlap. */
 let backgroundSyncStarted = false;
 function startBackgroundSync() {
   if (backgroundSyncStarted) return;
@@ -1091,11 +1098,26 @@ function startBackgroundSync() {
     void (async () => {
       try {
         if (!configured()) return;
-        const rows = await sql()`SELECT org_id FROM towbook_sessions WHERE status='connected' AND encrypted_session <> '' AND (last_sync_at IS NULL OR last_sync_at < NOW() - INTERVAL '60 seconds')`;
-        for (const r of rows) void syncForOrg(String(r.org_id), "sync:interval");
+        const rows = await sql()`SELECT org_id FROM towbook_sessions WHERE status='connected' AND encrypted_session <> '' AND (last_sync_at IS NULL OR last_sync_at < NOW() - INTERVAL '30 seconds')`;
+        for (const r of rows) {
+          const orgId = String(r.org_id);
+          void (async () => {
+            try {
+              await syncForOrg(orgId, "sync:interval");
+              // Adapter: AI-dispatcher deps type the actor role loosely (string);
+              // syncForOrg expects the narrow AuthUser role union — cast is safe
+              // because every actor passed here comes from resolveOrgActor.
+              await runAutoDispatch(orgId, {
+                syncForOrg: (oid: string, trigger: string, actor?: { id: string; role: string }) =>
+                  syncForOrg(oid, trigger, actor as { id: string; role: AuthUser["role"] } | undefined),
+                resolveOrgActor,
+              });
+            } catch { /* best-effort — one org's failure never stops the loop */ }
+          })();
+        }
       } catch { /* best-effort */ }
     })();
-  }, 60_000);
+  }, 30_000);
   const t = timer as unknown as { unref?: () => void };
   if (typeof t.unref === "function") t.unref();
 }
