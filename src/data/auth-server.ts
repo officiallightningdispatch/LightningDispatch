@@ -30,7 +30,13 @@ export async function currentUser(): Promise<AuthUser | null> {
   if (!configured()) return null;
   await ensureAuthSchema(); const token = await cookieValue(); if (!token) return null;
   const q = sql(); const rows = await q`SELECT u.id,u.name,u.email,m.org_id,m.role,m.contractor_id FROM sessions s JOIN users u ON u.id=s.user_id JOIN organization_memberships m ON m.user_id=u.id WHERE s.id=${token} AND s.expires_at > NOW()`;
-  if (!rows.length) return null; const r = rows[0] as Record<string, unknown>; return { id:String(r.id), name:String(r.name), email:String(r.email), role:r.role as Role, orgId:String(r.org_id), contractorId:r.contractor_id ? String(r.contractor_id) : undefined };
+  if (!rows.length) return null; const r = rows[0] as Record<string, unknown>;
+  // Seroval rejects object properties whose value is undefined. Owner/admin
+  // memberships have no contractor_id, so only include this optional field
+  // when the database actually returned one.
+  const user: AuthUser = { id:String(r.id), name:String(r.name), email:String(r.email), role:r.role as Role, orgId:String(r.org_id) };
+  if (r.contractor_id != null && r.contractor_id !== "") user.contractorId = String(r.contractor_id);
+  return user;
 }
 export async function requireRole(roles: Role[]) { const user = await currentUser(); return user && roles.includes(user.role) ? user : null; }
 
