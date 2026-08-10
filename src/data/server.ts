@@ -1147,6 +1147,8 @@ export type AiDispatcherStatus = {
   zoneLng: number;
   zoneRadiusMiles: number;
   maxEtaMinutes: number;
+  etaBufferMinutes: number;
+  etaFloorMinutes: number;
   lastDecisionAt: string | null;
   decisionsLast24h: number;
   escalationsOpen: number;
@@ -1196,6 +1198,8 @@ export const getAiDispatcherStatus = createServerFn({ method: "GET" }).handler(a
       zoneLng: settings.zoneLng,
       zoneRadiusMiles: settings.zoneRadiusMiles,
       maxEtaMinutes: settings.maxEtaMinutes,
+      etaBufferMinutes: settings.etaBufferMinutes,
+      etaFloorMinutes: settings.etaFloorMinutes,
       lastDecisionAt: a.last_decision_at ? new Date(String(a.last_decision_at)).toISOString() : null,
       decisionsLast24h: Number(a.last24h ?? 0),
       escalationsOpen: Number(a.escalations_open ?? 0),

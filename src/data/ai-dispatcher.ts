@@ -8,6 +8,21 @@ import { decryptSession } from "./towbook-key";
  * driver with an accurate ETA, log EVERY decision, and escalate uncertainty —
  * never guess.
  *
+ * ETA accuracy (owner-directed 2026-08-10, live incident 2026-08-10 23:33:52Z —
+ * offer 326520203 quoted Towbook's straight-line estimatedTimeSeconds (~3 min)
+ * which the owner had to manually extend by 35 min): the quoted ETA is now the
+ * ROAD-AWARE drive time from the driver's precise GPS (nearestDrivers lat/lng)
+ * to the offer's pickup, via OSRM public routing (duration = routes[0].duration,
+ * 4s timeout, fallback haversine ÷ 30 mph × 1.35 road factor on any failure),
+ * plus a prep buffer, never below the floor, never above the ceiling
+ * (org max_eta_minutes, lowered by the offer's own maxEta when smaller).
+ * Choice is BY ROAD ETA: each candidate (checked in && has GPS && no current
+ * calls) is routed and the minimum road ETA wins — a driver with a better real
+ * drive time beats one with a better straight-line time. Drivers with no GPS
+ * (0,0) are NEVER auto-dispatched and NO ETA is quoted for them: the offer is
+ * accepted with driverId 0 + escalated (auto_accept_no_driver) so it can never
+ * expire but no fabricated ETA goes to the club.
+ *
  * Per-offer sequence (the accept POST is the ONLY state-changing call this
  * module makes):
  *   1. GET /api/callRequests/            → pending offers (status == 0)
@@ -15,20 +30,33 @@ import { decryptSession } from "./towbook-key";
  *   3. Expiration check — expired → escalate (we never use acceptMissedRequest)
  *   4. GET /api/nearestDrivers?latitude=<pickup>&longitude=<pickup>&checkInForAllDrivers=true
  *      → choose best driver: checked in && has GPS && no current calls,
- *        minimizing estimatedTimeSeconds
+ *        minimizing ROAD drive time (OSRM per candidate; fallback model on
+ *        routing failure)
  *   5. POST /api/callRequests/{id}/accept {id, ETA, driverId|0, ...} — one retry
- *      on failure, then escalate (never silently drop)
+ *      on failure, then escalate (never silently drop). No eligible driver →
+ *      driverId 0, no ETA quoted, escalated.
  *   6. Record decision + audit, then syncForOrg so the accepted call lands in
  *      dispatch_jobs immediately (reconcile by call.id/callNumber)
  *
  * Hard rails: only act on the documented offer shape (callRequestId, status,
  * startLocationLatitude/Longitude, expirationDateUtc); ANY unexpected shape →
  * escalated_unexpected_shape with the full offer JSON, NO accept. Out-of-zone
- * and unverifiable → never accept. Fetch is injectable (tests never hit real
- * Towbook); the loop wiring passes the real fetch.
+ * and unverifiable → never accept. Fetch and the road router are injectable
+ * (tests never hit real Towbook or OSRM); the loop wiring passes the real
+ * fetch and the default OSRM router.
  * ----------------------------------------------------------------------------- */
 
 export type AiDispatcherActor = { id: string; role: string };
+/** Road-aware drive-time source (injectable so tests are hermetic). Returns
+ *  drive SECONDS between two lat/lng pairs, or null when routing failed
+ *  (network / timeout / 429 / 5xx / bad body) — the caller falls back to the
+ *  haversine ÷ 30 mph × 1.35 factor model. */
+export type RoadRouter = (
+  fromLat: number,
+  fromLng: number,
+  toLat: number,
+  toLng: number,
+) => Promise<number | null>;
 export type AiDispatcherDeps = {
   /** Runs a full Towbook sync for the org (imported from server.ts by the caller;
    *  injected so this module never imports server.ts — avoids a module cycle). */
@@ -37,6 +65,8 @@ export type AiDispatcherDeps = {
   resolveOrgActor: (orgId: string) => Promise<AiDispatcherActor | null>;
   /** Injectable fetch for hermetic tests; defaults to the global fetch. */
   fetchImpl?: typeof fetch;
+  /** Injectable road router (defaults to the OSRM public API via fetchImpl). */
+  roadRouter?: RoadRouter;
 };
 
 export type OrgAiSettings = {
@@ -45,6 +75,10 @@ export type OrgAiSettings = {
   zoneLng: number;
   zoneRadiusMiles: number;
   maxEtaMinutes: number;
+  /** Prep/response buffer added on top of the road drive time (migration v9). */
+  etaBufferMinutes: number;
+  /** Never quote below this (migration v9). */
+  etaFloorMinutes: number;
 };
 
 /** Decision taxonomy — every row in ai_dispatcher_decisions carries one of these.
@@ -86,14 +120,61 @@ export function haversineMiles(lat1: number, lng1: number, lat2: number, lng2: n
   return 2 * EARTH_RADIUS_MILES * Math.asin(Math.sqrt(a));
 }
 
+/* --------------------------- road-aware ETA model --------------------------- */
+
+/** Fallback drive-time model (used when OSRM routing fails): straight-line
+ *  miles ÷ 30 mph × 1.35 road factor → minutes, ceiled. */
+const FALLBACK_ROAD_SPEED_MPH = 30;
+const FALLBACK_ROAD_FACTOR = 1.35;
+
+/** Minutes for a straight-line distance under the fallback road model
+ *  (haversine ÷ 30 mph × 1.35, ceiled). Exported so tests assert exact values. */
+export function fallbackRoadMinutes(distanceMiles: number): number {
+  if (!Number.isFinite(distanceMiles) || distanceMiles <= 0) return 1;
+  return Math.ceil((distanceMiles / FALLBACK_ROAD_SPEED_MPH) * 60 * FALLBACK_ROAD_FACTOR);
+}
+
+const OSRM_ENDPOINT = "https://router.project-osrm.org/route/v1/driving";
+const OSRM_TIMEOUT_MS = 4000;
+
+/** Default road router: OSRM public routing API. drive time = routes[0].duration
+ *  (seconds). Returns null on ANY failure — network error, timeout, non-2xx
+ *  (429/5xx included), or a malformed body — so the engine always falls back
+ *  to the factor model instead of quoting a fabricated number. */
+export async function osrmRoadSeconds(
+  fromLat: number,
+  fromLng: number,
+  toLat: number,
+  toLng: number,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<number | null> {
+  try {
+    const url = `${OSRM_ENDPOINT}/${fromLng},${fromLat};${toLng},${toLat}?overview=false`;
+    const res = await fetchImpl(url, {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(OSRM_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    const body: unknown = await res.json().catch(() => null);
+    if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+    const o = body as Record<string, unknown>;
+    if (o.code !== "Ok" || !Array.isArray(o.routes) || !o.routes.length) return null;
+    const duration = Number((o.routes[0] as Record<string, unknown>)?.duration);
+    return Number.isFinite(duration) && duration > 0 ? duration : null;
+  } catch {
+    return null;
+  }
+}
+
 /* ------------------------------- settings + ledger ------------------------------- */
 
 /** Load the org's AI-dispatcher settings, lazily creating the row with the
- *  owner-directed defaults (migration v8): enabled, 06606 centroid, 30 mi, 45 min. */
+ *  owner-directed defaults (migrations v8+v9): enabled, 06606 centroid, 30 mi,
+ *  45 min ceiling, 5 min prep buffer, 5 min quoted-ETA floor. */
 export async function getOrgSettings(orgId: string): Promise<OrgAiSettings> {
   const q = sql();
   await q`INSERT INTO org_settings(org_id) VALUES(${orgId}) ON CONFLICT(org_id) DO NOTHING`;
-  const rows = await q`SELECT ai_dispatcher_enabled, zone_lat, zone_lng, zone_radius_miles, max_eta_minutes FROM org_settings WHERE org_id=${orgId}`;
+  const rows = await q`SELECT ai_dispatcher_enabled, zone_lat, zone_lng, zone_radius_miles, max_eta_minutes, eta_buffer_minutes, eta_floor_minutes FROM org_settings WHERE org_id=${orgId}`;
   const r = rows[0] as Record<string, unknown>;
   return {
     aiDispatcherEnabled: r.ai_dispatcher_enabled !== false,
@@ -101,6 +182,8 @@ export async function getOrgSettings(orgId: string): Promise<OrgAiSettings> {
     zoneLng: Number(r.zone_lng),
     zoneRadiusMiles: Number(r.zone_radius_miles),
     maxEtaMinutes: Number(r.max_eta_minutes) || 45,
+    etaBufferMinutes: Number(r.eta_buffer_minutes) || 5,
+    etaFloorMinutes: Number(r.eta_floor_minutes) || 5,
   };
 }
 
@@ -216,35 +299,88 @@ export function validateOfferShape(raw: unknown): { ok: true; offer: OfferShape 
 
 type NearestDriver = Record<string, unknown>;
 
-/** Pick the best driver for the offer: checked in, real GPS (lat/lng nonzero),
- *  NO current calls, minimizing estimatedTimeSeconds. Returns null when no
- *  driver qualifies (→ accept with driverId 0 + escalate for manual dispatch). */
-export function chooseBestDriver(drivers: unknown[]): NearestDriver | null {
+/** One candidate's road-aware ETA facts (everything the decision row needs). */
+export type ChosenDriverEta = {
+  driver: NearestDriver;
+  /** Route seconds from the road router; null when routing failed (fallback used). */
+  roadSeconds: number | null;
+  /** Minutes used for ranking + the ETA formula: road minutes when routing
+   *  succeeded, fallback-model minutes when it failed. */
+  baseMinutes: number;
+  /** Towbook straight-line minutes (informational; the old ETA source). */
+  straightLineMinutes: number;
+  /** True when the router failed and the fallback factor model was used. */
+  usedFallback: boolean;
+};
+
+/** Road-aware driver choice: same rails as before (checked in, real GPS — lat/lng
+ *  nonzero AND finite, NO current calls, finite estimatedTimeSeconds), but each
+ *  candidate is routed from its precise GPS to the pickup and the minimum ROAD
+ *  ETA wins — a driver with a better real drive time beats one with a better
+ *  straight-line time. Routing failures fall back to the factor model per
+ *  candidate, so a driver is never dropped for a router hiccup. Returns null
+ *  when no driver qualifies (→ accept with driverId 0 + escalate; no ETA quoted). */
+export async function chooseBestDriverByRoad(
+  drivers: unknown[],
+  pickupLat: number,
+  pickupLng: number,
+  roadRouter: RoadRouter,
+): Promise<ChosenDriverEta | null> {
   const eligible = drivers.filter((d): d is NearestDriver => {
     if (!d || typeof d !== "object" || Array.isArray(d)) return false;
     const o = d as NearestDriver;
     return (
       o.isCheckedIn === true &&
-      typeof o.latitude === "number" && o.latitude !== 0 &&
-      typeof o.longitude === "number" && o.longitude !== 0 &&
+      typeof o.latitude === "number" && Number.isFinite(o.latitude) && o.latitude !== 0 &&
+      typeof o.longitude === "number" && Number.isFinite(o.longitude) && o.longitude !== 0 &&
       Array.isArray(o.calls) && o.calls.length === 0 &&
       typeof o.estimatedTimeSeconds === "number" && Number.isFinite(o.estimatedTimeSeconds)
     );
   });
   if (!eligible.length) return null;
-  eligible.sort((a, b) =>
-    Number(a.estimatedTimeSeconds) - Number(b.estimatedTimeSeconds) ||
-    String(a.driverId ?? "").localeCompare(String(b.driverId ?? "")));
-  return eligible[0];
+  const routed = await Promise.all(
+    eligible.map(async (d): Promise<ChosenDriverEta> => {
+      const straightLineMinutes = Math.max(1, Math.ceil(Number(d.estimatedTimeSeconds) / 60));
+      let roadSeconds: number | null = null;
+      try {
+        roadSeconds = await roadRouter(
+          Number(d.latitude), Number(d.longitude), pickupLat, pickupLng,
+        );
+      } catch { roadSeconds = null; }
+      if (roadSeconds != null && Number.isFinite(roadSeconds) && roadSeconds > 0) {
+        return { driver: d, roadSeconds, baseMinutes: Math.ceil(roadSeconds / 60), straightLineMinutes, usedFallback: false };
+      }
+      const fallback = fallbackRoadMinutes(
+        haversineMiles(Number(d.latitude), Number(d.longitude), pickupLat, pickupLng),
+      );
+      return { driver: d, roadSeconds: null, baseMinutes: fallback, straightLineMinutes, usedFallback: true };
+    }),
+  );
+  routed.sort((a, b) =>
+    a.baseMinutes - b.baseMinutes ||
+    String(a.driver.driverId ?? "").localeCompare(String(b.driver.driverId ?? "")));
+  return routed[0];
 }
 
-/** Clamp a driver's drive time (seconds) to the club-accepted ETA window:
- *  minutes = ceil(seconds/60), never below 1, never above the effective max
- *  (org default, lowered by the offer's own maxEta when it is smaller). */
-export function clampEtaMinutes(estimatedTimeSeconds: number, maxEtaMinutes: number): number {
-  if (!Number.isFinite(estimatedTimeSeconds) || estimatedTimeSeconds <= 0) return 1;
-  const minutes = Math.ceil(estimatedTimeSeconds / 60);
-  return Math.max(1, Math.min(Math.round(maxEtaMinutes) || 1, minutes));
+/** Final quoted ETA: ceil(base minutes) + prep buffer, clamped to
+ *  [floor, ceiling] (ceiling = org max, lowered by the offer's own maxEta). */
+export function finalEtaMinutes(
+  baseMinutes: number,
+  bufferMinutes: number,
+  floorMinutes: number,
+  ceilingMinutes: number,
+): number {
+  const raw = Math.ceil(Number.isFinite(baseMinutes) ? baseMinutes : 0) + (Number.isFinite(bufferMinutes) ? bufferMinutes : 0);
+  const ceiling = Math.round(ceilingMinutes) || 45;
+  const floor = Math.round(floorMinutes) || 5;
+  return Math.min(ceiling, Math.max(floor, raw));
+}
+
+/** Human-readable ETA breakdown for decision reasons:
+ *  "ETA 14 min (road 9 + buffer 5; floor 5, ceiling 45; straight-line 11; GPS 41.18,-73.15)" */
+export function etaDetailLabel(c: ChosenDriverEta, buffer: number, floor: number, ceiling: number, finalMinutes: number): string {
+  const base = c.usedFallback ? `road fallback ${c.baseMinutes}` : `road ${c.baseMinutes}`;
+  return `ETA ${finalMinutes} min (${base} + buffer ${buffer}; floor ${floor}, ceiling ${ceiling}; straight-line ${c.straightLineMinutes}; GPS ${Number(c.driver.latitude)},${Number(c.driver.longitude)})`;
 }
 
 /* ----------------------------------- Towbook HTTP ----------------------------------- */
@@ -440,37 +576,70 @@ export async function runAutoDispatch(orgId: string, deps: AiDispatcherDeps): Pr
         result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_driver_lookup_failed", escalated: true, reason });
         continue;
       }
-      const driver = chooseBestDriver(nd.body as unknown[]);
+      // --- road-aware driver choice: route EVERY candidate from its precise
+      // GPS to the pickup and pick the minimum ROAD ETA (fallback factor model
+      // per candidate when routing fails; no-GPS drivers are never eligible) ---
+      const roadRouter: RoadRouter = deps.roadRouter ?? ((fromLat, fromLng, toLat, toLng) =>
+        osrmRoadSeconds(fromLat, fromLng, toLat, toLng, fetchImpl));
+      const chosen = await chooseBestDriverByRoad(
+        nd.body as unknown[],
+        offer.startLocationLatitude,
+        offer.startLocationLongitude,
+        roadRouter,
+      );
+      const driver = chosen?.driver ?? null;
       const effectiveMaxEta = Math.min(settings.maxEtaMinutes, offer.maxEta ?? settings.maxEtaMinutes);
       const driverId = driver ? Number(driver.driverId) || 0 : 0;
-      const etaMinutes = driver ? clampEtaMinutes(Number(driver.estimatedTimeSeconds), effectiveMaxEta) : 1;
+      // Final quoted ETA: ceil(road minutes) + buffer, clamped to [floor, ceiling].
+      // NO driver → no ETA is computed or quoted (the accept body still needs
+      // the field; a neutral 1 is sent because nothing is being dispatched).
+      const etaMinutes = driver && chosen
+        ? finalEtaMinutes(chosen.baseMinutes, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta)
+        : null;
+      const postEta = etaMinutes ?? 1;
+      const etaFacts = chosen ? {
+        finalMinutes: etaMinutes,
+        baseMinutes: chosen.baseMinutes,
+        roadSeconds: chosen.roadSeconds,
+        usedFallback: chosen.usedFallback,
+        straightLineMinutes: chosen.straightLineMinutes,
+        bufferMinutes: settings.etaBufferMinutes,
+        floorMinutes: settings.etaFloorMinutes,
+        ceilingMinutes: effectiveMaxEta,
+        driverLatitude: Number(chosen.driver.latitude),
+        driverLongitude: Number(chosen.driver.longitude),
+      } : null;
 
       // --- accept + dispatch (the ONE state-changing call) ---
-      const accept = await postAccept(fetchImpl, baseUrl, cookies, offer.callRequestId, etaMinutes, driverId);
+      const accept = await postAccept(fetchImpl, baseUrl, cookies, offer.callRequestId, postEta, driverId);
       if (!accept.ok) {
-        const reason = `accept POST failed after retry (${accept.attempts.map((a) => a.error ?? `HTTP ${a.status}`).join("; ")}) — offer NOT auto-accepted, needs a human`;
+        const reason = `accept POST failed after retry (${accept.attempts.map((a) => a.error ?? `HTTP ${a.status}`).join("; ")}) — offer NOT auto-accepted, needs a human${chosen ? `; ${etaDetailLabel(chosen, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta, etaMinutes as number)}` : ""}`;
         await record({
           decision: "escalated_accept_failed",
           driverId: driver ? String(driver.driverId) : null,
           driverName: driver ? String(driver.driverName ?? "") : null,
           etaMinutes, zoneDistanceMiles: zoneDistance, reason,
-          rawResponse: { offer, attempts: accept.attempts.map((a) => ({ status: a.status, body: a.body })) },
+          rawResponse: { offer, eta: etaFacts, attempts: accept.attempts.map((a) => ({ status: a.status, body: a.body })) },
         });
         result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_accept_failed", escalated: true, reason });
         continue;
       }
 
-      if (driver) {
-        const reason = `accepted and dispatched to ${String(driver.driverName ?? driver.driverId)} (driver ${driver.driverId}), ETA ${etaMinutes} min`;
+      if (driver && chosen && etaMinutes != null) {
+        const reason = `accepted and dispatched to ${String(driver.driverName ?? driver.driverId)} (driver ${driver.driverId}) — ${etaDetailLabel(chosen, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta, etaMinutes)}`;
         await record({
           decision: "auto_accept_with_driver",
           callId: callIdFromAcceptResponse(accept.raw),
           driverId: String(driver.driverId), driverName: String(driver.driverName ?? ""),
-          etaMinutes, zoneDistanceMiles: zoneDistance, reason, rawResponse: accept.raw,
+          etaMinutes, zoneDistanceMiles: zoneDistance, reason,
+          rawResponse: { eta: etaFacts, accept: accept.raw },
         });
         result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "auto_accept_with_driver", escalated: false, reason });
       } else {
-        const reason = "no checked-in free driver with GPS — accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually";
+        // No checked-in free driver with GPS (no-GPS drivers are never
+        // auto-dispatched, and no ETA is fabricated for them): accept WITHOUT
+        // dispatch so the motor-club offer cannot expire or be missed.
+        const reason = "no checked-in free driver with GPS — accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually (no ETA quoted)";
         await record({
           decision: "auto_accept_no_driver",
           driverId: null, driverName: null,

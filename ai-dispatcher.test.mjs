@@ -1,8 +1,10 @@
 // Hermetic AI-dispatcher test suite (decisions 2026-08-10/11): the owner-directed
-// auto-accept engine — zone math (haversine vs the 06606 centroid), driver
-// selection, decision ledger + dedupe, every escalation path, and the settings
-// toggle gate. The accept/nearestDrivers/callRequests fetches are ALL mocked —
-// this suite can never POST to real Towbook.
+// auto-accept engine — zone math (haversine vs the 06606 centroid), ROAD-AWARE
+// driver selection + ETA (OSRM router is mocked; fallback factor model; buffer /
+// floor / ceiling), decision ledger + dedupe, every escalation path, and the
+// settings toggle gate. The accept/nearestDrivers/callRequests fetches AND the
+// road router are ALL mocked — this suite can never POST to real Towbook and
+// never calls the real OSRM API.
 //
 //   DATABASE_URL=... bun ai-dispatcher.test.mjs
 //
@@ -23,8 +25,9 @@ const {
   runAutoDispatch,
   getOrgSettings,
   haversineMiles,
-  chooseBestDriver,
-  clampEtaMinutes,
+  chooseBestDriverByRoad,
+  finalEtaMinutes,
+  fallbackRoadMinutes,
   validateOfferShape,
   shapeKeyOf,
 } = await import("./src/data/ai-dispatcher.ts");
@@ -106,13 +109,25 @@ function makeFetch({ offers, drivers, acceptStatus = 200, acceptBody = null, acc
   return { fetchImpl, calls };
 }
 
-const makeDeps = (fetchImpl) => {
+/** Mock road router (the OSRM stand-in). `routes` maps "fromLat,fromLng" →
+ *  drive seconds (or null to simulate a routing failure). Any key not in the
+ *  map falls back to a hermetic factor model on haversine — never network.
+ *  The default floor of 60s keeps zero-distance drivers at a sane 1-min base. */
+const makeRouter = (routes = {}) => async (fromLat, fromLng, toLat, toLng) => {
+  const key = `${fromLat.toFixed(2)},${fromLng.toFixed(2)}`;
+  if (key in routes) return routes[key];
+  const mi = haversineMiles(fromLat, fromLng, toLat, toLng);
+  return Math.max(60, Math.round((mi / 30) * 3600 * 1.35));
+};
+
+const makeDeps = (fetchImpl, router) => {
   const syncCalls = [];
   return {
     deps: {
       syncForOrg: async (orgId, trigger, actor) => { syncCalls.push({ orgId, trigger, actor }); return { ok: true }; },
       resolveOrgActor: async () => ({ id: USER, role: "owner" }),
       fetchImpl,
+      roadRouter: router ?? makeRouter(),
     },
     syncCalls,
   };
@@ -131,6 +146,11 @@ try {
   await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${ORG}, ${USER}, 'owner')`;
   await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES(${ORG}, ${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))}, 'connected')`;
   created = true;
+  // Owner-org baseline: the REAL incident row (offer 326520203, auto-accepted
+  // 2026-08-10 with a 3-min straight-line ETA) lives in the owner org — the
+  // "zero decisions" assumption predates it. Capture the count so the final
+  // check proves THIS run adds nothing to the owner org.
+  const ownerBaseline = Number((await q`SELECT count(*)::int n FROM ai_dispatcher_decisions WHERE org_id=${"89e15ce587651cc47c3bc45b1c612a220955"}`)[0].n);
 
   /* ============ 1) pure functions: zone math ============ */
   check("haversine(centroid) = 0", haversineMiles(ZONE.lat, ZONE.lng, ZONE.lat, ZONE.lng) === 0);
@@ -142,19 +162,25 @@ try {
   const far = haversineMiles(40.6, -74.5, ZONE.lat, ZONE.lng);
   check("haversine far point (NJ) > 30 mi", far > 30, String(far));
 
-  /* ============ 2) pure functions: driver selection ============ */
-  const freeFast = driver(703785, "Jayden Fountain", { etaSec: 604 });
-  const freeSlow = driver(603482, "Antone jerret", { etaSec: 1255 });
+  /* ============ 2) pure functions: road-aware driver selection + ETA ============ */
+  const R = makeRouter({ "41.10,-73.00": 3600, "41.15,-73.10": 600, "41.19,-73.15": null });
+  const freeFast = driver(703785, "Jayden Fountain", { lat: 41.1, lng: -73.0, etaSec: 604 });   // 5.7 mi straight-line, 11 min — but 60 min ROAD
+  const freeSlow = driver(603482, "Antone jerret", { lat: 41.15, lng: -73.1, etaSec: 1255 });   // 21 min straight-line — but 10 min ROAD
   const busy = driver(668209, "George Boyd", { calls: [{ callId: 1, status: 3 }] });
   const noGps = driver(103665, "Brittani Simms", { lat: 0, lng: 0, etaSec: 5 });
   const offline = driver(717660, "Levi C Martin", { checkedIn: false, etaSec: 10 });
-  check("chooseBestDriver picks the free+GPS+checked-in min-ETA driver", chooseBestDriver([freeSlow, freeFast, busy, noGps, offline])?.driverId === 703785);
-  check("chooseBestDriver excludes busy/no-GPS/offline", chooseBestDriver([freeFast, busy])?.driverId === 703785 && chooseBestDriver([busy, noGps, offline]) === null);
-  check("chooseBestDriver([]) = null", chooseBestDriver([]) === null);
-  check("clampEtaMinutes: ceil(604/60)=11", clampEtaMinutes(604, 45) === 11);
-  check("clampEtaMinutes: 3600s clamps to maxEta 10", clampEtaMinutes(3600, 10) === 10);
-  check("clampEtaMinutes: 30s → 1 (floor)", clampEtaMinutes(30, 45) === 1);
-  check("clampEtaMinutes: NaN → 1", clampEtaMinutes(NaN, 45) === 1);
+  const pick2 = await chooseBestDriverByRoad([freeSlow, freeFast, busy, noGps, offline], 41.2, -73.2, R);
+  check("chooseBestDriverByRoad picks min ROAD ETA (Antone 600s road beats Jayden 3600s road)", pick2?.driver.driverId === 603482 && pick2.baseMinutes === 10 && pick2.usedFallback === false && pick2.roadSeconds === 600, JSON.stringify(pick2));
+  check("chooseBestDriverByRoad excludes busy/no-GPS/offline", (await chooseBestDriverByRoad([freeFast, busy], 41.2, -73.2, R))?.driver.driverId === 703785 && (await chooseBestDriverByRoad([busy, noGps, offline], 41.2, -73.2, R)) === null);
+  check("chooseBestDriverByRoad([]) = null", (await chooseBestDriverByRoad([], 41.2, -73.2, R)) === null);
+  const fb = await chooseBestDriverByRoad([driver(703785, "Jayden Fountain", { lat: 41.19, lng: -73.15, etaSec: 604 })], 41.2, -73.2, R);
+  check("chooseBestDriverByRoad: router null → fallback factor model flagged", fb?.driver.driverId === 703785 && fb.usedFallback === true && fb.roadSeconds === null && fb.baseMinutes === fallbackRoadMinutes(haversineMiles(41.19, -73.15, 41.2, -73.2)), JSON.stringify(fb));
+  check("finalEtaMinutes: ceil(9)+5 = 14", finalEtaMinutes(9, 5, 5, 45) === 14);
+  check("finalEtaMinutes: ceiling clamps 60+5 → 45", finalEtaMinutes(60, 5, 5, 45) === 45);
+  check("finalEtaMinutes: floor lifts 1+5 → 15", finalEtaMinutes(1, 5, 15, 45) === 15);
+  check("finalEtaMinutes: zero base + buffer = 5 (default floor)", finalEtaMinutes(0, 5, 5, 45) === 5);
+  check("finalEtaMinutes: per-offer ceiling 10 clamps 9+5", finalEtaMinutes(9, 5, 5, 10) === 10);
+  check("fallbackRoadMinutes: 10 mi → 27 min (10/30*60*1.35)", fallbackRoadMinutes(10) === 27);
 
   /* ============ 3) pure functions: offer shape rail ============ */
   check("validateOfferShape ok on documented shape", validateOfferShape(offer(9001)).ok === true);
@@ -167,7 +193,7 @@ try {
 
   /* ============ 4) settings defaults (lazily created row) ============ */
   const s = await getOrgSettings(ORG);
-  check("org_settings defaults: enabled + 06606 centroid + 30mi + 45min", s.aiDispatcherEnabled === true && s.zoneLat === 41.208862 && s.zoneLng === -73.207253 && s.zoneRadiusMiles === 30 && s.maxEtaMinutes === 45, JSON.stringify(s));
+  check("org_settings defaults: enabled + 06606 centroid + 30mi + 45min + buffer 5 + floor 5", s.aiDispatcherEnabled === true && s.zoneLat === 41.208862 && s.zoneLng === -73.207253 && s.zoneRadiusMiles === 30 && s.maxEtaMinutes === 45 && s.etaBufferMinutes === 5 && s.etaFloorMinutes === 5, JSON.stringify(s));
 
   /* ============ 5) not_connected (org with no session) ============ */
   {
@@ -185,23 +211,30 @@ try {
     await q`UPDATE towbook_sessions SET encrypted_session=${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))} WHERE org_id=${ORG}`;
   }
 
-  /* ============ 7) auto-accept with driver (in zone, best driver, ETA clamp) ============ */
+  /* ============ 7) auto-accept with driver: ROAD ETA (route + buffer) ============ */
   {
     const m = makeFetch({
       offers: [offer(7001)],
-      drivers: [driver(717660, "Levi C Martin", { checkedIn: false, etaSec: 10 }), driver(603482, "Antone jerret", { etaSec: 1255 }), driver(703785, "Jayden Fountain", { etaSec: 604 })],
+      drivers: [
+        driver(717660, "Levi C Martin", { checkedIn: false, etaSec: 10, lat: 41.19, lng: -73.15 }),
+        driver(603482, "Antone jerret", { lat: 41.15, lng: -73.1, etaSec: 1255 }),   // road 720s (12 min)
+        driver(703785, "Jayden Fountain", { lat: 41.18, lng: -73.15, etaSec: 604 }), // road 540s (9 min) → winner
+      ],
     });
-    const { deps, syncCalls } = makeDeps(m.fetchImpl);
+    const router = makeRouter({ "41.15,-73.10": 720, "41.18,-73.15": 540 });
+    const { deps, syncCalls } = makeDeps(m.fetchImpl, router);
     const r = await runAutoDispatch(ORG, deps);
     check("auto-accept: 1 offer seen, 1 processed, no skip", r.offersSeen === 1 && r.processed === 1 && r.skipped === null, JSON.stringify(r));
     check("auto-accept: decision auto_accept_with_driver, not escalated", r.decisions[0]?.decision === "auto_accept_with_driver" && r.decisions[0]?.escalated === false, JSON.stringify(r.decisions));
     const p = posts(m.calls);
     check("auto-accept: exactly ONE POST (the accept)", p.length === 1 && m.calls.some((c) => c.url.endsWith("/api/callRequests/7001/accept")), JSON.stringify(m.calls.map((c) => c.url)));
-    check("auto-accept: chose the min-ETA free driver (703785)", p[0]?.body?.driverId === 703785, JSON.stringify(p[0]?.body));
-    check("auto-accept: ETA = ceil(604/60) = 11, body matches UI payload", p[0]?.body?.ETA === 11 && p[0]?.body?.id === 7001 && p[0]?.body?.comments === "" && p[0]?.body?.notes === "auto-accept by Lightning Dispatch" && p[0]?.body?.tireAvailable === false, JSON.stringify(p[0]?.body));
+    check("auto-accept: chose the min-ROAD-ETA free driver (703785, 9 min road)", p[0]?.body?.driverId === 703785, JSON.stringify(p[0]?.body));
+    check("auto-accept: ETA = ceil(540/60)+buffer 5 = 14, body matches UI payload", p[0]?.body?.ETA === 14 && p[0]?.body?.id === 7001 && p[0]?.body?.comments === "" && p[0]?.body?.notes === "auto-accept by Lightning Dispatch" && p[0]?.body?.tireAvailable === false, JSON.stringify(p[0]?.body));
     const rows = await decisions();
-    check("decision row: driver 703785 + name + eta 11 + zone distance + raw accept response", rows.length === 1 && String(rows[0].driver_id) === "703785" && String(rows[0].driver_name) === "Jayden Fountain" && Number(rows[0].eta_minutes) === 11 && Number(rows[0].zone_distance_miles) > 0 && rows[0].raw_response?.callNumber === 25000, JSON.stringify(rows[0]));
+    check("decision row: driver 703785 + name + eta 14 + zone distance + raw accept response", rows.length === 1 && String(rows[0].driver_id) === "703785" && String(rows[0].driver_name) === "Jayden Fountain" && Number(rows[0].eta_minutes) === 14 && Number(rows[0].zone_distance_miles) > 0 && rows[0].raw_response?.accept?.callNumber === 25000, JSON.stringify(rows[0]));
     check("decision row: call_id reconciled from accept response", String(rows[0].call_id) === "279999999", String(rows[0].call_id));
+    check("decision row: reason carries the road breakdown note", String(rows[0].reason).includes("ETA 14 min (road 9 + buffer 5") && String(rows[0].reason).includes("straight-line 11") && String(rows[0].reason).includes("GPS 41.18,-73.15"), String(rows[0].reason));
+    check("decision row: raw_response.eta has road seconds + buffer/floor/ceiling facts", rows[0].raw_response?.eta?.roadSeconds === 540 && rows[0].raw_response?.eta?.usedFallback === false && rows[0].raw_response?.eta?.straightLineMinutes === 11 && rows[0].raw_response?.eta?.bufferMinutes === 5 && rows[0].raw_response?.eta?.floorMinutes === 5 && rows[0].raw_response?.eta?.ceilingMinutes === 45 && rows[0].raw_response?.eta?.finalMinutes === 14, JSON.stringify(rows[0].raw_response?.eta));
     const a = await audits();
     check("audit: 1 ai_dispatcher:accept row", Number(a[0].n) === 1, String(a[0].n));
     check("syncForOrg triggered with sync:auto-accept + actor", syncCalls.length === 1 && syncCalls[0].trigger === "sync:auto-accept" && syncCalls[0].actor?.id === USER, JSON.stringify(syncCalls));
@@ -224,9 +257,10 @@ try {
   {
     const m = makeFetch({
       offers: [offer(7003, { maxEta: 10 })],
-      drivers: [driver(703785, "Jayden Fountain", { etaSec: 3600 })], // 60 min raw → clamped to 10
+      drivers: [driver(703785, "Jayden Fountain", { lat: 41.1, lng: -73.0, etaSec: 3600 })], // road 3600s → 60+5 = 65 → clamped to 10
     });
-    const { deps } = makeDeps(m.fetchImpl);
+    const router = makeRouter({ "41.10,-73.00": 3600 });
+    const { deps } = makeDeps(m.fetchImpl, router);
     const r = await runAutoDispatch(ORG, deps);
     const p = posts(m.calls);
     check("maxEta override: ETA clamped to 10 (offer maxEta beats 45)", p[0]?.body?.ETA === 10, JSON.stringify(p[0]?.body));
@@ -351,19 +385,110 @@ try {
     check("re-enabled: engine acts again", r2.gated === false && r2.processed === 1, JSON.stringify(r2));
   }
 
-  /* ============ 21) ledger totals + owner org untouched ============ */
+  /* ============ 21) routing failure → fallback factor model (no fabricated road) ============ */
+  {
+    const m = makeFetch({
+      offers: [offer(7015)],
+      drivers: [driver(703785, "Jayden Fountain", { lat: 41.15, lng: -73.1, etaSec: 604 })],
+    });
+    const router = makeRouter({ "41.15,-73.10": null }); // OSRM failed for this driver
+    const { deps } = makeDeps(m.fetchImpl, router);
+    const r = await runAutoDispatch(ORG, deps);
+    const p = posts(m.calls);
+    const expBase = fallbackRoadMinutes(haversineMiles(41.15, -73.1, 41.2, -73.2));
+    check("fallback: still auto-accepted with the driver (router hiccup never drops a driver)", r.decisions[0]?.decision === "auto_accept_with_driver" && p[0]?.body?.driverId === 703785, JSON.stringify(r.decisions));
+    check("fallback: ETA = fallback base + buffer (no fabricated road time)", p[0]?.body?.ETA === expBase + 5, `expected ${expBase + 5}, got ${p[0]?.body?.ETA}`);
+    const rows = await decisions();
+    const fr = rows.find((x) => String(x.call_request_id) === "7015");
+    check("fallback: decision row flags usedFallback + null roadSeconds + breakdown note", fr && Number(fr.eta_minutes) === expBase + 5 && fr.raw_response?.eta?.usedFallback === true && fr.raw_response?.eta?.roadSeconds === null && fr.raw_response?.eta?.straightLineMinutes === 11 && String(fr.reason).includes("road fallback") && String(fr.reason).includes(`buffer 5`), JSON.stringify(fr?.raw_response?.eta));
+  }
+
+  /* ============ 22) floor applied (road + buffer below the configured floor) ============ */
+  {
+    await q`UPDATE org_settings SET eta_floor_minutes=15 WHERE org_id=${ORG}`;
+    const m = makeFetch({
+      offers: [offer(7016)],
+      drivers: [driver(703785, "Jayden Fountain", { lat: 41.19, lng: -73.15, etaSec: 604 })], // road 60s → 1+5 = 6 → floor 15
+    });
+    const router = makeRouter({ "41.19,-73.15": 60 });
+    const { deps } = makeDeps(m.fetchImpl, router);
+    const r = await runAutoDispatch(ORG, deps);
+    const p = posts(m.calls);
+    check("floor: ETA lifted to 15 (1+5 = 6 < floor)", p[0]?.body?.ETA === 15, JSON.stringify(p[0]?.body));
+    const rows = await decisions();
+    const fl = rows.find((x) => String(x.call_request_id) === "7016");
+    check("floor: reason + raw_response record the applied floor", fl && String(fl.reason).includes("floor 15") && fl.raw_response?.eta?.floorMinutes === 15 && fl.raw_response?.eta?.finalMinutes === 15, String(fl?.reason));
+    await q`UPDATE org_settings SET eta_floor_minutes=5 WHERE org_id=${ORG}`;
+  }
+
+  /* ============ 23) org ceiling respected (road + buffer above max_eta_minutes) ============ */
+  {
+    const m = makeFetch({
+      offers: [offer(7017)],
+      drivers: [driver(603482, "Antone jerret", { lat: 41.1, lng: -73.0, etaSec: 3600 })], // road 3600s → 60+5 = 65 → ceiling 45
+    });
+    const router = makeRouter({ "41.10,-73.00": 3600 });
+    const { deps } = makeDeps(m.fetchImpl, router);
+    const r = await runAutoDispatch(ORG, deps);
+    const p = posts(m.calls);
+    check("ceiling: ETA clamped to 45 (org max_eta_minutes)", p[0]?.body?.ETA === 45, JSON.stringify(p[0]?.body));
+    const rows = await decisions();
+    const ce = rows.find((x) => String(x.call_request_id) === "7017");
+    check("ceiling: reason records ceiling 45", ce && String(ce.reason).includes("ceiling 45") && Number(ce.eta_minutes) === 45, String(ce?.reason));
+  }
+
+  /* ============ 24) choice BY ROAD ETA: better road time beats better straight-line ============ */
+  {
+    const m = makeFetch({
+      offers: [offer(7018)],
+      drivers: [
+        driver(703785, "Jayden Fountain", { lat: 41.1, lng: -73.0, etaSec: 300 }),   // 5 min straight-line (old winner) — 60 min ROAD
+        driver(603482, "Antone jerret", { lat: 41.19, lng: -73.15, etaSec: 1800 }), // 30 min straight-line — 10 min ROAD
+      ],
+    });
+    const router = makeRouter({ "41.10,-73.00": 3600, "41.19,-73.15": 600 });
+    const { deps } = makeDeps(m.fetchImpl, router);
+    const r = await runAutoDispatch(ORG, deps);
+    const p = posts(m.calls);
+    check("choice-by-road: Antone (10 min road) dispatched over Jayden (5 min straight-line)", p[0]?.body?.driverId === 603482, JSON.stringify(p[0]?.body));
+    check("choice-by-road: ETA = 10 + buffer 5 = 15", p[0]?.body?.ETA === 15, JSON.stringify(p[0]?.body));
+    const rows = await decisions();
+    const cb = rows.find((x) => String(x.call_request_id) === "7018");
+    check("choice-by-road: decision names Antone + road breakdown", cb && String(cb.driver_name) === "Antone jerret" && String(cb.reason).includes("road 10 + buffer 5") && cb.raw_response?.eta?.roadSeconds === 600 && cb.raw_response?.eta?.straightLineMinutes === 30, String(cb?.reason));
+  }
+
+  /* ============ 25) no-GPS drivers: never auto-dispatched, no ETA quoted ============ */
+  {
+    const m = makeFetch({
+      offers: [offer(7019)],
+      drivers: [
+        driver(103665, "Brittani Simms", { lat: 0, lng: 0, etaSec: 5 }),          // no GPS
+        driver(703785, "Jayden Fountain", { lat: 41.2, lng: -73.2, etaSec: 10, calls: [{ callId: 1, status: 3 }] }), // busy
+      ],
+    });
+    const { deps } = makeDeps(m.fetchImpl);
+    const r = await runAutoDispatch(ORG, deps);
+    check("no-GPS: decision auto_accept_no_driver, escalated for the ops queue", r.decisions[0]?.decision === "auto_accept_no_driver" && r.decisions[0]?.escalated === true, JSON.stringify(r.decisions));
+    const p = posts(m.calls);
+    check("no-GPS: accepted with driverId 0 (offer must not expire)", p.length === 1 && p[0]?.body?.driverId === 0, JSON.stringify(p[0]?.body));
+    const rows = await decisions();
+    const ng = rows.find((x) => String(x.call_request_id) === "7019");
+    check("no-GPS: no ETA recorded in the ledger (nothing fabricated for the club)", ng && ng.eta_minutes === null && String(ng.reason).includes("no ETA quoted"), JSON.stringify(ng));
+  }
+
+  /* ============ 26) ledger totals + owner org untouched ============ */
   {
     const rows = await decisions();
     const byDecision = rows.reduce((acc, x) => { acc[x.decision] = (acc[x.decision] || 0) + 1; return acc; }, {});
-    check("ledger: every auto_accept + escalation path present exactly once", byDecision["auto_accept_with_driver"] === 6 && byDecision["auto_accept_no_driver"] === 1 && byDecision["escalated_out_of_zone"] === 1 && byDecision["escalated_missing_coords"] === 1 && byDecision["escalated_expired"] === 1 && byDecision["escalated_unexpected_shape"] === 1 && byDecision["escalated_driver_lookup_failed"] === 1 && byDecision["escalated_accept_failed"] === 1, JSON.stringify(byDecision));
+    check("ledger: every auto_accept + escalation path present exactly once", byDecision["auto_accept_with_driver"] === 10 && byDecision["auto_accept_no_driver"] === 2 && byDecision["escalated_out_of_zone"] === 1 && byDecision["escalated_missing_coords"] === 1 && byDecision["escalated_expired"] === 1 && byDecision["escalated_unexpected_shape"] === 1 && byDecision["escalated_driver_lookup_failed"] === 1 && byDecision["escalated_accept_failed"] === 1, JSON.stringify(byDecision));
     const a = await audits();
-    check("audit: 7 ai_dispatcher:accept rows (every accept incl. no-driver)", Number(a[0].n) === 7, String(a[0].n));
+    check("audit: 12 ai_dispatcher:accept rows (every accept incl. no-driver)", Number(a[0].n) === 12, String(a[0].n));
     const adAudit = await q`SELECT count(*)::int n FROM audit_log WHERE org_id=${ORG} AND action='ai_dispatcher:decision'`;
     check("audit: 6 ai_dispatcher:decision rows (escalations)", Number(adAudit[0].n) === 6, String(adAudit[0].n));
     const ownerSession = await q`SELECT status FROM towbook_sessions WHERE org_id=${"89e15ce587651cc47c3bc45b1c612a220955"}`;
     check("owner org session untouched", ownerSession.length === 1 && String(ownerSession[0].status) === "connected", JSON.stringify(ownerSession));
     const ownerDecisions = await q`SELECT count(*)::int n FROM ai_dispatcher_decisions WHERE org_id=${"89e15ce587651cc47c3bc45b1c612a220955"}`;
-    check("owner org has zero AI-dispatcher decisions", Number(ownerDecisions[0].n) === 0, String(ownerDecisions[0].n));
+    check("owner org untouched: decision count unchanged by this run", Number(ownerDecisions[0].n) === ownerBaseline, `${ownerBaseline} → ${Number(ownerDecisions[0].n)}`);
   }
 
   console.log("\nALL AI-DISPATCHER CHECKS PASSED");

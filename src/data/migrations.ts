@@ -89,6 +89,16 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     // is the hard backstop.
     await q`CREATE UNIQUE INDEX IF NOT EXISTS ai_dispatcher_decisions_org_callreq_uidx ON ai_dispatcher_decisions(org_id, call_request_id) WHERE call_request_id IS NOT NULL`;
   }],
+  [9, async (q) => {
+    // AI dispatcher ETA accuracy (owner-directed 2026-08-10, after offer
+    // 326520203 was auto-accepted with a 3-min straight-line ETA the owner had
+    // to manually extend by 35 min): the quoted ETA is road-aware drive time
+    // (OSRM from the driver's precise GPS to the pickup) + a prep buffer, never
+    // below a floor, never above the ceiling (max_eta_minutes, still lowered by
+    // a per-offer maxEta). Idempotent column adds; existing orgs get the defaults.
+    await q`ALTER TABLE org_settings ADD COLUMN IF NOT EXISTS eta_buffer_minutes INTEGER NOT NULL DEFAULT 5`;
+    await q`ALTER TABLE org_settings ADD COLUMN IF NOT EXISTS eta_floor_minutes INTEGER NOT NULL DEFAULT 5`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();
