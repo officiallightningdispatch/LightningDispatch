@@ -1,7 +1,43 @@
 import { Link } from "@tanstack/react-router";
-import { BriefcaseBusiness, Command, LogIn, Radio, Zap } from "lucide-react";
-import { Card } from "~/components/ui";
+import { LogIn, Zap } from "lucide-react";
 import { createFileRoute } from "@tanstack/react-router";
 export const Route=createFileRoute("/")({component:Landing});
-const portals=[{to:"/driver",title:"Contractor app",desc:"Get offers, manage active jobs, and stay on top of your day.",icon:BriefcaseBusiness},{to:"/ops",title:"Dispatcher ops",desc:"Run the live queue, assign work, and keep every job moving.",icon:Radio},{to:"/owner",title:"Owner command",desc:"See performance, team health, and the operation at a glance.",icon:Command}];
-function Landing(){return <main className="min-h-dvh bg-canvas px-4 py-10 text-ink-900 sm:px-8"><div className="mx-auto max-w-6xl"><header className="flex items-center gap-3"><span className="grid size-11 place-items-center rounded-2xl bg-brand-500"><Zap className="size-6 text-white" fill="currentColor" strokeWidth={0}/></span><strong className="text-lg tracking-tight">Lightning Dispatch OS</strong></header><section className="py-16 sm:py-24"><p className="text-sm font-bold uppercase tracking-[.2em] text-brand-600">Roadside operations, unified</p><h1 className="mt-4 max-w-2xl text-4xl font-extrabold tracking-tight sm:text-6xl">Move every job forward.</h1><p className="mt-5 max-w-xl text-lg text-ink-500">One calm, intelligent workspace for contractors, dispatchers, and owners.</p></section><div className="grid gap-4 md:grid-cols-3">{portals.map(p=><Card key={p.to} interactive className="flex flex-col p-6"><p.icon className="size-7 text-brand-500"/><h2 className="mt-6 text-xl font-bold">{p.title}</h2><p className="mt-2 min-h-12 text-sm leading-6 text-ink-500">{p.desc}</p><Link to={p.to as any} className="mt-6 inline-flex h-11 items-center justify-center rounded-xl bg-brand-500 px-4 text-sm font-semibold text-white hover:bg-brand-600">Open portal</Link></Card>)}</div><div className="mt-8 text-center"><Link to="/login" className="inline-flex h-11 items-center gap-2 rounded-xl px-4 text-sm font-semibold text-ink-600 hover:bg-ink-50"><LogIn className="size-4"/>Sign in to your workspace</Link></div></div></main>}
+// Single-entry landing: ONE sign-in CTA. Roles are decided by the account
+// server-side; the login page routes each user to their own workspace. There is
+// deliberately no role selector here — lines never cross.
+function Landing(){
+  return <main className="grid min-h-dvh bg-canvas text-ink-900">
+    <div className="mx-auto flex w-full max-w-md flex-col px-6 py-10 sm:py-16">
+      {/* Brand header */}
+      <header className="flex items-center gap-3">
+        <span className="grid size-11 place-items-center rounded-2xl bg-brand-500">
+          <Zap className="size-6 text-white" fill="currentColor" strokeWidth={0} aria-hidden="true"/>
+        </span>
+        <strong className="text-lg tracking-tight">Lightning Dispatch OS</strong>
+      </header>
+
+      {/* Value statement */}
+      <section className="flex flex-1 flex-col justify-center py-14 sm:py-20">
+        <p className="text-sm font-bold uppercase tracking-[.2em] text-brand-600">Roadside operations, unified</p>
+        <h1 className="mt-4 text-4xl font-extrabold tracking-tight sm:text-5xl">Move every job forward.</h1>
+        <p className="mt-5 max-w-sm text-lg leading-7 text-ink-500">
+          One calm, intelligent system for contractors, dispatchers, and owners.
+        </p>
+      </section>
+
+      {/* The single entry point */}
+      <Link
+        to="/login"
+        className="inline-flex h-13 min-h-[52px] w-full items-center justify-center gap-2 rounded-2xl bg-brand-500 px-6 text-base font-semibold text-white shadow-card transition-colors duration-150 hover:bg-brand-600 active:scale-[0.99] motion-reduce:transform-none"
+      >
+        <LogIn className="size-5" aria-hidden="true"/>
+        Sign in
+      </Link>
+
+      {/* Informational strip — text only, never a role choice */}
+      <p className="mt-6 text-center text-sm leading-6 text-ink-400">
+        Drivers&nbsp;·&nbsp;Dispatchers&nbsp;·&nbsp;Owners&nbsp;—&nbsp;one login routes you to your workspace.
+      </p>
+    </div>
+  </main>;
+}
