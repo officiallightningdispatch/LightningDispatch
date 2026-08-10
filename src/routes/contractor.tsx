@@ -19,7 +19,8 @@ import { avgResponseMinutes } from "~/lib/dispatch-recommendation";
 import { JOB_STATUS_META, SERVICE_ICONS, SERVICE_LABELS, timeAgo } from "~/lib/job-ui";
 import { mutationKey, useDispatchStore } from "~/lib/store";
 
-export const Route = createFileRoute("/contractor")({ component: ContractorView });
+import { DriverGate } from "~/components/portal-gate";
+export const Route = createFileRoute("/contractor")({ component: () => <DriverGate><ContractorView /></DriverGate> });
 
 /** Persisted contractor identity — the demo has no login, so the demo user
  *  picks which seeded contractor they are acting as. */

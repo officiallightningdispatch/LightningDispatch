@@ -33,7 +33,8 @@ import {
 } from "~/lib/job-ui";
 import { mutationKey, useDispatchStore } from "~/lib/store";
 
-export const Route = createFileRoute("/dispatch")({ component: DispatchConsole });
+import { OpsGate } from "~/components/portal-gate";
+export const Route = createFileRoute("/dispatch")({ component: () => <OpsGate><DispatchConsole /></OpsGate> });
 
 function DispatchConsole() {
   return (

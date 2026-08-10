@@ -32,5 +32,7 @@ export function PortalGate({ children, roles }: { children: ReactNode; roles: Ro
   return <>{children}</>;
 }
 export const DriverGate = ({ children }: { children: ReactNode }) => <PortalGate roles={["contractor"]}>{children}</PortalGate>;
-export const OpsGate = ({ children }: { children: ReactNode }) => <PortalGate roles={["dispatcher", "admin"]}>{children}</PortalGate>;
+// Owner is the boss: owner + admin have full access to the ops workspace too.
+// Contractors are still restricted to their own portal via DriverGate (never weakened).
+export const OpsGate = ({ children }: { children: ReactNode }) => <PortalGate roles={["owner", "admin", "dispatcher"]}>{children}</PortalGate>;
 export const OwnerGate = ({ children }: { children: ReactNode }) => <PortalGate roles={["owner", "admin"]}>{children}</PortalGate>;
