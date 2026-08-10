@@ -1,4 +1,4 @@
-import { createCipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
@@ -54,4 +54,21 @@ export async function encryptSession(value: string): Promise<string> {
   const cipher = createCipheriv("aes-256-gcm", key, iv);
   const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
   return `v1.${iv.toString("base64")}.${cipher.getAuthTag().toString("base64")}.${encrypted.toString("base64")}`;
+}
+
+/** Reverse of encryptSession. Throws on a wrong key (GCM tag mismatch), a
+ *  malformed envelope, or tampered ciphertext — callers surface that as
+ *  "session unavailable on this host, reconnect Towbook" rather than leaking
+ *  anything. The value never touches logs. */
+export async function decryptSession(value: string): Promise<string> {
+  const parts = value.split(".");
+  if (parts.length !== 4 || parts[0] !== "v1") {
+    throw new Error("Unrecognized encrypted session format");
+  }
+  const [, ivB64, tagB64, dataB64] = parts;
+  const key = await loadSessionKey();
+  const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(ivB64, "base64"));
+  decipher.setAuthTag(Buffer.from(tagB64, "base64"));
+  const plain = Buffer.concat([decipher.update(Buffer.from(dataB64, "base64")), decipher.final()]);
+  return plain.toString("utf8");
 }

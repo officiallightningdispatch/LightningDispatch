@@ -1,10 +1,10 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { sql } from "~/db";
-import { encryptSession } from "./towbook-key";
+import { decryptSession, encryptSession } from "./towbook-key";
 import { contractors as seedContractors, jobs as seedJobs } from "./seed";
 import type { AuthUser } from "./auth-server";
-import type { ContractorStatus, JobStatus, Contractor, Job } from "./seed";
+import type { ContractorStatus, JobStatus, Contractor, Job, ServiceType } from "./seed";
 
 export type DispatchData = { contractors: Contractor[]; jobs: Job[] };
 export type CommandErrorCode = "validation"|"not_found"|"invalid_state"|"conflict"|"offline_contractor"|"database_unavailable"|"unauthorized";
@@ -27,6 +27,7 @@ function prepare() {
     await ensureAuthSchema();
     const { ensureSchema } = await import("./migrations");
     await ensureSchema();
+    startBackgroundSync();
   })();
   return schemaInit;
 }
@@ -41,7 +42,7 @@ async function dataFor(u: AuthUser): Promise<DispatchData> { const q=sql(); cons
 async function result(u: AuthUser): Promise<CommandResult> { return {ok:true,data:await dataFor(u)}; }
 function can(u:AuthUser, roles:AuthUser["role"][]) { return roles.includes(u.role); }
 
-export const getDispatchData=createServerFn({method:"GET"}).handler(async()=>{ if(!configured())return {mode:"demo" as const,data:{contractors:seedContractors,jobs:seedJobs}}; const { currentUser } = await import("./auth-server"); const u=await currentUser(); if(!u)return {mode:"database" as const,data:{contractors:[],jobs:[]},error:{code:"unauthorized" as const,message:"Sign in required."}}; try {await prepare(); return {mode:"database" as const,data:await dataFor(u)};} catch { return {mode:"database" as const,data:{contractors:[],jobs:[]},error:{code:"database_unavailable" as const,message:"Database unavailable."}};} });
+export const getDispatchData=createServerFn({method:"GET"}).handler(async()=>{ if(!configured())return {mode:"demo" as const,data:{contractors:seedContractors,jobs:seedJobs}}; const { currentUser } = await import("./auth-server"); const u=await currentUser(); if(!u)return {mode:"database" as const,data:{contractors:[],jobs:[]},error:{code:"unauthorized" as const,message:"Sign in required."}}; try {await prepare(); void maybeAutoSync(u.orgId); return {mode:"database" as const,data:await dataFor(u)};} catch { return {mode:"database" as const,data:{contractors:[],jobs:[]},error:{code:"database_unavailable" as const,message:"Database unavailable."}};} });
 
 export const assignJob=createServerFn({method:"POST"}).validator(passthrough).handler(async({data})=>{const e=invalid(data,z.object({jobId:id,contractorId:id}).strict());if(e)return e;if(!configured())return unavailable("Database mode is not active — assign works in the live demo only.");const { currentUser } = await import("./auth-server"); const u=await currentUser();if(!u)return fail("unauthorized","Sign in required.");if(!can(u,["owner","admin","dispatcher"]))return fail("unauthorized","You cannot assign jobs.");try{await prepare();const q=sql();const c=await q`SELECT status FROM dispatch_contractors WHERE id=${(data as {contractorId:string}).contractorId} AND org_id=${u.orgId}`;if(!c.length)return fail("not_found","Contractor not found.");if(c[0].status!=="online")return fail("offline_contractor","Contractor is offline.");const job=(data as {jobId:string}).jobId, con=(data as {contractorId:string}).contractorId, actor=u.id;const rows=await q.transaction([q`WITH changed AS (UPDATE dispatch_jobs SET status='offered',assigned_contractor_id=${con},assigned_at=NOW() WHERE id=${job} AND org_id=${u.orgId} AND status='new' RETURNING id,org_id,'new'::text AS old_status,'offered'::text AS new_status) INSERT INTO status_events(id,org_id,job_id,from_status,to_status,actor_user_id,actor_role) SELECT gen_random_uuid()::text,org_id,id,old_status,new_status,${actor},${u.role} FROM changed RETURNING job_id` ,q`INSERT INTO audit_log(id,org_id,actor_user_id,actor_role,action,entity_type,entity_id,detail) SELECT gen_random_uuid()::text,${u.orgId},${actor},${u.role},'assign','job',${job},jsonb_build_object('contractorId',${con}) WHERE EXISTS (SELECT 1 FROM status_events WHERE org_id=${u.orgId} AND job_id=${job} AND from_status='new' AND to_status='offered' AND actor_user_id=${actor})`]); if(!rows[0]?.length)return fail("conflict","Job is no longer available for assignment.");return result(u);}catch{return unavailable("Unable to assign job.");}});
 
@@ -226,3 +227,448 @@ export const connectTowbook=createServerFn({method:"POST"}).validator(passthroug
 });
 export const disconnectTowbook=createServerFn({method:"POST"}).handler(async()=>{if(!configured())return {ok:true as const};const {currentUser}=await import("./auth-server");const u=await currentUser();if(!u||!can(u,["owner","admin"]))return towbookFail("towbook_blocked","You cannot disconnect Towbook.");try{await prepare();await sql()`DELETE FROM towbook_sessions WHERE org_id=${u.orgId}`;return {ok:true as const};}catch{return towbookFail("towbook_unreachable","Unable to disconnect Towbook.");}});
 export const resetDemo=createServerFn({method:"POST"}).validator(passthrough).handler(async()=>fail("unauthorized","Reset demo data is disabled in database mode."));
+
+/* ============================ Towbook job puller (slice 2) ============================
+ * Self-discovering authenticated sync: uses the org's stored Towbook session cookie jar
+ * (encrypted at rest via towbook-key.ts) to fetch likely job-list surfaces, parse job
+ * rows out of HTML tables and/or JSON payloads, and upsert them into dispatch_jobs
+ * deduped by towbook_job_id (org-scoped unique). Status changes write status_events +
+ * audit_log. Diagnostics are rich (URLs tried + statuses + truncated body hints) so the
+ * first live run pinpoints the one thing to adjust. Session cookies/passwords are NEVER
+ * included in any response, diagnostic, or log.
+ *
+ * Safety rails: no session row / not connected → clean error; undecryptable session →
+ * clean error (reconnect); login-page response → session_expired; unknown statuses are
+ * skipped and counted (failed) with the raw values surfaced in diagnostics; per-org
+ * in-flight guard prevents overlapping syncs.
+ * ---------------------------------------------------------------------------------- */
+
+export type TowbookSyncCode = "ok" | "not_connected" | "session_unavailable" | "session_expired" | "no_jobs" | "unauthorized" | "error";
+export type TowbookSyncDiag = { url: string; status: number | null; contentType: string | null; hint: string };
+export type TowbookSyncResult = { ok: boolean; code: TowbookSyncCode; message: string; added: number; updated: number; failed: number; diagnostics: TowbookSyncDiag[] };
+const syncResult = (code: TowbookSyncCode, message: string, extra?: Partial<TowbookSyncResult>): TowbookSyncResult => ({ ok: code === "ok", code, message, added: 0, updated: 0, failed: 0, diagnostics: [], ...extra });
+
+/** Data-driven Towbook status → dispatch lifecycle mapping (first match wins; order
+ *  matters — specific negations before the generic bucket). Unmapped statuses are
+ *  skipped, not silently coerced. */
+export const TOWBOOK_STATUS_TO_LIFECYCLE: ReadonlyArray<{ match: RegExp; to: JobStatus }> = [
+  { match: /not dispatched|unassigned|incoming|new|pending|queued|unscheduled/i, to: "new" },
+  { match: /assigned|offered|offer sent|offer/i, to: "offered" },
+  { match: /dispatched|accepted|accept/i, to: "accepted" },
+  { match: /en\s?route|enroute|on the way|heading/i, to: "en_route" },
+  { match: /arrived|on scene|on-scene|at scene/i, to: "arrived" },
+  { match: /completed|complete|done|closed|finished|paid|billed/i, to: "completed" },
+];
+export function mapTowbookStatus(raw: string): JobStatus | null {
+  const s = (raw || "").trim().toLowerCase();
+  if (!s) return null;
+  for (const { match, to } of TOWBOOK_STATUS_TO_LIFECYCLE) if (match.test(s)) return to;
+  return null;
+}
+
+/** Data-driven Towbook service text → dispatch service type. Anything unrecognized
+ *  falls back to flatbed_tow (generic roadside/tow) rather than breaking the UI,
+ *  which only renders the five canonical service types. */
+const TOWBOOK_SERVICE_TO_TYPE: ReadonlyArray<{ match: RegExp; to: ServiceType }> = [
+  { match: /jump|battery|boost|dead batt|start/i, to: "jump_start" },
+  { match: /tire|tyre/i, to: "tire_change" },
+  { match: /lock|key|unlock/i, to: "lockout" },
+  { match: /fuel|gas|diesel|petrol|gasoline/i, to: "fuel_delivery" },
+  { match: /tow|wrecker|rollback|flatbed|transport|recover|winch/i, to: "flatbed_tow" },
+];
+export function mapTowbookService(raw: string): ServiceType {
+  const s = (raw || "").toLowerCase();
+  for (const { match, to } of TOWBOOK_SERVICE_TO_TYPE) if (match.test(s)) return to;
+  return "flatbed_tow";
+}
+
+/** Candidate job-list surfaces (ASP.NET Core MVC paths). The puller tries them in
+ *  order with the stored session and records what each returns. */
+const TOWBOOK_JOB_PATHS = [
+  "", "/Dispatch", "/Dispatch/Index", "/Dispatch/Active", "/Dispatch/History",
+  "/Dispatch/Completed", "/Jobs", "/Jobs/Index", "/Job", "/Job/Index",
+  "/Orders", "/Order", "/Orders/Index", "/Agero", "/Agero/Index",
+  "/MotorClub", "/MotorClubs", "/MotorClub/Index", "/Incoming", "/History",
+  "/Completed", "/CompletedJobs", "/Today", "/TodaysJobs", "/Dashboard",
+];
+
+const stripHtml = (s: string) => s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+/** Compact, tag-stripped, lowercased body fingerprint — truncated so a response can
+ *  never smuggle the full page (or PII) into the UI; it exists to identify the page. */
+const pageHint = (html: string, ct: string | null) => {
+  if (ct && ct.includes("json")) return html.replace(/\s+/g, " ").slice(0, 160);
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase()
+    .slice(0, 160) || `(${html.length} bytes)`;
+};
+const isLoginPage = (html: string) => /<form/i.test(html) && /RequestVerificationToken/i.test(html);
+const isLoginRedirect = (loc: string | null) => Boolean(loc && /login/i.test(loc));
+
+/* ------------------------------- HTML table parsing ------------------------------- */
+
+type RawJob = Record<string, string>;
+const HEADER_FIELD_MAP: ReadonlyArray<{ match: RegExp; field: string }> = [
+  { match: /job\s*type|work\s*type|service|category|reason|type of|job\s*kind/i, field: "service" },
+  { match: /job|order|ticket|ref|number|^id$|call\s*id/i, field: "id" },
+  { match: /customer|member|caller|account|party|^name$/i, field: "customer" },
+  { match: /phone|tel|mobile/i, field: "phone" },
+  { match: /vehicle|unit|car|truck|year|make|model|vin|color|plate/i, field: "vehicle" },
+  { match: /pickup|from|origin|source|address|street|location/i, field: "pickup" },
+  { match: /dropoff|drop\s*off|to\s*:|dest|destination|deliver/i, field: "dropoff" },
+  { match: /status|state|stage/i, field: "status" },
+  { match: /date|created|opened|time/i, field: "date" },
+  { match: /note|comment|description|details|memo/i, field: "note" },
+];
+const fieldForHeader = (h: string): string => {
+  const hh = h.toLowerCase();
+  for (const { match, field } of HEADER_FIELD_MAP) if (match.test(hh)) return field;
+  return "";
+};
+const cellTexts = (row: string) => [...row.matchAll(/<t[dh][\s\S]*?<\/t[dh]>/gi)].map((m) => stripHtml(m[0]));
+/** Extract job-ish records from every <table> that has a recognizable header row. */
+export function parseTables(html: string): RawJob[] {
+  const out: RawJob[] = [];
+  for (const tbl of [...html.matchAll(/<table[\s\S]*?<\/table>/gi)]) {
+    const rows = [...tbl[0].matchAll(/<tr[\s\S]*?<\/tr>/gi)].map((m) => m[0]);
+    if (rows.length < 2) continue;
+    const first = cellTexts(rows[0]);
+    const hasTh = /<th/i.test(rows[0]);
+    const headers = first.map((c, i) => {
+      if (hasTh) return c;
+      const f = fieldForHeader(c);
+      return f || (i < 8 ? `col${i}` : "");
+    });
+    if (!hasTh && !headers.some(Boolean)) continue;
+    for (let i = 1; i < rows.length; i++) {
+      const cells = cellTexts(rows[i]);
+      const rec: RawJob = {};
+      cells.forEach((c, idx) => {
+        const field = fieldForHeader(headers[idx] || "");
+        if (!field || !c) return;
+        rec[field] = rec[field] ? `${rec[field]} ${c}` : c;
+      });
+      if (Object.values(rec).some((v) => v)) out.push(rec);
+    }
+  }
+  return out;
+}
+
+/* ---------------------------------- JSON parsing ---------------------------------- */
+
+const JSON_FIELD_MAP: ReadonlyArray<{ match: RegExp; field: string }> = [
+  { match: /job_?type|work_?type|service|category|reason|kind/i, field: "service" },
+  { match: /job_?id|job_?number|order_?id|order_?number|ticket|reference|^id$|call_?id/i, field: "id" },
+  { match: /customer|member|caller|account|party|client/i, field: "customer" },
+  { match: /phone|tel|mobile/i, field: "phone" },
+  { match: /vehicle|unit|car|truck|year|make|model|vin|plate/i, field: "vehicle" },
+  { match: /pickup|origin|source|from_?address|location|street/i, field: "pickup" },
+  { match: /dropoff|destination|dest|to_?address/i, field: "dropoff" },
+  { match: /status|state|stage/i, field: "status" },
+  { match: /created|opened|date|time/i, field: "date" },
+  { match: /note|comment|description|details|memo/i, field: "note" },
+];
+const fieldForJsonKey = (k: string): string => {
+  for (const { match, field } of JSON_FIELD_MAP) if (match.test(k)) return field;
+  return "";
+};
+const scalar = (v: unknown): string => (typeof v === "string" ? v : typeof v === "number" ? String(v) : v == null ? "" : JSON.stringify(v));
+function objToRawJob(o: Record<string, unknown>): RawJob | null {
+  const rec: RawJob = {};
+  for (const [k, v] of Object.entries(o)) {
+    const field = fieldForJsonKey(k.toLowerCase());
+    const s = scalar(v).trim();
+    if (!field || !s) continue;
+    rec[field] = rec[field] ? `${rec[field]} ${s}` : s;
+  }
+  return Object.keys(rec).length ? rec : null;
+}
+/** Recursively harvest job-ish objects from an arbitrary JSON payload. */
+export function parseJsonJobs(payload: string): RawJob[] {
+  let data: unknown;
+  try { data = JSON.parse(payload); } catch { return []; }
+  const out: RawJob[] = [];
+  const walk = (node: unknown) => {
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        if (item && typeof item === "object" && !Array.isArray(item)) {
+          const rec = objToRawJob(item as Record<string, unknown>);
+          if (rec) out.push(rec);
+          else walk(item);
+        } else walk(item);
+      }
+    } else if (node && typeof node === "object") {
+      for (const v of Object.values(node as Record<string, unknown>)) walk(v);
+    }
+  };
+  walk(data);
+  return out;
+}
+
+/* -------------------------------- normalization -------------------------------- */
+
+type NormalizedJob = {
+  towbookJobId: string;
+  customer: string;
+  phone: string;
+  vehicle: string;
+  pickup: string;
+  dropoff: string;
+  status: JobStatus;
+  towbookStatus: string;
+  serviceType: ServiceType;
+  createdAt: string;
+  note: string;
+  raw: Record<string, unknown>;
+};
+export function normalizeRawJob(rec: RawJob, sourceUrl: string): NormalizedJob | null {
+  const towbookJobId = (rec.id || "").trim();
+  if (!towbookJobId) return null;
+  const towbookStatus = (rec.status || "").trim() || "unknown";
+  const status = mapTowbookStatus(towbookStatus);
+  if (!status) return null; // unmapped → skip; caller records it as failed w/ diagnostics
+  const pickup = (rec.pickup || "").trim();
+  const dateTxt = (rec.date || "").trim();
+  const parsed = dateTxt ? Date.parse(dateTxt) : NaN;
+  return {
+    towbookJobId,
+    customer: (rec.customer || "").trim() || `Towbook job ${towbookJobId}`,
+    phone: (rec.phone || "").trim(),
+    vehicle: (rec.vehicle || "").trim(),
+    pickup,
+    dropoff: (rec.dropoff || "").trim(),
+    status,
+    towbookStatus,
+    serviceType: mapTowbookService(rec.service || ""),
+    createdAt: Number.isNaN(parsed) ? new Date().toISOString() : new Date(parsed).toISOString(),
+    note: (rec.note || "").trim(),
+    raw: { sourceUrl, ...rec },
+  };
+}
+
+/* ------------------------------ self-discovering fetch ------------------------------ */
+
+async function discoverJobPages(cookieJar: string, baseUrl: string): Promise<{ diagnostics: TowbookSyncDiag[]; pages: { url: string; body: string; contentType: string | null }[]; sessionExpired: boolean }> {
+  const diagnostics: TowbookSyncDiag[] = [];
+  const pages: { url: string; body: string; contentType: string | null }[] = [];
+  let sessionExpired = false;
+  const origin = new URL(baseUrl).origin;
+  for (const path of TOWBOOK_JOB_PATHS) {
+    if (sessionExpired) break; // don't hammer a dead session
+    const url = origin + path;
+    try {
+      const res = await fetch(url, { headers: towbookBrowserHeaders(cookieJar), redirect: "manual", signal: AbortSignal.timeout(12000) });
+      const text = await res.text();
+      const ct = res.headers.get("content-type");
+      diagnostics.push({ url, status: res.status, contentType: ct, hint: pageHint(text, ct) });
+      if (res.status >= 300 && res.status < 400) {
+        const loc = res.headers.get("location");
+        if (loc) {
+          const target = new URL(loc, origin);
+          if (target.origin === origin) {
+            const r2 = await fetch(target.toString(), { headers: towbookBrowserHeaders(cookieJar), redirect: "manual", signal: AbortSignal.timeout(12000) });
+            const t2 = await r2.text();
+            const ct2 = r2.headers.get("content-type");
+            diagnostics.push({ url: target.toString(), status: r2.status, contentType: ct2, hint: pageHint(t2, ct2) });
+            if (isLoginPage(t2) || isLoginRedirect(r2.headers.get("location"))) { sessionExpired = true; break; }
+            if (r2.status === 200) pages.push({ url: target.toString(), body: t2, contentType: ct2 });
+          }
+        }
+      } else if (res.status === 200) {
+        if (isLoginPage(text)) { sessionExpired = true; break; }
+        pages.push({ url, body: text, contentType: ct });
+      }
+    } catch (err) {
+      diagnostics.push({ url, status: null, contentType: null, hint: String(err).slice(0, 80) });
+    }
+  }
+  return { diagnostics, pages, sessionExpired };
+}
+
+/* ----------------------------------- upsert ----------------------------------- */
+
+async function resolveOrgActor(orgId: string): Promise<{ id: string; role: AuthUser["role"] } | null> {
+  const rows = await sql()`SELECT user_id, role FROM organization_memberships WHERE org_id=${orgId} ORDER BY (role='owner') DESC, role LIMIT 1`;
+  if (!rows.length) return null;
+  return { id: String(rows[0].user_id), role: String(rows[0].role) as AuthUser["role"] };
+}
+
+async function upsertPulledJobs(
+  orgId: string,
+  actor: { id: string; role: AuthUser["role"] },
+  jobs: NormalizedJob[],
+  trigger: string,
+): Promise<{ added: number; updated: number; failed: number }> {
+  const q = sql();
+  const existingRows = await q`SELECT id, status, customer_name, phone, pickup, dropoff, towbook_status FROM dispatch_jobs WHERE org_id=${orgId} AND towbook_job_id IS NOT NULL`;
+  const existing = new Map(existingRows.map((r) => [String(r.towbook_job_id), r as Record<string, unknown>]));
+  let added = 0, updated = 0, failed = 0;
+  for (const job of jobs) {
+    const cur = existing.get(job.towbookJobId);
+    try {
+      if (!cur) {
+        const slug = job.towbookJobId.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 60);
+        const jobId = slug ? `tb-${slug}` : `tb-${Math.random().toString(36).slice(2, 10)}`;
+        await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, customer_phone, vehicle_desc, pickup, dropoff, towbook_status, raw_json)
+          VALUES(${jobId}, ${orgId}, ${job.customer}, ${job.phone || ""}, 0, 0, ${job.pickup || "Unknown"}, ${job.serviceType}, ${job.status}, ${job.createdAt}, ${job.note}, ${job.towbookJobId}, ${job.phone || ""}, ${job.vehicle}, ${job.pickup}, ${job.dropoff}, ${job.towbookStatus}, ${JSON.stringify(job.raw)}::jsonb)`;
+        await q`INSERT INTO status_events(id, org_id, job_id, from_status, to_status, actor_user_id, actor_role, note)
+          SELECT gen_random_uuid()::text, ${orgId}, ${jobId}, 'import', ${job.status}, ${actor.id}, ${actor.role}, ${`imported from Towbook (${trigger})`}`;
+        await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
+          SELECT gen_random_uuid()::text, ${orgId}, ${actor.id}, ${actor.role}, 'towbook_import', 'job', ${jobId}, ${JSON.stringify({ towbookJobId: job.towbookJobId, towbookStatus: job.towbookStatus, status: job.status, source: job.raw.sourceUrl })}::jsonb, ${trigger}`;
+        existing.set(job.towbookJobId, { id: jobId, status: job.status, customer_name: job.customer, phone: job.phone, pickup: job.pickup, dropoff: job.dropoff, towbook_status: job.towbookStatus });
+        added++;
+      } else {
+        const statusChanged = String(cur.status) !== job.status;
+        const fieldsChanged =
+          String(cur.customer_name ?? "") !== job.customer ||
+          String(cur.phone ?? "") !== (job.phone || "") ||
+          String(cur.pickup ?? "") !== job.pickup ||
+          String(cur.dropoff ?? "") !== job.dropoff ||
+          String(cur.towbook_status ?? "") !== job.towbookStatus;
+        if (!statusChanged && !fieldsChanged) continue; // already current — no churn
+        await q`UPDATE dispatch_jobs SET customer_name=${job.customer}, phone=${job.phone || ""}, area=${job.pickup || "Unknown"}, service_type=${job.serviceType}, status=${job.status}, note=${job.note}, towbook_status=${job.towbookStatus}, customer_phone=${job.phone || ""}, vehicle_desc=${job.vehicle}, pickup=${job.pickup}, dropoff=${job.dropoff}, raw_json=${JSON.stringify(job.raw)}::jsonb,
+          completed_at=CASE WHEN ${job.status}='completed' AND completed_at IS NULL THEN NOW() ELSE completed_at END,
+          assigned_at=CASE WHEN ${job.status}='offered' AND assigned_at IS NULL THEN NOW() ELSE assigned_at END
+          WHERE id=${String(cur.id)} AND org_id=${orgId}`;
+        if (statusChanged) {
+          await q`INSERT INTO status_events(id, org_id, job_id, from_status, to_status, actor_user_id, actor_role, note)
+            SELECT gen_random_uuid()::text, ${orgId}, ${String(cur.id)}, ${String(cur.status)}, ${job.status}, ${actor.id}, ${actor.role}, ${`status change from Towbook (${trigger})`}`;
+          await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
+            SELECT gen_random_uuid()::text, ${orgId}, ${actor.id}, ${actor.role}, 'towbook_status_change', 'job', ${String(cur.id)}, ${JSON.stringify({ towbookJobId: job.towbookJobId, from: String(cur.status), to: job.status, towbookStatus: job.towbookStatus })}::jsonb, ${trigger}`;
+        }
+        existing.set(job.towbookJobId, { ...cur, status: job.status, customer_name: job.customer, phone: job.phone, pickup: job.pickup, dropoff: job.dropoff, towbook_status: job.towbookStatus });
+        updated++;
+      }
+    } catch {
+      failed++;
+    }
+  }
+  return { added, updated, failed };
+}
+
+/* ----------------------------------- core sync ----------------------------------- */
+
+async function doSyncForOrg(orgId: string, trigger: string, actorHint?: { id: string; role: AuthUser["role"] }): Promise<TowbookSyncResult> {
+  const q = sql();
+  const sess = await q`SELECT encrypted_session, status FROM towbook_sessions WHERE org_id=${orgId}`;
+  if (!sess.length || String(sess[0].status) !== "connected" || !String(sess[0].encrypted_session || "").length) {
+    return syncResult("not_connected", "Towbook is not connected for this organization — connect it in Settings first.");
+  }
+  let cookies: string, baseUrl: string;
+  try {
+    const plain = await decryptSession(String(sess[0].encrypted_session));
+    const parsed = JSON.parse(plain) as { cookies?: string; baseUrl?: string };
+    cookies = parsed.cookies || "";
+    baseUrl = parsed.baseUrl || TOWBOOK_ORIGIN;
+  } catch {
+    return syncResult("session_unavailable", "The stored Towbook session cannot be decrypted on this host — reconnect Towbook in Settings.");
+  }
+  const { diagnostics, pages, sessionExpired } = await discoverJobPages(cookies, baseUrl);
+  if (sessionExpired) {
+    await q`UPDATE towbook_sessions SET last_sync_at=NOW() WHERE org_id=${orgId}`;
+    return syncResult("session_expired", "The Towbook session expired or was rejected — reconnect Towbook in Settings.", { diagnostics });
+  }
+  if (!pages.length) {
+    await q`UPDATE towbook_sessions SET last_sync_at=NOW() WHERE org_id=${orgId}`;
+    return syncResult("no_jobs", "Synced, but no job list was found on the discovered pages. The diagnostics below show what each URL returned.", { diagnostics });
+  }
+  const rawJobs: RawJob[] = [];
+  for (const p of pages) {
+    const looksJson = (p.contentType && p.contentType.includes("json")) || /^\s*[\[{]/.test(p.body);
+    rawJobs.push(...(looksJson ? parseJsonJobs(p.body) : parseTables(p.body)));
+  }
+  const byId = new Map<string, RawJob>();
+  for (const r of rawJobs) {
+    const rid = (r.id || "").trim();
+    if (rid && !byId.has(rid)) byId.set(rid, r);
+  }
+  const normalized: NormalizedJob[] = [];
+  const skipped: Array<{ id: string; reason: string }> = [];
+  for (const [rid, rec] of byId) {
+    const n = normalizeRawJob(rec, "");
+    if (!n) {
+      skipped.push({ id: rid, reason: (rec.status || "").trim() ? `unmapped status "${(rec.status || "").trim()}"` : "no id/status" });
+      continue;
+    }
+    normalized.push(n);
+  }
+  const actor = actorHint ?? (await resolveOrgActor(orgId));
+  if (!actor) {
+    await q`UPDATE towbook_sessions SET last_sync_at=NOW() WHERE org_id=${orgId}`;
+    return syncResult("error", "No organization member found to attribute the import to — add an owner to this organization.", { diagnostics });
+  }
+  const res = await upsertPulledJobs(orgId, actor, normalized, trigger);
+  await q`UPDATE towbook_sessions SET last_sync_at=NOW() WHERE org_id=${orgId}`;
+  if (skipped.length) {
+    const sample = skipped.slice(0, 5).map((s) => `${s.id} (${s.reason})`).join(", ");
+    diagnostics.push({ url: "<status-map>", status: null, contentType: null, hint: `skipped ${skipped.length} job(s): ${sample}${skipped.length > 5 ? " …" : ""} — extend the status map in src/data/server.ts (TOWBOOK_STATUS_TO_LIFECYCLE)` });
+  }
+  const failed = res.failed + skipped.length;
+  return {
+    ok: true,
+    code: "ok",
+    message: `Synced ${normalized.length} Towbook job(s): ${res.added} added, ${res.updated} updated, ${failed} failed.`,
+    added: res.added,
+    updated: res.updated,
+    failed,
+    diagnostics,
+  };
+}
+
+/** Per-org in-flight guard: concurrent triggers (manual button, pull-on-read,
+ *  interval) share one sync per org instead of overlapping. */
+const syncInFlight = new Map<string, Promise<TowbookSyncResult>>();
+function syncForOrg(orgId: string, trigger: string, actor?: { id: string; role: AuthUser["role"] }): Promise<TowbookSyncResult> {
+  const running = syncInFlight.get(orgId);
+  if (running) return running;
+  const p = doSyncForOrg(orgId, trigger, actor).finally(() => { syncInFlight.delete(orgId); });
+  syncInFlight.set(orgId, p);
+  return p;
+}
+
+/** Pull-on-read trigger: fire-and-forget refresh when the org's session is connected
+ *  and the last sync is older than ~60s. Never throws — the read must never fail. */
+async function maybeAutoSync(orgId: string): Promise<void> {
+  try {
+    if (!configured()) return;
+    const rows = await sql()`SELECT last_sync_at FROM towbook_sessions WHERE org_id=${orgId} AND status='connected' AND encrypted_session <> ''`;
+    if (!rows.length) return;
+    const last = rows[0].last_sync_at ? new Date(String(rows[0].last_sync_at)).getTime() : 0;
+    if (Date.now() - last > 60_000) void syncForOrg(orgId, "sync:pull-on-read");
+  } catch { /* best-effort — never fail the read */ }
+}
+
+/** Background interval (lives inside the served bundle's process, which is the same
+ *  process that hosts the port-3000 server — serve.ts only wraps the built handler).
+ *  Every 60s, sync every connected org whose last sync is stale; the per-org in-flight
+ *  guard prevents overlap. */
+let backgroundSyncStarted = false;
+function startBackgroundSync() {
+  if (backgroundSyncStarted) return;
+  backgroundSyncStarted = true;
+  const timer = globalThis.setInterval(() => {
+    void (async () => {
+      try {
+        if (!configured()) return;
+        const rows = await sql()`SELECT org_id FROM towbook_sessions WHERE status='connected' AND encrypted_session <> '' AND (last_sync_at IS NULL OR last_sync_at < NOW() - INTERVAL '60 seconds')`;
+        for (const r of rows) void syncForOrg(String(r.org_id), "sync:interval");
+      } catch { /* best-effort */ }
+    })();
+  }, 60_000);
+  const t = timer as unknown as { unref?: () => void };
+  if (typeof t.unref === "function") t.unref();
+}
+
+export const towbookSyncNow = createServerFn({ method: "POST" }).handler(async () => {
+  if (!configured()) return syncResult("error", "Towbook sync requires database mode.");
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u) return syncResult("unauthorized", "Sign in required.");
+  if (!can(u, ["owner", "admin"])) return syncResult("unauthorized", "Only owners and admins can sync Towbook.");
+  await prepare();
+  return syncForOrg(u.orgId, "sync:manual", { id: u.id, role: u.role });
+});

@@ -21,6 +21,21 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
   [4, async (q) => {
     await q`CREATE TABLE IF NOT EXISTS towbook_sessions (org_id TEXT PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE, encrypted_session TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'connected', last_sync_at TIMESTAMPTZ, error TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
   }],
+  [5, async (q) => {
+    // Towbook job-puller columns: raw Towbook identity + normalized customer/vehicle/
+    // route fields, the raw Towbook status string, and the full raw record (JSONB)
+    // for diagnostics/reconciliation. Idempotent — extends only what's missing.
+    await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS towbook_job_id TEXT`;
+    await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS customer_phone TEXT`;
+    await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS vehicle_desc TEXT`;
+    await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS pickup TEXT`;
+    await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS dropoff TEXT`;
+    await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS towbook_status TEXT`;
+    await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS raw_json JSONB`;
+    // One Towbook job per org — the puller dedupes on this; manual jobs (no
+    // towbook_job_id) are unaffected. Partial index: only rows with a Towbook id.
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS dispatch_jobs_org_towbook_job_idx ON dispatch_jobs(org_id, towbook_job_id) WHERE towbook_job_id IS NOT NULL`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();
