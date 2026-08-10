@@ -17,7 +17,29 @@ const fail = (code: CommandErrorCode, message: string, field?: string): CommandR
 function invalid(input: unknown, schema: z.ZodTypeAny): CommandResult|null { const p=schema.safeParse(input); if(p.success)return null; const i=p.error.issues[0]; return fail("validation",i.message,i.path[0] ? String(i.path[0]) : undefined); }
 const unavailable = (message="Database command unavailable.") => fail("database_unavailable",message);
 
-async function prepare() { await (await import("./auth-server")).ensureAuthSchema(); await ensureSchema(); }
+let schemaInit: Promise<void> | undefined;
+/** Initialize auth + dispatch schemas once per server process. Startup invokes this;
+ * command handlers retain the awaited promise as a first-request safety net. */
+function prepare() {
+  if (!configured()) return Promise.resolve();
+  schemaInit ??= (async () => {
+    const { ensureAuthSchema } = await import("./auth-server");
+    await ensureAuthSchema();
+    await ensureSchema();
+  })();
+  return schemaInit;
+}
+
+// The production handler is imported when the server boots. Running initialization
+// here fixes the old request-only wiring while the handler-level awaits remain a
+// fallback for runtimes that load modules lazily.
+if (configured()) {
+  await prepare().catch((error) => {
+    console.error("[dispatch] database schema initialization deferred", error);
+    schemaInit = undefined;
+  });
+}
+
 function mapContractor(r: Record<string,unknown>): Contractor { return {id:String(r.id),name:String(r.name),status:r.status as ContractorStatus,location:{lat:Number(r.lat),lng:Number(r.lng),area:String(r.area)},vehicleTypes:(r.vehicle_types as string[])||[],rating:Number(r.rating),completedJobCount:Number(r.completed_job_count),responseTimeHistoryMinutes:(r.response_time_history_minutes as number[])||[]}; }
 function mapJob(r: Record<string,unknown>): Job { return {id:String(r.id),customerName:String(r.customer_name),phone:String(r.phone),location:{lat:Number(r.lat),lng:Number(r.lng),area:String(r.area)},serviceType:r.service_type as Job["serviceType"],status:r.status as JobStatus,createdAt:new Date(String(r.created_at)).toISOString(),assignedAt:r.assigned_at?new Date(String(r.assigned_at)).toISOString():undefined,arrivedAt:r.arrived_at?new Date(String(r.arrived_at)).toISOString():undefined,completedAt:r.completed_at?new Date(String(r.completed_at)).toISOString():undefined,assignedContractorId:r.assigned_contractor_id?String(r.assigned_contractor_id):undefined,note:String(r.note||"")}; }
 async function dataFor(u: AuthUser): Promise<DispatchData> { const q=sql(); const cs=await q`SELECT id,name,status,lat,lng,area,vehicle_types,rating,completed_job_count,response_time_history_minutes FROM dispatch_contractors WHERE org_id=${u.orgId} ${u.role==="contractor" ? q`AND id=${u.contractorId||""}` : q``}`; const js=await q`SELECT id,customer_name,phone,lat,lng,area,service_type,status,created_at,assigned_at,arrived_at,completed_at,assigned_contractor_id,note FROM dispatch_jobs WHERE org_id=${u.orgId} ${u.role==="contractor" ? q`AND assigned_contractor_id=${u.contractorId||""}` : q``} ORDER BY created_at DESC`; return {contractors:cs.map(mapContractor),jobs:js.map(mapJob)}; }

@@ -1,5 +1,6 @@
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { sql } from "~/db";
+import { ensureSchema } from "./migrations";
 import { createServerOnlyFn } from "@tanstack/react-start";
 export type Role = "owner" | "admin" | "dispatcher" | "contractor";
 export type AuthUser = { id: string; name: string; email: string; role: Role; orgId: string; contractorId?: string };
@@ -25,10 +26,15 @@ export async function ensureAuthSchema() {
   await q`CREATE TABLE IF NOT EXISTS organization_memberships (org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK (role IN ('owner','admin','dispatcher','contractor')), contractor_id TEXT, PRIMARY KEY(org_id,user_id))`;
   await q`CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
 }
+
+async function prepareAuthAndDispatchSchema() {
+  await ensureAuthSchema();
+  await ensureSchema();
+}
 const id = () => randomBytes(18).toString("hex");
 export async function currentUser(): Promise<AuthUser | null> {
   if (!configured()) return null;
-  await ensureAuthSchema(); const token = await cookieValue(); if (!token) return null;
+  await prepareAuthAndDispatchSchema(); const token = await cookieValue(); if (!token) return null;
   const q = sql(); const rows = await q`SELECT u.id,u.name,u.email,m.org_id,m.role,m.contractor_id FROM sessions s JOIN users u ON u.id=s.user_id JOIN organization_memberships m ON m.user_id=u.id WHERE s.id=${token} AND s.expires_at > NOW()`;
   if (!rows.length) return null; const r = rows[0] as Record<string, unknown>; return { id:String(r.id), name:String(r.name), email:String(r.email), role:r.role as Role, orgId:String(r.org_id), contractorId:r.contractor_id ? String(r.contractor_id) : undefined };
 }
