@@ -1,0 +1,99 @@
+@import "@fontsource-variable/inter";
+@import "tailwindcss";
+
+@theme {
+  /* ---- Brand orange: primary. ---- */
+  --color-brand-50: #fff4ea; /* tint fills, icon chips, active-tab bg */
+  --color-brand-100: #ffe4cc; /* badge/alert tint bg */
+  --color-brand-200: #fecfa3; /* disabled primary bg */
+  --color-brand-300: #fdb268; /* disabled text, soft accents */
+  --color-brand-400: #f9952f; /* gradient light end, hover on dark */
+  --color-brand-500: #f27801; /* ★ PRIMARY — CTAs, active states, highlights */
+  --color-brand-600: #d96400; /* hover on brand-500 */
+  --color-brand-700: #b15000; /* pressed, text-on-tint */
+  --color-brand-800: #8c3f00; /* deep accents */
+  --color-brand-900: #713400; /* logo alt, dark headers */
+  --color-brand-950: #3b1a00;
+
+  /* ---- Ink: black scale. ---- */
+  --color-ink-50: #f6f6f7; /* inset fills (replaces slate-50) */
+  --color-ink-100: #e9e9ec; /* card borders (replaces slate-200) */
+  --color-ink-200: #d5d5da; /* strong borders, disabled fills */
+  --color-ink-300: #b3b3bb; /* placeholder, inactive dots */
+  --color-ink-400: #8e8e97; /* captions, secondary meta */
+  --color-ink-500: #6e6e77; /* secondary body text */
+  --color-ink-600: #55555e; /* emphasized secondary */
+  --color-ink-700: #41414a; /* card titles on white */
+  --color-ink-800: #2e2e35;
+  --color-ink-900: #1c1c21; /* body text */
+  --color-ink-950: #0e0e11; /* nav/header surface, dark mode base */
+
+  /* ---- Surfaces ---- */
+  --color-canvas: #f5f6f8; /* page bg */
+  --color-surface: #ffffff; /* cards, popovers, inputs */
+  --color-hover: #fafbfc; /* row/card hover fill */
+
+  /* ---- Yellow accent: SPARINGLY (offered, medium confidence, AI panel, demo chips) ---- */
+  --color-accent-50: #fffbeb;
+  --color-accent-100: #fef3c7;
+  --color-accent-200: #fde68a;
+  --color-accent-300: #fcd34d;
+  --color-accent-400: #fbbf24;
+  --color-accent-500: #f59e0b;
+  --color-accent-600: #d97706;
+  --color-accent-700: #b45309;
+  --color-accent-800: #92400e;
+
+  /* ---- Semantic ---- */
+  --color-success-50: #ecfdf5;
+  --color-success-100: #d1fae5;
+  --color-success-500: #10b981;
+  --color-success-600: #059669;
+  --color-success-700: #047857;
+  --color-danger-50: #fef2f2;
+  --color-danger-100: #fee2e2;
+  --color-danger-500: #ef4444;
+  --color-danger-600: #dc2626;
+  --color-danger-700: #b91c1c;
+  --color-info-50: #f0f9ff;
+  --color-info-100: #e0f2fe;
+  --color-info-500: #0ea5e9;
+  --color-info-600: #0284c7;
+  --color-info-700: #0369a1;
+
+  --font-sans: "Inter Variable", "Inter", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+
+  /* Barely-there card elevation */
+  --shadow-card: 0 1px 2px rgba(14, 14, 17, 0.04);
+  --shadow-card-hover: 0 2px 8px rgba(14, 14, 17, 0.06);
+}
+
+@layer base {
+  html,
+  body {
+    @apply bg-canvas text-ink-900 antialiased;
+  }
+  * {
+    @apply border-ink-100;
+  }
+  ::selection {
+    background: var(--color-brand-500);
+    color: #fff;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-brand-500);
+    outline-offset: 2px;
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
