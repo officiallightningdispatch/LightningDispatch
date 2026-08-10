@@ -1,20 +1,19 @@
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { sql } from "~/db";
-import { createServerOnlyFn } from "@tanstack/react-start";
 export type Role = "owner" | "admin" | "dispatcher" | "contractor";
 export type AuthUser = { id: string; name: string; email: string; role: Role; orgId: string; contractorId?: string };
 const cookieName = "lightning_session";
-const cookieValue = createServerOnlyFn(async () => {
+const cookieValue = async () => {
   const { getCookie } = await import("@tanstack/start-server-core");
   return getCookie(cookieName);
-});
-const writeCookie = createServerOnlyFn(async (value:string,maxAge:number) => {
+};
+const writeCookie = async (value:string,maxAge:number) => {
   const { setCookie } = await import("@tanstack/start-server-core");
   setCookie(cookieName, value, {
     path: "/", httpOnly: true, sameSite: "lax", maxAge,
     ...(process.env.NODE_ENV === "production" ? { secure: true } : {}),
   });
-});
+};
 const configured=()=>Boolean(process.env.DATABASE_URL);
 const hash=(password:string,salt=randomBytes(16).toString("hex"))=>`${salt}:${scryptSync(password,salt,64).toString("hex")}`;
 const verify=(password:string,stored:string)=>{const [salt,hex]=stored.split(":");if(!salt||!hex)return false;try{return timingSafeEqual(scryptSync(password,salt,64),Buffer.from(hex,"hex"));}catch{return false;}};
