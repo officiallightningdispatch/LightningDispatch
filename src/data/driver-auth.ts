@@ -535,3 +535,90 @@ export const driverJobAction = createServerFn({ method: "POST" }).validator(pass
     return { ok: false as const, code: "towbook_failed", message: "Unable to update the job. Try again." };
   }
 });
+
+/* ------------------------------- earnings + profile ------------------------------- */
+export type DriverEarningsTip = {
+  jobId: string;
+  callNumber: string | null;
+  customerName: string | null;
+  amountCents: number;
+  currency: string;
+  status: string;
+};
+export type DriverEarningsResult =
+  | { ok: true; profile: { name: string; email: string; towbookDriverId: string }; completed: DriverCall[]; tips: DriverEarningsTip[]; totals: { completedJobs: number; tipsTotalCents: number; tipCount: number } }
+  | { ok: false; expired: boolean; message: string };
+/** Driver earnings: completed calls (from the Towbook queue) + tips attributed
+ *  to this driver (job_completions.tip->>'driver_towbook_id'). Contractor-only.
+ *  Tips are accounted separately from card payments — per the owner's payments
+ *  spec, tips reconcile to the specific driver. */
+export const driverEarnings = createServerFn({ method: "GET" }).handler(async (): Promise<DriverEarningsResult> => {
+  if (!configured()) return { ok: false as const, expired: false, message: "Driver earnings require database mode." };
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u || u.role !== "contractor") return { ok: false as const, expired: false, message: "Sign in as a driver first." };
+  try {
+    await ensure();
+    const q = await db();
+    const rows = await q`SELECT name, email, towbook_driver_id FROM users WHERE id=${u.id}`;
+    const driverId = rows.length ? String(rows[0].towbook_driver_id ?? "") : "";
+    if (!driverId) return { ok: false as const, expired: true, message: "Your account is not linked to a Towbook driver yet — reconnect." };
+    const queue = await fetchDriverQueue({ orgId: u.orgId, towbookDriverId: driverId });
+    if (!queue.ok) return queue;
+    const completed = queue.calls.filter((c) => c.statusId === 5 || c.statusId === 6);
+    const tipRows = await q`
+      SELECT jc.job_id, jc.tip, d.towbook_job_id, d.customer_name
+      FROM job_completions jc LEFT JOIN dispatch_jobs d ON d.id = jc.job_id AND d.org_id = jc.org_id
+      WHERE jc.org_id = ${u.orgId} AND jc.tip IS NOT NULL AND jc.tip->>'driver_towbook_id' = ${driverId}
+      ORDER BY jc.updated_at DESC`;
+    const tips: DriverEarningsTip[] = [];
+    for (const r of tipRows as Record<string, unknown>[]) {
+      const tip = typeof r.tip === "object" && r.tip != null ? (r.tip as Record<string, unknown>) : {};
+      const amountCents = Number(tip.amount_cents ?? 0);
+      if (!Number.isFinite(amountCents) || amountCents <= 0) continue;
+      tips.push({
+        jobId: String(r.job_id ?? ""),
+        callNumber: r.towbook_job_id != null ? String(r.towbook_job_id) : null,
+        customerName: r.customer_name != null ? String(r.customer_name) : null,
+        amountCents,
+        currency: String(tip.currency ?? "USD"),
+        status: String(tip.status ?? "unknown"),
+      });
+    }
+    const tipsTotalCents = tips.reduce((s, t) => s + t.amountCents, 0);
+    return {
+      ok: true as const,
+      profile: { name: String(rows[0].name ?? ""), email: String(rows[0].email ?? ""), towbookDriverId: driverId },
+      completed,
+      tips,
+      totals: { completedJobs: completed.length, tipsTotalCents, tipCount: tips.length },
+    };
+  } catch {
+    return { ok: false as const, expired: false, message: "Unable to load your earnings. Try again." };
+  }
+});
+export type DriverProfileResult =
+  | { ok: true; name: string; email: string; towbookDriverId: string }
+  | { ok: false; message: string };
+/** Driver profile: the LD user row behind the contractor session (no Towbook
+ *  call — cheap for the profile tab). */
+export const driverProfile = createServerFn({ method: "GET" }).handler(async (): Promise<DriverProfileResult> => {
+  if (!configured()) return { ok: false as const, message: "Driver profile requires database mode." };
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u || u.role !== "contractor") return { ok: false as const, message: "Sign in as a driver first." };
+  try {
+    await ensure();
+    const q = await db();
+    const rows = await q`SELECT name, email, towbook_driver_id FROM users WHERE id=${u.id}`;
+    if (!rows.length) return { ok: false as const, message: "Driver account not found." };
+    return {
+      ok: true as const,
+      name: String(rows[0].name ?? ""),
+      email: String(rows[0].email ?? ""),
+      towbookDriverId: String(rows[0].towbook_driver_id ?? ""),
+    };
+  } catch {
+    return { ok: false as const, message: "Unable to load your profile. Try again." };
+  }
+});
