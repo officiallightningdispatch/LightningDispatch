@@ -179,7 +179,7 @@ await setup();
   let threw = false;
   try { await loadB2Config(); } catch (e) { threw = String(e).includes("Backblaze B2 is not configured") && String(e).includes("B2_KEY_ID"); }
   check("missing B2 creds → clear structured error", threw);
-  Object.assign(process.env, saved);
+  process.env.B2_KEY_ID = saved.k; process.env.B2_APPLICATION_KEY = saved.a; process.env.B2_BUCKET_NAME = saved.b;
 }
 
 /* ============ 3) pre-arrival uploads + gate + auto-arrive (ORG) ============ */
@@ -217,7 +217,7 @@ await setup();
   await setVehicleMatchCore(user, { jobId: c.call, confirmed: true });
 
   // Auto-arrive fires once the gate passes (photos_required=true for ORG).
-  const geoFetch = makeFetch({ callId: c.call });
+  const geoFetch = makeFetch({ callId: c.call, getStatusId: 4 });
   const out = await evaluateGeofence({ orgId: ORG, userId: c.userId, towbookDriverId: c.tbDriver, lat: PICKUP.lat, lng: PICKUP.lng, fetchImpl: geoFetch.fetchImpl });
   check("gate passed → geofence auto-arrives", out.action === "arrived" && out.towbookOk && out.verified, JSON.stringify(out));
   const st = await q`SELECT status FROM dispatch_jobs WHERE id=${c.job}`;
@@ -227,7 +227,7 @@ await setup();
 /* ================ 4) phase gating + soft/final/complete (ORG2) ================ */
 {
   const c = CONF[ORG2];
-  const { fetchImpl } = makeFetch({ callId: c.call });
+  const { fetchImpl, calls: cc } = makeFetch({ callId: c.call });
   const user = userFor(ORG2);
   // Service photos before pre-arrival → locked.
   const early = await uploadJobPhotoCore(user, { jobId: c.call, phase: "service", side: "front", dataUrl: photoDataUrl("F") }, { fetchImpl });
@@ -261,8 +261,9 @@ await setup();
   await uploadJobPhotoCore(user, { jobId: c.call, phase: "final", side: "rear", dataUrl: photoDataUrl("S") }, { fetchImpl });
 
   // THE completion: 12 photos → Towbook PO → PUT 5 verified → platform done.
-  const { fetchImpl: cf, calls: cc } = makeFetch({ callId: c.call, getStatusId: 5 });
-  const done = await completeJobCore(user, { jobId: c.call }, { fetchImpl: cf });
+  // Same mock instance as the uploads so the object store holds the bytes; its
+  // defaults (PUT body status 5, GET verify getStatusId 5) match completion.
+  const done = await completeJobCore(user, { jobId: c.call }, { fetchImpl });
   check("completion ok", done.ok === true && done.photosUploaded === 12 && done.towbookCompleted === true && done.changed === true, JSON.stringify(done));
   const posts = cc.filter((x) => x.method === "POST" && x.url.includes(`/api/calls/${c.call}/photos`));
   check("12 Towbook photo POSTs, verified 201", posts.length === 12 && posts.every((x) => String(x.body).includes('name="file"')), JSON.stringify(posts.map((x) => x.url)));
@@ -313,7 +314,7 @@ await setup();
   delete process.env.B2_KEY_ID; delete process.env.B2_APPLICATION_KEY; delete process.env.B2_BUCKET_NAME;
   const noCreds = await uploadJobPhotoCore(user, { jobId: c.call, phase: "pre_arrival", side: "front", dataUrl: photoDataUrl("U") }, { fetchImpl });
   check("upload without B2 creds → b2_not_configured", noCreds.ok === false && noCreds.code === "b2_not_configured" && noCreds.message.includes("Backblaze B2 is not configured"), JSON.stringify(noCreds));
-  Object.assign(process.env, saved);
+  process.env.B2_KEY_ID = saved.k; process.env.B2_APPLICATION_KEY = saved.a; process.env.B2_BUCKET_NAME = saved.b;
 
   // Full 12-photo job, then creds removed at completion → fail loud + escalate.
   for (const phase of PHASES) for (let i = 0; i < SIDES.length; i++) {
@@ -322,7 +323,7 @@ await setup();
   await setVehicleMatchCore(user, { jobId: c.call, confirmed: true });
   delete process.env.B2_KEY_ID; delete process.env.B2_APPLICATION_KEY; delete process.env.B2_BUCKET_NAME;
   const r = await completeJobCore(user, { jobId: c.call }, { fetchImpl });
-  Object.assign(process.env, saved);
+  process.env.B2_KEY_ID = saved.k; process.env.B2_APPLICATION_KEY = saved.a; process.env.B2_BUCKET_NAME = saved.b;
   check("completion without B2 → photo_upload_failed, no silent success", r.ok === false && r.code === "photo_upload_failed" && r.message.includes("Photo storage isn't connected"), JSON.stringify(r));
   const j = await q`SELECT status FROM dispatch_jobs WHERE id=${c.job}`;
   check("job stays arrived when B2 missing", String(j[0].status) === "arrived");

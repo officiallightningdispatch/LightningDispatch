@@ -284,6 +284,12 @@ export async function uploadJobPhotoCore(user: PhotoUser, data: unknown, opts: {
       ON CONFLICT (org_id, job_id, phase, side) DO UPDATE
         SET storage_key=EXCLUDED.storage_key, uploaded_by_user_id=EXCLUDED.uploaded_by_user_id,
             match_confirmed=FALSE, uploaded_at=NOW()`;
+    // The vehicle-match confirmation applies to the whole pre-arrival SET — any
+    // retake invalidates it for every side (the new photo set needs re-confirming).
+    if (v.data.phase === "pre_arrival") {
+      await q`UPDATE job_photos SET match_confirmed=FALSE
+        WHERE org_id=${user.orgId} AND job_id=${job.id} AND phase='pre_arrival'`;
+    }
     try {
       await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
         SELECT gen_random_uuid()::text, ${user.orgId}, ${user.id}, 'contractor', 'photo_uploaded', 'job', ${job.id},
