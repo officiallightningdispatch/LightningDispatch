@@ -85,10 +85,17 @@ const jsonResponse = (status, body) => ({
 });
 
 /** Mock Towbook fetch. Records every call; routes GET /api/callRequests/,
- *  GET /api/nearestDrivers, POST /api/callRequests/{id}/accept. Throws on any
- *  URL outside the documented surface — a stray call fails the test. */
-function makeFetch({ offers, drivers, acceptStatus = 200, acceptBody = null, acceptFails = 0, nearestDriversStatus = 200 }) {
+ *  GET /api/nearestDrivers, POST /api/callRequests/{id}/accept, plus the
+ *  post-accept verification surface: GET /api/calls/{id},
+ *  GET /api/calls?status=N and POST /api/calls/{id}/assignDrivers. Throws on
+ *  any URL outside the documented surface — a stray call fails the test.
+ *  The created call mirrors the accept body's driverId in assets[].driver.id
+ *  (so verification passes by default) unless `callDriverId` overrides it
+ *  (simulating the 2026-08-10 incident: accepted driver ≠ driver on the call). */
+function makeFetch({ offers, drivers, acceptStatus = 200, acceptBody = null, acceptFails = 0, nearestDriversStatus = 200, callDriverId = null, assignSucceeds = true, acceptResponseId = null, callsFailures = 0 }) {
   const calls = [];
+  let call = null; // the call created by the accept POST
+  let callsFailuresLeft = callsFailures;
   const fetchImpl = async (url, init = {}) => {
     const u = String(url);
     const method = init.method || "GET";
@@ -102,7 +109,36 @@ function makeFetch({ offers, drivers, acceptStatus = 200, acceptBody = null, acc
     if (u.includes("/api/callRequests/") && method === "POST") {
       if (acceptFails > 0) { acceptFails--; return jsonResponse(500, { error: "accept boom" }); }
       if (acceptStatus !== 200) return jsonResponse(acceptStatus, { error: "boom" });
-      return jsonResponse(200, acceptBody ?? { id: 279999999, callNumber: 25000, status: { id: 2 }, version: 1 });
+      const bodyId = acceptResponseId ?? (acceptBody && acceptBody.id != null ? acceptBody.id : 279999999);
+      const offerFor = offers.find((o) => String(o.callRequestId) === u.split("/api/callRequests/")[1].split("/")[0]);
+      call = {
+        id: bodyId,
+        callNumber: 25000,
+        status: { id: 2 },
+        version: 1,
+        purchaseOrderNumber: offerFor ? offerFor.purchaseOrderNumber : null,
+        assets: parsedBody && Number(parsedBody.driverId) > 0
+          ? [{ driver: { id: callDriverId ?? Number(parsedBody.driverId), name: callDriverId != null ? "Someone Else" : "Assigned" } }]
+          : [],
+      };
+      return jsonResponse(200, acceptBody ?? { id: bodyId, callNumber: 25000, status: { id: 2 }, version: 1 });
+    }
+    if (u.includes("/api/calls/") && u.endsWith("/assignDrivers") && method === "POST") {
+      if (!assignSucceeds) return jsonResponse(500, { error: "assign boom" });
+      if (call && parsedBody && Number(parsedBody.driverId) > 0) {
+        call.assets = [{ driver: { id: Number(parsedBody.driverId), name: "Assigned" } }];
+      }
+      return jsonResponse(200, { ok: true });
+    }
+    if (u.includes("/api/calls/")) {
+      if (callsFailuresLeft > 0) { callsFailuresLeft--; return jsonResponse(500, { error: "call list boom" }); }
+      const m = u.match(/\/api\/calls\/(\d+)$/);
+      if (m) return call && String(call.id) === m[1] ? jsonResponse(200, call) : jsonResponse(404, { error: "not found" });
+      const sm = u.match(/status=(\d+)/);
+      if (sm) {
+        const status = Number(sm[1]);
+        return jsonResponse(200, call && call.status.id === status ? [call] : []);
+      }
     }
     throw new Error(`mock fetch hit an unexpected URL: ${method} ${u}`);
   };
@@ -128,6 +164,7 @@ const makeDeps = (fetchImpl, router) => {
       resolveOrgActor: async () => ({ id: USER, role: "owner" }),
       fetchImpl,
       roadRouter: router ?? makeRouter(),
+      verifyRetryDelayMs: 0,
     },
     syncCalls,
   };
@@ -189,7 +226,10 @@ try {
   const noStatus = validateOfferShape({ ...offer(9003), status: undefined });
   check("validateOfferShape flags missing status", !noStatus.ok && noStatus.missing.includes("status"));
   check("validateOfferShape rejects non-objects", !validateOfferShape("junk").ok && !validateOfferShape(null).ok);
-  check("shapeKeyOf stable + distinct", shapeKeyOf(offer(9004)) === shapeKeyOf(offer(9004)) && shapeKeyOf(offer(9004)) !== shapeKeyOf({ ...offer(9004), accountName: "other" }));
+  // fixture determinism: offer() stamps expirationDateUtc from Date.now(), so
+  // two fresh calls can hash differently; build once and reuse.
+  const stableOffer = offer(9004);
+  check("shapeKeyOf stable + distinct", shapeKeyOf(stableOffer) === shapeKeyOf(stableOffer) && shapeKeyOf(stableOffer) !== shapeKeyOf({ ...stableOffer, accountName: "other" }));
 
   /* ============ 4) settings defaults (lazily created row) ============ */
   const s = await getOrgSettings(ORG);
@@ -361,7 +401,9 @@ try {
     check("no driver: sync still triggered after accept", syncCalls.length === 1 && syncCalls[0].trigger === "sync:auto-accept", JSON.stringify(syncCalls));
     const rows = await decisions();
     const nd = rows.find((x) => String(x.call_request_id) === "7012");
-    check("no driver: reason explains the escalation", nd && String(nd.reason).includes("no checked-in free driver with GPS") && nd.raw_response?.callNumber === 25000, String(nd?.reason));
+    check("no driver: reason explains the escalation (eligible-list wording)", nd && String(nd.reason).includes("no ELIGIBLE checked-in free driver with GPS"), String(nd?.reason));
+    check("no driver: accept body quotes the SLA ceiling ETA + awaiting-assignment notes", nd && p[0]?.body?.ETA === 45 && String(p[0]?.body?.notes).includes("awaiting driver assignment") && nd.eta_minutes === null, JSON.stringify({ eta: p[0]?.body?.ETA, notes: p[0]?.body?.notes, etaMinutes: nd?.eta_minutes }));
+    check("no driver: raw_response now captures the FULL offer + accept response", nd && nd.raw_response?.offer?.callRequestId === "7012" && nd.raw_response?.accept?.callNumber === 25000, JSON.stringify(nd?.raw_response));
   }
 
   /* ============ 19) non-pending offers (status != 0) are skipped silently ============ */
@@ -473,18 +515,76 @@ try {
     check("no-GPS: accepted with driverId 0 (offer must not expire)", p.length === 1 && p[0]?.body?.driverId === 0, JSON.stringify(p[0]?.body));
     const rows = await decisions();
     const ng = rows.find((x) => String(x.call_request_id) === "7019");
-    check("no-GPS: no ETA recorded in the ledger (nothing fabricated for the club)", ng && ng.eta_minutes === null && String(ng.reason).includes("no ETA quoted"), JSON.stringify(ng));
+    check("no-GPS: no ETA recorded in the ledger (nothing fabricated for the club)", ng && ng.eta_minutes === null && String(ng.reason).includes("accepted WITHOUT dispatch"), JSON.stringify(ng));
   }
 
+  /* ============ 26a) post-accept dispatch verification (2026-08-10 incident fix) ============ */
+  {
+    // accept → verification passes on the accept-response call fetch (1 POST only)
+    const m = makeFetch({ offers: [offer(8011)], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })] });
+    const { deps } = makeDeps(m.fetchImpl);
+    const r = await runAutoDispatch(ORG, deps);
+    check("verif ok: decision auto_accept_with_driver + reason says VERIFIED", r.decisions[0]?.decision === "auto_accept_with_driver" && String(r.decisions[0]?.reason).includes("VERIFIED on call 279999999"), String(r.decisions[0]?.reason));
+    check("verif ok: exactly ONE POST (accept) — verification is GET-only", posts(m.calls).length === 1, JSON.stringify(posts(m.calls)));
+    const rows1 = await decisions();
+    const v1 = rows1.find((x) => String(x.call_request_id) === "8011");
+    check("verif ok: raw_response has offer + verification(ok, acceptResponse)", v1 && v1.raw_response?.offer?.callRequestId === "8011" && v1.raw_response?.verification?.ok === true && v1.raw_response?.verification?.source === "acceptResponse" && v1.raw_response?.verification?.driverOnCall === "703785", JSON.stringify(v1?.raw_response?.verification));
+  }
+  {
+    // THE INCIDENT: accepted driver ≠ driver on the call → assign endpoint called
+    // once → succeeds → re-verify → VERIFIED + assignedAfterRetry
+    const m = makeFetch({ offers: [offer(8012)], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })], callDriverId: 999999, assignSucceeds: true });
+    const { deps } = makeDeps(m.fetchImpl);
+    const r = await runAutoDispatch(ORG, deps);
+    const p = posts(m.calls);
+    check("verif assign-retry: decision auto_accept_with_driver + VERIFIED reason", r.decisions[0]?.decision === "auto_accept_with_driver" && String(r.decisions[0]?.reason).includes("VERIFIED"), String(r.decisions[0]?.reason));
+    check("verif assign-retry: exactly TWO POSTs — accept THEN /assignDrivers {driverId, callId}", p.length === 2 && p[1]?.url.endsWith("/assignDrivers") && p[1]?.body?.driverId === 703785 && p[1]?.body?.callId === "279999999", JSON.stringify(p));
+    const rows2 = await decisions();
+    const v2 = rows2.find((x) => String(x.call_request_id) === "8012");
+    check("verif assign-retry: verification.assignedAfterRetry true + driverOnCall 703785", v2 && v2.raw_response?.verification?.assignedAfterRetry === true && v2.raw_response?.verification?.driverOnCall === "703785", JSON.stringify(v2?.raw_response?.verification));
+  }
+  {
+    // assign attempt fails → escalated_dispatch_failed with evidence, escalated=true
+    const m = makeFetch({ offers: [offer(8013)], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })], callDriverId: 999999, assignSucceeds: false });
+    const { deps } = makeDeps(m.fetchImpl);
+    const r = await runAutoDispatch(ORG, deps);
+    check("verif assign-fail: escalated_dispatch_failed + escalated true", r.decisions[0]?.decision === "escalated_dispatch_failed" && r.decisions[0]?.escalated === true, JSON.stringify(r.decisions));
+    const rows3 = await decisions();
+    const v3 = rows3.find((x) => String(x.call_request_id) === "8013");
+    check("verif assign-fail: reason names the driver + needs a human", v3 && String(v3.reason).includes("dispatch NOT verified") && String(v3.reason).includes("needs a human"), String(v3?.reason));
+    check("verif assign-fail: raw_response has verification evidence (assign 500 recorded)", v3 && v3.raw_response?.verification?.ok === false && v3.raw_response?.verification?.attempts?.length >= 2, JSON.stringify(v3?.raw_response?.verification));
+  }
+  {
+    // verification fetch race: first call GET fails, retry succeeds → VERIFIED
+    const m = makeFetch({ offers: [offer(8014)], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })], callsFailures: 1 });
+    const { deps } = makeDeps(m.fetchImpl);
+    const r = await runAutoDispatch(ORG, deps);
+    check("verif race: first fetch fails then retry → still VERIFIED", r.decisions[0]?.decision === "auto_accept_with_driver" && String(r.decisions[0]?.reason).includes("VERIFIED"), String(r.decisions[0]?.reason));
+    const rows4 = await decisions();
+    const v4 = rows4.find((x) => String(x.call_request_id) === "8014");
+    check("verif race: verification ok after retry", v4 && v4.raw_response?.verification?.ok === true, JSON.stringify(v4?.raw_response?.verification));
+  }
+  {
+    // eligibility rail: offer.drivers[] EXCLUDES the only free driver → engine must
+    // NOT dispatch them; accept driverId 0 + escalate (the 703785 root cause path)
+    const m = makeFetch({ offers: [{ ...offer(8015), drivers: [603482] }], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })] });
+    const { deps } = makeDeps(m.fetchImpl);
+    const r = await runAutoDispatch(ORG, deps);
+    const p = posts(m.calls);
+    check("eligibility: ineligible driver NOT dispatched (driverId 0) + auto_accept_no_driver escalated", r.decisions[0]?.decision === "auto_accept_no_driver" && r.decisions[0]?.escalated === true && p[0]?.body?.driverId === 0, JSON.stringify({ d: r.decisions[0], post: p[0]?.body }));
+    const rows5 = await decisions();
+    const v5 = rows5.find((x) => String(x.call_request_id) === "8015");
+    check("eligibility: reason names the eligible list + accepted without dispatch", v5 && String(v5.reason).includes("no ELIGIBLE") && String(v5.reason).includes("603482"), String(v5?.reason));
+  }
   /* ============ 26) ledger totals + owner org untouched ============ */
   {
     const rows = await decisions();
     const byDecision = rows.reduce((acc, x) => { acc[x.decision] = (acc[x.decision] || 0) + 1; return acc; }, {});
-    check("ledger: every auto_accept + escalation path present exactly once", byDecision["auto_accept_with_driver"] === 10 && byDecision["auto_accept_no_driver"] === 2 && byDecision["escalated_out_of_zone"] === 1 && byDecision["escalated_missing_coords"] === 1 && byDecision["escalated_expired"] === 1 && byDecision["escalated_unexpected_shape"] === 1 && byDecision["escalated_driver_lookup_failed"] === 1 && byDecision["escalated_accept_failed"] === 1, JSON.stringify(byDecision));
+    check("ledger: every auto_accept + escalation path present exactly once", byDecision["auto_accept_with_driver"] === 13 && byDecision["auto_accept_no_driver"] === 3 && byDecision["escalated_out_of_zone"] === 1 && byDecision["escalated_missing_coords"] === 1 && byDecision["escalated_expired"] === 1 && byDecision["escalated_unexpected_shape"] === 1 && byDecision["escalated_driver_lookup_failed"] === 1 && byDecision["escalated_accept_failed"] === 1 && byDecision["escalated_dispatch_failed"] === 1, JSON.stringify(byDecision));
     const a = await audits();
-    check("audit: 12 ai_dispatcher:accept rows (every accept incl. no-driver)", Number(a[0].n) === 12, String(a[0].n));
+    check("audit: 16 ai_dispatcher:accept rows (every accept incl. no-driver)", Number(a[0].n) === 16, String(a[0].n));
     const adAudit = await q`SELECT count(*)::int n FROM audit_log WHERE org_id=${ORG} AND action='ai_dispatcher:decision'`;
-    check("audit: 6 ai_dispatcher:decision rows (escalations)", Number(adAudit[0].n) === 6, String(adAudit[0].n));
+    check("audit: 7 ai_dispatcher:decision rows (escalations)", Number(adAudit[0].n) === 7, String(adAudit[0].n));
     const ownerSession = await q`SELECT status FROM towbook_sessions WHERE org_id=${"89e15ce587651cc47c3bc45b1c612a220955"}`;
     check("owner org session untouched", ownerSession.length === 1 && String(ownerSession[0].status) === "connected", JSON.stringify(ownerSession));
     const ownerDecisions = await q`SELECT count(*)::int n FROM ai_dispatcher_decisions WHERE org_id=${"89e15ce587651cc47c3bc45b1c612a220955"}`;

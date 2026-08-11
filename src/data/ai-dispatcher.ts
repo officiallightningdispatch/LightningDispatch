@@ -32,11 +32,22 @@ import { decryptSession } from "./towbook-key";
  *      → choose best driver: checked in && has GPS && no current calls,
  *        minimizing ROAD drive time (OSRM per candidate; fallback model on
  *        routing failure)
- *   5. POST /api/callRequests/{id}/accept {id, ETA, driverId|0, ...} — one retry
- *      on failure, then escalate (never silently drop). No eligible driver →
- *      driverId 0, no ETA quoted, escalated.
- *   6. Record decision + audit, then syncForOrg so the accepted call lands in
- *      dispatch_jobs immediately (reconcile by call.id/callNumber)
+ *   5. POST /api/callRequests/{id}/accept {id, ETA, driverId|0, notes} — one
+ *      retry on failure, then escalate (never silently drop). No eligible driver
+ *      → driverId 0, ETA = the club's SLA ceiling (honest "not yet assigned"),
+ *      notes "awaiting driver assignment", escalated. Choice is constrained to
+ *      the offer's own `drivers[]` eligible list when one is carried (the UI
+ *      dropdown is built from it — an ineligible driverId is silently ignored).
+ *   6. VERIFY the dispatch: GET the created call and confirm the chosen driver
+ *      is actually on it (assets[].driver.id / assets[].drivers[].driver.id).
+ *      Not verified → ONE assign attempt (POST /api/calls/{id}/assignDrivers,
+ *      best-guess endpoint — not statically discoverable) → re-verify → still
+ *      not assigned → escalated_dispatch_failed with the evidence. The engine
+ *      NEVER reports "dispatched" without verification.
+ *   7. Record decision + audit (every row captures the FULL offer JSON in
+ *      raw_response = {offer, accept, verification}), then syncForOrg so the
+ *      accepted call lands in dispatch_jobs immediately (reconcile by
+ *      call.id/callNumber)
  *
  * Hard rails: only act on the documented offer shape (callRequestId, status,
  * startLocationLatitude/Longitude, expirationDateUtc); ANY unexpected shape →
@@ -67,6 +78,9 @@ export type AiDispatcherDeps = {
   fetchImpl?: typeof fetch;
   /** Injectable road router (defaults to the OSRM public API via fetchImpl). */
   roadRouter?: RoadRouter;
+  /** Post-accept verification retry delay for the call-fetch race (default 5s;
+   *  tests inject 0). */
+  verifyRetryDelayMs?: number;
 };
 
 export type OrgAiSettings = {
@@ -93,7 +107,8 @@ export type AiDispatcherDecision =
   | "escalated_expired"
   | "escalated_driver_lookup_failed"
   | "escalated_accept_failed"
-  | "escalated_unexpected_shape";
+  | "escalated_unexpected_shape"
+  | "escalated_dispatch_failed";
 
 export type AutoDispatchRunResult = {
   gated: boolean; // ai_dispatcher_enabled=false → engine did nothing
@@ -249,6 +264,13 @@ type OfferShape = {
   startLocationLongitude: number;
   expirationDateUtc: string;
   maxEta: number | null;
+  /** Eligible driver ids carried by the offer (UI dropdown is built from this
+   *  list — accept-with-driverId is only honored for ids in it; absent/empty
+   *  means "any company driver" per the UI fallback). Captured so the engine
+   *  never dispatches a driver the club did not pre-approve (the 2026-08-10
+   *  incident: 703785 was accepted but never landed on the call — the engine
+   *  bypassed this rail). */
+  drivers: number[] | null;
 };
 
 const numeric = (v: unknown): number | null =>
@@ -282,6 +304,9 @@ export function validateOfferShape(raw: unknown): { ok: true; offer: OfferShape 
   if (!expirationDateUtc || Number.isNaN(Date.parse(expirationDateUtc))) missing.push("expirationDateUtc");
   if (missing.length) return { ok: false, missing };
   const maxEta = numeric(o.maxEta);
+  const drivers = Array.isArray(o.drivers)
+    ? o.drivers.map((d) => numeric(d)).filter((d): d is number => d != null && d > 0)
+    : null;
   return {
     ok: true,
     offer: {
@@ -291,6 +316,7 @@ export function validateOfferShape(raw: unknown): { ok: true; offer: OfferShape 
       startLocationLongitude: lng as number,
       expirationDateUtc: expirationDateUtc as string,
       maxEta: maxEta != null && maxEta > 0 ? maxEta : null,
+      drivers,
     },
   };
 }
@@ -441,7 +467,8 @@ const callIdFromAcceptResponse = (body: unknown): string | null => {
  *  retry on failure — a failed accept is NEVER silently dropped. Returns the
  *  last attempt's raw response for the decision row. The body id is the NUMERIC
  *  callRequestId when it parses as an integer (byte-matching the UI payload:
- *  `{ id: id, ... }` where id is the numeric offer id). */
+ *  `{ id: id, ... }` where id is the numeric offer id). `notes` is appended so
+ *  the no-driver accept tells the club the truth ("awaiting driver assignment"). */
 async function postAccept(
   fetchImpl: typeof fetch,
   baseUrl: string,
@@ -449,6 +476,7 @@ async function postAccept(
   callRequestId: string,
   etaMinutes: number,
   driverId: number,
+  notes: string,
 ): Promise<{ ok: boolean; raw: unknown; attempts: FetchResult[] }> {
   const url = `${baseUrl}/api/callRequests/${callRequestId}/accept`;
   const numericId = Number(callRequestId);
@@ -457,7 +485,7 @@ async function postAccept(
     comments: "",
     ETA: etaMinutes,
     driverId,
-    notes: "auto-accept by Lightning Dispatch",
+    notes,
     tireAvailable: false,
   });
   const attempts: FetchResult[] = [];
@@ -467,6 +495,176 @@ async function postAccept(
     if (res.ok) return { ok: true, raw: res.body, attempts };
   }
   return { ok: false, raw: attempts[attempts.length - 1]?.body ?? null, attempts };
+}
+/* ------------------------- dispatch verification + retry ------------------------- */
+/** The assign endpoint for EXISTING calls is not statically discoverable in the
+ *  Towbook UI JS (the Map app's typed client has per-call verbs lock/audit/
+ *  Complete/Cancel/... but NO assignDrivers; drag-to-assign code is not in any
+ *  fetched bundle). Best-guess candidate following the `/api/calls/{id}/<verb>`
+ *  convention; a wrong guess fails harmlessly (404/400 → no state change) and
+ *  the engine escalates with evidence instead of claiming a dispatch. */
+export const ASSIGN_DRIVER_ENDPOINT = "assignDrivers";
+/** POST /api/calls/{id}/assignDrivers {driverId, callId} — one attempt, never
+ *  retried: if the first guess fails we escalate with evidence, we do not spam
+ *  the live API. */
+async function postAssignDriver(
+  fetchImpl: typeof fetch,
+  baseUrl: string,
+  cookie: string,
+  callId: string,
+  driverId: number,
+): Promise<FetchResult> {
+  const url = `${baseUrl}/api/calls/${callId}/${ASSIGN_DRIVER_ENDPOINT}`;
+  return towbookFetch(fetchImpl, url, cookie, {
+    method: "POST",
+    body: JSON.stringify({ driverId, callId }),
+  });
+}
+export type DispatchVerification = {
+  /** True only when the chosen driver is actually on the fetched call. */
+  ok: boolean;
+  callId: string | null;
+  statusId: number | null;
+  driverOnCall: string | null;
+  /** How the call was located: "acceptResponse", "purchaseOrder", "newest". */
+  source: string;
+  assignedAfterRetry: boolean;
+  found: boolean;
+  attempts: Array<{ url: string; status: number | null; error: string | null; matched: boolean }>;
+  error: string | null;
+};
+/** True when the call's assets carry `driver.id === driverId` — the assignment
+ *  mirror used by the Towbook UI (call-single.json evidence: assets[].driver.id
+ *  and assets[].drivers[].driver.id are both DRIVER ids). */
+export function callHasDriver(call: unknown, driverId: number): boolean {
+  if (!call || typeof call !== "object") return false;
+  const assets = (call as Record<string, unknown>).assets;
+  if (!Array.isArray(assets)) return false;
+  return assets.some((a) => {
+    if (!a || typeof a !== "object") return false;
+    const driver = (a as Record<string, unknown>).driver as Record<string, unknown> | undefined;
+    if (driver && Number(driver.id) === driverId) return true;
+    const drivers = (a as Record<string, unknown>).drivers;
+    return Array.isArray(drivers) && drivers.some((d) => {
+      if (!d || typeof d !== "object") return false;
+      const sub = ((d as Record<string, unknown>).driver ?? null) as Record<string, unknown> | null;
+      return sub != null && Number(sub.id) === driverId;
+    });
+  });
+}
+/** Locate the call created by the accept: accept-response id → PO match on the
+ *  status-2 (accepted) list, falling back to status-1 (offered) → newest id. */
+export async function findAcceptedCall(
+  fetchImpl: typeof fetch,
+  baseUrl: string,
+  cookie: string,
+  acceptResponseId: string | null,
+  purchaseOrderNumber: unknown,
+): Promise<{ call: Record<string, unknown> | null; source: string; fetches: Array<{ url: string; status: number | null; error: string | null; matched: boolean }> }> {
+  const fetches: Array<{ url: string; status: number | null; error: string | null; matched: boolean }> = [];
+  if (acceptResponseId) {
+    const url = `${baseUrl}/api/calls/${acceptResponseId}`;
+    const res = await towbookFetch(fetchImpl, url, cookie);
+    fetches.push({ url, status: res.status, error: res.error, matched: false });
+    if (res.ok && res.body && typeof res.body === "object" && !Array.isArray(res.body)) {
+      fetches[fetches.length - 1].matched = true;
+      return { call: res.body as Record<string, unknown>, source: "acceptResponse", fetches };
+    }
+  }
+  // status 2 (accepted) then 1 (offered) — the accept may land in either.
+  for (const statusId of [2, 1]) {
+    const res = await towbookFetch(fetchImpl, `${baseUrl}/api/calls?status=${statusId}`, cookie);
+    fetches.push({ url: `${baseUrl}/api/calls?status=${statusId}`, status: res.status, error: res.error, matched: false });
+    if (res.ok && Array.isArray(res.body) && res.body.length) {
+      const list = res.body as Array<Record<string, unknown>>;
+      // PO match first (the offer carries purchaseOrderNumber; the call mirrors it)
+      const po = purchaseOrderNumber != null ? String(purchaseOrderNumber) : null;
+      const byPo = po ? list.find((c) => String((c as Record<string, unknown>).purchaseOrderNumber ?? "") === po) : undefined;
+      if (byPo) {
+        fetches[fetches.length - 1].matched = true;
+        return { call: byPo, source: "purchaseOrder", fetches };
+      }
+      // else newest id (accept just created the call — it is the newest)
+      const newest = list.reduce<Record<string, unknown> | null>((acc, c) => {
+        const id = Number((c as Record<string, unknown>).id) || 0;
+        return acc === null || id > (Number((acc as Record<string, unknown>).id) || 0) ? c : acc;
+      }, null);
+      if (newest) {
+        fetches[fetches.length - 1].matched = true;
+        return { call: newest, source: "newest", fetches };
+      }
+    }
+  }
+  return { call: null, source: "none", fetches };
+}
+/** Post-accept verification loop (the core of the dispatch fix): GET the
+ *  created call and check the chosen driver is actually on it
+ *  (assets[].driver.id / assets[].drivers[].driver.id). If NOT → one assign
+ *  attempt (postAssignDriver) → re-verify. If the call can't be fetched (race)
+ *  → retry once after `retryDelayMs`. NEVER reports dispatched without the
+ *  driver being observed on the call. */
+export async function verifyDispatch(
+  fetchImpl: typeof fetch,
+  baseUrl: string,
+  cookie: string,
+  offer: OfferShape,
+  acceptResponseId: string | null,
+  driverId: number,
+  opts: { retryDelayMs?: number; allowAssign?: boolean } = {},
+): Promise<DispatchVerification> {
+  const delay = opts.retryDelayMs ?? 5000;
+  const attempt = async (): Promise<DispatchVerification> => {
+    const { call, source, fetches } = await findAcceptedCall(fetchImpl, baseUrl, cookie, acceptResponseId, (offer as unknown as Record<string, unknown>).purchaseOrderNumber);
+    const base: DispatchVerification = {
+      ok: false, callId: call ? String((call as Record<string, unknown>).id ?? "") : null,
+      statusId: call && (call as Record<string, unknown>).status && typeof (call as Record<string, unknown>).status === "object"
+        ? Number((((call as Record<string, unknown>).status) as Record<string, unknown>).id) ?? null : null,
+      driverOnCall: null, source, assignedAfterRetry: false, found: !!call, attempts: fetches, error: null,
+    };
+    if (!call) return { ...base, error: "call not found after accept" };
+    if (callHasDriver(call, driverId)) {
+      return { ...base, ok: true, driverOnCall: String(driverId) };
+    }
+    const onCall = firstDriverIdOnCall(call);
+    return { ...base, driverOnCall: onCall, error: `chosen driver ${driverId} not on the call (found ${onCall ?? "none"})` };
+  };
+  let v = await attempt();
+  if (!v.found && v.error === "call not found after accept") {
+    // Race — the accept is async ("Your request ... has been received"); retry once.
+    await new Promise((r) => setTimeout(r, delay));
+    v = await attempt();
+    if (v.ok) return { ...v, assignedAfterRetry: v.assignedAfterRetry };
+  }
+  if (v.ok || !opts.allowAssign || !v.callId) return v;
+  // Chosen driver not verified on the call → one assign attempt → re-verify.
+  const assignUrl = `${baseUrl}/api/calls/${v.callId}/${ASSIGN_DRIVER_ENDPOINT}`;
+  const assignRes = await postAssignDriver(fetchImpl, baseUrl, cookie, v.callId, driverId);
+  v.attempts.push({ url: assignUrl, status: assignRes.status, error: assignRes.error, matched: false });
+  if (!assignRes.ok) {
+    return { ...v, error: `assign attempt failed (${assignRes.error ?? `HTTP ${assignRes.status}`}) — ${v.error}` };
+  }
+  const after = await attempt();
+  if (after.ok) return { ...after, assignedAfterRetry: true, attempts: [...v.attempts, ...after.attempts] };
+  return { ...after, attempts: [...v.attempts, ...after.attempts], error: `assign returned ok but driver still not on the call — ${after.error}` };
+}
+function firstDriverIdOnCall(call: Record<string, unknown>): string | null {
+  const assets = call.assets;
+  if (!Array.isArray(assets)) return null;
+  for (const a of assets) {
+    if (!a || typeof a !== "object") continue;
+    const d = (a as Record<string, unknown>).driver as Record<string, unknown> | undefined;
+    if (d && d.id != null) return String(d.id);
+    const drs = (a as Record<string, unknown>).drivers;
+    if (Array.isArray(drs)) {
+      for (const dr of drs) {
+        if (dr && typeof dr === "object" && (dr as Record<string, unknown>).driver) {
+          const id = ((dr as Record<string, unknown>).driver as Record<string, unknown>).id;
+          if (id != null) return String(id);
+        }
+      }
+    }
+  }
+  return null;
 }
 
 /* ----------------------------------- the engine ----------------------------------- */
@@ -578,11 +776,22 @@ export async function runAutoDispatch(orgId: string, deps: AiDispatcherDeps): Pr
       }
       // --- road-aware driver choice: route EVERY candidate from its precise
       // GPS to the pickup and pick the minimum ROAD ETA (fallback factor model
-      // per candidate when routing fails; no-GPS drivers are never eligible) ---
+      // per candidate when routing fails; no-GPS drivers are never eligible).
+      // Eligibility rail (2026-08-10 incident fix): if the offer carries an
+      // explicit `drivers[]` eligible list (the UI dropdown is built from it),
+      // ONLY those ids may be dispatched — accept-with-driverId for an
+      // ineligible driver is silently ignored by Towbook. ---
+      const eligibleIds = offer.drivers && offer.drivers.length ? new Set(offer.drivers) : null;
+      const candidates = eligibleIds
+        ? (nd.body as unknown[]).filter((d) => {
+            const id = Number((d as Record<string, unknown>).driverId);
+            return Number.isFinite(id) && eligibleIds.has(id);
+          })
+        : (nd.body as unknown[]);
       const roadRouter: RoadRouter = deps.roadRouter ?? ((fromLat, fromLng, toLat, toLng) =>
         osrmRoadSeconds(fromLat, fromLng, toLat, toLng, fetchImpl));
       const chosen = await chooseBestDriverByRoad(
-        nd.body as unknown[],
+        candidates,
         offer.startLocationLatitude,
         offer.startLocationLongitude,
         roadRouter,
@@ -591,12 +800,16 @@ export async function runAutoDispatch(orgId: string, deps: AiDispatcherDeps): Pr
       const effectiveMaxEta = Math.min(settings.maxEtaMinutes, offer.maxEta ?? settings.maxEtaMinutes);
       const driverId = driver ? Number(driver.driverId) || 0 : 0;
       // Final quoted ETA: ceil(road minutes) + buffer, clamped to [floor, ceiling].
-      // NO driver → no ETA is computed or quoted (the accept body still needs
-      // the field; a neutral 1 is sent because nothing is being dispatched).
+      // NO driver → no ETA is computed (nothing is being dispatched); the accept
+      // body still needs the field — quote the club's SLA ceiling (an honest
+      // "not yet assigned" worst case, never a fabricated 1-minute promise).
       const etaMinutes = driver && chosen
         ? finalEtaMinutes(chosen.baseMinutes, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta)
         : null;
-      const postEta = etaMinutes ?? 1;
+      const postEta = etaMinutes ?? effectiveMaxEta;
+      const postNotes = driver
+        ? "auto-accept by Lightning Dispatch"
+        : "auto-accept by Lightning Dispatch; awaiting driver assignment";
       const etaFacts = chosen ? {
         finalMinutes: etaMinutes,
         baseMinutes: chosen.baseMinutes,
@@ -609,9 +822,13 @@ export async function runAutoDispatch(orgId: string, deps: AiDispatcherDeps): Pr
         driverLatitude: Number(chosen.driver.latitude),
         driverLongitude: Number(chosen.driver.longitude),
       } : null;
-
-      // --- accept + dispatch (the ONE state-changing call) ---
-      const accept = await postAccept(fetchImpl, baseUrl, cookies, offer.callRequestId, postEta, driverId);
+      const noDriverReason = driver
+        ? null
+        : eligibleIds
+          ? `no ELIGIBLE checked-in free driver with GPS (offer eligible list [${offer.drivers!.join(", ")}]; accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually, ETA quoted at the ${effectiveMaxEta}-min ceiling — no ETA recorded)`
+          : "no checked-in free driver with GPS — accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually (ETA quoted at the SLA ceiling — no ETA recorded)";
+      // --- accept (the ONE state-changing call) ---
+      const accept = await postAccept(fetchImpl, baseUrl, cookies, offer.callRequestId, postEta, driverId, postNotes);
       if (!accept.ok) {
         const reason = `accept POST failed after retry (${accept.attempts.map((a) => a.error ?? `HTTP ${a.status}`).join("; ")}) — offer NOT auto-accepted, needs a human${chosen ? `; ${etaDetailLabel(chosen, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta, etaMinutes as number)}` : ""}`;
         await record({
@@ -619,35 +836,53 @@ export async function runAutoDispatch(orgId: string, deps: AiDispatcherDeps): Pr
           driverId: driver ? String(driver.driverId) : null,
           driverName: driver ? String(driver.driverName ?? "") : null,
           etaMinutes, zoneDistanceMiles: zoneDistance, reason,
-          rawResponse: { offer, eta: etaFacts, attempts: accept.attempts.map((a) => ({ status: a.status, body: a.body })) },
+          rawResponse: { offer, eta: etaFacts, accept: accept.raw, attempts: accept.attempts.map((a) => ({ status: a.status, body: a.body })) },
         });
         result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_accept_failed", escalated: true, reason });
         continue;
       }
-
       if (driver && chosen && etaMinutes != null) {
-        const reason = `accepted and dispatched to ${String(driver.driverName ?? driver.driverId)} (driver ${driver.driverId}) — ${etaDetailLabel(chosen, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta, etaMinutes)}`;
-        await record({
-          decision: "auto_accept_with_driver",
-          callId: callIdFromAcceptResponse(accept.raw),
-          driverId: String(driver.driverId), driverName: String(driver.driverName ?? ""),
-          etaMinutes, zoneDistanceMiles: zoneDistance, reason,
-          rawResponse: { eta: etaFacts, accept: accept.raw },
+        // --- post-accept verification loop: NEVER claim "dispatched" without
+        // seeing the chosen driver on the fetched call (assets[].driver.id /
+        // assets[].drivers[].driver.id). Not verified → one assign attempt →
+        // re-verify → still not assigned → escalated_dispatch_failed. ---
+        const verification = await verifyDispatch(fetchImpl, baseUrl, cookies, offer, callIdFromAcceptResponse(accept.raw), driverId, {
+          retryDelayMs: deps.verifyRetryDelayMs ?? 5000,
+          allowAssign: true,
         });
-        result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "auto_accept_with_driver", escalated: false, reason });
+        if (verification.ok) {
+          const reason = `accepted and dispatched to ${String(driver.driverName ?? driver.driverId)} (driver ${driver.driverId}, VERIFIED on call ${verification.callId}) — ${etaDetailLabel(chosen, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta, etaMinutes)}`;
+          await record({
+            decision: "auto_accept_with_driver",
+            callId: verification.callId,
+            driverId: String(driver.driverId), driverName: String(driver.driverName ?? ""),
+            etaMinutes, zoneDistanceMiles: zoneDistance, reason,
+            rawResponse: { offer, eta: etaFacts, accept: accept.raw, verification },
+          });
+          result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "auto_accept_with_driver", escalated: false, reason });
+        } else {
+          const reason = `accepted (call ${verification.callId ?? "unknown"}) but dispatch NOT verified for ${String(driver.driverName ?? driver.driverId)} (driver ${driver.driverId}) — ${verification.error}; needs a human to assign on Towbook (ETA ${etaMinutes} min quoted)`;
+          await record({
+            decision: "escalated_dispatch_failed",
+            callId: verification.callId,
+            driverId: String(driver.driverId), driverName: String(driver.driverName ?? ""),
+            etaMinutes, zoneDistanceMiles: zoneDistance, reason,
+            rawResponse: { offer, eta: etaFacts, accept: accept.raw, verification },
+          });
+          result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_dispatch_failed", escalated: true, reason });
+        }
       } else {
-        // No checked-in free driver with GPS (no-GPS drivers are never
-        // auto-dispatched, and no ETA is fabricated for them): accept WITHOUT
-        // dispatch so the motor-club offer cannot expire or be missed.
-        const reason = "no checked-in free driver with GPS — accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually (no ETA quoted)";
+        // No checked-in free (eligible) driver with GPS (no-GPS drivers are
+        // never auto-dispatched, and no ETA is fabricated for them): accept
+        // WITHOUT dispatch so the motor-club offer cannot expire or be missed.
         await record({
           decision: "auto_accept_no_driver",
           driverId: null, driverName: null,
-          etaMinutes: null, zoneDistanceMiles: zoneDistance, reason, rawResponse: accept.raw,
+          etaMinutes: null, zoneDistanceMiles: zoneDistance, reason: noDriverReason as string,
+          rawResponse: { offer, eta: etaFacts, accept: accept.raw },
         });
-        result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "auto_accept_no_driver", escalated: true, reason });
+        result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "auto_accept_no_driver", escalated: true, reason: noDriverReason as string });
       }
-
       // Pull the resulting call into dispatch_jobs immediately (reconcile by
       // call.id/callNumber happens inside the sync's upsert).
       try { await deps.syncForOrg(orgId, "sync:auto-accept", actor ?? undefined); } catch { /* engine never throws */ }
