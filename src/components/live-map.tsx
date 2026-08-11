@@ -157,15 +157,47 @@ export function LiveMap({
   }, [load, pollMs]);
 
   /* -------------------------------- viewport -------------------------------- */
-  useEffect(() => {
-    const el = mapRef.current;
-    if (!el) return;
+  // The viewport div does NOT exist on first mount: while data is null a loading
+  // skeleton renders instead, so a mount-time effect sees mapRef.current ===
+  // null and the ResizeObserver is never attached — viewport stays null, geo
+  // stays null, and the map silently renders FallbackPlot forever (QA
+  // 2026-08-11). Drive setup from a callback ref instead: it fires exactly when
+  // the viewport div mounts (and React 19 calls the returned cleanup on
+  // unmount), so the map always measures its container and paints tiles.
+  const setupMap = useCallback((node: HTMLDivElement | null) => {
+    mapRef.current = node;
+    if (!node) return;
+    // Immediate initial measurement — don't wait for the RO's first callback;
+    // the map must still compute a viewport if that callback fires late/never.
+    const r0 = node.getBoundingClientRect();
+    if (r0.width > 0 && r0.height > 0) {
+      setViewport((v) => (v && Math.abs(v.w - r0.width) < 1 && Math.abs(v.h - r0.height) < 1 ? v : { w: r0.width, h: r0.height }));
+    }
     const ro = new ResizeObserver((entries) => {
       const r = entries[0]?.contentRect;
       if (r && r.width > 0 && r.height > 0) setViewport((v) => (v && Math.abs(v.w - r.width) < 1 && Math.abs(v.h - r.height) < 1 ? v : { w: r.width, h: r.height }));
     });
-    ro.observe(el);
-    return () => ro.disconnect();
+    ro.observe(node);
+    // Wheel zoom must be non-passive to preventDefault — attach natively here
+    // too (it has the exact same mount-lifetime bug the RO had).
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const g = geomRef.current;
+      const vp = g.viewport;
+      if (!vp) return;
+      const rect = node.getBoundingClientRect();
+      const anchor = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      const dir = e.deltaY < 0 ? 1 : -1;
+      const next = zoomAtPoint({ center: g.center, zoom: g.zoom, viewport: vp }, anchor, clamp(g.zoom + dir, MIN_ZOOM, MAX_ZOOM));
+      setCenter(next.center);
+      setZoom(next.zoom);
+    };
+    node.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      ro.disconnect();
+      node.removeEventListener("wheel", onWheel);
+      if (mapRef.current === node) mapRef.current = null;
+    };
   }, []);
 
   /* ---------------------------------- pins ---------------------------------- */
@@ -327,25 +359,6 @@ export function LiveMap({
     pinchRef.current = null;
     dragRef.current = null;
   };
-  // Wheel zoom must be non-passive to preventDefault — attach natively.
-  useEffect(() => {
-    const el = mapRef.current;
-    if (!el) return;
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      const g = geomRef.current;
-      const vp = g.viewport;
-      if (!vp) return;
-      const rect = el.getBoundingClientRect();
-      const anchor = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-      const dir = e.deltaY < 0 ? 1 : -1;
-      const next = zoomAtPoint({ center: g.center, zoom: g.zoom, viewport: vp }, anchor, clamp(g.zoom + dir, MIN_ZOOM, MAX_ZOOM));
-      setCenter(next.center);
-      setZoom(next.zoom);
-    };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
-  }, []);
 
   /* ------------------------------ tile failures ------------------------------ */
   const onTileLoad = (key: string) => {
@@ -408,7 +421,7 @@ export function LiveMap({
 
       {/* the map viewport */}
       <div
-        ref={mapRef}
+        ref={setupMap}
         className={`relative w-full select-none overflow-hidden bg-ink-50 ${heightClass} ${isHero ? "h-full" : ""}`}
         style={{ touchAction: "none", cursor: "grab" }}
         onPointerDown={onPointerDown}
