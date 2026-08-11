@@ -177,7 +177,9 @@ await setup();
   const saved = { k: process.env.B2_KEY_ID, a: process.env.B2_APPLICATION_KEY, b: process.env.B2_BUCKET_NAME };
   delete process.env.B2_KEY_ID; delete process.env.B2_APPLICATION_KEY; delete process.env.B2_BUCKET_NAME;
   let threw = false;
-  try { await loadB2Config(); } catch (e) { threw = String(e).includes("Backblaze B2 is not configured") && String(e).includes("B2_KEY_ID"); }
+  // Hermetic: point the file fallback at a nonexistent dir so the test passes
+  // even when real .secrets files exist on this machine.
+  try { await loadB2Config({}, { stableDir: `/tmp/b2-missing-${Date.now()}` }); } catch (e) { threw = String(e).includes("Backblaze B2 is not configured") && String(e).includes("B2_KEY_ID"); }
   check("missing B2 creds → clear structured error", threw);
   process.env.B2_KEY_ID = saved.k; process.env.B2_APPLICATION_KEY = saved.a; process.env.B2_BUCKET_NAME = saved.b;
 }
@@ -312,7 +314,10 @@ await setup();
   // Upload-time missing creds: hard structured error, never fake success.
   const saved = { k: process.env.B2_KEY_ID, a: process.env.B2_APPLICATION_KEY, b: process.env.B2_BUCKET_NAME };
   delete process.env.B2_KEY_ID; delete process.env.B2_APPLICATION_KEY; delete process.env.B2_BUCKET_NAME;
-  const noCreds = await uploadJobPhotoCore(user, { jobId: c.call, phase: "pre_arrival", side: "front", dataUrl: photoDataUrl("U") }, { fetchImpl });
+  // Hermetic: point the file fallback at a nonexistent dir so this passes even
+  // when real .secrets files exist on this machine.
+  const noCredsDir = `/tmp/b2-missing-${Date.now()}`;
+  const noCreds = await uploadJobPhotoCore(user, { jobId: c.call, phase: "pre_arrival", side: "front", dataUrl: photoDataUrl("U") }, { fetchImpl, b2StableDir: noCredsDir });
   check("upload without B2 creds → b2_not_configured", noCreds.ok === false && noCreds.code === "b2_not_configured" && noCreds.message.includes("Backblaze B2 is not configured"), JSON.stringify(noCreds));
   process.env.B2_KEY_ID = saved.k; process.env.B2_APPLICATION_KEY = saved.a; process.env.B2_BUCKET_NAME = saved.b;
 
@@ -322,7 +327,7 @@ await setup();
   }
   await setVehicleMatchCore(user, { jobId: c.call, confirmed: true });
   delete process.env.B2_KEY_ID; delete process.env.B2_APPLICATION_KEY; delete process.env.B2_BUCKET_NAME;
-  const r = await completeJobCore(user, { jobId: c.call }, { fetchImpl });
+  const r = await completeJobCore(user, { jobId: c.call }, { fetchImpl, b2StableDir: noCredsDir });
   process.env.B2_KEY_ID = saved.k; process.env.B2_APPLICATION_KEY = saved.a; process.env.B2_BUCKET_NAME = saved.b;
   check("completion without B2 → photo_upload_failed, no silent success", r.ok === false && r.code === "photo_upload_failed" && r.message.includes("Photo storage isn't connected"), JSON.stringify(r));
   const j = await q`SELECT status FROM dispatch_jobs WHERE id=${c.job}`;

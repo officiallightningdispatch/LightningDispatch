@@ -235,7 +235,7 @@ export type PhotoUploadResult =
  *  confirmation so the driver must re-confirm the current photo). Phase gates:
  *  pre_arrival needs the job en_route/arrived; service needs pre_arrival done;
  *  final needs service done. Injectable fetchImpl for hermetic tests. */
-export async function uploadJobPhotoCore(user: PhotoUser, data: unknown, opts: { fetchImpl?: typeof fetch } = {}): Promise<PhotoUploadResult> {
+export async function uploadJobPhotoCore(user: PhotoUser, data: unknown, opts: { fetchImpl?: typeof fetch; b2StableDir?: string } = {}): Promise<PhotoUploadResult> {
   const v = z.object({
     jobId: z.string().min(1).max(128),
     phase: z.enum(PHOTO_PHASES),
@@ -268,7 +268,7 @@ export async function uploadJobPhotoCore(user: PhotoUser, data: unknown, opts: {
     const key = storageKeyFor(user.orgId, job.id, v.data.phase, v.data.side);
     let b2;
     try {
-      const config = await loadB2Config();
+      const config = await loadB2Config(undefined, { stableDir: opts.b2StableDir });
       const auth = await authorizeAccount({ keyId: config.keyId, applicationKey: config.applicationKey, fetchImpl: opts.fetchImpl });
       b2 = { config, s3ApiUrl: auth.s3ApiUrl };
     } catch (err) {
@@ -437,7 +437,7 @@ export type CompleteJobResult =
  *  and on the platform. Any failure is recorded + escalated
  *  (escalated_photo_upload_failed) and the job STAYS arrived — a job never
  *  reaches completed without its photos on the PO. Injectable fetchImpl. */
-export async function completeJobCore(user: PhotoUser, data: unknown, opts: { fetchImpl?: typeof fetch } = {}): Promise<CompleteJobResult> {
+export async function completeJobCore(user: PhotoUser, data: unknown, opts: { fetchImpl?: typeof fetch; b2StableDir?: string } = {}): Promise<CompleteJobResult> {
   const v = z.object({ jobId: z.string().min(1).max(128) }).safeParse(data);
   if (!v.success) return { ok: false, code: "invalid_state", message: "Invalid request." };
   try {
@@ -472,7 +472,7 @@ export async function completeJobCore(user: PhotoUser, data: unknown, opts: { fe
     let uploaded = 0;
     let b2: { config: Awaited<ReturnType<typeof loadB2Config>>; s3ApiUrl: string } | null = null;
     try {
-      const config = await loadB2Config();
+      const config = await loadB2Config(undefined, { stableDir: opts.b2StableDir });
       const auth = await authorizeAccount({ keyId: config.keyId, applicationKey: config.applicationKey, fetchImpl });
       b2 = { config, s3ApiUrl: auth.s3ApiUrl };
     } catch { /* per-photo failures below will surface the B2 problem */ }

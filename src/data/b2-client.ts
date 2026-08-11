@@ -52,11 +52,12 @@ const readEnvOrFile = async (env: string | undefined, envFile: string | undefine
 /** Resolve the B2 credentials. Throws a clear, structured error when any of
  *  the three parts is missing — callers surface it as a hard failure, never a
  *  fake success. */
-export async function loadB2Config(env: NodeJS.ProcessEnv = process.env): Promise<B2Config> {
+export async function loadB2Config(env: NodeJS.ProcessEnv = process.env, opts: { stableDir?: string } = {}): Promise<B2Config> {
+  const stableDir = opts.stableDir ?? STABLE_DIR;
   const [keyId, applicationKey, bucketName] = await Promise.all([
-    readEnvOrFile(env.B2_KEY_ID, env.B2_KEY_ID_FILE, join(STABLE_DIR, "b2-key-id")),
-    readEnvOrFile(env.B2_APPLICATION_KEY, env.B2_APPLICATION_KEY_FILE, join(STABLE_DIR, "b2-application-key")),
-    readEnvOrFile(env.B2_BUCKET_NAME, env.B2_BUCKET_NAME_FILE, join(STABLE_DIR, "b2-bucket-name")),
+    readEnvOrFile(env.B2_KEY_ID, env.B2_KEY_ID_FILE, join(stableDir, "b2-key-id")),
+    readEnvOrFile(env.B2_APPLICATION_KEY, env.B2_APPLICATION_KEY_FILE, join(stableDir, "b2-application-key")),
+    readEnvOrFile(env.B2_BUCKET_NAME, env.B2_BUCKET_NAME_FILE, join(stableDir, "b2-bucket-name")),
   ]);
   const missing: string[] = [];
   if (!keyId) missing.push("B2_KEY_ID (or a b2-key-id file in .secrets)");
@@ -138,7 +139,7 @@ export function regionFromS3Url(s3ApiUrl: string): string {
 
 /* --------------------------------- authorize --------------------------------- */
 
-export type B2Authorized = { s3ApiUrl: string; bucketName: string };
+export type B2Authorized = { s3ApiUrl: string; bucketName: string | null };
 let cachedAuthorize: { at: number; value: B2Authorized } | null = null;
 
 /** POST /b2api/v3/b2_authorize_account with HTTP Basic (keyId:applicationKey)
@@ -161,9 +162,16 @@ export async function authorizeAccount(opts: { keyId: string; applicationKey: st
   }
   const apiInfo = (body as Record<string, unknown>).apiInfo as Record<string, unknown> | undefined;
   const allowed = (body as Record<string, unknown>).allowed as Record<string, unknown> | undefined;
-  const s3ApiUrl = typeof apiInfo?.s3ApiUrl === "string" && apiInfo.s3ApiUrl ? apiInfo.s3ApiUrl : null;
+  // v3 shape nests the S3 endpoint under apiInfo.storageApi.s3ApiUrl; older
+  // shapes put it directly at apiInfo.s3ApiUrl. Account-wide keys return
+  // allowed.bucketName = null (the bucket comes from config), so only the S3
+  // endpoint is required here.
+  const storageApi = (apiInfo?.storageApi ?? null) as Record<string, unknown> | null;
+  const s3ApiUrl = typeof storageApi?.s3ApiUrl === "string" && storageApi.s3ApiUrl
+    ? storageApi.s3ApiUrl
+    : typeof apiInfo?.s3ApiUrl === "string" && apiInfo.s3ApiUrl ? apiInfo.s3ApiUrl : null;
   const bucketName = typeof allowed?.bucketName === "string" && allowed.bucketName ? allowed.bucketName : null;
-  if (!s3ApiUrl || !bucketName) {
+  if (!s3ApiUrl) {
     throw new Error("B2 authorize did not return an S3 endpoint — check the application key's capabilities.");
   }
   const value = { s3ApiUrl, bucketName };
