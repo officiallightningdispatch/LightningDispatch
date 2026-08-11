@@ -415,13 +415,14 @@ async function tbRequest(fetchImpl: typeof fetch, url: string, cookie: string, i
  *  redirect towards the login page, or a 200 that is actually the login page
  *  (its username field is `UserName` — the driver editor uses `Username`, so
  *  the editor partial can never be mistaken for a login page). */
+function isExpired(r: TbRes): boolean {
   if (r.status === 401 || r.status === 403) return true;
   if (r.status != null && r.status >= 300 && r.status < 400 && r.location) {
     if (/login|security/i.test(r.location)) return true;
   }
   return r.status === 200 && typeof r.body === "string" &&
     /name="UserName"/i.test(r.body) && /<form/i.test(r.body);
-};
+}
 
 /** The driver editor partial — the same request the /Settings/Drivers page's
  *  own XHR makes (verified 200/36 KB with X-Requested-With). Carries the
@@ -624,9 +625,17 @@ export async function editContractorCore(actor: ContractorMgmtActor, data: unkno
       const byEmail = await q`SELECT id FROM users WHERE email = ${email} AND id != ${contractorId} LIMIT 1`;
       if (byEmail.length) return { ok: false, code: "duplicate", message: "That email address is already in use by another account." };
     }
-    await q`UPDATE users SET name = ${name}, email = ${email} WHERE id = ${contractorId} AND deactivated_at IS NULL`;
+    // An empty email payload means "no change": users.email is UNIQUE, so
+    // writing '' would collide once a second contractor is edited without an
+    // email. Keep the stored value (usually the derived placeholder).
+    const effectiveEmail = email || String(row.email ?? "");
+    if (email) {
+      await q`UPDATE users SET name = ${name}, email = ${email} WHERE id = ${contractorId} AND deactivated_at IS NULL`;
+    } else {
+      await q`UPDATE users SET name = ${name} WHERE id = ${contractorId} AND deactivated_at IS NULL`;
+    }
     const before = { name: String(row.name ?? ""), email: String(row.email ?? "") };
-    await recordAudit(actor, "contractor_updated", contractorId, { contractorId, from: before, to: { name, email } });
+    await recordAudit(actor, "contractor_updated", contractorId, { contractorId, from: before, to: { name, email: effectiveEmail } });
 
     const driverId = row.towbook_driver_id != null ? String(row.towbook_driver_id) : "";
     let towbook: TowbookPushOutcome;
@@ -650,7 +659,7 @@ export async function editContractorCore(actor: ContractorMgmtActor, data: unkno
       }
     }
     const contractor: ContractorRow = {
-      id: contractorId, name, email, loginHandle: row.login_handle != null ? String(row.login_handle) : null,
+      id: contractorId, name, email: effectiveEmail, loginHandle: row.login_handle != null ? String(row.login_handle) : null,
       towbookDriverId: row.towbook_driver_id != null ? String(row.towbook_driver_id) : null,
       towbookUserId: row.towbook_user_id != null ? String(row.towbook_user_id) : null,
       status: "not_signed_in", lastActivityAt: null, createdAt: toIso(row.created_at), removedAt: null,

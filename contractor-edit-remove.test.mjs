@@ -74,8 +74,10 @@ function makeFetch({ roster, deleted = new Set(), failEditor = null, failDetails
     const u = String(url);
     const method = init.method || "GET";
     calls.push({ method, url: u, headers: init.headers || {}, body: init.body || null });
-    const json = (s, b) => ({ status: s, ok: s >= 200 && s < 300, text: async () => JSON.stringify(b), json: async () => JSON.parse(JSON.stringify(b)) });
-    const html = (s, h) => ({ status: s, ok: s >= 200 && s < 300, text: async () => h, json: async () => ({}) });
+    // tbRequest reads res.headers.get("location") for session-expiry redirects.
+    const hdrs = (loc = null) => ({ get: (k) => (String(k).toLowerCase() === "location" ? loc : null) });
+    const json = (s, b) => ({ status: s, ok: s >= 200 && s < 300, headers: hdrs(), text: async () => JSON.stringify(b), json: async () => JSON.parse(JSON.stringify(b)) });
+    const html = (s, h) => ({ status: s, ok: s >= 200 && s < 300, headers: hdrs(), text: async () => h, json: async () => ({}) });
     const mEditor = u.match(/\/ajax\/settings\/drivers\/(\d+)$/);
     if (mEditor) {
       if (failEditor != null) return html(failEditor, "<html>gone</html>");
@@ -108,7 +110,7 @@ function makeFetch({ roster, deleted = new Set(), failEditor = null, failDetails
       // Deleted drivers vanish from the base roster (server-side filter).
       return json(200, (roster ?? []).filter((d) => !deleted.has(String(d.id))));
     }
-    console.error('MOCK UNMATCHED:', method, u); return { status: 500, ok: false, text: async () => 'unmatched', json: async () => ({}) };
+    console.error('MOCK UNMATCHED:', method, u); return { status: 500, ok: false, headers: { get: () => null }, text: async () => 'unmatched', json: async () => ({}) };
   };
   return { fetchImpl, calls, deleted };
 }
@@ -174,10 +176,10 @@ await q`UPDATE users SET email=${realEmail} WHERE id=${added[DRIVER_EMAIL]}`;
   const post = posts(m.calls)[0];
   check("Details POST is form-urlencoded with Name overridden + token in body",
     String(post.headers["content-type"]).includes("application/x-www-form-urlencoded") &&
-    String(post.body).includes("Name=QA+Edited+Name") && String(post.body).includes("Email=qa-edited%40lightning.test") && String(post.body).includes("RequestVerificationToken=TOK" + DRIVER_EDIT),
+    String(post.body).includes("Name=QA%20Edited%20Name") && String(post.body).includes("Email=qa-edited%40lightning.test") && String(post.body).includes("RequestVerificationToken=TOK" + DRIVER_EDIT),
     JSON.stringify({ headers: post.headers, body: post.body }));
   check("Details POST preserved unrelated fields (StartDate/Notes/LicenseClass)",
-    String(post.body).includes("StartDate=2025-01-01") && String(post.body).includes("Notes=some+notes") && String(post.body).includes("LicenseClass=3"),
+    String(post.body).includes("StartDate=2025-01-01") && String(post.body).includes("Notes=some%20notes") && String(post.body).includes("LicenseClass=3"),
     String(post.body));
   const aud = await q`SELECT detail, actor_role FROM audit_log WHERE org_id=${ORG} AND action='contractor_updated' ORDER BY occurred_at DESC LIMIT 1`;
   check("audit contractor_updated (owner, from/to detail)",
@@ -195,7 +197,7 @@ await q`UPDATE users SET email=${realEmail} WHERE id=${added[DRIVER_EMAIL]}`;
   check("edit with derived email ok + verified", r1.ok === true && r1.data.towbook.status === "verified", JSON.stringify(r1));
   const p1 = posts(m.calls)[0];
   check("derived @towbook.driver email NOT sent to Towbook (Name only)",
-    String(p1.body).includes("Name=QA+Rename+Only") && !String(p1.body).includes("towbook.driver"), String(p1.body));
+    String(p1.body).includes("Name=QA%20Rename%20Only") && !String(p1.body).includes("towbook.driver"), String(p1.body));
   // Real email → pushed.
   const m2 = makeFetch({ roster: ROSTER_ALL });
   const r2 = await editContractorCore(ACTOR, { contractorId: added[DRIVER_EMAIL], name: "QA Email Push", email: "qa-new-real@lightning.test" }, { fetchImpl: m2.fetchImpl });
@@ -239,7 +241,7 @@ await q`UPDATE users SET email=${realEmail} WHERE id=${added[DRIVER_EMAIL]}`;
   const calls = [];
   const fetchImpl = async (url, init = {}) => {
     calls.push({ method: init.method || "GET", url: String(url) });
-    return { status: 302, ok: false, location: "/Security/Login.aspx", text: async () => "", json: async () => ({}) };
+    return { status: 302, ok: false, headers: { get: (k) => (String(k).toLowerCase() === "location" ? "/Security/Login.aspx" : null) }, text: async () => "", json: async () => ({}) };
   };
   const r = await editContractorCore(ACTOR, { contractorId: added[DRIVER_EDIT], name: "QA Expired Session", email: "" }, { fetchImpl });
   check("edit expired session: local stands, towbook failed + escalated", r.ok === true && r.data.towbook.status === "failed" && r.data.towbook.escalated === true && String(r.data.towbook.notice).includes("expired"), JSON.stringify(r.data.towbook));
