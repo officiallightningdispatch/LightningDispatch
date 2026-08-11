@@ -420,6 +420,13 @@ export const driverLogin = createServerFn({ method: "POST" }).validator(passthro
     const identity = await identifyDriver(session);
     if (!identity.ok) return { ok: false as const, error: identity.message };
     const { userId } = await upsertDriverUser(orgId, d.username, identity.identity);
+    // Owner-directed guard (contractor edit/remove): a removed contractor must
+    // not be able to sign in even with valid Towbook credentials — check BEFORE
+    // persisting a session row or starting an LD session.
+    const { isDriverDeactivated } = await import("./driver-gps-core");
+    if (await isDriverDeactivated(orgId, identity.identity.driverId)) {
+      return { ok: false as const, error: "This driver account was removed in Lightning Dispatch — contact the owner." };
+    }
     await persistDriverSession(orgId, identity.identity.driverId, session);
     const lat = typeof d.latitude === "number" && Number.isFinite(d.latitude) ? d.latitude : 0;
     const lng = typeof d.longitude === "number" && Number.isFinite(d.longitude) ? d.longitude : 0;

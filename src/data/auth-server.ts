@@ -26,6 +26,9 @@ export async function ensureAuthSchema() {
   const q = sql();
   await q`CREATE TABLE IF NOT EXISTS organizations (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
   await q`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
+  // Soft-deactivate flag (migration 14 also adds it; adding here keeps
+  // currentUser's deactivated_at filter safe even when ensureSchema has not run).
+  await q`ALTER TABLE users ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ`;
   await q`CREATE TABLE IF NOT EXISTS organization_memberships (org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK (role IN ('owner','admin','dispatcher','contractor')), contractor_id TEXT, PRIMARY KEY(org_id,user_id))`;
   await q`CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
 }
@@ -59,7 +62,7 @@ export async function currentUser(): Promise<AuthUser | null> {
   if (!tokens.length) return null;
   const q = sql();
   for (const token of tokens) {
-    const rows = await q`SELECT u.id,u.name,u.email,m.org_id,m.role,m.contractor_id FROM sessions s JOIN users u ON u.id=s.user_id JOIN organization_memberships m ON m.user_id=u.id WHERE s.id=${token} AND s.expires_at > NOW()`;
+    const rows = await q`SELECT u.id,u.name,u.email,m.org_id,m.role,m.contractor_id FROM sessions s JOIN users u ON u.id=s.user_id JOIN organization_memberships m ON m.user_id=u.id WHERE s.id=${token} AND s.expires_at > NOW() AND u.deactivated_at IS NULL`;
     if (!rows.length) continue;
     const r = rows[0] as Record<string, unknown>;
     // Seroval rejects object properties whose value is undefined. Owner/admin

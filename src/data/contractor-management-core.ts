@@ -60,7 +60,9 @@ const canManage = (a: ContractorMgmtActor) => ALLOWED_ROLES.includes(a.role);
 /* --------------------------------- types --------------------------------- */
 
 export type ContractorStatus = "signed_in" | "not_signed_in";
-/** Seroval-safe row: every property defined (null, never undefined). */
+/** Seroval-safe row: every property defined (null, never undefined).
+ *  removedAt set ⇒ the contractor was removed (soft-deactivated): excluded from
+ *  dispatch, cannot sign in, historical records kept. */
 export type ContractorRow = {
   id: string;
   name: string;
@@ -71,14 +73,28 @@ export type ContractorRow = {
   status: ContractorStatus;
   lastActivityAt: string | null;
   createdAt: string | null;
+  removedAt: string | null;
 };
 
 export type ImportSkip = { towbookDriverId: string; name: string | null; reason: string };
 export type ImportSummary = { imported: number; updated: number; skipped: ImportSkip[] };
 
+/** Outcome of the best-effort Towbook write after a local edit/remove. Every
+ *  property defined (Seroval-safe). `pushed` true only when the write was
+ *  verified against Towbook; `escalated` true only for genuine failures
+ *  (rejected / session expired / verify failed) — "unsupported" (404/405) and
+ *  "skipped" (no session / no driver id) are notices, not escalations. */
+export type TowbookPushOutcome = {
+  pushed: boolean;
+  status: "verified" | "skipped" | "unsupported" | "failed";
+  notice: string;
+  escalated: boolean;
+  attempts: string[];
+};
+
 export type ContractorManagementResult<T> =
   | { ok: true; data: T }
-  | { ok: false; code: "unauthorized" | "invalid_input" | "duplicate" | "towbook_not_connected" | "towbook_failed" | "database_error"; message: string };
+  | { ok: false; code: "unauthorized" | "invalid_input" | "duplicate" | "not_found" | "towbook_not_connected" | "towbook_failed" | "database_error"; message: string };
 
 /* ------------------------------- helpers ------------------------------- */
 
@@ -116,7 +132,7 @@ export async function listContractorsCore(actor: ContractorMgmtActor): Promise<C
   try {
     await ensure();
     const q = await db();
-    const rows = await q`SELECT u.id, u.name, u.email, u.login_handle, u.towbook_driver_id, u.towbook_user_id, u.created_at,
+    const rows = await q`SELECT u.id, u.name, u.email, u.login_handle, u.towbook_driver_id, u.towbook_user_id, u.created_at, u.deactivated_at,
         ts.updated_at AS session_updated_at,
         dl.last_ping
       FROM users u
@@ -128,7 +144,7 @@ export async function listContractorsCore(actor: ContractorMgmtActor): Promise<C
         FROM driver_locations WHERE org_id = ${actor.orgId}
         GROUP BY driver_id
       ) dl ON dl.driver_id = u.id
-      ORDER BY LOWER(u.name), u.created_at`;
+      ORDER BY (u.deactivated_at IS NOT NULL), LOWER(u.name), u.created_at`;
     const contractors: ContractorRow[] = (rows as Record<string, unknown>[]).map((r) => {
       const signedIn = r.session_updated_at != null;
       const lastPing = r.last_ping != null ? new Date(String(r.last_ping)) : null;
@@ -144,6 +160,7 @@ export async function listContractorsCore(actor: ContractorMgmtActor): Promise<C
         status: signedIn ? "signed_in" : "not_signed_in",
         lastActivityAt: lastActivity ? lastActivity.toISOString() : null,
         createdAt: toIso(r.created_at),
+        removedAt: r.deactivated_at != null ? toIso(r.deactivated_at) : null,
       };
     });
     return { ok: true, data: contractors };
@@ -355,6 +372,385 @@ export async function importContractorsCore(actor: ContractorMgmtActor, opts: { 
   }
 }
 
+/* ------------------------------ Towbook writes ------------------------------ */
+/* The owner-directed edit/remove surface (recon-verified 2026-08-11 — see
+ * /home/team/shared/towbook-driver-writes.md): the driver editor is
+ * GET /ajax/settings/drivers/{id} (X-Requested-With) and its form saves via
+ * POST /ajax/Settings/Drivers/Details (fields incl. Name/Email; hidden
+ * RequestVerificationToken + the session's .AspNetCore.Antiforgery.* cookie);
+ * the one-click removal is POST /api/drivers/{id}/disable (deleted drivers
+ * vanish from the base GET /api/drivers roster — the import's source — and
+ * show deleted:true on GET /api/drivers/full?includeDeleted=true). Every write
+ * is GET-first (fresh antiforgery token), one retry, read-back verify, and on
+ * genuine failure escalates with evidence (ops "Needs attention") — never
+ * silently dropped. "Unsupported" (404/405) and "skipped" (no session / no
+ * Towbook id) keep the local change and return a notice, not an escalation. */
+
+type TbRes = { ok: boolean; status: number | null; location: string | null; body: unknown };
+async function tbRequest(fetchImpl: typeof fetch, url: string, cookie: string, init?: { method?: string; body?: string; headers?: Record<string, string> }): Promise<TbRes> {
+  try {
+    const res = await fetchImpl(url, {
+      method: init?.method ?? "GET",
+      headers: {
+        "user-agent": TOWBOOK_UA,
+        accept: "application/json,text/plain,*/*",
+        "accept-language": "en-US,en;q=0.9",
+        cookie,
+        ...(init?.headers ?? {}),
+        ...(init?.method && init.method !== "GET" ? { "content-type": init.headers?.["content-type"] ?? "application/json" } : {}),
+      },
+      redirect: "manual",
+      signal: AbortSignal.timeout(15000),
+      ...(init?.body ? { body: init.body } : {}),
+    });
+    const text = await res.text();
+    let body: unknown = text;
+    if (text) { try { body = JSON.parse(text); } catch { /* keep raw text */ } }
+    return { ok: res.status >= 200 && res.status < 300, status: res.status, location: res.headers.get("location"), body };
+  } catch (err) {
+    return { ok: false, status: null, location: null, body: String(err).slice(0, 200) };
+  }
+}
+/** True when the response means the stored session cookie is dead: 401/403, a
+ *  redirect towards the login page, or a 200 that is actually the login page
+ *  (its username field is `UserName` — the driver editor uses `Username`, so
+ *  the editor partial can never be mistaken for a login page). */
+const statusLabel = (r: TbRes): string => {
+  if (r.status != null) return String(r.status);
+  const raw = typeof r.body === "string" ? r.body : JSON.stringify(r.body);
+  return "network error" + (raw && raw !== "{}" ? `: ${raw.slice(0, 160)}` : "");
+};
+  if (r.status === 401 || r.status === 403) return true;
+  if (r.status != null && r.status >= 300 && r.status < 400 && r.location) {
+    if (/login|security/i.test(r.location)) return true;
+  }
+  return r.status === 200 && typeof r.body === "string" &&
+    /name="UserName"/i.test(r.body) && /<form/i.test(r.body);
+};
+
+/** The driver editor partial — the same request the /Settings/Drivers page's
+ *  own XHR makes (verified 200/36 KB with X-Requested-With). Carries the
+ *  per-session antiforgery token the write POSTs must include. */
+async function fetchEditorPartial(fetchImpl: typeof fetch, baseUrl: string, cookie: string, driverId: string): Promise<{ res: TbRes; token: string | null; values: Map<string, string> }> {
+  const res = await tbRequest(fetchImpl, `${baseUrl}/ajax/settings/drivers/${driverId}`, cookie, {
+    headers: { "X-Requested-With": "XMLHttpRequest" },
+  });
+  const html = typeof res.body === "string" ? res.body : "";
+  let token: string | null = null;
+  const values = new Map<string, string>();
+  if (res.ok && html) {
+    const hidden = html.match(/<input[^>]*name="RequestVerificationToken"[^>]*value="([^"]*)"/i);
+    const fn = html.match(/RequestVerificationToken'\s*:\s*'([^']+)'/);
+    token = hidden?.[1] ?? fn?.[1] ?? null;
+    // input[type=text|hidden|password|number|date|tel|email|url], checkbox
+    // (only when checked — browsers submit checked boxes), select (selected
+    // option), textarea.
+    for (const m of html.matchAll(/<input\b[^>]*>/gi)) {
+      const tag = m[0];
+      const name = tag.match(/name="([^"]*)"/i)?.[1];
+      if (!name) continue;
+      const type = (tag.match(/type="([^"]*)"/i)?.[1] ?? "text").toLowerCase();
+      if (type === "submit" || type === "button" || type === "image" || type === "reset") continue;
+      if (type === "checkbox") { if (/checked/i.test(tag)) values.set(name, tag.match(/value="([^"]*)"/i)?.[1] ?? "on"); continue; }
+      if (type === "radio") { if (/checked/i.test(tag)) values.set(name, tag.match(/value="([^"]*)"/i)?.[1] ?? "on"); continue; }
+      values.set(name, tag.match(/value="([^"]*)"/i)?.[1] ?? "");
+    }
+    for (const m of html.matchAll(/<select\b[^>]*name="([^"]*)"[^>]*>([\s\S]*?)<\/select>/gi)) {
+      const name = m[1];
+      const sel = m[2].match(/<option[^>]*selected[^>]*value="([^"]*)"|<option[^>]*value="([^"]*)"[^>]*selected/i);
+      values.set(name, sel?.[1] ?? sel?.[2] ?? "");
+    }
+    for (const m of html.matchAll(/<textarea\b[^>]*name="([^"]*)"[^>]*>([\s\S]*?)<\/textarea>/gi)) {
+      values.set(m[1], m[2].replace(/^\s+|\s+$/g, ""));
+    }
+  }
+  return { res, token, values };
+}
+
+function outcome(status: TowbookPushOutcome["status"], notice: string, escalated: boolean, attempts: string[]): TowbookPushOutcome {
+  return { pushed: status === "verified", status, notice, escalated, attempts };
+}
+
+/** Edit push: fetch the editor partial, override Name (+ Email only when the
+ *  LD email is a real email — never the derived @towbook.driver addresses),
+ *  POST the full form (field-preserving) with the fresh token, then read back
+ *  the name via GET /api/drivers. */
+async function pushDriverEdit(fetchImpl: typeof fetch, baseUrl: string, cookie: string, driverId: string, changes: { name: string; email: string | null }): Promise<TowbookPushOutcome> {
+  const attempts: string[] = [];
+  const editor = await fetchEditorPartial(fetchImpl, baseUrl, cookie, driverId);
+  attempts.push(`GET /ajax/settings/drivers/${driverId} → ${statusLabel(editor.res)} (${editor.res.ok ? "ok" : "failed"})`);
+  if (isExpired(editor.res)) return outcome("failed", "The Towbook session expired — reconnect Towbook in Settings.", true, attempts);
+  if (!editor.res.ok) {
+    if (editor.res.status === 404 || editor.res.status === 405) {
+      return outcome("unsupported", "Towbook does not support editing driver details from Lightning Dispatch (HTTP " + (editor.res.status ?? "?") + ").", false, attempts);
+    }
+    return outcome("failed", `Towbook rejected the driver editor (HTTP ${editor.res.status ?? "error"}).`, true, attempts);
+  }
+  const values = editor.values;
+  if (!editor.token) return outcome("failed", "Towbook did not return the form token — the edit could not be pushed.", true, attempts);
+  values.set("Name", changes.name);
+  if (changes.email && values.has("Email")) values.set("Email", changes.email);
+  const body = [...values.entries()].map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&");
+  let post = await tbRequest(fetchImpl, `${baseUrl}/ajax/Settings/Drivers/Details`, cookie, {
+    method: "POST",
+    body,
+    headers: { "content-type": "application/x-www-form-urlencoded; charset=UTF-8", "X-Requested-With": "XMLHttpRequest" },
+  });
+  attempts.push(`POST /ajax/Settings/Drivers/Details → ${post.status ?? "network error"} (${post.ok ? "ok" : "failed"})`);
+  if (!post.ok && !isExpired(post)) {
+    const retry = await tbRequest(fetchImpl, `${baseUrl}/ajax/Settings/Drivers/Details`, cookie, {
+      method: "POST",
+      body,
+      headers: { "content-type": "application/x-www-form-urlencoded; charset=UTF-8", "X-Requested-With": "XMLHttpRequest" },
+    });
+    attempts.push(`POST retry → ${retry.status ?? "network error"} (${retry.ok ? "ok" : "failed"})`);
+    post = retry;
+  }
+  if (!post.ok || isExpired(post)) {
+    if (isExpired(post)) return outcome("failed", "The Towbook session expired while saving — reconnect Towbook in Settings.", true, attempts);
+    if (post.status === 404 || post.status === 405) return outcome("unsupported", "Towbook does not support editing driver details from Lightning Dispatch (HTTP " + (post.status ?? "?") + ").", false, attempts);
+    return outcome("failed", `Towbook rejected the driver update (HTTP ${post.status ?? "error"}).`, true, attempts);
+  }
+  // Read-back verify: the driver's name on the base roster.
+  const roster = await tbRequest(fetchImpl, `${baseUrl}/api/drivers`, cookie);
+  attempts.push(`GET /api/drivers verify → ${roster.status ?? "network error"}`);
+  const found = Array.isArray(roster.body) ? (roster.body as Record<string, unknown>[]).find((d) => d.id != null && String(d.id) === driverId) : null;
+  if (roster.ok && found && String(found.name ?? "") === changes.name) {
+    return outcome("verified", changes.email && values.has("Email") ? "Name and email synced to Towbook and verified." : "Name synced to Towbook and verified.", false, attempts);
+  }
+  return outcome("failed", `Towbook did not confirm the new name (${String(found?.name ?? "unknown")}).`, true, attempts);
+}
+
+/** Remove push: POST /api/drivers/{id}/disable (the page's "Disable Driver"
+ *  action) with the fresh token header, then verify deleted:true on
+ *  GET /api/drivers/full?includeDeleted=true. */
+async function pushDriverDisable(fetchImpl: typeof fetch, baseUrl: string, cookie: string, driverId: string): Promise<TowbookPushOutcome> {
+  const attempts: string[] = [];
+  const editor = await fetchEditorPartial(fetchImpl, baseUrl, cookie, driverId);
+  attempts.push(`GET /ajax/settings/drivers/${driverId} → ${statusLabel(editor.res)} (${editor.res.ok ? "ok" : "failed"})`);
+  if (isExpired(editor.res)) return outcome("failed", "The Towbook session expired — reconnect Towbook in Settings.", true, attempts);
+  if (!editor.res.ok) {
+    if (editor.res.status === 404 || editor.res.status === 405) return outcome("unsupported", "Towbook does not support removing drivers from Lightning Dispatch (HTTP " + (editor.res.status ?? "?") + ").", false, attempts);
+    return outcome("failed", `Towbook rejected the driver editor (HTTP ${editor.res.status ?? "error"}).`, true, attempts);
+  }
+  let post = await tbRequest(fetchImpl, `${baseUrl}/api/drivers/${driverId}/disable`, cookie, {
+    method: "POST",
+    headers: { ...(editor.token ? { RequestVerificationToken: editor.token } : {}) },
+  });
+  attempts.push(`POST /api/drivers/${driverId}/disable → ${post.status ?? "network error"} (${post.ok ? "ok" : "failed"})`);
+  if (!post.ok && !isExpired(post)) {
+    const retry = await tbRequest(fetchImpl, `${baseUrl}/api/drivers/${driverId}/disable`, cookie, {
+      method: "POST",
+      headers: { ...(editor.token ? { RequestVerificationToken: editor.token } : {}) },
+    });
+    attempts.push(`POST retry → ${retry.status ?? "network error"} (${retry.ok ? "ok" : "failed"})`);
+    post = retry;
+  }
+  if (!post.ok || isExpired(post)) {
+    if (isExpired(post)) return outcome("failed", "The Towbook session expired while removing the driver — reconnect Towbook in Settings.", true, attempts);
+    if (post.status === 404 || post.status === 405) return outcome("unsupported", "Towbook does not support removing drivers from Lightning Dispatch (HTTP " + (post.status ?? "?") + ").", false, attempts);
+    return outcome("failed", `Towbook rejected the driver removal (HTTP ${post.status ?? "error"}).`, true, attempts);
+  }
+  // Read-back verify: deleted:true on the full roster (deleted drivers are
+  // excluded from the base /api/drivers, so /full?includeDeleted=true is the
+  // proof; absent from both is also treated as gone).
+  const full = await tbRequest(fetchImpl, `${baseUrl}/api/drivers/full?includeDeleted=true`, cookie);
+  attempts.push(`GET /api/drivers/full?includeDeleted=true verify → ${full.status ?? "network error"}`);
+  const found = Array.isArray(full.body) ? (full.body as Record<string, unknown>[]).find((d) => d.id != null && String(d.id) === driverId) : null;
+  if (full.ok && (found?.deleted === true || found == null)) {
+    return outcome("verified", "Removed from Towbook (driver disabled) and verified.", false, attempts);
+  }
+  return outcome("failed", `Towbook did not confirm the driver removal (deleted=${String(found?.deleted ?? "unknown")}).`, true, attempts);
+}
+
+/* ------------------------------ audit + escalation ------------------------------ */
+
+async function recordAudit(actor: ContractorMgmtActor, action: string, entityId: string, detail: Record<string, unknown>): Promise<void> {
+  try {
+    const q = await db();
+    await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
+      SELECT gen_random_uuid()::text, ${actor.orgId}, ${actor.id}, ${actor.role}, ${action}, 'contractor', ${entityId}, ${JSON.stringify(detail)}::jsonb, 'contractor-management'`;
+  } catch { /* audit is best-effort — never mask the outcome */ }
+}
+
+/** Escalation into the decision ledger — the ops "Needs attention" banner
+ *  reads ai_dispatcher_decisions with escalated=TRUE. Fixed dedupe key per
+ *  (driver, operation) so the same failure never spams. */
+async function recordEscalation(orgId: string, driverId: string, op: string, reason: string, evidence: Record<string, unknown>): Promise<void> {
+  try {
+    const q = await db();
+    await q`INSERT INTO ai_dispatcher_decisions(id, org_id, call_request_id, call_id, decision, escalated, driver_id, driver_name, eta_minutes, zone_distance_miles, reason, raw_response)
+      VALUES(gen_random_uuid()::text, ${orgId}, ${`contractor-push-${op}-${driverId}`}, ${driverId}, 'escalated_contractor_push_failed', TRUE, ${driverId}, NULL, NULL, NULL, ${reason}, ${JSON.stringify(evidence)}::jsonb)
+      ON CONFLICT DO NOTHING`;
+  } catch { /* never mask the outcome */ }
+}
+
+/* ------------------------------ edit contractor ------------------------------ */
+
+const EDIT_SCHEMA = z.object({
+  contractorId: z.string().trim().min(1).max(128),
+  name: z.string().trim().min(1).max(120),
+  email: z.string().trim().max(200).optional().or(z.literal("")),
+});
+
+export type ContractorEditResult = { contractor: ContractorRow; towbook: TowbookPushOutcome };
+
+/** Owner edits a contractor's name (+ email) from the Contractors tab. Updates
+ *  the LD users row (audit 'contractor_updated') AND pushes to Towbook via the
+ *  driver editor form when supported (verified read-back; on genuine failure
+ *  escalates with evidence). If Towbook rejects / doesn't support the write,
+ *  the local update stands and the UI shows a clear inline notice. */
+export async function editContractorCore(actor: ContractorMgmtActor, data: unknown, opts: { fetchImpl?: typeof fetch } = {}): Promise<ContractorManagementResult<ContractorEditResult>> {
+  if (!canManage(actor)) return { ok: false, code: "unauthorized", message: "Owner access required." };
+  const v = EDIT_SCHEMA.safeParse(data);
+  if (!v.success) {
+    const issue = v.error.issues[0];
+    return { ok: false, code: "invalid_input", message: issue ? issue.message : "Enter a name." };
+  }
+  const { contractorId, name } = v.data;
+  const providedEmail = v.data.email && v.data.email.trim() ? v.data.email.trim() : "";
+  if (providedEmail && !emailLike(providedEmail)) {
+    return { ok: false, code: "invalid_input", message: "That email address doesn't look valid." };
+  }
+  const email = providedEmail || "";
+  const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
+  try {
+    await ensure();
+    const q = await db();
+    const rows = await q`SELECT u.id, u.name, u.email, u.login_handle, u.towbook_driver_id, u.towbook_user_id, u.deactivated_at
+      FROM users u JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND m.role = 'contractor'
+      WHERE u.id = ${contractorId} LIMIT 1`;
+    if (!rows.length) return { ok: false, code: "not_found", message: "That contractor is not on this account." };
+    const row = rows[0] as Record<string, unknown>;
+    if (row.deactivated_at != null) {
+      return { ok: false, code: "invalid_input", message: "This contractor was removed — they can't be edited until re-added." };
+    }
+    if (email) {
+      const byEmail = await q`SELECT id FROM users WHERE email = ${email} AND id != ${contractorId} LIMIT 1`;
+      if (byEmail.length) return { ok: false, code: "duplicate", message: "That email address is already in use by another account." };
+    }
+    await q`UPDATE users SET name = ${name}, email = ${email} WHERE id = ${contractorId} AND deactivated_at IS NULL`;
+    const before = { name: String(row.name ?? ""), email: String(row.email ?? "") };
+    await recordAudit(actor, "contractor_updated", contractorId, { contractorId, from: before, to: { name, email } });
+
+    const driverId = row.towbook_driver_id != null ? String(row.towbook_driver_id) : "";
+    let towbook: TowbookPushOutcome;
+    if (!driverId) {
+      towbook = outcome("skipped", "Updated in Lightning Dispatch; this contractor has no Towbook driver id, so Towbook was not updated.", false, []);
+    } else {
+      const session = await loadOwnerSession(actor.orgId);
+      if (!session) {
+        towbook = outcome("skipped", "Updated in Lightning Dispatch; Towbook isn't connected, so the change was NOT pushed to Towbook.", false, []);
+      } else {
+        towbook = await pushDriverEdit(fetchImpl, session.baseUrl, session.cookies, driverId, {
+          name,
+          // Push the email only when it is a REAL address — never the derived
+          // @towbook.driver placeholders (they are not the linked user's mail).
+          email: email && emailLike(email) && !email.toLowerCase().endsWith("@towbook.driver") ? email : null,
+        });
+        if (towbook.escalated) {
+          await recordEscalation(actor.orgId, driverId, "edit", towbook.notice, { contractorId, name, email, attempts: towbook.attempts });
+        }
+        await recordAudit(actor, "contractor_towbook_push", contractorId, { op: "edit", driverId, status: towbook.status, notice: towbook.notice, attempts: towbook.attempts });
+      }
+    }
+    const contractor: ContractorRow = {
+      id: contractorId, name, email, loginHandle: row.login_handle != null ? String(row.login_handle) : null,
+      towbookDriverId: row.towbook_driver_id != null ? String(row.towbook_driver_id) : null,
+      towbookUserId: row.towbook_user_id != null ? String(row.towbook_user_id) : null,
+      status: "not_signed_in", lastActivityAt: null, createdAt: toIso(row.created_at), removedAt: null,
+    };
+    return { ok: true, data: { contractor, towbook } };
+  } catch (err) {
+    return { ok: false, code: "database_error", message: err instanceof Error ? err.message : "Unable to edit the contractor." };
+  }
+}
+
+/* ------------------------------ remove contractor ------------------------------ */
+
+const REMOVE_SCHEMA = z.object({
+  contractorId: z.string().trim().min(1).max(128),
+  reason: z.string().trim().max(300).optional().or(z.literal("")),
+});
+
+export type ContractorRemoveResult = { contractor: ContractorRow; towbook: TowbookPushOutcome; sessionsInvalidated: number };
+
+/** Owner removes a contractor. NEVER a hard delete — users are referenced by
+ *  jobs, sessions, pings, photos and audit rows, so the row is soft-deactivated
+ *  (deactivated_at) and kept for history. The contractor's LD sessions are
+ *  deleted (they can't keep using the portal) and their stored Towbook session
+ *  row is removed (no re-checkin, no dispatch). Reflected on Towbook via the
+ *  "Disable Driver" action when supported (verified read-back; genuine failures
+ *  escalate with evidence — the local removal ALWAYS stands). */
+export async function removeContractorCore(actor: ContractorMgmtActor, data: unknown, opts: { fetchImpl?: typeof fetch } = {}): Promise<ContractorManagementResult<ContractorRemoveResult>> {
+  if (!canManage(actor)) return { ok: false, code: "unauthorized", message: "Owner access required." };
+  const v = REMOVE_SCHEMA.safeParse(data);
+  if (!v.success) {
+    const issue = v.error.issues[0];
+    return { ok: false, code: "invalid_input", message: issue ? issue.message : "Invalid removal request." };
+  }
+  const { contractorId } = v.data;
+  const reason = (v.data.reason ?? "").trim();
+  const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
+  try {
+    await ensure();
+    const q = await db();
+    const rows = await q`SELECT u.id, u.name, u.email, u.login_handle, u.towbook_driver_id, u.towbook_user_id, u.created_at, u.deactivated_at
+      FROM users u JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND m.role = 'contractor'
+      WHERE u.id = ${contractorId} LIMIT 1`;
+    if (!rows.length) return { ok: false, code: "not_found", message: "That contractor is not on this account." };
+    const row = rows[0] as Record<string, unknown>;
+    if (row.deactivated_at != null) return { ok: false, code: "invalid_input", message: "That contractor is already removed." };
+
+    // (a) Local soft-deactivate — never a hard delete. History (jobs, audit,
+    //     GPS, photos, memberships) all reference the users row and stays.
+    await q`UPDATE users SET deactivated_at = NOW() WHERE id = ${contractorId} AND deactivated_at IS NULL`;
+    // (b) Invalidate EVERYTHING: LD cookie sessions die immediately, and the
+    //     stored per-driver Towbook session is removed so loadDriverSession
+    //     returns null (no portal GPS pings / job actions) and a fresh
+    //     Towbook sign-in cannot re-link.
+    const sessions = await q`DELETE FROM sessions WHERE user_id = ${contractorId} RETURNING id`;
+    const driverId = row.towbook_driver_id != null ? String(row.towbook_driver_id) : "";
+    if (driverId) {
+      await q`DELETE FROM towbook_sessions WHERE org_id = ${actor.orgId} AND session_kind = 'driver' AND towbook_driver_id = ${driverId}`;
+    }
+
+    // (c) Towbook propagation — best-effort with verified read-back.
+    let towbook: TowbookPushOutcome;
+    if (!driverId) {
+      towbook = outcome("skipped", "Removed in Lightning Dispatch; this contractor has no Towbook driver id, so Towbook was not updated.", false, []);
+    } else {
+      const session = await loadOwnerSession(actor.orgId);
+      if (!session) {
+        towbook = outcome("skipped", "Removed in Lightning Dispatch; Towbook isn't connected, so the driver is still active on Towbook.", false, []);
+      } else {
+        towbook = await pushDriverDisable(fetchImpl, session.baseUrl, session.cookies, driverId);
+        if (towbook.escalated) {
+          await recordEscalation(actor.orgId, driverId, "remove", towbook.notice, { contractorId, reason, attempts: towbook.attempts });
+        }
+        await recordAudit(actor, "contractor_towbook_push", contractorId, { op: "remove", driverId, status: towbook.status, notice: towbook.notice, attempts: towbook.attempts });
+      }
+    }
+
+    await recordAudit(actor, "contractor_removed", contractorId, {
+      contractorId, name: String(row.name ?? ""), towbookDriverId: driverId || null, reason: reason || null,
+      sessionsInvalidated: sessions.length, towbook: { status: towbook.status, pushed: towbook.pushed, notice: towbook.notice },
+    });
+
+    const contractor: ContractorRow = {
+      id: contractorId, name: String(row.name ?? ""), email: String(row.email ?? ""),
+      loginHandle: row.login_handle != null ? String(row.login_handle) : null,
+      towbookDriverId: row.towbook_driver_id != null ? String(row.towbook_driver_id) : null,
+      towbookUserId: row.towbook_user_id != null ? String(row.towbook_user_id) : null,
+      status: "not_signed_in", lastActivityAt: null, createdAt: toIso(row.created_at),
+      removedAt: new Date().toISOString(),
+    };
+    return { ok: true, data: { contractor, towbook, sessionsInvalidated: sessions.length } };
+  } catch (err) {
+    return { ok: false, code: "database_error", message: err instanceof Error ? err.message : "Unable to remove the contractor." };
+  }
+}
+
 /* -------------------------------- handlers -------------------------------- */
 
 /** Thin auth wrapper shared by the facade handlers: owner/admin only. Returns
@@ -386,4 +782,18 @@ export async function importContractorsHandler(opts: { fetchImpl?: typeof fetch 
   const actor = await resolveActor();
   if (!actor) return { ok: false, code: "unauthorized", message: "Owner access required." };
   return importContractorsCore(actor, opts);
+}
+
+export async function editContractorHandler(data: unknown): Promise<ContractorManagementResult<ContractorEditResult>> {
+  if (!configured()) return { ok: false, code: "database_error", message: "Contractor management requires database mode." };
+  const actor = await resolveActor();
+  if (!actor) return { ok: false, code: "unauthorized", message: "Owner access required." };
+  return editContractorCore(actor, data);
+}
+
+export async function removeContractorHandler(data: unknown): Promise<ContractorManagementResult<ContractorRemoveResult>> {
+  if (!configured()) return { ok: false, code: "database_error", message: "Contractor management requires database mode." };
+  const actor = await resolveActor();
+  if (!actor) return { ok: false, code: "unauthorized", message: "Owner access required." };
+  return removeContractorCore(actor, data);
 }

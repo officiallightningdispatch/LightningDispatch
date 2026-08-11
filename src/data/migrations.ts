@@ -215,6 +215,17 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     )`;
     await q`CREATE INDEX IF NOT EXISTS job_completions_org_updated_idx ON job_completions(org_id, updated_at)`;
   }],
+  [14, async (q) => {
+    // Contractor edit/remove (owner-directed 2026-08-11, backlog "Contractor
+    // edit/remove with Towbook propagation"): soft-deactivate contractor users
+    // instead of hard-deleting them — users are referenced by jobs, sessions,
+    // GPS pings, photos and audit rows, so history must survive. A removed
+    // contractor: cannot sign in (auth-server currentUser + driverLogin filter
+    // on deactivated_at), their LD + stored Towbook sessions are deleted, and
+    // they are excluded from dispatch (no session, and Towbook-side disable).
+    // deactivated_at stays NULL for active users.
+    await q`ALTER TABLE users ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

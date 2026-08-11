@@ -89,6 +89,20 @@ export async function loadDriverSession(user: { orgId: string; towbookDriverId: 
   }
 }
 
+/** True when the LD users row for a driver is soft-deactivated (removed by the
+ *  owner — contractor edit/remove feature). driverLogin refuses deactivated
+ *  drivers BEFORE persisting a session, so a removed contractor cannot sign in
+ *  even with valid Towbook credentials. */
+export async function isDriverDeactivated(orgId: string, towbookDriverId: string): Promise<boolean> {
+  await ensure();
+  const q = await db();
+  const rows = await q`SELECT u.deactivated_at
+    FROM users u
+    JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${orgId} AND m.role = 'contractor'
+    WHERE u.towbook_driver_id = ${towbookDriverId} LIMIT 1`;
+  return rows.length > 0 && rows[0].deactivated_at != null;
+}
+
 /* --------------------------------- geometry --------------------------------- */
 
 const EARTH_RADIUS_METERS = 6371000;
