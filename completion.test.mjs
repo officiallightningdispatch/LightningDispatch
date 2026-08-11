@@ -271,10 +271,13 @@ const orgFetch = makeFetch({ callId: CONF[ORG].call });
   const c = CONF[ORG2];
   const { fetchImpl, squareCalls } = makeFetch({ callId: c.call });
   const user = userFor(ORG2);
-  // Hermetic: point the file fallback at a nonexistent dir so this passes even
-  // when real .secrets files exist on this machine.
+  // Hermetic: point the file fallback at a nonexistent dir AND clear the env
+  // vars (env-first) so this passes even when real .secrets files exist here.
   const noSquareDir = `/tmp/square-missing-${Date.now()}`;
+  const savedSq = { s: process.env.SQUARE_ACCESS_TOKEN, l: process.env.SQUARE_LOCATION_ID };
+  delete process.env.SQUARE_ACCESS_TOKEN; delete process.env.SQUARE_LOCATION_ID;
   const noTip = await createTipLinkCore(user, { jobId: c.call, amountCents: 500 }, { fetchImpl, squareStableDir: noSquareDir });
+  process.env.SQUARE_ACCESS_TOKEN = savedSq.s; process.env.SQUARE_LOCATION_ID = savedSq.l;
   check("tip without Square creds → square_not_configured", noTip.ok === false && noTip.code === "square_not_configured", JSON.stringify(noTip));
   check("no Square POST fired", squareCalls.length === 0, JSON.stringify(squareCalls));
 
