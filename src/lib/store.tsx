@@ -210,6 +210,11 @@ export interface DispatchStoreValue {
   setContractorStatus: (contractorId: string, status: ContractorStatus) => Promise<boolean>;
   /** Wipe persisted state and reload the pristine server seed. */
   resetDemo: () => Promise<boolean>;
+  /** Re-fetch org data and re-hydrate the store (database mode only — demo
+   *  mode keeps its local fixture untouched). Returns the fresh payload so
+   *  callers (e.g. the notification layer) can detect arrivals; null when the
+   *  fetch failed or in demo mode. Powers the owner portal's live poll. */
+  refresh: () => Promise<DispatchData | null>;
 }
 
 const DispatchStoreContext = createContext<DispatchStoreValue | null>(null);
@@ -419,6 +424,20 @@ export function DispatchStoreProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  /** Live refresh (notification poll + live queue): database mode only.
+   *  Demo mode returns null and never touches the local fixture. */
+  const refresh = useCallback(async (): Promise<DispatchData | null> => {
+    if (!dbMode.current) return null;
+    try {
+      const response = await getDispatchData();
+      if (response.mode !== "database") return null;
+      hydrateFromServer(response.data);
+      return response.data;
+    } catch {
+      return null;
+    }
+  }, [hydrateFromServer]);
+
   const value = useMemo<DispatchStoreValue>(
     () => ({
       state,
@@ -434,8 +453,9 @@ export function DispatchStoreProvider({ children }: { children: ReactNode }) {
       declineJob,
       setContractorStatus,
       resetDemo,
+      refresh,
     }),
-    [state, loading, isDemoMode, pending, errors, clearError, assignJob, advanceJob, declineJob, setContractorStatus, resetDemo],
+    [state, loading, isDemoMode, pending, errors, clearError, assignJob, advanceJob, declineJob, setContractorStatus, resetDemo, refresh],
   );
 
   return <DispatchStoreContext.Provider value={value}>{children}</DispatchStoreContext.Provider>;

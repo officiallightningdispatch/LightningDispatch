@@ -97,3 +97,17 @@
     transform: translateY(0);
   }
 }
+
+/* Notification banner slide-in (backlog #1): drops in from just above the
+ * viewport under the app header. Paired with animate-[notify-in_0.25s_ease-out]
+ * in the banner stack. */
+@keyframes notify-in {
+  from {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

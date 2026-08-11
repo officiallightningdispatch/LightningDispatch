@@ -18,6 +18,7 @@ import { JobPhotoFlow } from "~/components/driver-photos-ui";
 import { JobDetailDisclosure } from "~/components/job-detail";
 import { driverJobAction, driverJobs, driverLogout, type DriverCall } from "~/data/driver-auth";
 import { pingDriverLocation } from "~/data/driver-gps";
+import { DriverNotificationBanners, SoundToggle } from "~/components/notify-banners";
 
 const STATUS_META: Record<number, { label: string; badge: string; dot: string }> = {
   0: { label: "New", badge: "bg-ink-100 text-ink-600", dot: "bg-ink-400" },
@@ -158,13 +159,17 @@ export function RealDriverPortal() {
 
   return (
     <AppShell portal="driver" title="My jobs" description="Offers and active calls from the dispatch board — status stays in sync with Towbook.">
+      <DriverNotificationBanners calls={calls} />
       <div className="mb-4 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <Button variant="ghost" size="sm" onClick={() => void load(false)} disabled={loading}>
             <RefreshCw className={`size-4 ${loading ? "animate-spin" : ""}`} /> Refresh
           </Button>
         </div>
-        <Button variant="ghost" size="sm" onClick={() => void signOut()}><LogOut className="size-4" /> Sign out</Button>
+        <div className="flex items-center gap-1">
+          <SoundToggle role="driver" />
+          <Button variant="ghost" size="sm" onClick={() => void signOut()}><LogOut className="size-4" /> Sign out</Button>
+        </div>
       </div>
 
       <GpsStatusChip state={gpsState} />
