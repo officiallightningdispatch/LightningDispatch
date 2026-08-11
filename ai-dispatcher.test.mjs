@@ -837,6 +837,17 @@ try {
     check("resolveTomtomKey: unreadable file → null (degrades, never crashes)", missing === null, String(missing));
     const stable = resolveTomtomKey({});
     check("resolveTomtomKey: empty env → stable key file resolves non-empty (value never echoed)", typeof stable === "string" && stable.length > 0, `len=${stable?.length ?? -1}`);
+    // Artifact fallback (the hosted-live fix, mirroring b2-client.ts): when the
+    // machine-local sibling dir is unavailable the build-embedded copy at
+    // <site-root>/dist/.secrets/tomtom.key resolves — but ONLY on an explicit
+    // opt-in. Both checks need dist/.secrets/tomtom.key present (the build's
+    // prepare-secrets.sh embeds it), so this suite runs after a build.
+    const { existsSync } = await import("node:fs");
+    const artifactPath = join(process.cwd(), "dist", ".secrets", "tomtom.key");
+    const artifact = resolveTomtomKey({}, { stableKeyFile: join(dir, "nope.key"), allowArtifactFallback: true });
+    check("resolveTomtomKey: artifact fallback resolves <site-root>/dist/.secrets/tomtom.key when the stable dir is unavailable (explicit opt-in)", existsSync(artifactPath) && typeof artifact === "string" && artifact.length > 0, `exists=${existsSync(artifactPath)} len=${artifact?.length ?? -1}`);
+    const hermetic = resolveTomtomKey({}, { stableKeyFile: join(dir, "nope.key") });
+    check("resolveTomtomKey: explicit stableKeyFile override stays hermetic — artifact fallback NOT consulted", hermetic === null, String(hermetic));
     const routerViaFile = resolveRouter({ TOMTOM_KEY_FILE: f }, makeRouterFetch().fetchImpl);
     check("resolveRouter: key from file → tomtom provider + keyConfigured true", routerViaFile.provider === "tomtom" && routerViaFile.tomtomKeyConfigured === true && typeof routerViaFile.router === "function");
     rmSync(dir, { recursive: true, force: true });
@@ -935,6 +946,13 @@ try {
         { pickupLat: 41.18, pickupLng: -73.13, status: "accepted", createdAt: "t3" },
       ], 41.2, -73.2, Rq3, 3);
     check("queue model: 3-job chain 10+30 + 5+30 + 5+30 = 110 queue + final 10 = 120", chain3 && chain3.queueMinutes === 110 && chain3.finalLegMinutes === 10 && chain3.arrivalMinutes === 120, JSON.stringify(chain3));
+    // ETA honesty in the workload chain: a leg that fell back after a TomTom
+    // failure must CARRY that failure to the decision record — never a silent
+    // provider=osrm with tomtomFailure=null (owner-shared incident 2026-08-11).
+    const ttFail = await workloadAwareArrivalMinutes(
+      dA, [{ pickupLat: 41.16, pickupLng: -73.11, status: "en_route", createdAt: "t1" }], 41.2, -73.2,
+      makeRouter({ "41.15,-73.10": { seconds: 600, provider: "osrm", liveTraffic: false, trafficDelaySeconds: null, notes: "osrm after tomtom 429", tomtomFailure: "HTTP 429" } }), 1);
+    check("queue model: TomTom failure on a chain leg is carried (tomtomFailure HTTP 429) — ETA honesty", ttFail?.tomtomFailure === "HTTP 429", JSON.stringify(ttFail));
     // gps ping age surface (best-effort — the live payload has no timestamp)
     const stale = { ...driver(2006, "Stale GPS", { lat: 41.19, lng: -73.15, etaSec: 604 }), gpsUpdatedAtUtc: new Date(Date.now() - 30 * 60000).toISOString() };
     check("gpsPingAgeMinutes: detects a 30-min-old ping", gpsPingAgeMinutes(stale) != null && gpsPingAgeMinutes(stale) >= 29 && gpsPingAgeMinutes(stale) <= 31, String(gpsPingAgeMinutes(stale)));
@@ -1020,6 +1038,26 @@ try {
       const rows = await q`SELECT reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG4} AND call_request_id='8034'`;
       check("engine tomtom-429: reason surfaces 'tomtom failed (HTTP 429) → osrm' + ETA still quoted", rows[0] && String(rows[0].reason).includes("tomtom failed (HTTP 429) → osrm") && String(rows[0].reason).includes("osrm road 10 + buffer 5") && rows[0].raw_response?.eta?.tomtomFailure === "HTTP 429", String(rows[0]?.reason));
       check("engine tomtom-429: 1 TomTom call, 1 OSRM call (chain attempted live first)", rf.tomtomCalls.length === 1 && rf.osrmCalls.length === 1, `${rf.tomtomCalls.length}/${rf.osrmCalls.length}`);
+    }
+    // ETA honesty in the WORKLOAD chain (busy driver): the decision records the
+    // TomTom failure when a chain leg fell back — provider osrm + tomtomFailure
+    // HTTP 429, never the silent osrm/usedFallback=false/tomtomFailure=null combo.
+    {
+      const m = makeFetch({
+        offers: [{ ...offer(8035), drivers: [3001, 3003] }],
+        drivers: [driver(3001, "Queue A", { lat: 41.15, lng: -73.10, etaSec: 604 }), driver(3003, "Two Job", { lat: 41.19, lng: -73.15, etaSec: 604 })],
+      });
+      const router3 = makeRouter({
+        "41.19,-73.15": 600, // 3003 GPS → J1
+        "41.10,-73.00": 600, // 3003 J1 → J2
+        "41.11,-73.01": { seconds: 900, provider: "osrm", liveTraffic: false, trafficDelaySeconds: null, notes: "osrm after tomtom 429", tomtomFailure: "HTTP 429" }, // J2 → offer (TomTom failed)
+      });
+      const { deps } = makeDeps(m.fetchImpl, router3);
+      const r = await runAutoDispatch(ORG4, deps);
+      const p = posts(m.calls);
+      const rows = await q`SELECT reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG4} AND call_request_id='8035'`;
+      check("engine workload tomtom-429: busy-driver chain records tomtomFailure HTTP 429 (no silent fallback)", rows[0] && rows[0].raw_response?.eta?.tomtomFailure === "HTTP 429" && rows[0].raw_response?.eta?.provider === "osrm" && String(rows[0].reason).includes("tomtom failed (HTTP 429) → osrm") && String(rows[0].reason).includes("workload-aware: 2 active jobs ≈ 80 min"), String(rows[0]?.reason));
+      check("engine workload tomtom-429: still dispatches 3003 with the workload ETA 100", r.decisions[0]?.decision === "auto_accept_with_driver" && p[0]?.body?.driverId === 3003 && p[0]?.body?.ETA === 100, JSON.stringify({ d: r.decisions[0], p: p[0]?.body }));
     }
   }
 

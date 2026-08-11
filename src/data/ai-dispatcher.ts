@@ -502,24 +502,50 @@ export async function tomtomRoadSeconds(
   return attempt.result;
 }
 
+/** Site root (walked up from this module — source runs, tests, and the
+ *  published bundle all land on the same directory: the one with
+ *  package.json). */
+const SITE_ROOT = findSiteRoot(import.meta.url);
 /** Stable, publish-proof TomTom key path: sibling of the site root, OUTSIDE
  *  the repo and outside the build output — /home/team/shared/.secrets/tomtom.key
  *  for this deployment (the same pattern as the Towbook session key,
  *  towbook-key.ts). A publish/clean rebuild can never touch it. */
-const STABLE_TOMTOM_KEY_FILE = join(dirname(findSiteRoot(import.meta.url)), ".secrets", "tomtom.key");
+const STABLE_TOMTOM_KEY_FILE = join(dirname(SITE_ROOT), ".secrets", "tomtom.key");
+/** Artifact fallbacks (mirror b2-client.ts ARTIFACT_DIRS): the hosted live
+ *  deployment cannot read the machine-local sibling dir, so the build embeds
+ *  the key at <site-root>/dist/.secrets (preferred over the source-tree
+ *  .secrets, which only local source runs would have). */
+const ARTIFACT_TOMTOM_KEY_FILES = [
+  join(SITE_ROOT, "dist", ".secrets", "tomtom.key"),
+  join(SITE_ROOT, ".secrets", "tomtom.key"),
+];
 
 /** Resolve the TomTom Routing API key for this deployment. Resolution order
- *  (first match wins, mirroring the Towbook session key):
+ *  (first match wins, mirroring the Towbook session key + b2-client):
  *    1. env TOMTOM_API_KEY — non-empty (trimmed).
  *    2. env TOMTOM_KEY_FILE — an explicit key-file path (unreadable → null, so
- *       the chain degrades instead of crashing).
+ *       the chain degrades instead of crashing, and hermetic tests can pin a
+ *       broken path to force "no key" without touching any real key file).
  *    3. The stable key file at <site-root-parent>/.secrets/tomtom.key (outside
  *       the repo and the build output).
+ *    4. The artifact key files at <site-root>/dist/.secrets/tomtom.key then
+ *       <site-root>/.secrets/tomtom.key (the hosted live deployment cannot
+ *       read the machine-local sibling dir, so the build embeds the key).
  *  Returns null when nothing is configured. Whitespace/newlines are trimmed
  *  (a key file with a trailing newline resolves cleanly). The key VALUE is
  *  never logged, stored, or serialized — callers expose only the boolean
- *  (tomtomKeyConfigured). */
-export function resolveTomtomKey(env: Record<string, string | undefined>): string | null {
+ *  (tomtomKeyConfigured).
+ *
+ *  Hermeticity (mirror loadB2Config): when opts.stableKeyFile is passed (tests
+ *  pin their fixtures) the artifact fallback files are NOT consulted, so a
+ *  test can never accidentally resolve the real production key. The artifact
+ *  fallback applies only on the production path (no stableKeyFile override),
+ *  or when the caller explicitly opts in with allowArtifactFallback
+ *  (verification harnesses). */
+export function resolveTomtomKey(
+  env: Record<string, string | undefined>,
+  opts: { stableKeyFile?: string; allowArtifactFallback?: boolean } = {},
+): string | null {
   const fromEnv = (env.TOMTOM_API_KEY ?? "").trim();
   if (fromEnv) return fromEnv;
   const explicitFile = (env.TOMTOM_KEY_FILE ?? "").trim();
@@ -530,11 +556,19 @@ export function resolveTomtomKey(env: Record<string, string | undefined>): strin
       return null;
     }
   }
+  const stableFile = opts.stableKeyFile ?? STABLE_TOMTOM_KEY_FILE;
   try {
-    return readFileSync(STABLE_TOMTOM_KEY_FILE, "utf8").trim() || null;
-  } catch {
-    return null;
+    const v = readFileSync(stableFile, "utf8").trim();
+    if (v) return v;
+  } catch { /* fall through to the artifact copies */ }
+  const artifactFiles = opts.stableKeyFile && !opts.allowArtifactFallback ? [] : ARTIFACT_TOMTOM_KEY_FILES;
+  for (const file of artifactFiles) {
+    try {
+      const v = readFileSync(file, "utf8").trim();
+      if (v) return v;
+    } catch { /* try the next candidate */ }
   }
+  return null;
 }
 
 /** ETA v3 provider selection. Chain: TomTom (live traffic + construction, only
@@ -816,17 +850,23 @@ export async function workloadAwareArrivalMinutes(
   finalLegProvider: EtaProvider;
   startedOnScene: boolean;
   unlocatedJobs: number;
+  /** First TomTom failure seen on ANY chain leg (a leg that fell back to
+   *  OSRM/factor after TomTom failed). Lets the decision record be honest
+   *  about live traffic NOT being used for part of the chain (ETA honesty). */
+  tomtomFailure: string | null;
 } | null> {
   const total = activeCount != null && Number.isFinite(activeCount) && activeCount >= 0
     ? Math.round(activeCount)
     : queue.length;
   if (total === 0) return null; // free driver — current-position travel is the caller's model
+  let chainTomtomFailure: string | null = null;
   const legMinutes = async (fromLat: number, fromLng: number, toLat: number, toLng: number): Promise<{ minutes: number; provider: EtaProvider }> => {
     let result: RoadResult | null = null;
     try {
       result = roadRouter ? await roadRouter(fromLat, fromLng, toLat, toLng) : null;
     } catch { result = null; }
     if (result && Number.isFinite(result.seconds) && result.seconds > 0) {
+      if (result.tomtomFailure && !chainTomtomFailure) chainTomtomFailure = result.tomtomFailure;
       return { minutes: result.seconds / 60, provider: result.provider };
     }
     return { minutes: fallbackRoadMinutes(haversineMiles(fromLat, fromLng, toLat, toLng)), provider: "factor" };
@@ -877,6 +917,7 @@ export async function workloadAwareArrivalMinutes(
     finalLegProvider: finalLeg.provider,
     startedOnScene,
     unlocatedJobs,
+    tomtomFailure: chainTomtomFailure,
   };
 }
 
@@ -950,7 +991,7 @@ export async function chooseBestDriverByRoad(
           finalLegMinutes: chain.finalLegMinutes,
           startedOnScene: chain.startedOnScene,
           unlocatedJobs: chain.unlocatedJobs,
-          tomtomFailure: null,
+          tomtomFailure: chain.tomtomFailure,
           gpsPingAgeMinutes: pingAge,
         };
       }
@@ -1039,7 +1080,7 @@ export async function chooseBestDriverByRoad(
       finalLegMinutes: arrival.finalLegMinutes,
       startedOnScene: arrival.startedOnScene,
       unlocatedJobs: arrival.unlocatedJobs,
-      tomtomFailure: null,
+      tomtomFailure: arrival.tomtomFailure,
       gpsPingAgeMinutes: gpsPingAgeMinutes(d),
     };
   }));
