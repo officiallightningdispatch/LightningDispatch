@@ -20,7 +20,7 @@ const {
   photosCompleteForJob,
   evaluateGeofence,
   latestDriverLocations,
-} = await import("./src/data/driver-gps.ts");
+} = await import("./src/data/driver-gps-core.ts");
 const { encryptSession } = await import("./src/data/towbook-key.ts");
 const { ensureSchema } = await import("./src/data/migrations.ts");
 const checks = [];

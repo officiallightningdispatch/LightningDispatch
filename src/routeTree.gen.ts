@@ -26,6 +26,7 @@ import { Route as OwnerQueueRouteImport } from './routes/owner/queue'
 import { Route as OwnerPerformanceRouteImport } from './routes/owner/performance'
 import { Route as OwnerMoneyRouteImport } from './routes/owner/money'
 import { Route as OwnerHistoryRouteImport } from './routes/owner/history'
+import { Route as OwnerDriversRouteImport } from './routes/owner/drivers'
 import { Route as OwnerAiDispatcherRouteImport } from './routes/owner/ai-dispatcher'
 import { Route as OwnerActiveRouteImport } from './routes/owner/active'
 import { Route as OpsHistoryRouteImport } from './routes/ops/history'
@@ -121,6 +122,11 @@ const OwnerHistoryRoute = OwnerHistoryRouteImport.update({
   path: '/history',
   getParentRoute: () => OwnerRoute,
 } as any)
+const OwnerDriversRoute = OwnerDriversRouteImport.update({
+  id: '/drivers',
+  path: '/drivers',
+  getParentRoute: () => OwnerRoute,
+} as any)
 const OwnerAiDispatcherRoute = OwnerAiDispatcherRouteImport.update({
   id: '/ai-dispatcher',
   path: '/ai-dispatcher',
@@ -185,6 +191,7 @@ export interface FileRoutesByFullPath {
   '/ops/history': typeof OpsHistoryRoute
   '/owner/active': typeof OwnerActiveRoute
   '/owner/ai-dispatcher': typeof OwnerAiDispatcherRoute
+  '/owner/drivers': typeof OwnerDriversRoute
   '/owner/history': typeof OwnerHistoryRoute
   '/owner/money': typeof OwnerMoneyRoute
   '/owner/performance': typeof OwnerPerformanceRoute
@@ -210,6 +217,7 @@ export interface FileRoutesByTo {
   '/ops/history': typeof OpsHistoryRoute
   '/owner/active': typeof OwnerActiveRoute
   '/owner/ai-dispatcher': typeof OwnerAiDispatcherRoute
+  '/owner/drivers': typeof OwnerDriversRoute
   '/owner/history': typeof OwnerHistoryRoute
   '/owner/money': typeof OwnerMoneyRoute
   '/owner/performance': typeof OwnerPerformanceRoute
@@ -239,6 +247,7 @@ export interface FileRoutesById {
   '/ops/history': typeof OpsHistoryRoute
   '/owner/active': typeof OwnerActiveRoute
   '/owner/ai-dispatcher': typeof OwnerAiDispatcherRoute
+  '/owner/drivers': typeof OwnerDriversRoute
   '/owner/history': typeof OwnerHistoryRoute
   '/owner/money': typeof OwnerMoneyRoute
   '/owner/performance': typeof OwnerPerformanceRoute
@@ -269,6 +278,7 @@ export interface FileRouteTypes {
     | '/ops/history'
     | '/owner/active'
     | '/owner/ai-dispatcher'
+    | '/owner/drivers'
     | '/owner/history'
     | '/owner/money'
     | '/owner/performance'
@@ -294,6 +304,7 @@ export interface FileRouteTypes {
     | '/ops/history'
     | '/owner/active'
     | '/owner/ai-dispatcher'
+    | '/owner/drivers'
     | '/owner/history'
     | '/owner/money'
     | '/owner/performance'
@@ -322,6 +333,7 @@ export interface FileRouteTypes {
     | '/ops/history'
     | '/owner/active'
     | '/owner/ai-dispatcher'
+    | '/owner/drivers'
     | '/owner/history'
     | '/owner/money'
     | '/owner/performance'
@@ -465,6 +477,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OwnerHistoryRouteImport
       parentRoute: typeof OwnerRoute
     }
+    '/owner/drivers': {
+      id: '/owner/drivers'
+      path: '/drivers'
+      fullPath: '/owner/drivers'
+      preLoaderRoute: typeof OwnerDriversRouteImport
+      parentRoute: typeof OwnerRoute
+    }
     '/owner/ai-dispatcher': {
       id: '/owner/ai-dispatcher'
       path: '/ai-dispatcher'
@@ -569,6 +588,7 @@ const OpsRouteWithChildren = OpsRoute._addFileChildren(OpsRouteChildren)
 interface OwnerRouteChildren {
   OwnerActiveRoute: typeof OwnerActiveRoute
   OwnerAiDispatcherRoute: typeof OwnerAiDispatcherRoute
+  OwnerDriversRoute: typeof OwnerDriversRoute
   OwnerHistoryRoute: typeof OwnerHistoryRoute
   OwnerMoneyRoute: typeof OwnerMoneyRoute
   OwnerPerformanceRoute: typeof OwnerPerformanceRoute
@@ -581,6 +601,7 @@ interface OwnerRouteChildren {
 const OwnerRouteChildren: OwnerRouteChildren = {
   OwnerActiveRoute: OwnerActiveRoute,
   OwnerAiDispatcherRoute: OwnerAiDispatcherRoute,
+  OwnerDriversRoute: OwnerDriversRoute,
   OwnerHistoryRoute: OwnerHistoryRoute,
   OwnerMoneyRoute: OwnerMoneyRoute,
   OwnerPerformanceRoute: OwnerPerformanceRoute,
