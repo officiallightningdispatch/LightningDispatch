@@ -71,8 +71,9 @@ function extractTowbookStatusId(status: unknown): number | null {
   return null;
 }
 /** Mirrors ai-dispatcher.ts callHasDriver: true when the call's assets assign it
- *  to this driver (assets[].driver.id or assets[].drivers[].driver.id). */
-function callHasDriver(call: unknown, driverId: number): boolean {
+ *  to this driver (assets[].driver.id or assets[].drivers[].driver.id).
+ *  Exported for driver-gps.ts (geofence assignment check against raw_json). */
+export function callHasDriver(call: unknown, driverId: number): boolean {
   if (!call || typeof call !== "object") return false;
   const assets = (call as Record<string, unknown>).assets;
   if (!Array.isArray(assets)) return false;
@@ -119,11 +120,13 @@ const driverHeaders = (cookie: string) => ({
   cookie,
 });
 type TbRes = { ok: boolean; status: number | null; body: unknown };
-async function tbFetch(fetchImpl: typeof fetch, url: string, session: DriverSession, init?: { method?: string; body?: string }): Promise<TbRes> {
+/** Exported for driver-gps.ts (geofence Towbook writes reuse the exact same
+ *  session/headers path so the driver portal and the geofence can never drift). */
+export async function tbFetch(fetchImpl: typeof fetch, url: string, session: DriverSession, init?: { method?: string; body?: string }): Promise<TbRes> {
   try {
     const res = await fetchImpl(url, {
       method: init?.method ?? "GET",
-      headers: init?.method === "POST"
+      headers: init?.method === "POST" || init?.method === "PUT"
         ? { ...driverHeaders(session.cookies), "content-type": "application/json" }
         : driverHeaders(session.cookies),
       redirect: "manual",
@@ -139,8 +142,9 @@ async function tbFetch(fetchImpl: typeof fetch, url: string, session: DriverSess
   }
 }
 /** True when a response means the session cookie is dead (401/403, or a 200
- *  that is actually the login page HTML — the MVC login form fingerprint). */
-const isExpired = (r: TbRes): boolean =>
+ *  that is actually the login page HTML — the MVC login form fingerprint).
+ *  Exported for driver-gps.ts (geofence write verification). */
+export const isExpired = (r: TbRes): boolean =>
   r.status === 401 || r.status === 403 ||
   (r.status === 200 && typeof r.body === "string" && /<form/i.test(r.body) && /RequestVerificationToken/i.test(r.body));
 
@@ -197,7 +201,7 @@ async function upsertDriverUser(orgId: string, username: string, identity: Drive
   const existing = await q`SELECT u.id FROM users u WHERE u.towbook_driver_id=${identity.driverId} OR LOWER(u.login_handle)=${handle} LIMIT 1`;
   if (existing.length) {
     const userId = String(existing[0].id);
-    await q`UPDATE users SET name=${identity.driverName}, towbook_driver_id=${identity.driverId} WHERE id=${userId}`;
+    await q`UPDATE users SET name=${identity.driverName}, towbook_driver_id=${identity.driverId}, towbook_user_id=${identity.userId} WHERE id=${userId}`;
     const memberships = await q`SELECT 1 FROM organization_memberships WHERE org_id=${orgId} AND user_id=${userId}`;
     if (!memberships.length) {
       await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${orgId}, ${userId}, 'contractor')`;
@@ -207,7 +211,7 @@ async function upsertDriverUser(orgId: string, username: string, identity: Drive
   const { makeId, hash } = await import("./auth-server");
   const userId = makeId();
   const randomPassword = Math.random().toString(36).slice(2) + Date.now().toString(36);
-  await q`INSERT INTO users(id, name, email, password_hash, login_handle, towbook_driver_id) VALUES(${userId}, ${identity.driverName}, ${email}, ${hash(randomPassword)}, ${handle}, ${identity.driverId})`;
+  await q`INSERT INTO users(id, name, email, password_hash, login_handle, towbook_driver_id, towbook_user_id) VALUES(${userId}, ${identity.driverName}, ${email}, ${hash(randomPassword)}, ${handle}, ${identity.driverId}, ${identity.userId})`;
   await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${orgId}, ${userId}, 'contractor')`;
   return { userId, created: true };
 }
@@ -225,8 +229,10 @@ async function persistDriverSession(orgId: string, driverId: string, session: Dr
 }
 
 /** Load a driver's stored session from their LD user (role contractor +
- *  towbook_driver_id). Returns null when no session row exists. */
-async function loadDriverSession(user: { orgId: string; towbookDriverId: string }): Promise<DriverSession | null> {
+ *  towbook_driver_id). Returns null when no session row exists. Exported so the
+ *  GPS module (driver-gps.ts) can reuse the exact same decrypt path for the
+ *  geofence Towbook writes and live checkins. */
+export async function loadDriverSession(user: { orgId: string; towbookDriverId: string }): Promise<DriverSession | null> {
   await ensure();
   const q = await db();
   const rows = await q`SELECT encrypted_session FROM towbook_sessions WHERE org_id=${user.orgId} AND session_kind='driver' AND towbook_driver_id=${user.towbookDriverId} LIMIT 1`;
@@ -406,8 +412,13 @@ async function writeThrough(user: { orgId: string; userId: string; towbookDriver
     const currentMapped = currentId == null ? "new" : (STATUS_ID_TO_LIFECYCLE[currentId] ?? "new");
     const slug = callId.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 60);
     const newJobRowId = slug ? `tb-${slug}` : `tb-${Math.random().toString(36).slice(2, 10)}`;
-    await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, customer_phone, vehicle_desc, pickup, dropoff, towbook_status, raw_json)
-      VALUES(${newJobRowId}, ${user.orgId}, ${customer || `Towbook job ${callId}`}, '', 0, 0, ${pickup || "Unknown"}, 'flatbed_tow', ${mapped}, NOW(), '', ${callId}, '', ${vehicle}, ${pickup}, ${dropoff}, ${String(toStatus)}, ${JSON.stringify({ sourceUrl: "driver-portal", ...rawCall })}::jsonb)`;
+    const wp0 = waypoints[0] as Record<string, unknown> | undefined;
+    const wLat = wp0 ? Number(wp0.latitude) : NaN;
+    const wLng = wp0 ? Number(wp0.longitude) : NaN;
+    const pickupLat = Number.isFinite(wLat) && wLat !== 0 ? wLat : null;
+    const pickupLng = Number.isFinite(wLng) && wLng !== 0 ? wLng : null;
+    await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, customer_phone, vehicle_desc, pickup, dropoff, towbook_status, raw_json, pickup_lat, pickup_lng)
+      VALUES(${newJobRowId}, ${user.orgId}, ${customer || `Towbook job ${callId}`}, '', 0, 0, ${pickup || "Unknown"}, 'flatbed_tow', ${mapped}, NOW(), '', ${callId}, '', ${vehicle}, ${pickup}, ${dropoff}, ${String(toStatus)}, ${JSON.stringify({ sourceUrl: "driver-portal", ...rawCall })}::jsonb, ${pickupLat}, ${pickupLng})`;
     await q`INSERT INTO status_events(id, org_id, job_id, from_status, to_status, actor_user_id, actor_role, note)
       SELECT gen_random_uuid()::text, ${user.orgId}, ${newJobRowId}, ${currentMapped}, ${mapped}, ${user.userId}, 'contractor', ${`driver ${actionLabel(toStatus)} (Lightning Dispatch)`}`;
     await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
@@ -464,12 +475,14 @@ export const driverLogout = createServerFn({ method: "POST" }).handler(async () 
   const u = await currentUser();
   try {
     // Best-effort Towbook checkout so a logout never leaves the driver online.
+    // The checkin/checkout body id is the TOWBOOK user id (identity.userId),
+    // not the LD user id — the two differ for every driver.
     if (u && u.role === "contractor") {
       const q = await db();
-      const rows = await q`SELECT towbook_driver_id FROM users WHERE id=${u.id}`;
+      const rows = await q`SELECT towbook_driver_id, towbook_user_id FROM users WHERE id=${u.id}`;
       if (rows.length && rows[0].towbook_driver_id != null) {
         const session = await loadDriverSession({ orgId: u.orgId, towbookDriverId: String(rows[0].towbook_driver_id) });
-        if (session) await driverCheckout(session, u.id);
+        if (session) await driverCheckout(session, String(rows[0].towbook_user_id ?? ""));
       }
     }
   } catch { /* best-effort — LD logout must never fail because Towbook checkout failed */ }

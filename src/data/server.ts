@@ -728,6 +728,23 @@ export function previousStatusFromHistory(raw: Record<string, unknown>, current:
   return prev ?? "import";
 }
 
+/** Pickup waypoint coords from a raw Towbook call (waypoints[0].latitude/
+ *  longitude — recon-verified 2026-08-11; the geofence auto-arrive needs them,
+ *  and the sync's legacy lat/lng import stays 0,0). Null when absent. */
+function pickupCoords(raw: unknown): { lat: number | null; lng: number | null } {
+  if (!raw || typeof raw !== "object") return { lat: null, lng: null };
+  const wp = (raw as Record<string, unknown>).waypoints;
+  if (!Array.isArray(wp) || !wp.length) return { lat: null, lng: null };
+  const w0 = wp[0] as Record<string, unknown> | undefined;
+  if (!w0) return { lat: null, lng: null };
+  const lat = Number(w0.latitude);
+  const lng = Number(w0.longitude);
+  return {
+    lat: Number.isFinite(lat) && lat !== 0 ? lat : null,
+    lng: Number.isFinite(lng) && lng !== 0 ? lng : null,
+  };
+}
+
 /** Org-scoped upsert of normalized Towbook jobs (exported for the fixture test;
  *  INSERT first-seen ids, UPDATE re-synced ids in place — never duplicates).
  *
@@ -758,8 +775,9 @@ export async function upsertPulledJobs(
       if (!cur) {
         const slug = job.towbookJobId.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 60);
         const jobId = slug ? `tb-${slug}` : `tb-${Math.random().toString(36).slice(2, 10)}`;
-        await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, customer_phone, vehicle_desc, pickup, dropoff, towbook_status, raw_json)
-          VALUES(${jobId}, ${orgId}, ${job.customer}, ${job.phone || ""}, 0, 0, ${job.pickup || "Unknown"}, ${job.serviceType}, ${job.status}, ${job.createdAt}, ${job.note}, ${job.towbookJobId}, ${job.phone || ""}, ${job.vehicle}, ${job.pickup}, ${job.dropoff}, ${job.towbookStatus}, ${JSON.stringify(job.raw)}::jsonb)`;
+        const coords = pickupCoords(job.raw);
+        await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, customer_phone, vehicle_desc, pickup, dropoff, towbook_status, raw_json, pickup_lat, pickup_lng)
+          VALUES(${jobId}, ${orgId}, ${job.customer}, ${job.phone || ""}, 0, 0, ${job.pickup || "Unknown"}, ${job.serviceType}, ${job.status}, ${job.createdAt}, ${job.note}, ${job.towbookJobId}, ${job.phone || ""}, ${job.vehicle}, ${job.pickup}, ${job.dropoff}, ${job.towbookStatus}, ${JSON.stringify(job.raw)}::jsonb, ${coords.lat}, ${coords.lng})`;
         await q`INSERT INTO status_events(id, org_id, job_id, from_status, to_status, actor_user_id, actor_role, note)
           SELECT gen_random_uuid()::text, ${orgId}, ${jobId}, ${previousStatusFromHistory(job.raw, job.status)}, ${job.status}, ${actor.id}, ${actor.role}, ${`imported from Towbook (${trigger})`}`;
         await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
@@ -775,7 +793,9 @@ export async function upsertPulledJobs(
           String(cur.dropoff ?? "") !== job.dropoff ||
           String(cur.towbook_status ?? "") !== job.towbookStatus;
         if (!statusChanged && !fieldsChanged) { unchanged++; continue; } // already current — no churn
+        const coords = pickupCoords(job.raw);
         await q`UPDATE dispatch_jobs SET customer_name=${job.customer}, phone=${job.phone || ""}, area=${job.pickup || "Unknown"}, service_type=${job.serviceType}, status=${job.status}, note=${job.note}, towbook_status=${job.towbookStatus}, customer_phone=${job.phone || ""}, vehicle_desc=${job.vehicle}, pickup=${job.pickup}, dropoff=${job.dropoff}, raw_json=${JSON.stringify(job.raw)}::jsonb,
+          pickup_lat=COALESCE(${coords.lat}, pickup_lat), pickup_lng=COALESCE(${coords.lng}, pickup_lng),
           completed_at=CASE WHEN ${job.status}='completed' AND completed_at IS NULL THEN NOW() ELSE completed_at END,
           assigned_at=CASE WHEN ${job.status}='offered' AND assigned_at IS NULL THEN NOW() ELSE assigned_at END
           WHERE id=${String(cur.id)} AND org_id=${orgId}`;

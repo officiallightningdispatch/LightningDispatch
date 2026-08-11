@@ -117,6 +117,50 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`ALTER TABLE users ADD COLUMN IF NOT EXISTS towbook_driver_id TEXT`;
     await q`CREATE UNIQUE INDEX IF NOT EXISTS users_towbook_driver_id_idx ON users(towbook_driver_id) WHERE towbook_driver_id IS NOT NULL`;
   }],
+  [11, async (q) => {
+    // GPS tracking + geofence auto-arrive (owner-directed 2026-08-11, milestone
+    // #3). driver_locations is the append-light ping ledger (pruned to 24h on
+    // write); dispatch_jobs gains the pickup waypoint coords the geofence needs
+    // (backfilled from raw_json waypoints[0] — the Towbook sync imports lat/lng
+    // as 0,0); org_settings gains the geofence radius + the photos gate flag;
+    // pre_arrival_photos is the MILESTONE #4 contract table the gate reads (4
+    // photos + vehicle-match confirmed) — created now so the gate is real and
+    // #4 only flips photos_required on without touching geofence logic.
+    await q`CREATE TABLE IF NOT EXISTS driver_locations (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      driver_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      towbook_driver_id TEXT,
+      job_id TEXT,
+      latitude DOUBLE PRECISION NOT NULL,
+      longitude DOUBLE PRECISION NOT NULL,
+      accuracy DOUBLE PRECISION,
+      captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    await q`CREATE INDEX IF NOT EXISTS driver_locations_org_captured_idx ON driver_locations(org_id, captured_at)`;
+    await q`CREATE INDEX IF NOT EXISTS driver_locations_org_driver_idx ON driver_locations(org_id, driver_id)`;
+    await q`ALTER TABLE org_settings ADD COLUMN IF NOT EXISTS geofence_radius_meters DOUBLE PRECISION NOT NULL DEFAULT 150`;
+    await q`ALTER TABLE org_settings ADD COLUMN IF NOT EXISTS photos_required BOOLEAN NOT NULL DEFAULT FALSE`;
+    await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS pickup_lat DOUBLE PRECISION`;
+    await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS pickup_lng DOUBLE PRECISION`;
+    // Backfill pickup coords for existing rows from the stored raw Towbook call
+    // (waypoints[0] carries latitude/longitude — recon-verified 2026-08-11).
+    await q`UPDATE dispatch_jobs SET pickup_lat=(raw_json#>>'{waypoints,0,latitude}')::double precision, pickup_lng=(raw_json#>>'{waypoints,0,longitude}')::double precision
+      WHERE pickup_lat IS NULL AND raw_json IS NOT NULL AND raw_json#>>'{waypoints,0,latitude}' IS NOT NULL`;
+    // Milestone #4 contract table: 4 pre-arrival photos (one per vehicle side)
+    // + a vehicle-match confirmation. Populated by the photo workflow (#4); the
+    // geofence gate only READS it (and only when photos_required=true).
+    await q`CREATE TABLE IF NOT EXISTS pre_arrival_photos (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      job_id TEXT NOT NULL,
+      photo_url TEXT NOT NULL,
+      vehicle_match_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+      uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    await q`CREATE INDEX IF NOT EXISTS pre_arrival_photos_org_job_idx ON pre_arrival_photos(org_id, job_id)`;
+    await q`ALTER TABLE users ADD COLUMN IF NOT EXISTS towbook_user_id TEXT`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

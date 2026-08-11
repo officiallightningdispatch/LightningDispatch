@@ -10,11 +10,12 @@
  * Towbook session surfaces a "reconnect" prompt instead of failing silently.
  */
 import { useNavigate } from "@tanstack/react-router";
-import { LogOut, MapPin, Navigation, RefreshCw, ThumbsUp, Truck } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { LogOut, MapPin, Navigation, Radar, RefreshCw, ThumbsUp, Truck } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AppShell } from "~/components/app-shell";
 import { Button, Card, useToast } from "~/components/ui";
 import { driverJobAction, driverJobs, driverLogout, type DriverCall } from "~/data/driver-auth";
+import { pingDriverLocation } from "~/data/driver-gps";
 
 const STATUS_META: Record<number, { label: string; badge: string; dot: string }> = {
   0: { label: "New", badge: "bg-ink-100 text-ink-600", dot: "bg-ink-400" },
@@ -33,6 +34,78 @@ const etaLabel = (iso: string | null): string => {
   return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 };
 
+type GpsState = "idle" | "tracking" | "denied" | "unsupported" | "error";
+
+/** GPS ping loop (milestone #3): while the driver has a job in en_route or
+ *  arrived, capture browser geolocation every ~20s and ping the platform
+ *  (driver_locations + best-effort Towbook checkin + geofence auto-arrive).
+ *  Never throws, never blocks the job queue: a denied/absent geolocation just
+ *  flips the status chip. The interval is mounted once; the active job id is
+ *  read from a ref so a queue refresh can never restart the loop. */
+function useDriverGps(calls: DriverCall[] | null): GpsState {
+  const [state, setState] = useState<GpsState>("idle");
+  const activeJobRef = useRef<string | null>(null);
+  useEffect(() => {
+    const active = calls?.find((c) => c.statusId === 3 || c.statusId === 4);
+    activeJobRef.current = active ? active.id : null;
+  }, [calls]);
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      setState("unsupported");
+      return;
+    }
+    let stopped = false;
+    let lastFixAt = 0;
+    const tick = () => {
+      const jobId = activeJobRef.current;
+      if (!jobId) { setState((s) => (s === "tracking" ? "idle" : s)); return; }
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          if (stopped) return;
+          lastFixAt = Date.now();
+          setState("tracking");
+          void pingDriverLocation({
+            data: {
+              latitude: pos.coords.latitude,
+              longitude: pos.coords.longitude,
+              accuracy: Number.isFinite(pos.coords.accuracy) ? Math.round(pos.coords.accuracy) : null,
+              jobTowbookId: jobId,
+            },
+          }).catch(() => { /* a failed ping never breaks the loop */ });
+        },
+        (err) => {
+          if (stopped) return;
+          if (err && err.code === err.PERMISSION_DENIED) setState("denied");
+          else if (Date.now() - lastFixAt > 60000) setState("error");
+        },
+        { enableHighAccuracy: true, timeout: 12000, maximumAge: 20000 },
+      );
+    };
+    tick();
+    const t = setInterval(tick, 20000);
+    return () => { stopped = true; clearInterval(t); };
+  }, []);
+  return state;
+}
+
+const GPS_CHIP: Record<GpsState, { label: string; tone: string; icon: typeof Radar }> = {
+  tracking: { label: "Live tracking on — sending your position every 20 seconds", tone: "bg-success-50 text-success-700", icon: Radar },
+  idle: { label: "Location pings active once you're en route to a job", tone: "bg-ink-50 text-ink-500", icon: Radar },
+  denied: { label: "Location access is off — allow location for live tracking and auto-arrival", tone: "bg-amber-50 text-amber-800", icon: MapPin },
+  unsupported: { label: "This browser can't provide location — tracking unavailable", tone: "bg-ink-50 text-ink-500", icon: MapPin },
+  error: { label: "Temporarily can't get your position — will keep retrying", tone: "bg-amber-50 text-amber-800", icon: MapPin },
+};
+
+function GpsStatusChip({ state }: { state: GpsState }) {
+  const meta = GPS_CHIP[state] ?? GPS_CHIP.idle;
+  const Icon = meta.icon;
+  return (
+    <p className={`mb-4 flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-medium ${meta.tone}`}>
+      <Icon className="size-4 shrink-0" /> {meta.label}
+    </p>
+  );
+}
+
 export function RealDriverPortal() {
   const nav = useNavigate();
   const toast = useToast();
@@ -41,6 +114,7 @@ export function RealDriverPortal() {
   const [expired, setExpired] = useState(false);
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState<string | null>(null); // callId being acted on
+  const gpsState = useDriverGps(calls);
 
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -90,6 +164,8 @@ export function RealDriverPortal() {
         </div>
         <Button variant="ghost" size="sm" onClick={() => void signOut()}><LogOut className="size-4" /> Sign out</Button>
       </div>
+
+      <GpsStatusChip state={gpsState} />
 
       {expired && (
         <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">

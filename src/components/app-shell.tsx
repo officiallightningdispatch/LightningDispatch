@@ -1,5 +1,5 @@
 import { Link, useLocation } from "@tanstack/react-router";
-import { Zap, Home, Inbox, Briefcase, DollarSign, User, List, Users, History, BarChart3, Settings, Wallet, Bot } from "lucide-react";
+import { Zap, Home, Inbox, Briefcase, DollarSign, User, List, Users, History, BarChart3, Settings, Wallet, Bot, Map } from "lucide-react";
 import type { ReactNode } from "react";
 
 export type Portal = "driver" | "ops" | "owner";
@@ -19,6 +19,7 @@ const NAV: Record<Portal, { links: NavItem[]; mobile: NavItem[] }> = {
       { to: "/owner", label: "Dashboard", icon: Home },
       { to: "/owner/queue", label: "Queue", icon: List },
       { to: "/owner/active", label: "Active Jobs", icon: Briefcase },
+      { to: "/owner/drivers", label: "Live Map", icon: Map },
       { to: "/owner/history", label: "History", icon: History },
       { to: "/owner/performance", label: "Performance", icon: BarChart3 },
       { to: "/owner/money", label: "Money", icon: Wallet },
@@ -31,6 +32,7 @@ const NAV: Record<Portal, { links: NavItem[]; mobile: NavItem[] }> = {
       { to: "/owner", label: "Dashboard", icon: Home },
       { to: "/owner/queue", label: "Queue", icon: List },
       { to: "/owner/active", label: "Active", icon: Briefcase },
+      { to: "/owner/drivers", label: "Live Map", icon: Map },
       { to: "/owner/performance", label: "Performance", icon: BarChart3 },
       { to: "/owner/money", label: "Money", icon: Wallet },
       { to: "/owner/ai-dispatcher", label: "AI", icon: Bot },

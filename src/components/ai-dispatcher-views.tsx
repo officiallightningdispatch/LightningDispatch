@@ -22,6 +22,7 @@ export const AI_DECISION_META: Record<string, { label: string; badge: string }> 
   escalated_accept_failed: { label: "Escalated · accept failed", badge: "bg-danger-50 text-danger-700" },
   escalated_unexpected_shape: { label: "Escalated · unexpected offer", badge: "bg-danger-50 text-danger-700" },
   escalated_dispatch_failed: { label: "Escalated · dispatch failed", badge: "bg-danger-50 text-danger-700" },
+  escalated_auto_arrive_failed: { label: "Escalated · auto-arrive failed", badge: "bg-danger-50 text-danger-700" },
 };
 const DECISION_FALLBACK = { label: "Decision", badge: "bg-ink-100 text-ink-600" };
 
