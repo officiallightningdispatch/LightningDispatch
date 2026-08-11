@@ -215,8 +215,9 @@ export async function photoStatusForJob(orgId: string, job: ResolvedJob): Promis
 const storageKeyFor = (orgId: string, jobId: string, phase: PhotoPhase, side: PhotoSide) => `ld-photos/${orgId}/${jobId}/${phase}/${side}.jpg`;
 
 /** Decode a data: URL into bytes + mime (client-side resize always sends
- *  image/jpeg; anything else is rejected by the size/mime guards below). */
-function decodeDataUrl(dataUrl: string): { bytes: Uint8Array; mime: string } | null {
+ *  image/jpeg; anything else is rejected by the size/mime guards below).
+ *  Exported so the completion core (customer signature PNGs) reuses it. */
+export function decodeDataUrl(dataUrl: string): { bytes: Uint8Array; mime: string } | null {
   const m = /^data:([a-zA-Z0-9.+-]+\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
   if (!m) return null;
   const mime = m[1].toLowerCase();
@@ -428,15 +429,17 @@ async function tbPhotoUpload(fetchImpl: typeof fetch, session: DriverSession, ca
 
 export type CompleteJobResult =
   | { ok: true; photosUploaded: number; towbookCompleted: boolean; changed: boolean }
-  | { ok: false; code: "not_found" | "unauthorized" | "photos_incomplete" | "photo_upload_failed" | "towbook_failed" | "no_session" | "invalid_state"; message: string; failures?: Array<{ label: string; status: number | null }> };
+  | { ok: false; code: "not_found" | "unauthorized" | "photos_incomplete" | "photo_upload_failed" | "towbook_failed" | "no_session" | "invalid_state" | "completion_capture_required"; message: string; failures?: Array<{ label: string; status: number | null }> };
 
-/** THE completion push (owner spec): all 12 photos (4 pre-arrival + 4 service
- *  + 4 final) are read back from B2 and uploaded to the Towbook PO via the
- *  DRIVER's session, one by one (verified per photo, one retry each). Only when
- *  every photo landed does the job complete on Towbook (PUT status 5, verified)
- *  and on the platform. Any failure is recorded + escalated
- *  (escalated_photo_upload_failed) and the job STAYS arrived — a job never
- *  reaches completed without its photos on the PO. Injectable fetchImpl. */
+/** THE completion push (owner spec): the customer completion capture (signature
+ *  + survey from the v13 job_completions table) must already be stored, then
+ *  all 12 photos (4 pre-arrival + 4 service + 4 final) are read back from B2
+ *  and uploaded to the Towbook PO via the DRIVER's session, one by one
+ *  (verified per photo, one retry each). Only when every photo landed does the
+ *  job complete on Towbook (PUT status 5, verified) and on the platform. Any
+ *  failure is recorded + escalated (escalated_photo_upload_failed) and the job
+ *  STAYS arrived — a job never reaches completed without its photos on the PO
+ *  or its customer capture. Injectable fetchImpl. */
 export async function completeJobCore(user: PhotoUser, data: unknown, opts: { fetchImpl?: typeof fetch; b2StableDir?: string } = {}): Promise<CompleteJobResult> {
   const v = z.object({ jobId: z.string().min(1).max(128) }).safeParse(data);
   if (!v.success) return { ok: false, code: "invalid_state", message: "Invalid request." };
@@ -448,6 +451,13 @@ export async function completeJobCore(user: PhotoUser, data: unknown, opts: { fe
     const q = await db();
     const assigned = await isAssignedDriver(user.orgId, user.id, user.towbookDriverId, job);
     if (!assigned) return { ok: false, code: "unauthorized", message: "This job is not assigned to you." };
+
+    // Gate (completion flow): the customer completion capture — signature + survey —
+    // must be on file BEFORE complete. The tip is OPTIONAL and never blocks.
+    const comp = await import("./completion-core").then((m) => m.completionCaptureForJob(user.orgId, job.id));
+    if (!comp.signatureCaptured || !comp.survey) {
+      return { ok: false, code: "completion_capture_required", message: "Get the customer's signature and rating before completing the job." };
+    }
 
     // Gate: all three phases complete.
     const photos = await jobPhotoRows(user.orgId, job.id);

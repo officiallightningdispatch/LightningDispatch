@@ -30,6 +30,7 @@ const {
   photoStatusForJob,
   photosCompleteForJob: _unused, // gate lives in driver-gps-core
 } = await import("./src/data/driver-photos-core.ts");
+const { captureCompletionCore } = await import("./src/data/completion-core.ts");
 const { photosCompleteForJob, evaluateGeofence, getGeofenceSettings } = await import("./src/data/driver-gps-core.ts");
 const { encryptSession } = await import("./src/data/towbook-key.ts");
 const { ensureSchema } = await import("./src/data/migrations.ts");
@@ -116,6 +117,10 @@ function makeFetch({ callId, getStatusId = 5, failPhotosOn = -1, putStatus = 200
 }
 
 const photoDataUrl = (marker) => `data:image/jpeg;base64,${marker.repeat(1500)}`;
+// A real (minimal) PNG with a unique marker suffix — the signature path checks
+// the PNG magic bytes, so the payload must actually be a PNG.
+const PNG_1x1 = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+const sigDataUrl = (marker) => `data:image/png;base64,${Buffer.concat([PNG_1x1, Buffer.from(marker.repeat(100))]).toString("base64")}`;
 const bytesOf = (marker) => Buffer.from(marker.repeat(1500), "base64");
 const userFor = (orgId) => ({ orgId, id: CONF[orgId].userId, role: "contractor", towbookDriverId: CONF[orgId].tbDriver });
 
@@ -254,6 +259,10 @@ await setup();
   await uploadJobPhotoCore(user, { jobId: c.call, phase: "service", side: "rear", dataUrl: photoDataUrl("N") }, { fetchImpl });
   const fin = await finalCompleteCore(user, { jobId: c.call });
   check("final complete ok → finalizing", fin.ok === true && fin.phase === "finalizing", JSON.stringify(fin));
+  // Customer completion capture (completion flow): signature + survey on file
+  // before complete — completeJobCore now hard-gates on it.
+  const cap = await captureCompletionCore(user, { jobId: c.call, signatureDataUrl: sigDataUrl("Q"), survey: { rating: 5, comment: "QA" } }, { fetchImpl });
+  check("customer capture saved (completion gate)", cap.ok === true && cap.completion.status === "captured", JSON.stringify(cap));
   // 3 final photos → completion locked.
   for (let i = 0; i < 3; i++) {
     await uploadJobPhotoCore(user, { jobId: c.call, phase: "final", side: SIDES[i], dataUrl: photoDataUrl(String.fromCharCode(79 + i)) }, { fetchImpl });
@@ -295,6 +304,8 @@ await setup();
     await uploadJobPhotoCore(user, { jobId: c.call, phase, side: SIDES[i], dataUrl: photoDataUrl("T") }, { fetchImpl });
   }
   await setVehicleMatchCore(user, { jobId: c.call, confirmed: true });
+  const cap3 = await captureCompletionCore(user, { jobId: c.call, signatureDataUrl: sigDataUrl("W"), survey: { rating: 4 } }, { fetchImpl });
+  check("ORG3 capture saved before failure test", cap3.ok === true, JSON.stringify(cap3));
   // The 3rd PO photo POST fails (500, retried once, still fails).
   const { fetchImpl: ff, calls: fc } = makeFetch({ callId: c.call, failPhotosOn: 3 });
   const r = await completeJobCore(user, { jobId: c.call }, { fetchImpl: ff });
@@ -326,6 +337,9 @@ await setup();
     await uploadJobPhotoCore(user, { jobId: c.call, phase, side: SIDES[i], dataUrl: photoDataUrl("V") }, { fetchImpl });
   }
   await setVehicleMatchCore(user, { jobId: c.call, confirmed: true });
+  // Customer capture saved WHILE creds are present (the completion gate needs it).
+  const cap4 = await captureCompletionCore(user, { jobId: c.call, signatureDataUrl: sigDataUrl("R"), survey: { rating: 5 } }, { fetchImpl });
+  check("ORG4 capture saved before creds removal", cap4.ok === true, JSON.stringify(cap4));
   delete process.env.B2_KEY_ID; delete process.env.B2_APPLICATION_KEY; delete process.env.B2_BUCKET_NAME;
   const r = await completeJobCore(user, { jobId: c.call }, { fetchImpl, b2StableDir: noCredsDir });
   process.env.B2_KEY_ID = saved.k; process.env.B2_APPLICATION_KEY = saved.a; process.env.B2_BUCKET_NAME = saved.b;
@@ -352,6 +366,7 @@ for (const org of [ORG, ORG2, ORG3, ORG4]) await q`DELETE FROM organizations WHE
 for (const u of [OWNER, OWNER2, OWNER3, OWNER4, DRIVER, DRIVER2, DRIVER3, DRIVER4, OTHER]) await q`DELETE FROM users WHERE id=${u}`.catch(() => {});
 const leftover = await q`SELECT
   (SELECT COUNT(*)::int FROM job_photos p JOIN organizations o ON o.id=p.org_id WHERE o.name='qa driver-photos') AS photos,
+  (SELECT COUNT(*)::int FROM job_completions jc JOIN organizations o ON o.id=jc.org_id WHERE o.name='qa driver-photos') AS completions,
   (SELECT COUNT(*)::int FROM dispatch_jobs j JOIN organizations o ON o.id=j.org_id WHERE o.name='qa driver-photos') AS jobs,
   (SELECT COUNT(*)::int FROM status_events e JOIN organizations o ON o.id=e.org_id WHERE o.name='qa driver-photos') AS events,
   (SELECT COUNT(*)::int FROM audit_log a JOIN organizations o ON o.id=a.org_id WHERE o.name='qa driver-photos') AS audit,

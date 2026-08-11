@@ -11,11 +11,13 @@
  * upload surfaces a clear error and the slot stays empty (photos are a hard
  * gate on completion).
  */
-import { Camera, Check, Loader2, ShieldCheck, TriangleAlert } from "lucide-react";
+import { Camera, Check, Loader2, PenLine, ShieldCheck, Star, TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Button } from "~/components/ui";
+import { Button, useToast } from "~/components/ui";
 import { completeJobWithPhotos, getJobPhotoStatus, setVehicleMatch, softCompleteJob, finalCompleteJob, uploadJobPhoto } from "~/data/driver-photos";
 import type { JobPhotoStatus, PhotoPhase, PhotoSide } from "~/data/driver-photos";
+import { captureCompletion, createTipLink, getCompletionCapture, isSquareConfigured } from "~/data/completion";
+import type { CompletionCaptureStatus } from "~/data/completion";
 
 export const PHOTO_SIDES: PhotoSide[] = ["front", "driver_side", "passenger_side", "rear"];
 export const SIDE_LABELS: Record<PhotoSide, string> = {
@@ -162,6 +164,9 @@ export function JobPhotoFlow({ callId, jobStatus, onCompleted }: { callId: strin
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [completionError, setCompletionError] = useState("");
   const [completionDetail, setCompletionDetail] = useState("");
+  const [capture, setCapture] = useState<CompletionCaptureStatus | null>(null);
+  const [squareConfigured, setSquareConfigured] = useState(false);
+  const toast = useToast();
 
   const refresh = useCallback(async () => {
     try {
@@ -175,10 +180,17 @@ export function JobPhotoFlow({ callId, jobStatus, onCompleted }: { callId: strin
     } catch {
       setLoadError("Couldn't load photo status.");
     }
+    try {
+      const c = await getCompletionCapture({ data: { jobId: callId } });
+      if (c.ok) setCapture(c.completion);
+    } catch {
+      // completion capture unknown — the panel will retry on save
+    }
   }, [callId]);
 
   useEffect(() => {
     void refresh();
+    void isSquareConfigured().then((r) => setSquareConfigured(r.configured)).catch(() => { /* tips stay hidden */ });
   }, [refresh]);
 
   const upload = async (phase: PhotoPhase, side: PhotoSide, dataUrl: string) => {
@@ -329,17 +341,322 @@ export function JobPhotoFlow({ callId, jobStatus, onCompleted }: { callId: strin
       )}
       {canComplete && (
         <div className="rounded-2xl border border-brand-200 bg-brand-50/60 p-4">
-          <p className="text-sm font-bold text-ink-800">All 12 photos captured</p>
-          <p className="mt-0.5 text-xs text-ink-500">Complete the job — all photos are attached to the Towbook PO, then Towbook marks it completed.</p>
-          <Button className="mt-3 w-full" loading={actionBusy === "complete"} onClick={() => void complete()}>
-            <ShieldCheck className="size-5" /> Complete job — push to Towbook
-          </Button>
-          {completionDetail && !completionError && <p className="mt-2 text-xs text-ink-500">{completionDetail}</p>}
+          {capture && capture.signatureCaptured && capture.survey ? (
+            <>
+              <p className="flex items-center gap-1.5 text-sm font-bold text-ink-800">
+                <Check className="size-4 text-success-600" strokeWidth={3} /> Customer completion saved
+              </p>
+              <p className="mt-0.5 text-xs text-ink-500">
+                Signature on file · {capture.survey.rating}-star rating
+                {capture.tip ? ` · tip ${(capture.tip.amountCents / 100).toFixed(0)}` : ""}.
+              </p>
+              {squareConfigured && (
+                <TipOptionBlock callId={callId} squareConfigured={squareConfigured} linkSent={Boolean(capture.tip)} />
+              )}
+              <Button className="mt-3 w-full" loading={actionBusy === "complete"} onClick={() => void complete()}>
+                <ShieldCheck className="size-5" /> Complete job — push to Towbook
+              </Button>
+              {completionDetail && !completionError && <p className="mt-2 text-xs text-ink-500">{completionDetail}</p>}
+            </>
+          ) : (
+            <CustomerCompletionPanel
+              callId={callId}
+              squareConfigured={squareConfigured}
+              onSaved={(completion) => {
+                setCapture(completion);
+                toast("Customer completion saved — signature and rating on file.");
+                void refresh();
+              }}
+            />
+          )}
         </div>
       )}
       {completionError && (
         <p role="alert" className="flex items-start gap-2 rounded-xl bg-danger-50 p-3 text-sm text-danger-600">
           <TriangleAlert className="mt-0.5 size-4 shrink-0" /> {completionError}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------- customer completion capture ------------------------- */
+
+const TIP_PRESETS = [200, 500, 1000]; // $2 / $5 / $10
+
+/** Mobile-friendly signature pad (canvas + pointer events — works by touch and
+ *  mouse). Produces a PNG data URL once there is ink; "Clear" resets it. */
+function SignaturePad({ onChange }: { onChange: (dataUrl: string | null) => void }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const drawingRef = useRef(false);
+  const inkRef = useRef(false);
+  const [hasInk, setHasInk] = useState(false);
+
+  const point = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return null;
+    return {
+      x: ((e.clientX - rect.left) * canvas.width) / rect.width,
+      y: ((e.clientY - rect.top) * canvas.height) / rect.height,
+    };
+  };
+
+  const start = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    const p = point(e);
+    if (!canvas || !p) return;
+    drawingRef.current = true;
+    inkRef.current = true;
+    setHasInk(true);
+    try { canvas.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    const c = canvas.getContext("2d");
+    if (!c) return;
+    c.lineWidth = 3;
+    c.lineCap = "round";
+    c.lineJoin = "round";
+    c.strokeStyle = "#111827";
+    c.beginPath();
+    c.moveTo(p.x, p.y);
+    c.lineTo(p.x + 0.1, p.y + 0.1);
+    c.stroke();
+  };
+
+  const move = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!drawingRef.current) return;
+    const canvas = canvasRef.current;
+    const p = point(e);
+    const c = canvas?.getContext("2d");
+    if (!canvas || !c || !p) return;
+    c.lineTo(p.x, p.y);
+    c.stroke();
+  };
+
+  const end = () => {
+    if (!drawingRef.current) return;
+    drawingRef.current = false;
+    const canvas = canvasRef.current;
+    if (canvas && inkRef.current) onChange(canvas.toDataURL("image/png"));
+  };
+
+  const clear = () => {
+    const canvas = canvasRef.current;
+    const c = canvas?.getContext("2d");
+    if (canvas && c) c.clearRect(0, 0, canvas.width, canvas.height);
+    drawingRef.current = false;
+    inkRef.current = false;
+    setHasInk(false);
+    onChange(null);
+  };
+
+  return (
+    <div>
+      <div className="relative overflow-hidden rounded-xl border border-ink-200 bg-white">
+        <canvas
+          ref={canvasRef}
+          width={640}
+          height={200}
+          onPointerDown={start}
+          onPointerMove={move}
+          onPointerUp={end}
+          onPointerLeave={end}
+          className="block h-40 w-full cursor-crosshair touch-none"
+          aria-label="Signature pad — have the customer sign here"
+        />
+        {!hasInk && (
+          <span className="pointer-events-none absolute inset-0 flex items-center justify-center gap-1.5 text-xs font-medium text-ink-400">
+            <PenLine className="size-3.5" /> Have the customer sign here
+          </span>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={clear}
+        className="mt-1.5 text-[11px] font-semibold text-ink-500 underline decoration-ink-200 underline-offset-2 hover:text-danger-600"
+      >
+        Clear signature
+      </button>
+    </div>
+  );
+}
+
+/** Optional tip block — ONLY rendered when the owner's Square account is
+ *  configured (square_not_configured never blocks completion). Calls
+ *  createTipLink and opens the Square-hosted payment page in a new tab. */
+function TipOptionBlock({ callId, squareConfigured, linkSent }: { callId: string; squareConfigured: boolean; linkSent?: boolean }) {
+  const [preset, setPreset] = useState<number | null>(500);
+  const [custom, setCustom] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [sent, setSent] = useState(false);
+  if (!squareConfigured) return null;
+
+  const amountCents = custom.trim() !== "" ? Math.round(Number(custom) * 100) : preset ?? 0;
+
+  const send = async () => {
+    if (!Number.isFinite(amountCents) || amountCents < 100 || amountCents > 1_000_000) {
+      setError("Enter a tip of $1 – $10,000.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const r = await createTipLink({ data: { jobId: callId, amountCents } });
+      if (r.ok) {
+        setSent(true);
+        if (typeof window !== "undefined") window.open(r.paymentLinkUrl, "_blank", "noopener,noreferrer");
+      } else {
+        setError(r.message);
+      }
+    } catch {
+      setError("Couldn't create the tip link — try again.");
+    }
+    setBusy(false);
+  };
+
+  return (
+    <div className="mt-3 rounded-xl border border-ink-200 bg-surface p-3">
+      <p className="text-xs font-bold text-ink-800">Optional customer tip</p>
+      <p className="mt-0.5 text-[11px] leading-relaxed text-ink-500">
+        Opens a secure Square payment page the customer pays on — the tip is attributed to you.
+      </p>
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        {TIP_PRESETS.map((cents) => (
+          <button
+            key={cents}
+            type="button"
+            onClick={() => { setPreset(cents); setCustom(""); }}
+            className={`h-9 rounded-lg px-3 text-sm font-bold transition-colors ${
+              preset === cents && custom.trim() === ""
+                ? "bg-brand-500 text-white"
+                : "border border-ink-200 bg-surface text-ink-700 hover:bg-hover"
+            }`}
+          >
+            ${cents / 100}
+          </button>
+        ))}
+        <label className="flex h-9 items-center gap-1 rounded-lg border border-ink-200 bg-surface px-2">
+          <span className="text-xs font-semibold text-ink-400">$</span>
+          <input
+            type="number"
+            min="1"
+            max="10000"
+            inputMode="decimal"
+            placeholder="Custom"
+            value={custom}
+            onChange={(e) => { setCustom(e.target.value); setPreset(null); }}
+            className="w-20 bg-transparent text-sm font-bold text-ink-900 outline-none placeholder:font-medium placeholder:text-ink-300"
+          />
+        </label>
+      </div>
+      {(sent || linkSent) && (
+        <p className="mt-1.5 flex items-center gap-1 text-[11px] font-semibold text-success-600">
+          <Check className="size-3" strokeWidth={3} /> Tip link sent — the customer can pay on Square now.
+        </p>
+      )}
+      {error && (
+        <p role="alert" className="mt-1.5 text-[11px] leading-snug text-danger-600">{error}</p>
+      )}
+      <Button className="mt-2 w-full" size="sm" variant="secondary" loading={busy} onClick={() => void send()}>
+        {busy ? "Creating link…" : "Send tip link"}
+      </Button>
+    </div>
+  );
+}
+
+/** The "Customer completion" step (owner spec): signature pad + 5-star rating
+ *  + optional one-line comment + optional tip. Submit is enabled once a
+ *  signature AND a rating exist; the tip is never required. */
+function CustomerCompletionPanel({
+  callId,
+  squareConfigured,
+  onSaved,
+}: {
+  callId: string;
+  squareConfigured: boolean;
+  onSaved: (completion: CompletionCaptureStatus) => void;
+}) {
+  const [signature, setSignature] = useState<string | null>(null);
+  const [rating, setRating] = useState<number | null>(null);
+  const [comment, setComment] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const save = async () => {
+    if (!signature || !rating) return;
+    setSaving(true);
+    setError("");
+    try {
+      const r = await captureCompletion({ data: { jobId: callId, signatureDataUrl: signature, survey: { rating, comment: comment.trim() } } });
+      if (r.ok) onSaved(r.completion);
+      else setError(r.message);
+    } catch {
+      setError("Couldn't save the customer completion — check your connection and retry.");
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <p className="flex items-center gap-1.5 text-sm font-bold text-ink-800">
+          <PenLine className="size-4 text-brand-600" /> Customer completion
+        </p>
+        <p className="mt-0.5 text-xs leading-relaxed text-ink-500">
+          All 12 photos are captured. Before completing, get the customer&apos;s signature and a quick rating.
+        </p>
+      </div>
+
+      <div>
+        <p className="mb-1 text-xs font-semibold text-ink-700">Customer signature <span className="text-danger-500">*</span></p>
+        <SignaturePad onChange={setSignature} />
+      </div>
+
+      <div>
+        <p className="mb-1 text-xs font-semibold text-ink-700">How was the service? <span className="text-danger-500">*</span></p>
+        <div className="flex gap-1.5" role="radiogroup" aria-label="Rate the service 1 to 5 stars">
+          {[1, 2, 3, 4, 5].map((n) => (
+            <button
+              key={n}
+              type="button"
+              role="radio"
+              aria-checked={rating === n}
+              aria-label={`${n} star${n === 1 ? "" : "s"}`}
+              onClick={() => setRating(n)}
+              className="grid size-11 place-items-center rounded-xl border border-ink-200 bg-surface transition-colors active:scale-95"
+            >
+              <Star
+                className={`size-6 ${n <= (rating ?? 0) ? "fill-accent-400 text-accent-400" : "text-ink-300"}`}
+                aria-hidden="true"
+              />
+            </button>
+          ))}
+        </div>
+        <label className="mt-2 block">
+          <span className="sr-only">Comment (optional)</span>
+          <input
+            type="text"
+            maxLength={200}
+            placeholder="Comment (optional)"
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            className="h-10 w-full rounded-xl border border-ink-200 bg-surface px-3 text-sm text-ink-900 outline-none transition-colors focus:border-brand-500 focus:outline-2 focus:outline-brand-500/40"
+          />
+        </label>
+      </div>
+
+      {squareConfigured && <TipOptionBlock callId={callId} squareConfigured={squareConfigured} />}
+
+      <Button className="w-full" loading={saving} disabled={!signature || !rating} onClick={() => void save()}>
+        <Check className="size-5" /> Save customer completion
+      </Button>
+      {(!signature || !rating) && (
+        <p className="text-center text-[11px] text-ink-400">Needs a signature and a star rating.</p>
+      )}
+      {error && (
+        <p role="alert" className="flex items-start gap-2 rounded-xl bg-danger-50 p-3 text-sm text-danger-600">
+          <TriangleAlert className="mt-0.5 size-4 shrink-0" /> {error}
         </p>
       )}
     </div>

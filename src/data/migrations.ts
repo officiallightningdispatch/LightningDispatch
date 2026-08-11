@@ -191,6 +191,30 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`ALTER TABLE org_settings ALTER COLUMN photos_required SET DEFAULT TRUE`;
     await q`UPDATE org_settings SET photos_required=TRUE WHERE photos_required IS DISTINCT FROM TRUE`;
   }],
+  [13, async (q) => {
+    // Customer completion capture (owner-directed 2026-08-11, milestone
+    // "completion flow"): BEFORE a job completes, the customer provides a
+    // signature (PNG stored in B2, key under the ld-photos/<org>/<job>/ prefix
+    // scheme) and a short survey (rating 1-5 + optional comment). The tip is
+    // OPTIONAL and nullable: a Square-hosted payment link is created server-side
+    // (owner's Square production credentials, hard-gated like B2 was) with the
+    // tip amount + the specific driver's Towbook id attributed to the link so
+    // tips are paid out to the right contractor. status ∈ 'none' | 'link_created'
+    // | 'paid' — 'link_created' means the customer was handed a Square page;
+    // 'paid' is set later when the payment is confirmed. One row per (org, job):
+    // a retake UPSERTs the same row (the tip survives a signature retake).
+    await q`CREATE TABLE IF NOT EXISTS job_completions (
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      job_id TEXT NOT NULL,
+      signature_storage_key TEXT,
+      survey JSONB,
+      tip JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (org_id, job_id)
+    )`;
+    await q`CREATE INDEX IF NOT EXISTS job_completions_org_updated_idx ON job_completions(org_id, updated_at)`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

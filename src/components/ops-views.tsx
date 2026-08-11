@@ -36,6 +36,7 @@ import {
 import { mutationKey, useDispatchStore } from "~/lib/store";
 import { getStatusEvents, type StatusEvent } from "~/data/server";
 import { getAllJobPhotoStatuses, type JobPhotoStatus } from "~/data/driver-photos";
+import { getAllCompletionCaptures, type CompletionCaptureStatus } from "~/data/completion";
 
 /* ============================================================================
  * Shared dispatch views — rendered inside BOTH the ops shell (/ops/*) and the
@@ -92,6 +93,56 @@ function PhotoStatusLine({ jobId }: { jobId: string }) {
       )}
       {st.matchConfirmed && (
         <span className="rounded-full bg-brand-100 px-2 py-0.5 font-bold text-brand-700">match ✓</span>
+      )}
+    </p>
+  );
+}
+
+/* ------------------------------ completion status (light) ------------------------------ */
+
+/** One shared fetch for every card on the page: all jobs' completion capture,
+ *  keyed by LD job id (same pattern as the photo status above). A failure
+ *  degrades to an empty map (cards simply show nothing). */
+let completionStatusesPromise: Promise<Record<string, CompletionCaptureStatus>> | null = null;
+function loadAllCompletionStatuses(): Promise<Record<string, CompletionCaptureStatus>> {
+  completionStatusesPromise ??= getAllCompletionCaptures()
+    .then((rows) => {
+      const map: Record<string, CompletionCaptureStatus> = {};
+      for (const r of rows) map[r.jobId] = r;
+      return map;
+    })
+    .catch(() => ({}));
+  return completionStatusesPromise;
+}
+function useCompletionStatuses(): Record<string, CompletionCaptureStatus> {
+  const [map, setMap] = useState<Record<string, CompletionCaptureStatus>>({});
+  useEffect(() => {
+    let live = true;
+    void loadAllCompletionStatuses().then((m) => { if (live) setMap(m); });
+    return () => { live = false; };
+  }, []);
+  return map;
+}
+
+/** Compact per-job completion pill for the owner/ops cards: e.g. "✓ signature"
+ *  once the customer capture is on file, plus the tip state ("tip $5 pending" /
+ *  "tip $5 ✓") when the customer was handed a Square payment link. Hidden until
+ *  something is captured. */
+function CompletionStatusLine({ jobId }: { jobId: string }) {
+  const map = useCompletionStatuses();
+  const c = map[jobId];
+  if (!c || c.status === "none") return null;
+  const tipLabel = c.tip ? `tip ${(c.tip.amountCents / 100).toFixed(0)}` : null;
+  return (
+    <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] font-medium text-ink-500">
+      <span className="uppercase tracking-wide text-ink-400">Completion</span>
+      {c.status === "captured" || c.status === "tip_link_created" || c.status === "tip_paid" ? (
+        <span className="rounded-full bg-success-100 px-2 py-0.5 font-bold text-success-700">✓ signature{c.survey ? ` · ${c.survey.rating}★` : ""}</span>
+      ) : null}
+      {tipLabel && (
+        <span className={`rounded-full px-2 py-0.5 font-bold ${c.tip?.status === "paid" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>
+          {tipLabel} {c.tip?.status === "paid" ? "✓" : "pending"}
+        </span>
       )}
     </p>
   );
@@ -746,6 +797,7 @@ function ActiveJobCard({ job, contractors }: { job: Job; contractors: Contractor
       </div>
 
       <PhotoStatusLine jobId={job.id} />
+      <CompletionStatusLine jobId={job.id} />
 
       {next && (
         <div className="mt-3 flex flex-col items-end gap-2 border-t border-ink-100 pt-3">
