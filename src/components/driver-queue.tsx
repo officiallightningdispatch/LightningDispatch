@@ -185,33 +185,13 @@ export function QueueSkeleton() {
   );
 }
 
-export function DriverJobCard({ call, acting, onAct, onQueueChanged }: { call: DriverCall; acting: boolean; onAct: (id: string, a: "accept" | "en_route") => Promise<void>; onQueueChanged: () => void }) {
-  const meta = STATUS_META[call.statusId] ?? { label: `Status ${call.statusId}`, badge: "bg-ink-100 text-ink-600", dot: "bg-ink-400" };
-  const address = [call.pickupAddress, call.zip].filter(Boolean).join(", ");
+/** The dominant per-stage action block shared by DriverJobCard and the R2
+ *  bottom sheets (TripSheet/HomeSheet): Accept → En route → photo callouts +
+ *  JobPhotoFlow → detail disclosure. One source of truth for the act() wiring. */
+export function JobCardActions({ call, acting, onAct, onQueueChanged }: { call: DriverCall; acting: boolean; onAct: (id: string, a: "accept" | "en_route") => Promise<void>; onQueueChanged: () => void }) {
   const jobStatus = call.statusId === 3 ? "en_route" : call.statusId === 4 ? "arrived" : call.statusId === 5 ? "completed" : "other";
   return (
-    <Card className="p-4">
-      <div className="mb-3 flex items-start justify-between gap-2">
-        <div>
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-400">Call #{call.callNumber}</p>
-          <p className="text-base font-bold text-ink-800">{call.serviceName}</p>
-        </div>
-        <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${meta.badge}`}>
-          <span className={`size-1.5 rounded-full ${meta.dot}`} /> {meta.label}
-        </span>
-      </div>
-      <dl className="space-y-2 text-sm">
-        {address && (
-          <div className="flex gap-2"><MapPin className="mt-0.5 size-4 shrink-0 text-brand-600" /><dd className="text-ink-700">{address}</dd></div>
-        )}
-        {call.vehicle && (
-          <div className="flex gap-2"><Truck className="mt-0.5 size-4 shrink-0 text-ink-400" /><dd className="text-ink-700">{call.vehicle}</dd></div>
-        )}
-        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-500">
-          <span>ETA: <strong className="font-semibold text-ink-700">{etaLabel(call.arrivalETA)}</strong></span>
-          {call.purchaseOrderNumber && <span>PO: <strong className="font-semibold text-ink-700">{call.purchaseOrderNumber}</strong></span>}
-        </div>
-      </dl>
+    <>
       {call.statusId === 1 && (
         <Button className="mt-4 w-full" loading={acting} onClick={() => void onAct(call.id, "accept")}>
           <ThumbsUp className="size-5" /> Accept — I&apos;m on it
@@ -236,6 +216,37 @@ export function DriverJobCard({ call, acting, onAct, onQueueChanged }: { call: D
         <JobPhotoFlow callId={call.id} jobStatus={jobStatus} onCompleted={onQueueChanged} />
       )}
       <JobDetailDisclosure jobId={call.id} label="Details & photos" />
+    </>
+  );
+}
+
+export function DriverJobCard({ call, acting, onAct, onQueueChanged }: { call: DriverCall; acting: boolean; onAct: (id: string, a: "accept" | "en_route") => Promise<void>; onQueueChanged: () => void }) {
+  const meta = STATUS_META[call.statusId] ?? { label: `Status ${call.statusId}`, badge: "bg-ink-100 text-ink-600", dot: "bg-ink-400" };
+  const address = [call.pickupAddress, call.zip].filter(Boolean).join(", ");
+  return (
+    <Card className="p-4">
+      <div className="mb-3 flex items-start justify-between gap-2">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-400">Call #{call.callNumber}</p>
+          <p className="text-base font-bold text-ink-800">{call.serviceName}</p>
+        </div>
+        <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${meta.badge}`}>
+          <span className={`size-1.5 rounded-full ${meta.dot}`} /> {meta.label}
+        </span>
+      </div>
+      <dl className="space-y-2 text-sm">
+        {address && (
+          <div className="flex gap-2"><MapPin className="mt-0.5 size-4 shrink-0 text-brand-600" /><dd className="text-ink-700">{address}</dd></div>
+        )}
+        {call.vehicle && (
+          <div className="flex gap-2"><Truck className="mt-0.5 size-4 shrink-0 text-ink-400" /><dd className="text-ink-700">{call.vehicle}</dd></div>
+        )}
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-500">
+          <span>ETA: <strong className="font-semibold text-ink-700">{etaLabel(call.arrivalETA)}</strong></span>
+          {call.purchaseOrderNumber && <span>PO: <strong className="font-semibold text-ink-700">{call.purchaseOrderNumber}</strong></span>}
+        </div>
+      </dl>
+      <JobCardActions call={call} acting={acting} onAct={onAct} onQueueChanged={onQueueChanged} />
     </Card>
   );
 }

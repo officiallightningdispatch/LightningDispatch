@@ -1,5 +1,5 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { BadgeCheck, LogOut, Truck, User } from "lucide-react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { BadgeCheck, ChevronRight, LifeBuoy, LogOut, Truck, User } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AppShell } from "~/components/app-shell";
 import { DriverToolbar } from "~/components/driver-queue";
@@ -50,6 +50,19 @@ function ProfileView() {
               </p>
             </div>
           </Card>
+          <Link
+            to="/driver/help"
+            className="flex items-center gap-3 rounded-2xl bg-surface p-4 ring-1 ring-ink-100 transition-colors duration-150 hover:bg-hover"
+          >
+            <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-brand-50 text-brand-600">
+              <LifeBuoy className="size-5" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-bold text-ink-800">Help &amp; Support</span>
+              <span className="block text-xs text-ink-500">Call dispatch (475) 219-8328 or report a problem</span>
+            </span>
+            <ChevronRight className="size-4 shrink-0 text-ink-400" />
+          </Link>
           <Card className="p-4">
             <dl className="space-y-3 text-sm">
               <div className="flex items-center justify-between gap-2">

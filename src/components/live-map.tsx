@@ -89,6 +89,17 @@ export type LiveMapProps = {
   emptyBody?: string;
   /** Rendered under the map on the /owner/drivers page (roster rows). */
   showDriverList?: boolean;
+  /** "panel" = the original card look (header counts, legend, borders).
+   *  "hero" = full-bleed driver-portal map: no Card wrapper, no header/legend/
+   *  driver list, slimmer zoom controls, waiting-for-GPS as a floating chip.
+   *  The data contract, pins and poll are IDENTICAL either way (R2 spec §b). */
+  variant?: "panel" | "hero";
+  /** Force the chrome-free look (hero implies it). */
+  hideChrome?: boolean;
+  /** Fired on a tap (pointerup with <6px movement, single pointer, no pinch) —
+   *  the driver portal uses it to expand the bottom sheet. Additive; ignored
+   *  by existing call sites. */
+  onTap?: () => void;
 };
 
 const timeAgoLabel = (iso: string, now: number): string => {
@@ -104,7 +115,11 @@ export function LiveMap({
   emptyTitle = "Live map unavailable",
   emptyBody = "Sign in and connect a database to see driver positions and active job pickups here.",
   showDriverList = false,
+  variant = "panel",
+  hideChrome = false,
+  onTap,
 }: LiveMapProps) {
+  const isHero = variant === "hero" || hideChrome;
   const [data, setData] = useState<LiveMapData | null>(null);
   const [error, setError] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -296,7 +311,14 @@ export function LiveMap({
   const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
     pointersRef.current.delete(e.pointerId);
     if (pointersRef.current.size < 2) pinchRef.current = null;
-    if (pointersRef.current.size === 0) dragRef.current = null;
+    if (pointersRef.current.size === 0) {
+      // Tap = single pointer, <6px of travel, no pinch, not on a control: the
+      // driver portal uses it to expand the bottom sheet (R2 spec §b).
+      const d = dragRef.current;
+      const onControl = e.target instanceof Element && e.target.closest("button") != null;
+      if (d && onTap && !onControl && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 6) onTap();
+      dragRef.current = null;
+    }
   };
   const onPointerCancel = (e: React.PointerEvent<HTMLDivElement>) => {
     pointersRef.current.delete(e.pointerId);
@@ -344,12 +366,21 @@ export function LiveMap({
   /* ------------------------------- empty states ------------------------------- */
   if (data === null && !error) {
     return (
-      <Card className="p-4">
-        <div className={`${heightClass} animate-pulse rounded-xl bg-ink-100/70`} aria-busy="true" />
-      </Card>
+      <div className={`${heightClass} animate-pulse bg-ink-100/70 ${isHero ? "" : "rounded-xl"}`} aria-busy="true" />
     );
   }
   if (data === null || pins.length === 0) {
+    if (isHero) {
+      return (
+        <div className={`relative w-full overflow-hidden bg-ink-50 ${heightClass}`}>
+          <EmptyState
+            icon={data === null ? Radar : MapPin}
+            title={data === null ? emptyTitle : "No jobs or drivers to show yet"}
+            body={data === null ? emptyBody : "When jobs are dispatched and drivers' phones ping, their positions appear here."}
+          />
+        </div>
+      );
+    }
     return (
       <Card className="p-4">
         <EmptyState
@@ -362,29 +393,31 @@ export function LiveMap({
   }
 
   return (
-    <Card className="overflow-hidden p-0">
-      {/* header: live counts + waiting-for-GPS note */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-ink-100 px-4 py-2.5">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-medium text-ink-500">
-          <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-success-500" /> {freshDrivers} live</span>
-          {staleDrivers > 0 && <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-ink-300" /> {staleDrivers} stale</span>}
-          <span className="flex items-center gap-1.5"><MapPin className="size-3.5 text-danger-500" /> {jobPins} jobs</span>
-          {hasSelf && <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-blue-500" /> you</span>}
+    <Card className={`overflow-hidden p-0 ${isHero ? "border-0 shadow-none" : ""}`}>
+      {/* header: live counts + waiting-for-GPS note (hero: chrome omitted) */}
+      {!isHero && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-ink-100 px-4 py-2.5">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-medium text-ink-500">
+            <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-success-500" /> {freshDrivers} live</span>
+            {staleDrivers > 0 && <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-ink-300" /> {staleDrivers} stale</span>}
+            <span className="flex items-center gap-1.5"><MapPin className="size-3.5 text-danger-500" /> {jobPins} jobs</span>
+            {hasSelf && <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-blue-500" /> you</span>}
+          </div>
+          <div className="flex items-center gap-2">
+            {lastUpdated && <span className="text-[11px] tabular-nums text-ink-400">updated {lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>}
+            <button
+              type="button"
+              aria-label="Refresh map"
+              onClick={() => void load(false)}
+              className="grid size-7 place-items-center rounded-lg text-ink-400 transition-colors duration-150 hover:bg-ink-50 hover:text-ink-600"
+            >
+              <RefreshCw className="size-3.5" />
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          {lastUpdated && <span className="text-[11px] tabular-nums text-ink-400">updated {lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>}
-          <button
-            type="button"
-            aria-label="Refresh map"
-            onClick={() => void load(false)}
-            className="grid size-7 place-items-center rounded-lg text-ink-400 transition-colors duration-150 hover:bg-ink-50 hover:text-ink-600"
-          >
-            <RefreshCw className="size-3.5" />
-          </button>
-        </div>
-      </div>
+      )}
 
-      {waitingForGps && (
+      {!isHero && waitingForGps && (
         <p className="flex items-center gap-2 border-b border-amber-100 bg-amber-50 px-4 py-2 text-xs font-medium text-amber-800">
           <Radar className="size-3.5 shrink-0" /> Waiting for driver GPS — no fresh pings in the last 2 minutes.
         </p>
@@ -393,7 +426,7 @@ export function LiveMap({
       {/* the map viewport */}
       <div
         ref={mapRef}
-        className={`relative w-full select-none overflow-hidden bg-ink-50 ${heightClass}`}
+        className={`relative w-full select-none overflow-hidden bg-ink-50 ${heightClass} ${isHero ? "h-full" : ""}`}
         style={{ touchAction: "none", cursor: "grab" }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
@@ -430,37 +463,47 @@ export function LiveMap({
           <FallbackPlot pins={pins} tilesUnavailable={tilesUnavailable} />
         )}
 
+        {/* waiting-for-GPS chip (hero: slim floating chip top-center — it is
+            safety-relevant so it stays visible) */}
+        {isHero && waitingForGps && (
+          <p className="absolute left-1/2 top-3 z-20 flex w-max max-w-[92vw] -translate-x-1/2 items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50/95 px-3 py-1 text-[11px] font-semibold text-amber-800 shadow-card backdrop-blur">
+            <Radar className="size-3.5 shrink-0" /> Waiting for driver GPS — no fresh pings in the last 2 minutes.
+          </p>
+        )}
+
         {/* zoom + recenter controls */}
-        <div className="absolute right-2 top-2 flex flex-col overflow-hidden rounded-xl border border-ink-200 bg-surface shadow-card">
-          <button type="button" aria-label="Zoom in" onClick={() => zoomBy(1)} className="grid size-9 place-items-center text-ink-600 transition-colors duration-150 hover:bg-ink-50">
-            <Plus className="size-4" />
+        <div className={`absolute right-2 top-2 flex flex-col overflow-hidden rounded-xl border border-ink-200 bg-surface shadow-card ${isHero ? "opacity-80" : ""}`}>
+          <button type="button" aria-label="Zoom in" onClick={() => zoomBy(1)} className={`grid place-items-center text-ink-600 transition-colors duration-150 hover:bg-ink-50 ${isHero ? "size-8" : "size-9"}`}>
+            <Plus className={`${isHero ? "size-3.5" : "size-4"}`} />
           </button>
           <span className="h-px bg-ink-100" />
-          <button type="button" aria-label="Zoom out" onClick={() => zoomBy(-1)} className="grid size-9 place-items-center text-ink-600 transition-colors duration-150 hover:bg-ink-50">
-            <Minus className="size-4" />
+          <button type="button" aria-label="Zoom out" onClick={() => zoomBy(-1)} className={`grid place-items-center text-ink-600 transition-colors duration-150 hover:bg-ink-50 ${isHero ? "size-8" : "size-9"}`}>
+            <Minus className={`${isHero ? "size-3.5" : "size-4"}`} />
           </button>
           <span className="h-px bg-ink-100" />
           <button
             type="button"
             aria-label="Re-center map"
             onClick={() => viewport && fit(pins, viewport.w, viewport.h)}
-            className="grid size-9 place-items-center text-brand-600 transition-colors duration-150 hover:bg-brand-50"
+            className={`grid place-items-center text-brand-600 transition-colors duration-150 hover:bg-brand-50 ${isHero ? "size-8" : "size-9"}`}
           >
-            <LocateFixed className="size-4" />
+            <LocateFixed className={`${isHero ? "size-3.5" : "size-4"}`} />
           </button>
         </div>
       </div>
 
-      {/* legend */}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-ink-100 px-4 py-2.5 text-[11px] font-medium text-ink-500">
-        <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-full bg-success-500 ring-2 ring-success-100" /> driver live</span>
-        <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-full bg-ink-300 ring-2 ring-ink-100" /> driver stale</span>
-        <span className="flex items-center gap-1.5"><MapPin className="size-3.5 text-danger-500" /> job pickup</span>
-        {hasSelf && <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-full bg-blue-500 ring-2 ring-blue-100" /> you</span>}
-        <span className="ml-auto hidden text-[10px] text-ink-400 sm:inline">drag · scroll/pinch to zoom</span>
-      </div>
+      {/* legend (hero: omitted) */}
+      {!isHero && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-ink-100 px-4 py-2.5 text-[11px] font-medium text-ink-500">
+          <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-full bg-success-500 ring-2 ring-success-100" /> driver live</span>
+          <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-full bg-ink-300 ring-2 ring-ink-100" /> driver stale</span>
+          <span className="flex items-center gap-1.5"><MapPin className="size-3.5 text-danger-500" /> job pickup</span>
+          {hasSelf && <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-full bg-blue-500 ring-2 ring-blue-100" /> you</span>}
+          <span className="ml-auto hidden text-[10px] text-ink-400 sm:inline">drag · scroll/pinch to zoom</span>
+        </div>
+      )}
 
-      {showDriverList && data.drivers.length > 0 && (
+      {!isHero && showDriverList && data.drivers.length > 0 && (
         <div className="divide-y divide-ink-100 border-t border-ink-100">
           {data.drivers.map((d) => (
             <div key={d.driverId} className="flex items-center gap-3 px-4 py-3">

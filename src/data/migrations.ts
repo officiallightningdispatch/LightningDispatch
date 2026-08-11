@@ -354,6 +354,38 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE INDEX IF NOT EXISTS payment_transactions_org_created_idx ON payment_transactions(org_id, created_at)`;
     await q`CREATE UNIQUE INDEX IF NOT EXISTS payment_transactions_org_msgid_uidx ON payment_transactions(org_id, source_email_message_id) WHERE source_email_message_id IS NOT NULL`;
   }],
+  [20, async (q) => {
+    // Driver portal R2 (2026-08-11, Uber-style redesign spec): Help & Support +
+    // post-job feedback tables. driver_issues records driver-raised problems
+    // (kind: job_issue | payment | account) AND the "Can't take it" decline
+    // intent from the Offers screen (kind: decline — the AI dispatcher's
+    // reassign path for still-offered calls is a later milestone, so a decline
+    // only notifies dispatch; it never auto-reassigns). job_feedback is the
+    // DRIVER's post-job rating (1-5 stars + note) — SEPARATE from the customer
+    // survey stored in job_completions.survey. Both rows are owner-readable
+    // day one; owner-side surfacing is a later milestone.
+    await q`CREATE TABLE IF NOT EXISTS driver_issues (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      driver_id TEXT NOT NULL,
+      driver_name TEXT,
+      job_id TEXT,
+      kind TEXT NOT NULL CHECK (kind IN ('job_issue','payment','account','decline')),
+      message TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    await q`CREATE INDEX IF NOT EXISTS driver_issues_org_created_idx ON driver_issues(org_id, created_at)`;
+    await q`CREATE TABLE IF NOT EXISTS job_feedback (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      job_id TEXT NOT NULL,
+      driver_id TEXT NOT NULL,
+      rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+      comment TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    await q`CREATE INDEX IF NOT EXISTS job_feedback_org_job_idx ON job_feedback(org_id, job_id)`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

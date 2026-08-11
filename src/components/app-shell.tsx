@@ -77,14 +77,35 @@ const PORTAL_META: Record<Portal, { appLabel: string; portalLabel: string; mobil
   owner: { appLabel: "Owner command center", portalLabel: "Owner portal", mobileBottomPad: false },
 };
 
-export function AppShell({ portal, title, description, children }: { portal: Portal; title: string; description: string; children?: ReactNode }) {
+export function AppShell({
+  portal,
+  title,
+  description,
+  children,
+  slim = false,
+  headerActions,
+}: {
+  portal: Portal;
+  title: string;
+  description: string;
+  children?: ReactNode;
+  /** Slim = the Uber-style chrome: ONLY the brand header row + bottom tab bar
+   *  (no eyebrow/h1/description block), and the main area goes flush (px-0,
+   *  py-0, no max-width) so a full-bleed map hero can fill the screen. Other
+   *  portals and non-slim driver pages are unchanged. */
+  slim?: boolean;
+  /** Extra controls rendered on the right side of the header row (driver
+   *  portal: GO/Offline pill + "?" Help icon). Header-actions area is
+   *  ml-auto so the brand stays left. */
+  headerActions?: ReactNode;
+}) {
   const location = useLocation();
   const { links, mobile } = NAV[portal];
   const meta = PORTAL_META[portal];
   return <div className={`min-h-dvh min-w-0 overflow-x-clip bg-canvas text-ink-900 ${meta.mobileBottomPad ? "pb-20" : ""}`}>
-    <header className="border-b border-ink-100 bg-surface"><div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-3 sm:px-6"><Link to={links[0].to as any} className="flex items-center gap-3"><span className="grid size-9 place-items-center rounded-xl bg-brand-500"><Zap className="size-5 text-white" fill="currentColor" strokeWidth={0} /></span><strong className="text-sm font-bold">Lightning Dispatch OS</strong></Link><span className="hidden text-xs text-ink-400 sm:block">{meta.appLabel}</span></div></header>
+    <header className="border-b border-ink-100 bg-surface"><div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-3 sm:px-6"><Link to={links[0].to as any} className="flex items-center gap-3"><span className="grid size-9 place-items-center rounded-xl bg-brand-500"><Zap className="size-5 text-white" fill="currentColor" strokeWidth={0} /></span><strong className="text-sm font-bold">Lightning Dispatch OS</strong></Link><span className="hidden text-xs text-ink-400 sm:block">{meta.appLabel}</span>{headerActions && <div className="ml-auto flex items-center gap-2">{headerActions}</div>}</div></header>
     <div className="mx-auto flex max-w-7xl"><aside className="hidden w-56 shrink-0 border-r border-ink-100 py-5 pr-4 md:block"><nav className="space-y-1" aria-label="Portal navigation">{links.map(l => <Link key={l.to} to={l.to as any} className={`flex h-11 items-center gap-3 rounded-xl px-3 text-sm font-semibold ${location.pathname === l.to ? "bg-ink-950 text-white" : "text-ink-500 hover:bg-ink-50"}`}><l.icon className="size-4" />{l.label}</Link>)}</nav></aside>
-    <main className={`min-w-0 flex-1 px-4 py-7 sm:px-6 ${portal === "driver" ? "mx-auto max-w-lg md:max-w-none" : ""}`}><div className="mb-7"><p className="mb-2 text-xs font-bold uppercase tracking-[.18em] text-brand-600">{meta.portalLabel}</p><h1 className="text-2xl font-bold tracking-tight sm:text-3xl">{title}</h1><p className="mt-1 text-sm text-ink-500">{description}</p></div>{children}</main>
+    <main className={`min-w-0 flex-1 px-4 py-7 sm:px-6 ${portal === "driver" ? "mx-auto max-w-lg md:max-w-none" : ""} ${slim ? "max-w-none px-0 py-0" : ""}`}>{!slim && <div className="mb-7"><p className="mb-2 text-xs font-bold uppercase tracking-[.18em] text-brand-600">{meta.portalLabel}</p><h1 className="text-2xl font-bold tracking-tight sm:text-3xl">{title}</h1><p className="mt-1 text-sm text-ink-500">{description}</p></div>}{children}</main>
     </div>
     <nav className="fixed inset-x-0 bottom-0 z-20 flex border-t border-ink-100 bg-surface/95 p-1 backdrop-blur md:hidden" aria-label="Portal navigation">{mobile.map(l => <Link key={l.to} to={l.to as any} className={`flex min-h-11 flex-1 flex-col items-center justify-center gap-0.5 rounded-lg text-[11px] font-semibold ${location.pathname === l.to ? "text-brand-600" : "text-ink-500"}`}><l.icon className="size-4" /><span>{l.label}</span></Link>)}</nav>
   </div>;

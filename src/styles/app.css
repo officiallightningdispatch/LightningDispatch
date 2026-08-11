@@ -111,3 +111,15 @@
     transform: translateY(0);
   }
 }
+/* ETA re-quote flash (driver portal R2): the accent-400 pill that pops in
+ * top-center when the dispatcher re-quotes a job's ETA between polls. */
+@keyframes flash-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -8px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}

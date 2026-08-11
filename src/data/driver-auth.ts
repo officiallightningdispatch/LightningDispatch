@@ -38,6 +38,18 @@ export type DriverCall = {
   vehicle: string;
   arrivalETA: string | null;
   purchaseOrderNumber: string | null;
+  /** Real member/customer name — contacts[0] on the raw call (the sync's
+   *  firstContact helper mirrored here). "" when the raw call has none. */
+  customerName: string;
+  /** Raw contact phone (digits kept as-is for tel: links). "" when absent. */
+  customerPhone: string;
+  /** Pickup waypoint coordinates (waypoints[0]); null when missing/zero. */
+  pickupLat: number | null;
+  pickupLng: number | null;
+  /** Best available Towbook timestamp for this call — arrivalTime (arrived/
+   *  completed), else enrouteTime, else createDate. Used by the Earnings
+   *  Today/Week toggle + per-job rows. null when the call has no timestamps. */
+  updatedAtIso: string | null;
 };
 export type DriverJobAction = "accept" | "en_route";
 const STATUS_ID_FOR_ACTION: Record<DriverJobAction, number> = { accept: 2, en_route: 3 };
@@ -271,6 +283,38 @@ export async function driverCheckout(session: DriverSession, userId: string, opt
 
 /* --------------------------------- job queue --------------------------------- */
 
+/** First contact (the real customer/member) on a Towbook call: `contacts` is an
+ *  array of contact DTOs ({name, phone, ...}) or, in some shapes, a single
+ *  object — mirrors server.ts firstContact (local copy: this module is
+ *  client-reachable and must not import server-only helpers). */
+function firstContact(call: Record<string, unknown>): Record<string, unknown> | null {
+  const c = call.contacts;
+  if (Array.isArray(c) && c.length) {
+    const first = c[0];
+    if (first && typeof first === "object" && !Array.isArray(first)) return first as Record<string, unknown>;
+    return null;
+  }
+  if (c && typeof c === "object" && !Array.isArray(c)) return c as Record<string, unknown>;
+  return null;
+}
+const pickString = (o: Record<string, unknown>, ...keys: string[]): string => {
+  for (const k of keys) {
+    const v = o[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return "";
+};
+/** Best available Towbook timestamp for a call (arrivalTime → enrouteTime →
+ *  createDate → dispatchTime). Display-only semantics: "when the job was
+ *  worked" — used by Earnings Today/Week + the per-job row time. */
+function callUpdatedAt(call: Record<string, unknown>): string | null {
+  for (const k of ["arrivalTime", "enrouteTime", "createDate", "dispatchTime"]) {
+    const v = call[k];
+    if (typeof v === "string" && v) return v;
+  }
+  return null;
+}
+
 /** Normalize one raw Towbook call into a driver card. Field names read directly
  *  from the real call object (evidence: api-calls-full.json). */
 export function normalizeDriverCall(call: Record<string, unknown>): DriverCall | null {
@@ -283,6 +327,9 @@ export function normalizeDriverCall(call: Record<string, unknown>): DriverCall |
   const vehicle = [asset?.year, asset?.make, asset?.model, color, asset?.vin].filter((v) => v != null && String(v) !== "").join(" ");
   const reason = call.reason && typeof call.reason === "object" ? String((call.reason as Record<string, unknown>).name ?? "") : "";
   const arrivalETA = typeof call.arrivalETA === "string" && call.arrivalETA ? call.arrivalETA : null;
+  const contact = firstContact(call);
+  const wLat = waypoint ? Number(waypoint.latitude) : NaN;
+  const wLng = waypoint ? Number(waypoint.longitude) : NaN;
   return {
     id: String(call.id),
     callNumber: call.callNumber != null ? String(call.callNumber) : String(call.id),
@@ -293,6 +340,11 @@ export function normalizeDriverCall(call: Record<string, unknown>): DriverCall |
     vehicle,
     arrivalETA,
     purchaseOrderNumber: call.purchaseOrderNumber != null ? String(call.purchaseOrderNumber) : null,
+    customerName: contact ? pickString(contact, "name", "fullName", "contactName", "customerName", "displayName") : "",
+    customerPhone: contact ? pickString(contact, "phone", "mobile", "telephone", "phoneNumber", "cell") : "",
+    pickupLat: Number.isFinite(wLat) && wLat !== 0 ? wLat : null,
+    pickupLng: Number.isFinite(wLng) && wLng !== 0 ? wLng : null,
+    updatedAtIso: callUpdatedAt(call),
   };
 }
 
@@ -536,6 +588,45 @@ export const driverJobAction = createServerFn({ method: "POST" }).validator(pass
   }
 });
 
+/* ------------------------------- availability toggle ------------------------------- */
+export type AvailabilityResult = { ok: boolean; message?: string };
+/** GO/Offline pill (driver portal R2, lead interim 2026-08-11): a visible
+ *  availability control that performs a real Towbook checkin/checkout with the
+ *  driver's last known position. It NEVER blocks assignment — per the owner's
+ *  dispatch directive the AI may still pick an offline driver, so this is a
+ *  preference + Towbook presence signal, not a hard pool gate. Idempotent:
+ *  re-toggling the same state is a harmless repeat of the checkin/checkout. */
+export const driverSetAvailability = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<AvailabilityResult> => {
+  const v = z.object({ online: z.boolean() }).safeParse(data);
+  if (!v.success) return { ok: false as const, message: "Invalid availability value." };
+  if (!configured()) return { ok: false as const, message: "Availability requires database mode." };
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u || u.role !== "contractor") return { ok: false as const, message: "Sign in as a driver first." };
+  try {
+    await ensure();
+    const q = await db();
+    const rows = await q`SELECT towbook_driver_id, towbook_user_id FROM users WHERE id=${u.id}`;
+    const driverId = rows.length ? String(rows[0].towbook_driver_id ?? "") : "";
+    const towbookUserId = rows.length ? String(rows[0].towbook_user_id ?? "") : "";
+    if (!driverId) return { ok: false as const, message: "Your account is not linked to a Towbook driver yet — reconnect." };
+    const { loadDriverSession } = await import("./driver-gps-core");
+    const session = await loadDriverSession({ orgId: u.orgId, towbookDriverId: driverId });
+    if (!session) return { ok: false as const, message: "No Towbook session — sign in again." };
+    if (v.data.online) {
+      const loc = await q`SELECT latitude, longitude FROM driver_locations WHERE org_id=${u.orgId} AND driver_id=${u.id} ORDER BY captured_at DESC LIMIT 1`;
+      const lat = loc.length && Number.isFinite(Number(loc[0].latitude)) ? Number(loc[0].latitude) : 0;
+      const lng = loc.length && Number.isFinite(Number(loc[0].longitude)) ? Number(loc[0].longitude) : 0;
+      const checkin = await driverCheckin(session, towbookUserId, lat, lng, { locationDenied: lat === 0 && lng === 0 });
+      return { ok: checkin.ok, ...(checkin.warning ? { message: checkin.warning } : {}) };
+    }
+    await driverCheckout(session, towbookUserId);
+    return { ok: true as const };
+  } catch {
+    return { ok: false as const, message: "Unable to update availability. Try again." };
+  }
+});
+
 /* ------------------------------- earnings + profile ------------------------------- */
 export type DriverEarningsTip = {
   jobId: string;
@@ -544,6 +635,9 @@ export type DriverEarningsTip = {
   amountCents: number;
   currency: string;
   status: string;
+  /** When the tip row was last updated (job_completions.updated_at) — powers
+   *  the Earnings Today/Week toggle. ISO string; absent → null. */
+  createdAtIso: string | null;
 };
 export type DriverEarningsResult =
   | { ok: true; profile: { name: string; email: string; towbookDriverId: string }; completed: DriverCall[]; tips: DriverEarningsTip[]; totals: { completedJobs: number; tipsTotalCents: number; tipCount: number } }
@@ -567,7 +661,7 @@ export const driverEarnings = createServerFn({ method: "GET" }).handler(async ()
     if (!queue.ok) return queue;
     const completed = queue.calls.filter((c) => c.statusId === 5 || c.statusId === 6);
     const tipRows = await q`
-      SELECT jc.job_id, jc.tip, d.towbook_job_id, d.customer_name
+      SELECT jc.job_id, jc.tip, jc.updated_at, d.towbook_job_id, d.customer_name
       FROM job_completions jc LEFT JOIN dispatch_jobs d ON d.id = jc.job_id AND d.org_id = jc.org_id
       WHERE jc.org_id = ${u.orgId} AND jc.tip IS NOT NULL AND jc.tip->>'driver_towbook_id' = ${driverId}
       ORDER BY jc.updated_at DESC`;
@@ -583,6 +677,7 @@ export const driverEarnings = createServerFn({ method: "GET" }).handler(async ()
         amountCents,
         currency: String(tip.currency ?? "USD"),
         status: String(tip.status ?? "unknown"),
+        createdAtIso: r.updated_at != null ? new Date(String(r.updated_at)).toISOString() : null,
       });
     }
     const tipsTotalCents = tips.reduce((s, t) => s + t.amountCents, 0);
