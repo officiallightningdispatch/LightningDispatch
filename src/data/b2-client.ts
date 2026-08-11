@@ -8,10 +8,24 @@
  * S3-compatible API speaks standard SigV4); no SDK dependency.
  *
  * Credential resolution mirrors towbook-key.ts (env → explicit file → stable
- * file OUTSIDE the repo/build, so a publish can never orphan the keys):
+ * files; first match wins):
  *   key id:        B2_KEY_ID            → B2_KEY_ID_FILE            → <site-parent>/.secrets/b2-key-id
+ *                                                                    → <site-root>/dist/.secrets/b2-key-id
+ *                                                                    → <site-root>/.secrets/b2-key-id
  *   app key:       B2_APPLICATION_KEY   → B2_APPLICATION_KEY_FILE   → <site-parent>/.secrets/b2-application-key
+ *                                                                    → <site-root>/dist/.secrets/b2-application-key
+ *                                                                    → <site-root>/.secrets/b2-application-key
  *   bucket:        B2_BUCKET_NAME       → B2_BUCKET_NAME_FILE       → <site-parent>/.secrets/b2-bucket-name
+ *                                                                    → <site-root>/dist/.secrets/b2-bucket-name
+ *                                                                    → <site-root>/.secrets/b2-bucket-name
+ * The sibling <site-parent>/.secrets path is preferred (publish-proof, outside
+ * the repo and the build output). The artifact fallbacks exist for the HOSTED
+ * live deployment (…ctonew.app, a CloudFront snapshot whose runtime cannot
+ * read the machine-local sibling dir): the build embeds the three files at
+ * dist/.secrets, and the source-tree .secrets covers local source runs. The
+ * artifact fallback is skipped whenever the caller pins resolution with
+ * opts.stableDir (hermetic tests load only their fixtures), unless the caller
+ * explicitly opts in with allowArtifactFallback.
  * Unlike the session key, a missing B2 credential FAILS loudly (structured
  * error) — photo upload is a hard gate on completing a job, so a photo is
  * never silently dropped. Nothing is ever auto-generated.
@@ -28,10 +42,15 @@ import { findSiteRoot } from "./towbook-key";
 const SITE_ROOT = findSiteRoot(import.meta.url);
 /** Stable, publish-proof key path: sibling of the site root, outside the repo. */
 const STABLE_DIR = join(dirname(SITE_ROOT), ".secrets");
+/** Artifact fallbacks (mirror towbook-key.ts LEGACY_KEY_FILES): the hosted
+ *  live deployment cannot read the machine-local sibling dir, so the build
+ *  embeds the creds at <site-root>/dist/.secrets (preferred over the
+ *  source-tree .secrets, which only local source runs would have). */
+const ARTIFACT_DIRS = [join(SITE_ROOT, "dist", ".secrets"), join(SITE_ROOT, ".secrets")];
 
 export type B2Config = { keyId: string; applicationKey: string; bucketName: string };
 
-const readEnvOrFile = async (env: string | undefined, envFile: string | undefined, stableFile: string): Promise<string | null> => {
+const readEnvOrFile = async (env: string | undefined, envFile: string | undefined, stableFiles: string[]): Promise<string | null> => {
   if (env && env.trim() !== "") return env.trim();
   if (envFile) {
     try {
@@ -42,29 +61,40 @@ const readEnvOrFile = async (env: string | undefined, envFile: string | undefine
       throw new Error(`${envFile} is not readable: ${String(err)}`);
     }
   }
-  try {
-    const v = (await readFile(stableFile, "utf8")).trim();
-    if (v) return v;
-  } catch { /* fall through to the missing-creds error below */ }
+  for (const file of stableFiles) {
+    try {
+      const v = (await readFile(file, "utf8")).trim();
+      if (v) return v;
+    } catch { /* try the next candidate */ }
+  }
   return null;
 };
 
 /** Resolve the B2 credentials. Throws a clear, structured error when any of
  *  the three parts is missing — callers surface it as a hard failure, never a
- *  fake success. */
-export async function loadB2Config(env: NodeJS.ProcessEnv = process.env, opts: { stableDir?: string } = {}): Promise<B2Config> {
+ *  fake success.
+ *
+ *  Hermeticity: when opts.stableDir is passed (tests pin their fixtures) the
+ *  artifact fallback dirs are NOT consulted, so a test can never accidentally
+ *  resolve the real production creds. The artifact fallback applies only on
+ *  the production path (no stableDir override), or when the caller explicitly
+ *  opts in with allowArtifactFallback (verification harnesses). */
+export async function loadB2Config(env: NodeJS.ProcessEnv = process.env, opts: { stableDir?: string; allowArtifactFallback?: boolean } = {}): Promise<B2Config> {
   const stableDir = opts.stableDir ?? STABLE_DIR;
+  const fallbackDirs = opts.stableDir && !opts.allowArtifactFallback ? [] : ARTIFACT_DIRS;
+  const searchedDirs = [stableDir, ...fallbackDirs];
+  const filesFor = (name: string) => [join(stableDir, name), ...fallbackDirs.map((dir) => join(dir, name))];
   const [keyId, applicationKey, bucketName] = await Promise.all([
-    readEnvOrFile(env.B2_KEY_ID, env.B2_KEY_ID_FILE, join(stableDir, "b2-key-id")),
-    readEnvOrFile(env.B2_APPLICATION_KEY, env.B2_APPLICATION_KEY_FILE, join(stableDir, "b2-application-key")),
-    readEnvOrFile(env.B2_BUCKET_NAME, env.B2_BUCKET_NAME_FILE, join(stableDir, "b2-bucket-name")),
+    readEnvOrFile(env.B2_KEY_ID, env.B2_KEY_ID_FILE, filesFor("b2-key-id")),
+    readEnvOrFile(env.B2_APPLICATION_KEY, env.B2_APPLICATION_KEY_FILE, filesFor("b2-application-key")),
+    readEnvOrFile(env.B2_BUCKET_NAME, env.B2_BUCKET_NAME_FILE, filesFor("b2-bucket-name")),
   ]);
   const missing: string[] = [];
   if (!keyId) missing.push("B2_KEY_ID (or a b2-key-id file in .secrets)");
   if (!applicationKey) missing.push("B2_APPLICATION_KEY (or a b2-application-key file in .secrets)");
   if (!bucketName) missing.push("B2_BUCKET_NAME (or a b2-bucket-name file in .secrets)");
   if (missing.length) {
-    throw new Error(`Backblaze B2 is not configured — missing ${missing.join(", ")}. Photo uploads are a hard gate on job completion.`);
+    throw new Error(`Backblaze B2 is not configured — missing ${missing.join(", ")}. Searched: ${searchedDirs.join(", ")}. Photo uploads are a hard gate on job completion.`);
   }
   return { keyId: keyId!, applicationKey: applicationKey!, bucketName: bucketName! };
 }
