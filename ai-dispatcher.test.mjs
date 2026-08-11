@@ -62,6 +62,7 @@ const ORG = `qa-ad-${randomUUID()}`;
 const ORG2 = `qa-ad2-${randomUUID()}`;
 const ORG3 = `qa-ad3-${randomUUID()}`; // ETA v3 traffic-layer engine tests
 const ORG4 = `qa-ad4-${randomUUID()}`; // queue-aware capacity + all-loaded engine tests
+const ORG5 = `qa-ad5-${randomUUID()}`; // lost-race classification tests
 const USER = `qa-ad-user-${randomUUID()}`;
 let created = false;
 
@@ -132,7 +133,7 @@ function makeFetch({ offers, drivers, offersStatus = 200, offersBody = null, acc
     }
     if (u.includes("/api/callRequests/") && method === "POST") {
       if (acceptFails > 0) { acceptFails--; return jsonResponse(500, { error: "accept boom" }); }
-      if (acceptStatus !== 200) return jsonResponse(acceptStatus, { error: "boom" });
+      if (acceptStatus !== 200) return jsonResponse(acceptStatus, acceptBody ?? { error: "boom" });
       const bodyId = acceptResponseId ?? (acceptBody && acceptBody.id != null ? acceptBody.id : 279999999);
       const offerFor = offers.find((o) => String(o.callRequestId) === u.split("/api/callRequests/")[1].split("/")[0]);
       call = {
@@ -243,6 +244,7 @@ const makeDeps = (fetchImpl, router, opts = {}) => {
 
 const decisions = () => q`SELECT call_request_id, call_id, decision, escalated, driver_id, driver_name, eta_minutes, zone_distance_miles, reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG} ORDER BY created_at, call_request_id`;
 const decisions3 = () => q`SELECT call_request_id, call_id, decision, escalated, driver_id, driver_name, eta_minutes, zone_distance_miles, reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG3} ORDER BY created_at, call_request_id`;
+const decisions5 = () => q`SELECT call_request_id, call_id, decision, escalated, driver_id, driver_name, eta_minutes, zone_distance_miles, reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG5} ORDER BY created_at, call_request_id`;
 const audits = () => q`SELECT count(*)::int n FROM audit_log WHERE org_id=${ORG} AND action='ai_dispatcher:accept'`;
 const posts = (calls) => calls.filter((c) => c.method === "POST");
 
@@ -262,6 +264,8 @@ try {
   // (a 3-job queue always exceeds the default 45-min SLA ceiling).
   await q`INSERT INTO org_settings(org_id) VALUES(${ORG4}) ON CONFLICT(org_id) DO NOTHING`;
   await q`UPDATE org_settings SET max_eta_minutes=180 WHERE org_id=${ORG4}`;
+  await q`INSERT INTO organizations(id, name) VALUES(${ORG5}, 'qa ai-dispatcher lost-race')`;
+  await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES(${ORG5}, ${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))}, 'connected')`;
   created = true;
   // Owner-org baseline: the REAL incident row (offer 326520203, auto-accepted
   // 2026-08-10 with a 3-min straight-line ETA) lives in the owner org — the
@@ -468,6 +472,52 @@ try {
     const { deps } = makeDeps(m.fetchImpl);
     const r = await runAutoDispatch(ORG, deps);
     check("accept retry succeeded: auto_accept_with_driver, 2 POSTs total", r.decisions[0]?.decision === "auto_accept_with_driver" && posts(m.calls).length === 2, JSON.stringify(r.decisions));
+  }
+
+  /* ============ 17a) offer_lost_race: another provider already accepted the broadcast offer ============ */
+  {
+    // Towbook's real reply when another provider wins the offer first: the
+    // accept POST returns this exact message. The old logic read it as a
+    // successful accept, then post-accept verification failed ("call not found
+    // after accept" — the call lives under the winning provider) and the engine
+    // falsely escalated_dispatch_failed "needs a human to assign on Towbook".
+    // Owner-reported 2026-08-11: offers 326636200 (19:09Z) + 326600476 (15:25Z).
+    const lostRaceReply = { error: "This dispatch offer has already been responded to with an Accept and is currently being processed." };
+    const m = makeFetch({
+      offers: [offer(7051)],
+      drivers: [driver(603482, "Antone jerret", { etaSec: 604 })],
+      acceptBody: lostRaceReply,
+    });
+    const { deps, syncCalls } = makeDeps(m.fetchImpl);
+    const r = await runAutoDispatch(ORG5, deps);
+    check("lost race: decision offer_lost_race, NOT escalated", r.decisions[0]?.decision === "offer_lost_race" && r.decisions[0]?.escalated === false, JSON.stringify(r.decisions));
+    check("lost race: reason names another provider + no action needed", String(r.decisions[0]?.reason).includes("another provider won the offer") && String(r.decisions[0]?.reason).includes("no action needed"), String(r.decisions[0]?.reason));
+    check("lost race: exactly ONE POST (the accept attempt) — no assign, no verify writes", posts(m.calls).length === 1, JSON.stringify(posts(m.calls)));
+    const rows = await decisions5();
+    check("lost race: ledger row escalated=false + raw accept reply captured", rows.length === 1 && rows[0].decision === "offer_lost_race" && rows[0].escalated === false && String(rows[0].raw_response?.accept?.error ?? "").includes("already been responded to with an Accept"), JSON.stringify(rows[0]));
+    check("lost race: NO sync triggered (nothing changed on our side)", syncCalls.length === 0, JSON.stringify(syncCalls));
+    // The ops queue "Needs attention" banner is driven by escalated=TRUE rows.
+    const escOpen = await q`SELECT count(*)::int n FROM ai_dispatcher_decisions WHERE org_id=${ORG5} AND escalated=TRUE`;
+    check("lost race: zero escalated rows in the org — no needs-a-human banner", Number(escOpen[0].n) === 0, String(escOpen[0].n));
+  }
+
+  /* ============ 17b) lost-race reply wrapped in a NON-2xx response is STILL offer_lost_race (never escalated_accept_failed) ============ */
+  {
+    const lostRaceReply = { error: "This dispatch offer has already been responded to with an Accept and is currently being processed." };
+    const m = makeFetch({ offers: [offer(7053)], drivers: [driver(603482, "Antone jerret", { etaSec: 604 })], acceptStatus: 400, acceptBody: lostRaceReply });
+    const { deps } = makeDeps(m.fetchImpl);
+    const r = await runAutoDispatch(ORG5, deps);
+    check("lost race non-2xx: decision offer_lost_race, NOT escalated", r.decisions[0]?.decision === "offer_lost_race" && r.decisions[0]?.escalated === false, JSON.stringify(r.decisions));
+  }
+
+  /* ============ 17c) genuine accept failure STILL escalates (guard not weakened) ============ */
+  {
+    const m = makeFetch({ offers: [offer(7052)], drivers: [driver(603482, "Antone jerret", { etaSec: 604 })], acceptFails: 2 });
+    const { deps } = makeDeps(m.fetchImpl);
+    const r = await runAutoDispatch(ORG5, deps);
+    check("genuine accept failure: STILL escalated_accept_failed + escalated true (2 POSTs)", r.decisions[0]?.decision === "escalated_accept_failed" && r.decisions[0]?.escalated === true && posts(m.calls).length === 2, JSON.stringify({ d: r.decisions[0], posts: posts(m.calls).length }));
+    const rows = await decisions5();
+    check("genuine accept failure: ledger row is escalated_accept_failed, NOT offer_lost_race", rows.some((x) => x.call_request_id === "7052" && x.decision === "escalated_accept_failed" && x.escalated === true), JSON.stringify(rows));
   }
 
   /* ============ 18) cap-full driver with unlocated jobs → workload ETA ============ */
@@ -1095,6 +1145,7 @@ try {
     await q`DELETE FROM organizations WHERE id=${ORG2}`.catch(() => {});
     await q`DELETE FROM organizations WHERE id=${ORG3}`.catch(() => {});
     await q`DELETE FROM organizations WHERE id=${ORG4}`.catch(() => {});
+    await q`DELETE FROM organizations WHERE id=${ORG5}`.catch(() => {});
     await q`DELETE FROM users WHERE id=${USER}`.catch(() => {});
   }
   const leftover = await q`SELECT
@@ -1118,9 +1169,13 @@ try {
     (SELECT count(*) FROM org_settings WHERE org_id=${ORG4}) AS os4,
     (SELECT count(*) FROM dispatch_jobs WHERE org_id=${ORG4}) AS jobs4,
     (SELECT count(*) FROM towbook_sessions WHERE org_id=${ORG4}) AS sess4,
-    (SELECT count(*) FROM ai_dispatcher_runs WHERE org_id=${ORG4}) AS runs4`;
+    (SELECT count(*) FROM ai_dispatcher_runs WHERE org_id=${ORG4}) AS runs4,
+    (SELECT count(*) FROM ai_dispatcher_decisions WHERE org_id=${ORG5}) AS ad5,
+    (SELECT count(*) FROM org_settings WHERE org_id=${ORG5}) AS os5,
+    (SELECT count(*) FROM towbook_sessions WHERE org_id=${ORG5}) AS sess5,
+    (SELECT count(*) FROM ai_dispatcher_runs WHERE org_id=${ORG5}) AS runs5`;
   const l = leftover[0];
-  console.log(`\ncleanup: ai_decisions=${l.ad} settings=${l.os} jobs=${l.jobs} events=${l.ev} audit=${l.audit} sessions=${l.sess} members=${l.members} users=${l.users} runs=${l.runs} ad2=${l.ad2} settings2=${l.os2} runs2=${l.runs2} ad3=${l.ad3} settings3=${l.os3} sess3=${l.sess3} runs3=${l.runs3} ad4=${l.ad4} settings4=${l.os4} jobs4=${l.jobs4} sess4=${l.sess4} runs4=${l.runs4}`);
+  console.log(`\ncleanup: ai_decisions=${l.ad} settings=${l.os} jobs=${l.jobs} events=${l.ev} audit=${l.audit} sessions=${l.sess} members=${l.members} users=${l.users} runs=${l.runs} ad2=${l.ad2} settings2=${l.os2} runs2=${l.runs2} ad3=${l.ad3} settings3=${l.os3} sess3=${l.sess3} runs3=${l.runs3} ad4=${l.ad4} settings4=${l.os4} jobs4=${l.jobs4} sess4=${l.sess4} runs4=${l.runs4} ad5=${l.ad5} settings5=${l.os5} sess5=${l.sess5} runs5=${l.runs5}`);
   if (Object.values(l).some((v) => Number(v) > 0)) {
     console.error("WARNING: QA rows remain!");
     process.exitCode = 1;

@@ -172,10 +172,16 @@ export type OrgAiSettings = {
 /** Decision taxonomy — every row in ai_dispatcher_decisions carries one of these.
  *  `auto_accept_*` = the offer was accepted (the only state changes the engine
  *  makes); `escalated_*` = the offer was NOT auto-accepted (or the accept failed)
- *  and needs a human; escalated=true marks rows the ops queue must surface. */
+ *  and needs a human; escalated=true marks rows the ops queue must surface.
+ *  `offer_lost_race` = the accept POST itself was a no-op because another
+ *  provider already accepted the broadcast offer ("already been responded to
+ *  with an Accept") — the job is COVERED by the winner, so this is a calm
+ *  non-escalating record, NOT a needs-a-human error (owner-reported 2026-08-11:
+ *  offers 326636200 + 326600476 were falsely escalated on this exact reply). */
 export type AiDispatcherDecision =
   | "auto_accept_with_driver"
   | "auto_accept_no_driver"
+  | "offer_lost_race"
   | "escalated_out_of_zone"
   | "escalated_missing_coords"
   | "escalated_expired"
@@ -1209,6 +1215,39 @@ async function postAccept(
   }
   return { ok: false, raw: attempts[attempts.length - 1]?.body ?? null, attempts };
 }
+/* --------------------------- lost-race classification ---------------------------
+ * Club offers are broadcast to MULTIPLE providers; when another provider accepts
+ * first, Towbook's reply to OUR accept POST is "This dispatch offer has already
+ * been responded to with an Accept and is currently being processed." That is
+ * NOT a failure: the job is covered by the winning provider and no human is
+ * needed. Classify it as the calm non-escalating decision `offer_lost_race`
+ * instead of the old false-alarm path — accept looked OK (HTTP 200 + message),
+ * post-accept verification couldn't find the call (it lives under the winning
+ * provider), and the engine escalated_dispatch_failed ("needs a human to assign
+ * on Towbook"). Owner-reported 2026-08-11: offers 326636200 (19:09Z) and
+ * 326600476 (15:25Z) both hit this exact reply. The match is deliberately TIGHT
+ * (the canonical phrase only): genuine accept errors (network/auth/5xx) and
+ * genuine "assigned but not verified" cases still escalate. */
+const LOST_RACE_ACCEPT_SIGNALS = ["already been responded to with an accept"];
+/** True when a response body/raw text carries the Towbook lost-race reply. */
+export function acceptResponseIsLostRace(body: unknown): boolean {
+  if (body == null) return false;
+  const text =
+    typeof body === "string" ? body : (() => {
+      try {
+        return JSON.stringify(body);
+      } catch {
+        return "";
+      }
+    })();
+  const lower = text.toLowerCase();
+  return LOST_RACE_ACCEPT_SIGNALS.some((s) => lower.includes(s));
+}
+/** True when ANY accept attempt (parsed body or raw text) carries the reply. */
+function acceptIsLostRace(accept: { raw: unknown; attempts: FetchResult[] }): boolean {
+  if (acceptResponseIsLostRace(accept.raw)) return true;
+  return accept.attempts.some((a) => acceptResponseIsLostRace(a.body) || acceptResponseIsLostRace(a.bodyText));
+}
 /* ------------------------- dispatch verification + retry ------------------------- */
 /** The assign endpoint for EXISTING calls is not statically discoverable in the
  *  Towbook UI JS (the Map app's typed client has per-call verbs lock/audit/
@@ -1668,6 +1707,29 @@ async function runAutoDispatchInternal(
         } else {
           acceptRecoveryNote = `session recovery failed (${recovery.reason})`;
         }
+      }
+      // --- lost-race classification (owner-reported 2026-08-11, offers
+      // 326636200 + 326600476): when another provider already accepted the
+      // broadcast offer, Towbook's accept reply says "already been responded to
+      // with an Accept" — the job is COVERED, so record the calm non-escalating
+      // decision offer_lost_race and move on (no verify/assign/sync — nothing
+      // changed on our side). Before this, the 200+message reply looked like a
+      // successful accept, then verification failed ("call not found after
+      // accept" — the call lives under the winning provider) and the engine
+      // falsely escalated_dispatch_failed "needs a human to assign on Towbook".
+      // Runs BEFORE the !accept.ok branch so a non-2xx lost-race reply can never
+      // become escalated_accept_failed either. ---
+      if (acceptIsLostRace(accept)) {
+        const reason = "offer already responded to with an Accept — another provider won the offer; no action needed";
+        await record({
+          decision: "offer_lost_race",
+          driverId: driver ? String(driver.driverId) : null,
+          driverName: driver ? String(driver.driverName ?? "") : null,
+          etaMinutes, zoneDistanceMiles: zoneDistance, reason,
+          rawResponse: { offer, eta: etaFacts, accept: accept.raw, attempts: accept.attempts.map((a) => ({ status: a.status, body: a.body })) },
+        });
+        result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "offer_lost_race", escalated: false, reason });
+        continue;
       }
       if (!accept.ok) {
         const reason = `accept POST failed after retry (${accept.attempts.map((a) => a.error ?? `HTTP ${a.status}`).join("; ")}) — offer NOT auto-accepted, needs a human${acceptRecoveryNote ? `; ${acceptRecoveryNote}` : ""}${chosen ? `; ${etaDetailLabel(chosen, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta, etaMinutes as number)}` : ""}`;

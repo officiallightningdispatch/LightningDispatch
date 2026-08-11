@@ -15,6 +15,7 @@ import { Card, StatusBadge } from "~/components/ui";
 export const AI_DECISION_META: Record<string, { label: string; badge: string }> = {
   auto_accept_with_driver: { label: "Auto-accepted · dispatched", badge: "bg-success-50 text-success-700" },
   auto_accept_no_driver: { label: "Auto-accepted · needs dispatch", badge: "bg-accent-50 text-accent-700" },
+  offer_lost_race: { label: "Offer accepted by another provider", badge: "bg-ink-100 text-ink-600" },
   escalated_out_of_zone: { label: "Escalated · out of zone", badge: "bg-danger-50 text-danger-700" },
   escalated_missing_coords: { label: "Escalated · no coordinates", badge: "bg-danger-50 text-danger-700" },
   escalated_expired: { label: "Escalated · expired", badge: "bg-danger-50 text-danger-700" },
