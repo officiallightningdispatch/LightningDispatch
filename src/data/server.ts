@@ -963,25 +963,26 @@ function syncForOrg(orgId: string, trigger: string, actor?: { id: string; role: 
 }
 
 /** Pull-on-read trigger: fire-and-forget refresh when the org's session is connected
- *  and the last sync is older than ~30s (replication tightened 60s→30s per
- *  owner direction: "whatever happens on Towbook should replicate on the portal").
- *  Never throws — the read must never fail. */
+ *  and the last sync is older than ~3s (replication tightened 30s→3s per
+ *  owner direction 2026-08-11: "the loops should be 3s"). Matches the
+ *  background-interval cadence. Never throws — the read must never fail. */
 async function maybeAutoSync(orgId: string): Promise<void> {
   try {
     if (!configured()) return;
     const rows = await sql()`SELECT last_sync_at FROM towbook_sessions WHERE org_id=${orgId} AND session_kind='owner' AND status='connected' AND encrypted_session <> ''`;
     if (!rows.length) return;
     const last = rows[0].last_sync_at ? new Date(String(rows[0].last_sync_at)).getTime() : 0;
-    if (Date.now() - last > 30_000) void syncForOrg(orgId, "sync:pull-on-read");
+    if (Date.now() - last > 3_000) void syncForOrg(orgId, "sync:pull-on-read");
   } catch { /* best-effort — never fail the read */ }
 }
 
 /** Background interval (lives inside the served bundle's process, which is the same
  *  process that hosts the port-3000 server — serve.ts only wraps the built handler).
- *  Every 30s, sync every connected org whose last sync is stale, then run the AI
- *  dispatcher for that org (auto-accept in-zone offers; gated on
- *  ai_dispatcher_enabled in the engine itself); the per-org in-flight guard
- *  prevents overlap. */
+ *  Every 3s (tightened from 30s per owner direction 2026-08-11), sync every
+ *  connected org whose last sync is stale, then run the AI dispatcher for that
+ *  org (auto-accept in-zone offers; gated on ai_dispatcher_enabled in the engine
+ *  itself); the per-org in-flight guard prevents overlap (a slow tick never
+ *  queues: setInterval skips a new fire while the previous one is still running). */
 let backgroundSyncStarted = false;
 function startBackgroundSync() {
   if (backgroundSyncStarted) return;
@@ -990,7 +991,7 @@ function startBackgroundSync() {
     void (async () => {
       try {
         if (!configured()) return;
-        const rows = await sql()`SELECT org_id FROM towbook_sessions WHERE session_kind='owner' AND status='connected' AND encrypted_session <> '' AND (last_sync_at IS NULL OR last_sync_at < NOW() - INTERVAL '30 seconds')`;
+        const rows = await sql()`SELECT org_id FROM towbook_sessions WHERE session_kind='owner' AND status='connected' AND encrypted_session <> '' AND (last_sync_at IS NULL OR last_sync_at < NOW() - INTERVAL '3 seconds')`;
         for (const r of rows) {
           const orgId = String(r.org_id);
           void (async () => {
@@ -1009,7 +1010,7 @@ function startBackgroundSync() {
         }
       } catch { /* best-effort */ }
     })();
-  }, 30_000);
+  }, 3_000);
   const t = timer as unknown as { unref?: () => void };
   if (typeof t.unref === "function") t.unref();
 }
