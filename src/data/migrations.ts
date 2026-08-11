@@ -99,6 +99,24 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`ALTER TABLE org_settings ADD COLUMN IF NOT EXISTS eta_buffer_minutes INTEGER NOT NULL DEFAULT 5`;
     await q`ALTER TABLE org_settings ADD COLUMN IF NOT EXISTS eta_floor_minutes INTEGER NOT NULL DEFAULT 5`;
   }],
+  [10, async (q) => {
+    // Driver portal v1 (owner-directed 2026-08-11): per-driver Towbook sessions.
+    // The org_id PRIMARY KEY becomes partial unique indexes — one 'owner' row
+    // per org (untouched, same semantics as before) plus one 'driver' row per
+    // (org, towbook_driver_id). Existing rows keep session_kind='owner' via the
+    // column DEFAULT, so the owner session is preserved byte-for-byte. The FK to
+    // organizations (ON DELETE CASCADE) stays on the column; only the PK
+    // constraint is dropped. LD users gain towbook_driver_id so driver users are
+    // found by their Towbook identity (login upsert + queue scoping).
+    await q`ALTER TABLE towbook_sessions ADD COLUMN IF NOT EXISTS session_kind TEXT NOT NULL DEFAULT 'owner'`;
+    await q`ALTER TABLE towbook_sessions ADD COLUMN IF NOT EXISTS towbook_driver_id TEXT`;
+    await q`ALTER TABLE towbook_sessions DROP CONSTRAINT IF EXISTS towbook_sessions_pkey`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS towbook_sessions_owner_org_uidx ON towbook_sessions(org_id) WHERE session_kind='owner'`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS towbook_sessions_driver_org_uidx ON towbook_sessions(org_id, towbook_driver_id) WHERE session_kind='driver' AND towbook_driver_id IS NOT NULL`;
+    await q`CREATE INDEX IF NOT EXISTS towbook_sessions_org_kind_idx ON towbook_sessions(org_id, session_kind)`;
+    await q`ALTER TABLE users ADD COLUMN IF NOT EXISTS towbook_driver_id TEXT`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS users_towbook_driver_id_idx ON users(towbook_driver_id) WHERE towbook_driver_id IS NOT NULL`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

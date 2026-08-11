@@ -922,7 +922,7 @@ export async function runAutoDispatch(orgId: string, deps: AiDispatcherDeps): Pr
     const settings = await getOrgSettings(orgId);
     if (!settings.aiDispatcherEnabled) return { ...base, gated: true };
 
-    const sess = await sql()`SELECT encrypted_session, status FROM towbook_sessions WHERE org_id=${orgId}`;
+    const sess = await sql()`SELECT encrypted_session, status FROM towbook_sessions WHERE org_id=${orgId} AND session_kind='owner'`;
     if (!sess.length || String(sess[0].status) !== "connected" || !String(sess[0].encrypted_session || "").length) {
       return { ...base, skipped: "not_connected" };
     }

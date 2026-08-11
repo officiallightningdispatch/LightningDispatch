@@ -2,6 +2,8 @@ import { createFileRoute } from "@tanstack/react-router";
 import { Inbox, Navigation, Phone, Route as RouteIcon, Star } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "~/components/app-shell";
+import { RealDriverPortal } from "~/components/driver-portal";
+import { GateSkeleton } from "~/components/portal-gate";
 import { JobStatusStepper } from "~/components/job-status-stepper";
 import { InlineError } from "~/components/mutation-status";
 import {
@@ -19,7 +21,21 @@ import { avgResponseMinutes } from "~/lib/dispatch-recommendation";
 import { JOB_STATUS_META, SERVICE_ICONS, SERVICE_LABELS, timeAgo } from "~/lib/job-ui";
 import { mutationKey, useDispatchStore } from "~/lib/store";
 
+import { authStatus } from "~/data/auth";
 export const Route = createFileRoute("/driver/")({ component: ContractorView });
+/** Real vs demo: a signed-in contractor gets the Towbook-backed driver portal;
+ *  demo mode (no DATABASE_URL) keeps the seeded demo experience untouched. */
+function ContractorView() {
+  const [mode, setMode] = useState<"checking" | "demo" | "real">("checking");
+  useEffect(() => {
+    void authStatus().then((s) => {
+      setMode(s.mode === "demo" ? "demo" : s.user?.role === "contractor" ? "real" : "demo");
+    }).catch(() => setMode("demo"));
+  }, []);
+  if (mode === "checking") return <GateSkeleton />;
+  if (mode === "real") return <RealDriverPortal />;
+  return <DemoContractorView />;
+}
 
 /** Persisted contractor identity — the demo has no login, so the demo user
  *  picks which seeded contractor they are acting as. */
@@ -56,7 +72,7 @@ const NEXT_STEP_ACTION: Partial<Record<JobStatus, { label: string; sub: string; 
 
 const ACTIVE_JOB_STATUSES: JobStatus[] = ["accepted", "en_route", "arrived"];
 
-function ContractorView() {
+function DemoContractorView() {
   return (
     <AppShell portal="driver" title="Contractor home" description="Go online, accept offers, and work jobs from the road.">
       <ContractorWorkspace />
