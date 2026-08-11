@@ -10,7 +10,7 @@
  * logic (see the client-graph rule that has broken the build before).
  */
 import { createServerFn } from "@tanstack/react-start";
-import type { ContractorManagementResult, ContractorRow, ContractorEditResult, ContractorRemoveResult, ImportSummary, TowbookPushOutcome } from "./contractor-management-core";
+import type { ContractorManagementResult, ContractorRow, ContractorEditResult, ContractorRemoveResult, ImportSummary } from "./contractor-management-core";
 export type { ContractorRow, ContractorStatus, ContractorEditResult, ContractorRemoveResult, ImportSummary, ImportSkip, TowbookPushOutcome } from "./contractor-management-core";
 
 const passthrough = (x: unknown) => x;

@@ -224,7 +224,7 @@ export async function addContractorCore(actor: ContractorMgmtActor, data: unknow
     } catch { /* best-effort audit */ }
     const contractor: ContractorRow = {
       id: userId, name, email, loginHandle: handle, towbookDriverId: driverId, towbookUserId: null,
-      status: "not_signed_in", lastActivityAt: null, createdAt: new Date().toISOString(),
+      status: "not_signed_in", lastActivityAt: null, createdAt: new Date().toISOString(), removedAt: null,
     };
     return { ok: true, data: contractor };
   } catch (err) {
