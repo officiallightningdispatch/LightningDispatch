@@ -6,14 +6,89 @@
  * never enters the client bundle graph.
  */
 import { z } from "zod";
-import {
-  callHasDriver,
-  driverCheckin,
-  isExpired,
-  loadDriverSession,
-  tbFetch,
-  type DriverSession,
-} from "./driver-auth";
+import { driverCheckin, type DriverSession } from "./driver-auth";
+
+/* ----------------- Towbook session/HTTP helpers (server-only) ----------------- */
+/* These four helpers live HERE (server-only), NOT in driver-auth.ts: driver-auth
+ * is client-reachable, and a plain export that dynamic-imports a server-only
+ * module pulls auth-server/db/node:crypto into the client bundle (the
+ * 'randomBytes is not exported by __vite-browser-external' client-build leak).
+ * driver-auth keeps ONLY private tbFetch/isExpired (b15211c surface) for its
+ * own exported plain functions identifyDriver/driverCheckin/driverCheckout,
+ * which may not dynamic-import a server-only module; callHasDriver and
+ * loadDriverSession have NO copy in driver-auth — its handlers and
+ * handler-only private functions dynamic-import them from here. */
+
+const TOWBOOK_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
+const driverHeaders = (cookie: string) => ({
+  "user-agent": TOWBOOK_UA,
+  accept: "application/json,text/plain,*/*",
+  "accept-language": "en-US,en;q=0.9",
+  cookie,
+});
+type TbRes = { ok: boolean; status: number | null; body: unknown };
+export async function tbFetch(fetchImpl: typeof fetch, url: string, session: DriverSession, init?: { method?: string; body?: string }): Promise<TbRes> {
+  try {
+    const res = await fetchImpl(url, {
+      method: init?.method ?? "GET",
+      headers: init?.method === "POST" || init?.method === "PUT"
+        ? { ...driverHeaders(session.cookies), "content-type": "application/json" }
+        : driverHeaders(session.cookies),
+      redirect: "manual",
+      signal: AbortSignal.timeout(15000),
+      ...(init?.body ? { body: init.body } : {}),
+    });
+    const text = await res.text();
+    let body: unknown = text;
+    if (text) { try { body = JSON.parse(text); } catch { /* keep raw text */ } }
+    return { ok: res.status >= 200 && res.status < 300, status: res.status, body };
+  } catch (err) {
+    return { ok: false, status: null, body: String(err).slice(0, 200) };
+  }
+}
+/** True when a response means the session cookie is dead (401/403, or a 200
+ *  that is actually the login page HTML — the MVC login form fingerprint). */
+export const isExpired = (r: TbRes): boolean =>
+  r.status === 401 || r.status === 403 ||
+  (r.status === 200 && typeof r.body === "string" && /<form/i.test(r.body) && /RequestVerificationToken/i.test(r.body));
+/** Mirrors ai-dispatcher.ts callHasDriver: true when the call's assets assign it
+ *  to this driver (assets[].driver.id or assets[].drivers[].driver.id). */
+export function callHasDriver(call: unknown, driverId: number): boolean {
+  if (!call || typeof call !== "object") return false;
+  const assets = (call as Record<string, unknown>).assets;
+  if (!Array.isArray(assets)) return false;
+  return assets.some((a) => {
+    if (!a || typeof a !== "object") return false;
+    const asset = a as Record<string, unknown>;
+    const driver = asset.driver as Record<string, unknown> | undefined;
+    if (driver && Number(driver.id) === driverId) return true;
+    const drivers = asset.drivers;
+    return Array.isArray(drivers) && drivers.some((d) => {
+      if (!d || typeof d !== "object") return false;
+      const sub = ((d as Record<string, unknown>).driver ?? null) as Record<string, unknown> | null;
+      return sub != null && Number(sub.id) === driverId;
+    });
+  });
+}
+/** Load a driver's stored Towbook session (session_kind='driver'), decrypting
+ *  with the same towbook-key path the driver portal uses. Returns null when no
+ *  session row exists or the decrypt fails. */
+export async function loadDriverSession(user: { orgId: string; towbookDriverId: string }): Promise<DriverSession | null> {
+  await ensure();
+  const q = await db();
+  const rows = await q`SELECT encrypted_session FROM towbook_sessions WHERE org_id=${user.orgId} AND session_kind='driver' AND towbook_driver_id=${user.towbookDriverId} LIMIT 1`;
+  if (!rows.length || !String(rows[0].encrypted_session || "").length) return null;
+  try {
+    const { decryptSession } = await import("./towbook-key");
+    const plain = await decryptSession(String(rows[0].encrypted_session));
+    const parsed = JSON.parse(plain) as { cookies?: string; baseUrl?: string };
+    if (!parsed.cookies) return null;
+    return { cookies: parsed.cookies, baseUrl: parsed.baseUrl || "https://app.towbook.com" };
+  } catch {
+    return null;
+  }
+}
+
 /* --------------------------------- geometry --------------------------------- */
 
 const EARTH_RADIUS_METERS = 6371000;
@@ -426,7 +501,6 @@ export async function getGeofenceSettingsHandler(): Promise<GeofenceSettings | n
     return null;
   }
 }
-}
 /** Owner/admin update of the geofence radius + photos gate flag. Every change
  *  is audited (who/what/when). */
 export async function updateGeofenceSettingsHandler(data: unknown) {
@@ -452,5 +526,4 @@ export async function updateGeofenceSettingsHandler(data: unknown) {
   } catch {
     return { ok: false as const, error: "Unable to update geofence settings." };
   }
-})
 }

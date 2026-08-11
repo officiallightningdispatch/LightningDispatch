@@ -70,27 +70,6 @@ function extractTowbookStatusId(status: unknown): number | null {
   }
   return null;
 }
-/** Mirrors ai-dispatcher.ts callHasDriver: true when the call's assets assign it
- *  to this driver (assets[].driver.id or assets[].drivers[].driver.id).
- *  Exported for driver-gps.ts (geofence assignment check against raw_json). */
-export function callHasDriver(call: unknown, driverId: number): boolean {
-  if (!call || typeof call !== "object") return false;
-  const assets = (call as Record<string, unknown>).assets;
-  if (!Array.isArray(assets)) return false;
-  return assets.some((a) => {
-    if (!a || typeof a !== "object") return false;
-    const asset = a as Record<string, unknown>;
-    const driver = asset.driver as Record<string, unknown> | undefined;
-    if (driver && Number(driver.id) === driverId) return true;
-    const drivers = asset.drivers;
-    return Array.isArray(drivers) && drivers.some((d) => {
-      if (!d || typeof d !== "object") return false;
-      const sub = ((d as Record<string, unknown>).driver ?? null) as Record<string, unknown> | null;
-      return sub != null && Number(sub.id) === driverId;
-    });
-  });
-}
-
 const configured = () => Boolean(process.env.DATABASE_URL);
 let schemaInit: Promise<void> | undefined;
 function ensure() {
@@ -120,9 +99,11 @@ const driverHeaders = (cookie: string) => ({
   cookie,
 });
 type TbRes = { ok: boolean; status: number | null; body: unknown };
-/** Exported for driver-gps.ts (geofence Towbook writes reuse the exact same
- *  session/headers path so the driver portal and the geofence can never drift). */
-export async function tbFetch(fetchImpl: typeof fetch, url: string, session: DriverSession, init?: { method?: string; body?: string }): Promise<TbRes> {
+/** Private (b15211c surface) — the driver portal's own Towbook HTTP path for
+ *  identifyDriver/driverCheckin/driverCheckout. The geofence engine uses the
+ *  exported copy in driver-gps-core.ts; this module is client-reachable, so no
+ *  server-only import may be referenced by its exported plain functions. */
+async function tbFetch(fetchImpl: typeof fetch, url: string, session: DriverSession, init?: { method?: string; body?: string }): Promise<TbRes> {
   try {
     const res = await fetchImpl(url, {
       method: init?.method ?? "GET",
@@ -142,9 +123,8 @@ export async function tbFetch(fetchImpl: typeof fetch, url: string, session: Dri
   }
 }
 /** True when a response means the session cookie is dead (401/403, or a 200
- *  that is actually the login page HTML — the MVC login form fingerprint).
- *  Exported for driver-gps.ts (geofence write verification). */
-export const isExpired = (r: TbRes): boolean =>
+ *  that is actually the login page HTML — the MVC login form fingerprint). */
+const isExpired = (r: TbRes): boolean =>
   r.status === 401 || r.status === 403 ||
   (r.status === 200 && typeof r.body === "string" && /<form/i.test(r.body) && /RequestVerificationToken/i.test(r.body));
 
@@ -229,24 +209,10 @@ async function persistDriverSession(orgId: string, driverId: string, session: Dr
 }
 
 /** Load a driver's stored session from their LD user (role contractor +
- *  towbook_driver_id). Returns null when no session row exists. Exported so the
- *  GPS module (driver-gps.ts) can reuse the exact same decrypt path for the
- *  geofence Towbook writes and live checkins. */
-export async function loadDriverSession(user: { orgId: string; towbookDriverId: string }): Promise<DriverSession | null> {
-  await ensure();
-  const q = await db();
-  const rows = await q`SELECT encrypted_session FROM towbook_sessions WHERE org_id=${user.orgId} AND session_kind='driver' AND towbook_driver_id=${user.towbookDriverId} LIMIT 1`;
-  if (!rows.length || !String(rows[0].encrypted_session || "").length) return null;
-  try {
-    const { decryptSession } = await import("./towbook-key");
-    const plain = await decryptSession(String(rows[0].encrypted_session));
-    const parsed = JSON.parse(plain) as { cookies?: string; baseUrl?: string };
-    if (!parsed.cookies) return null;
-    return { cookies: parsed.cookies, baseUrl: parsed.baseUrl || "https://app.towbook.com" };
-  } catch {
-    return null;
-  }
-}
+ *  towbook_driver_id). Returns null when no session row exists. Lives in
+ *  driver-gps-core.ts (server-only) — callers here dynamic-import it from
+ *  inside serverFn handlers / handler-only private functions so the
+ *  client-reachable module never statically references the decrypt path. */
 
 /* --------------------------------- checkin / checkout --------------------------------- */
 
@@ -308,6 +274,7 @@ export type QueueResult =
 /** GET /api/calls with the driver's session. Server-side per-session scoping is
  *  expected; when other drivers' calls leak, filter to this driver's assignment. */
 async function fetchDriverQueue(user: { orgId: string; towbookDriverId: string }, opts: { fetchImpl?: typeof fetch } = {}): Promise<QueueResult> {
+  const { callHasDriver, loadDriverSession } = await import("./driver-gps-core");
   const session = await loadDriverSession(user);
   if (!session) return { ok: false, expired: true, message: "No Towbook session — sign in again." };
   const fetchImpl = opts.fetchImpl ?? fetch;
@@ -343,6 +310,7 @@ async function applyDriverTransition(
   opts: { fetchImpl?: typeof fetch } = {},
 ): Promise<TransitionResult> {
   const toStatus = STATUS_ID_FOR_ACTION[action];
+  const { callHasDriver, loadDriverSession } = await import("./driver-gps-core");
   const session = await loadDriverSession(user);
   if (!session) return { ok: false, expired: true, code: "no_session", message: "No Towbook session — reconnect to keep working." };
   const fetchImpl = opts.fetchImpl ?? fetch;
@@ -481,6 +449,7 @@ export const driverLogout = createServerFn({ method: "POST" }).handler(async () 
       const q = await db();
       const rows = await q`SELECT towbook_driver_id, towbook_user_id FROM users WHERE id=${u.id}`;
       if (rows.length && rows[0].towbook_driver_id != null) {
+        const { loadDriverSession } = await import("./driver-gps-core");
         const session = await loadDriverSession({ orgId: u.orgId, towbookDriverId: String(rows[0].towbook_driver_id) });
         if (session) await driverCheckout(session, String(rows[0].towbook_user_id ?? ""));
       }
