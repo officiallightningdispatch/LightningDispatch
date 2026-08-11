@@ -10,10 +10,11 @@
  * Towbook session surfaces a "reconnect" prompt instead of failing silently.
  */
 import { useNavigate } from "@tanstack/react-router";
-import { LogOut, MapPin, Navigation, Radar, RefreshCw, ThumbsUp, Truck } from "lucide-react";
+import { Check, LogOut, MapPin, Navigation, Radar, RefreshCw, ThumbsUp, Truck } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppShell } from "~/components/app-shell";
 import { Button, Card, useToast } from "~/components/ui";
+import { JobPhotoFlow } from "~/components/driver-photos-ui";
 import { driverJobAction, driverJobs, driverLogout, type DriverCall } from "~/data/driver-auth";
 import { pingDriverLocation } from "~/data/driver-gps";
 
@@ -188,16 +189,19 @@ export function RealDriverPortal() {
         </Card>
       ) : (
         <div className="space-y-3">
-          {calls?.map((c) => <DriverJobCard key={c.id} call={c} acting={acting === c.id} onAct={act} />)}
+          {calls?.map((c) => (
+            <DriverJobCard key={c.id} call={c} acting={acting === c.id} onAct={act} onQueueChanged={() => void load(true)} />
+          ))}
         </div>
       )}
     </AppShell>
   );
 }
 
-function DriverJobCard({ call, acting, onAct }: { call: DriverCall; acting: boolean; onAct: (id: string, a: "accept" | "en_route") => Promise<void> }) {
+function DriverJobCard({ call, acting, onAct, onQueueChanged }: { call: DriverCall; acting: boolean; onAct: (id: string, a: "accept" | "en_route") => Promise<void>; onQueueChanged: () => void }) {
   const meta = STATUS_META[call.statusId] ?? { label: `Status ${call.statusId}`, badge: "bg-ink-100 text-ink-600", dot: "bg-ink-400" };
   const address = [call.pickupAddress, call.zip].filter(Boolean).join(", ");
+  const jobStatus = call.statusId === 3 ? "en_route" : call.statusId === 4 ? "arrived" : call.statusId === 5 ? "completed" : "other";
   return (
     <Card className="p-4">
       <div className="mb-3 flex items-start justify-between gap-2">
@@ -231,10 +235,18 @@ function DriverJobCard({ call, acting, onAct }: { call: DriverCall; acting: bool
           <Navigation className="size-5" /> En route — started heading over
         </Button>
       )}
-      {(call.statusId === 3 || call.statusId === 4) && (
-        <p className="mt-4 rounded-xl bg-ink-50 p-3 text-center text-sm font-medium text-ink-600">
-          {call.statusId === 3 ? "On the way — keep the app open for arrival." : "You've arrived — the next steps unlock after arrival."}
+      {call.statusId === 3 && (
+        <p className="mt-4 flex items-center gap-2 rounded-xl bg-violet-50 p-3 text-center text-sm font-medium text-violet-700">
+          <Navigation className="size-4 shrink-0" /> On the way — take the arrival photos when you reach the vehicle.
         </p>
+      )}
+      {call.statusId === 4 && (
+        <p className="mt-4 flex items-center gap-2 rounded-xl bg-brand-50 p-3 text-center text-sm font-medium text-brand-700">
+          <Check className="size-4 shrink-0" /> You&apos;ve arrived — finish the photo steps to complete the job.
+        </p>
+      )}
+      {(call.statusId === 3 || call.statusId === 4) && (
+        <JobPhotoFlow callId={call.id} jobStatus={jobStatus} onCompleted={onQueueChanged} />
       )}
     </Card>
   );

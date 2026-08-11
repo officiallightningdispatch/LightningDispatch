@@ -110,8 +110,9 @@ export function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: 
 export type GeofenceSettings = { geofenceRadiusMeters: number; photosRequired: boolean };
 
 /** Load the org's geofence settings, lazily creating the org_settings row with
- *  the owner-directed defaults (150 m radius, photos gate OFF until milestone
- *  #4 ships the photo workflow). */
+ *  the owner-directed defaults (150 m radius, photos gate ON — the owner's spec
+ *  gates auto-arrive on the 4 pre-arrival photos + vehicle-match confirmation;
+ *  the toggle stays owner-adjustable in settings). */
 export async function getGeofenceSettings(orgId: string): Promise<GeofenceSettings> {
   const q = await db();
   await q`INSERT INTO org_settings(org_id) VALUES(${orgId}) ON CONFLICT(org_id) DO NOTHING`;
@@ -120,7 +121,7 @@ export async function getGeofenceSettings(orgId: string): Promise<GeofenceSettin
   const radius = Number(r?.geofence_radius_meters ?? 150);
   return {
     geofenceRadiusMeters: Number.isFinite(radius) && radius > 0 ? radius : 150,
-    photosRequired: r ? r.photos_required !== false : false,
+    photosRequired: r ? r.photos_required !== false : true,
   };
 }
 
@@ -159,18 +160,16 @@ export async function storePing(opts: {
 
 /* --------------------------------- photos gate --------------------------------- */
 
-/** TODO(milestone #4 photo workflow): the 4 pre-arrival photos (one per
- *  vehicle side) + the vehicle-match confirmation are captured by the photo
- *  workflow (#4), which populates pre_arrival_photos. The gate here is the
- *  explicit check the owner's auto-arrive spec requires: photos_required=false
- *  (the default until #4 ships) passes unconditionally so geofence auto-arrive
- *  works today; #4 flips the org_settings flag on — no geofence logic change.
- *  Pass = at least 4 photos on the job AND at least one vehicle-match
- *  confirmation recorded. */
+/** The auto-arrive photos gate (owner spec): pre_arrival is complete when the
+ *  job has all 4 vehicle-side photos in job_photos AND at least one row carries
+ *  the driver's vehicle-match confirmation (retakes reset the flag, so the
+ *  confirmation always applies to the current photo set). The photo workflow
+ *  (#4) writes job_photos; this gate only READS it, and only when the org's
+ *  photos_required is on. */
 export async function photosCompleteForJob(orgId: string, jobId: string): Promise<boolean> {
   const q = await db();
-  const rows = await q`SELECT COUNT(*)::int AS n, COUNT(*) FILTER (WHERE vehicle_match_confirmed)::int AS confirmed
-    FROM pre_arrival_photos WHERE org_id=${orgId} AND job_id=${jobId}`;
+  const rows = await q`SELECT COUNT(*)::int AS n, COUNT(*) FILTER (WHERE match_confirmed)::int AS confirmed
+    FROM job_photos WHERE org_id=${orgId} AND job_id=${jobId} AND phase='pre_arrival'`;
   const r = rows[0] as Record<string, unknown> | undefined;
   return Number(r?.n ?? 0) >= 4 && Number(r?.confirmed ?? 0) >= 1;
 }

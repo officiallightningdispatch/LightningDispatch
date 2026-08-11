@@ -161,6 +161,36 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE INDEX IF NOT EXISTS pre_arrival_photos_org_job_idx ON pre_arrival_photos(org_id, job_id)`;
     await q`ALTER TABLE users ADD COLUMN IF NOT EXISTS towbook_user_id TEXT`;
   }],
+  [12, async (q) => {
+    // Photo workflow (owner-directed 2026-08-11, milestone #4): job_photos is
+    // the canonical photo ledger — 4+4+4 (pre_arrival / service / final, one per
+    // vehicle side), each photo stored in Backblaze B2 with its object key in
+    // storage_key. match_confirmed is the driver's vehicle-match confirmation
+    // (pre_arrival only). One photo per (org, job, phase, side): a retake
+    // UPSERTs the same slot (and overwrites the same B2 object).
+    await q`CREATE TABLE IF NOT EXISTS job_photos (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      job_id TEXT NOT NULL,
+      phase TEXT NOT NULL,
+      side TEXT NOT NULL,
+      storage_key TEXT NOT NULL,
+      uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      uploaded_by_user_id TEXT NOT NULL REFERENCES users(id),
+      match_confirmed BOOLEAN NOT NULL DEFAULT FALSE
+    )`;
+    await q`CREATE INDEX IF NOT EXISTS job_photos_org_job_phase_idx ON job_photos(org_id, job_id, phase)`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS job_photos_org_job_phase_side_uidx ON job_photos(org_id, job_id, phase, side)`;
+    // The v11 pre_arrival_photos table was the #4 contract placeholder; job_photos
+    // supersedes it (same gate semantics, storage_key instead of photo_url). It
+    // was never populated (no writer existed) — safe to drop; the gate now reads
+    // job_photos only.
+    await q`DROP TABLE IF EXISTS pre_arrival_photos`;
+    // Owner spec gates auto-arrive on photos: flip the org_settings default ON
+    // and apply to existing orgs (the toggle itself stays owner-adjustable).
+    await q`ALTER TABLE org_settings ALTER COLUMN photos_required SET DEFAULT TRUE`;
+    await q`UPDATE org_settings SET photos_required=TRUE WHERE photos_required IS DISTINCT FROM TRUE`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

@@ -35,12 +35,67 @@ import {
 } from "~/lib/job-ui";
 import { mutationKey, useDispatchStore } from "~/lib/store";
 import { getStatusEvents, type StatusEvent } from "~/data/server";
+import { getAllJobPhotoStatuses, type JobPhotoStatus } from "~/data/driver-photos";
 
 /* ============================================================================
  * Shared dispatch views — rendered inside BOTH the ops shell (/ops/*) and the
  * owner shell (/owner/queue, /owner/active, /owner/history). All data comes
  * from the org-scoped dispatch store + getStatusEvents; no demo data ever.
  * ========================================================================== */
+
+/* ------------------------------ photo status (light) ------------------------------ */
+
+/** One shared fetch for every card on the page: all jobs' photo status, keyed
+ *  by LD job id. The promise is cached module-wide so N cards never trigger N
+ *  requests; a failure degrades to an empty map (cards simply show nothing). */
+let photoStatusesPromise: Promise<Record<string, JobPhotoStatus>> | null = null;
+function loadAllPhotoStatuses(): Promise<Record<string, JobPhotoStatus>> {
+  photoStatusesPromise ??= getAllJobPhotoStatuses()
+    .then((rows) => {
+      const map: Record<string, JobPhotoStatus> = {};
+      for (const r of rows) map[r.jobId] = r;
+      return map;
+    })
+    .catch(() => ({}));
+  return photoStatusesPromise;
+}
+function usePhotoStatuses(): Record<string, JobPhotoStatus> {
+  const [map, setMap] = useState<Record<string, JobPhotoStatus>>({});
+  useEffect(() => {
+    let live = true;
+    void loadAllPhotoStatuses().then((m) => { if (live) setMap(m); });
+    return () => { live = false; };
+  }, []);
+  return map;
+}
+
+/** Compact per-job photo line for the owner/ops cards: per-phase counts and the
+ *  vehicle-match confirmation — e.g. "Photos · 4/4 arrival ✓ · 4/4 service · 0/4
+ *  final". Hidden for jobs with no photo activity. */
+function PhotoStatusLine({ jobId }: { jobId: string }) {
+  const map = usePhotoStatuses();
+  const st = map[jobId];
+  if (!st || st.phase === "idle" || st.phase === "completed") return null;
+  return (
+    <p className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] font-medium text-ink-500">
+      <span className="uppercase tracking-wide text-ink-400">Photos</span>
+      {(["pre_arrival", "service", "final"] as const).map((phase) => (
+        <span
+          key={phase}
+          className={`rounded-full px-2 py-0.5 font-bold ${st.complete[phase] ? "bg-success-100 text-success-700" : "bg-ink-100 text-ink-500"}`}
+        >
+          {phase === "pre_arrival" ? "arrival" : phase} {st.counts[phase]}/4{st.complete[phase] ? " ✓" : ""}
+        </span>
+      ))}
+      {st.phase === "finalizing" && (
+        <span className="rounded-full bg-brand-100 px-2 py-0.5 font-bold text-brand-700">ready to complete</span>
+      )}
+      {st.matchConfirmed && (
+        <span className="rounded-full bg-brand-100 px-2 py-0.5 font-bold text-brand-700">match ✓</span>
+      )}
+    </p>
+  );
+}
 
 /* ---------------------------------- queue ---------------------------------- */
 
@@ -689,6 +744,8 @@ function ActiveJobCard({ job, contractors }: { job: Job; contractors: Contractor
       <div className="mt-4">
         <JobStatusStepper status={job.status} />
       </div>
+
+      <PhotoStatusLine jobId={job.id} />
 
       {next && (
         <div className="mt-3 flex flex-col items-end gap-2 border-t border-ink-100 pt-3">

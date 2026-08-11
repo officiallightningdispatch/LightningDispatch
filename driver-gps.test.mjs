@@ -105,6 +105,10 @@ async function setup() {
       VALUES(${org}, ${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))}, 'connected', 'driver', ${tbDriver})`;
     await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, pickup, towbook_status, raw_json, pickup_lat, pickup_lng)
       VALUES(${job}, ${org}, 'QA Customer', '', 0, 0, 'Bridgeport', 'flatbed_tow', 'en_route', NOW(), '', ${callId}, '70 Pitt Street', '3', ${JSON.stringify(rawCall(callId, Number(tbDriver), 3))}::jsonb, ${PICKUP.lat}, ${PICKUP.lng})`;
+    // Milestone #4: photos_required now defaults ON (migration v12). The main
+    // gps flow (ORG) and the Towbook-write-failure flow (ORG3) are exercised
+    // with the gate OFF (photos aren't their subject); ORG2 is the gate org.
+    await q`INSERT INTO org_settings(org_id, geofence_radius_meters, photos_required) VALUES(${org}, 150, ${org === ORG2})`;
   }
 }
 await setup();
@@ -122,7 +126,14 @@ await setup();
 {
   const s = await getGeofenceSettings(ORG);
   check("default radius 150m", s.geofenceRadiusMeters === 150, JSON.stringify(s));
-  check("photos gate default off", s.photosRequired === false, JSON.stringify(s));
+  check("photos gate off for the main gps org (explicit)", s.photosRequired === false, JSON.stringify(s));
+  // Migration v12 flips the org_settings default to TRUE (owner spec: auto-
+  // arrive is gated on photos) — a brand-new org gets the gate ON.
+  const freshOrg = `qa-gps-default-${randomUUID()}`;
+  await q`INSERT INTO organizations(id, name) VALUES(${freshOrg}, 'qa driver-gps')`;
+  const fresh = await getGeofenceSettings(freshOrg);
+  check("photos gate default ON (milestone #4)", fresh.photosRequired === true, JSON.stringify(fresh));
+  await q`DELETE FROM organizations WHERE id=${freshOrg}`;
 }
 
 /* ------------------------------- ping storage ------------------------------- */
@@ -196,12 +207,10 @@ await setup();
 {
   const c = CONF[ORG2];
   const { fetchImpl, calls } = makeFetch({ callId: c.call });
-  // photos_required=true with no photos → blocked. (getGeofenceSettings first —
-  // it lazily creates the org_settings row the UPDATE needs.)
-  await getGeofenceSettings(ORG2);
-  await q`UPDATE org_settings SET photos_required=TRUE WHERE org_id=${ORG2}`;
+  // photos_required=true with no photos → blocked. (ORG2's org_settings row was
+  // created in setup with the gate ON — re-assert and keep it on.)
   const s = await getGeofenceSettings(ORG2);
-  check("photos flag now on", s.photosRequired === true);
+  check("photos flag on for gate org", s.photosRequired === true);
   const blocked = await evaluateGeofence({ orgId: ORG2, userId: c.userId, towbookDriverId: c.tbDriver, lat: PICKUP.lat, lng: PICKUP.lng, fetchImpl });
   check("photos gate enabled + no photos → no fire", blocked.action === "none" && blocked.reason.includes("photos gate"), JSON.stringify(blocked));
   check("no Towbook calls when gated", calls.length === 0);
@@ -209,15 +218,18 @@ await setup();
   check("job still en_route when gated", String(jobB[0].status) === "en_route");
 
   // 3 photos + match confirmed → still blocked (needs 4).
+  const SIDES = ["front", "driver_side", "passenger_side", "rear"];
   for (let i = 0; i < 3; i++) {
-    await q`INSERT INTO pre_arrival_photos(id, org_id, job_id, photo_url, vehicle_match_confirmed) VALUES(gen_random_uuid()::text, ${ORG2}, ${c.job}, ${`photo-${i}`}, ${i === 0})`;
+    await q`INSERT INTO job_photos(id, org_id, job_id, phase, side, storage_key, uploaded_by_user_id, match_confirmed)
+      VALUES(gen_random_uuid()::text, ${ORG2}, ${c.job}, 'pre_arrival', ${SIDES[i]}, ${`photo-${i}`}, ${c.userId}, ${i === 0})`;
   }
   check("photosComplete 3/4 → false", (await photosCompleteForJob(ORG2, c.job)) === false);
   const blocked3 = await evaluateGeofence({ orgId: ORG2, userId: c.userId, towbookDriverId: c.tbDriver, lat: PICKUP.lat, lng: PICKUP.lng, fetchImpl });
   check("3 photos → still gated", blocked3.action === "none");
 
   // 4th photo + match confirmed → gate passes → auto-arrive fires.
-  await q`INSERT INTO pre_arrival_photos(id, org_id, job_id, photo_url, vehicle_match_confirmed) VALUES(gen_random_uuid()::text, ${ORG2}, ${c.job}, 'photo-3', TRUE)`;
+  await q`INSERT INTO job_photos(id, org_id, job_id, phase, side, storage_key, uploaded_by_user_id, match_confirmed)
+    VALUES(gen_random_uuid()::text, ${ORG2}, ${c.job}, 'pre_arrival', ${SIDES[3]}, 'photo-3', ${c.userId}, TRUE)`;
   check("photosComplete 4/4 + confirmed → true", (await photosCompleteForJob(ORG2, c.job)) === true);
   const passed = await evaluateGeofence({ orgId: ORG2, userId: c.userId, towbookDriverId: c.tbDriver, lat: PICKUP.lat, lng: PICKUP.lng, fetchImpl });
   check("4 photos + match → auto-arrive fires", passed.action === "arrived" && passed.towbookOk && passed.verified, JSON.stringify(passed));
@@ -289,7 +301,8 @@ const leftover = await q`SELECT
   (SELECT COUNT(*)::int FROM audit_log a JOIN organizations o ON o.id=a.org_id WHERE o.name='qa driver-gps') AS audit,
   (SELECT COUNT(*)::int FROM towbook_sessions s JOIN organizations o ON o.id=s.org_id WHERE o.name='qa driver-gps') AS sessions,
   (SELECT COUNT(*)::int FROM ai_dispatcher_decisions d JOIN organizations o ON o.id=d.org_id WHERE o.name='qa driver-gps') AS decisions,
-  (SELECT COUNT(*)::int FROM pre_arrival_photos p JOIN organizations o ON o.id=p.org_id WHERE o.name='qa driver-gps') AS photos,
+  (SELECT COUNT(*)::int FROM job_photos p JOIN organizations o ON o.id=p.org_id WHERE o.name='qa driver-gps') AS photos,
+  (SELECT COUNT(*)::int FROM org_settings s JOIN organizations o ON o.id=s.org_id WHERE o.name='qa driver-gps') AS settings,
   (SELECT COUNT(*)::int FROM organization_memberships m JOIN organizations o ON o.id=m.org_id WHERE o.name='qa driver-gps') AS members,
   (SELECT COUNT(*)::int FROM users u WHERE u.id IN (${OWNER}, ${OWNER2}, ${OWNER3}, ${DRIVER}, ${DRIVER2}, ${DRIVER3})) AS users`;
 const z = Object.values(leftover[0]).every((n) => Number(n) === 0);
