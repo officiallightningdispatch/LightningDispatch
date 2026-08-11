@@ -162,13 +162,21 @@ export async function getJobDetailCore(user: JobDetailUser, data: unknown): Prom
     if (!(await canSeeJob(user, job))) return { ok: false, code: "unauthorized", message: "This job is not assigned to you." };
 
     // Assigned contractor name: the bug-batch columns first (real
-    // AI-dispatcher/Towbook selection), roster fallback for legacy manual
-    // assigns, then a driver-name resolution against the roster by Towbook id.
+    // AI-dispatcher/Towbook selection), then a users-row lookup for the REAL
+    // roster (manual console assigns write users.id — the legacy
+    // dispatch_contractors FK column is empty for real orgs, BUG 1 root cause
+    // 2026-08-11), and finally the legacy dispatch_contractors fallback for
+    // dev-only fixtures.
     let driverName: string | null = row.assigned_driver_name != null && String(row.assigned_driver_name) !== "" ? String(row.assigned_driver_name) : null;
     if (!driverName && row.assigned_contractor_id != null) {
       const q = await db();
-      const dc = await q`SELECT name FROM dispatch_contractors WHERE id=${String(row.assigned_contractor_id)} AND org_id=${user.orgId} LIMIT 1`;
-      if (dc.length && dc[0].name != null) driverName = String(dc[0].name);
+      const usr = await q`SELECT u.name FROM users u JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${user.orgId} AND m.role = 'contractor' WHERE u.id = ${String(row.assigned_contractor_id)} LIMIT 1`;
+      if (usr.length && usr[0].name != null) {
+        driverName = String(usr[0].name);
+      } else {
+        const dc = await q`SELECT name FROM dispatch_contractors WHERE id=${String(row.assigned_contractor_id)} AND org_id=${user.orgId} LIMIT 1`;
+        if (dc.length && dc[0].name != null) driverName = String(dc[0].name);
+      }
     }
 
     // Latest AI-dispatcher ETA quoted for this call (if any).

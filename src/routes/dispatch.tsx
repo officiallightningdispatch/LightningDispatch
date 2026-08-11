@@ -230,13 +230,19 @@ function IncomingJobCard({ job, contractors }: { job: Job; contractors: Contract
       <RecommendationPanel job={job} rec={rec} picking={picking} />
 
       <div className="flex gap-2 border-t border-ink-100 p-3">
-        <Button
-          className="flex-1"
-          onClick={() => void assign(rec.top.contractor.id)}
-          loading={pending}
-        >
-          {pending ? "Assigning…" : `Assign ${rec.top.contractor.name.split(" ")[0]}`}
-        </Button>
+        {rec.top ? (
+          <Button
+            className="flex-1"
+            onClick={() => void assign(rec.top.contractor.id)}
+            loading={pending}
+          >
+            {pending ? "Assigning…" : `Assign ${rec.top.contractor.name.split(" ")[0]}`}
+          </Button>
+        ) : (
+          <div className="flex flex-1 items-center justify-center rounded-xl bg-ink-50 px-3 py-2 text-center text-xs font-semibold text-ink-500">
+            No contractors available — add contractors to the roster before dispatching.
+          </div>
+        )}
         <Button
           variant="secondary"
           onClick={() => setPicking((p) => !p)}
@@ -272,6 +278,25 @@ function RecommendationPanel({
 }) {
   const top = rec.top;
   const conf = CONFIDENCE_META[rec.confidence];
+  if (!top) {
+    // Empty roster safety rail (BUG 2 2026-08-11): no recommendation exists —
+    // render a clear state, never crash on top.contractor.
+    return (
+      <div className="mx-3 mb-1 rounded-xl border border-ink-100 bg-hover p-3">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <span className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-ink-500">
+            <span className="grid size-5 place-items-center rounded-md bg-accent-100 text-accent-600">
+              <Zap className="size-3.5" fill="currentColor" strokeWidth={0} aria-hidden="true" />
+            </span>
+            AI dispatch recommendation
+          </span>
+          <StatusBadge className={conf.badge}>{conf.label}</StatusBadge>
+        </div>
+        <p className="text-sm font-semibold text-ink-600">No contractors available</p>
+        <p className="mt-0.5 text-xs italic text-ink-400">{rec.reason}</p>
+      </div>
+    );
+  }
   return (
     <div
       className={`mx-3 mb-1 rounded-xl border p-3 ${
