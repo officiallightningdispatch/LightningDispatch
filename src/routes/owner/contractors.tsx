@@ -203,7 +203,7 @@ function OwnerContractors() {
         <section>
           <div className="mb-3 flex items-baseline justify-between gap-2">
             <h3 className="text-sm font-bold uppercase tracking-wider text-ink-500">Roster</h3>
-            <span className="text-xs text-ink-400">signed in at least once = has a Towbook driver session</span>
+            <span className="text-xs text-ink-400">signed in = has a live portal or Towbook session</span>
           </div>
           {listError && <div className="mb-3"><InlineError message={listError} /></div>}
           {rows === null ? (

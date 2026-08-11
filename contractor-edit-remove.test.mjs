@@ -307,7 +307,7 @@ await q`UPDATE users SET email=${realEmail} WHERE id=${added[DRIVER_EMAIL]}`;
     JSON.stringify(aud));
   const list = await listContractorsCore(ACTOR);
   const removedRow = list.ok ? list.data.find((c) => c.id === added[DRIVER_REMOVE]) : null;
-  check("list shows removedAt (badge data)", removedRow && removedRow.removedAt != null && removedRow.status === "not_signed_in", JSON.stringify(removedRow));
+  check("list excludes the removed contractor entirely (owner-directed 2026-08-11: removed drivers must not display)", removedRow === undefined && Array.isArray(list.data), JSON.stringify(removedRow));
 }
 
 /* ============ 7) remove unsupported (disable 404) → local removal stands, notice only ============ */

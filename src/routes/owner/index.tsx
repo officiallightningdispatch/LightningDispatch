@@ -17,6 +17,7 @@ import { avgResponseMinutes, recommendForJob } from "~/lib/dispatch-recommendati
 import {
   ACTIVE_STATUSES,
   fmtDuration,
+  jobDriverName,
   JOB_LIFECYCLE,
   JOB_STATUS_META,
   SERVICE_ICONS,
@@ -239,7 +240,7 @@ function ContractorRow({ contractor: c }: { contractor: Contractor }) {
 }
 
 function CompletedRow({ job, contractors }: { job: Job; contractors: Contractor[] }) {
-  const contractor = contractors.find((c) => c.id === job.assignedContractorId);
+  const driverName = jobDriverName(job, contractors);
   const Icon = SERVICE_ICONS[job.serviceType];
   return (
     <div className="flex items-center gap-3 border-b border-ink-100 px-4 py-3.5 transition-colors duration-150 last:border-0 hover:bg-hover">
@@ -252,7 +253,7 @@ function CompletedRow({ job, contractors }: { job: Job; contractors: Contractor[
           <span className="font-medium text-ink-500">{SERVICE_LABELS[job.serviceType]}</span>
         </p>
         <p className="text-xs tabular-nums text-ink-400">
-          {contractor?.name ?? "Unassigned"} · {fmtDuration(job.createdAt, job.completedAt)} · done{" "}
+          {driverName ?? "Unassigned"} · {fmtDuration(job.createdAt, job.completedAt)} · done{" "}
           {timeAgo(job.completedAt)}
         </p>
       </div>

@@ -48,6 +48,35 @@ const STATUS_ID_TO_LIFECYCLE: Readonly<Record<number, string>> = {
   0: "new", 1: "offered", 2: "accepted", 3: "en_route", 4: "arrived", 5: "completed",
   252: "completed", 255: "cancelled",
 };
+/** Local copy of server.ts assignedDriverFromRawCall (this module deliberately
+ *  keeps tiny Towbook-shape helpers local instead of importing server modules):
+ *  the assigned driver on a raw call — assets[].driver = {id, name, ...} (the
+ *  same shape the sync persists), so a first-sighting import carries the real
+ *  driver attribution (BUG 4 fix 2026-08-11 — jobs were showing UNASSIGNED). */
+function assignedDriverFromRawCall(raw: unknown): { towbookId: string | null; name: string | null } {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { towbookId: null, name: null };
+  const assets = (raw as Record<string, unknown>).assets;
+  if (!Array.isArray(assets)) return { towbookId: null, name: null };
+  for (const a of assets) {
+    if (!a || typeof a !== "object" || Array.isArray(a)) continue;
+    const o = a as Record<string, unknown>;
+    const direct = o.driver as Record<string, unknown> | undefined;
+    if (direct && typeof direct === "object" && direct.id != null) {
+      return { towbookId: String(direct.id), name: direct.name != null ? String(direct.name) : null };
+    }
+    const drivers = o.drivers;
+    if (Array.isArray(drivers)) {
+      for (const d of drivers) {
+        if (!d || typeof d !== "object" || Array.isArray(d)) continue;
+        const sub = ((d as Record<string, unknown>).driver ?? null) as Record<string, unknown> | null;
+        if (sub && typeof sub === "object" && sub.id != null) {
+          return { towbookId: String(sub.id), name: sub.name != null ? String(sub.name) : null };
+        }
+      }
+    }
+  }
+  return { towbookId: null, name: null };
+}
 const numericStatusId = (v: unknown): number | null => {
   if (typeof v === "number" && Number.isFinite(v)) return v;
   if (typeof v === "string" && v.trim() !== "") { const n = Number(v); if (Number.isFinite(n)) return n; }
@@ -385,8 +414,9 @@ async function writeThrough(user: { orgId: string; userId: string; towbookDriver
     const wLng = wp0 ? Number(wp0.longitude) : NaN;
     const pickupLat = Number.isFinite(wLat) && wLat !== 0 ? wLat : null;
     const pickupLng = Number.isFinite(wLng) && wLng !== 0 ? wLng : null;
-    await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, customer_phone, vehicle_desc, pickup, dropoff, towbook_status, raw_json, pickup_lat, pickup_lng)
-      VALUES(${newJobRowId}, ${user.orgId}, ${customer || `Towbook job ${callId}`}, '', 0, 0, ${pickup || "Unknown"}, 'flatbed_tow', ${mapped}, NOW(), '', ${callId}, '', ${vehicle}, ${pickup}, ${dropoff}, ${String(toStatus)}, ${JSON.stringify({ sourceUrl: "driver-portal", ...rawCall })}::jsonb, ${pickupLat}, ${pickupLng})`;
+    const assigned = assignedDriverFromRawCall(rawCall);
+    await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, customer_phone, vehicle_desc, pickup, dropoff, towbook_status, raw_json, pickup_lat, pickup_lng, assigned_driver_towbook_id, assigned_driver_name)
+      VALUES(${newJobRowId}, ${user.orgId}, ${customer || `Towbook job ${callId}`}, '', 0, 0, ${pickup || "Unknown"}, 'flatbed_tow', ${mapped}, NOW(), '', ${callId}, '', ${vehicle}, ${pickup}, ${dropoff}, ${String(toStatus)}, ${JSON.stringify({ sourceUrl: "driver-portal", ...rawCall })}::jsonb, ${pickupLat}, ${pickupLng}, ${assigned.towbookId ?? user.towbookDriverId}, ${assigned.name})`;
     await q`INSERT INTO status_events(id, org_id, job_id, from_status, to_status, actor_user_id, actor_role, note)
       SELECT gen_random_uuid()::text, ${user.orgId}, ${newJobRowId}, ${currentMapped}, ${mapped}, ${user.userId}, 'contractor', ${`driver ${actionLabel(toStatus)} (Lightning Dispatch)`}`;
     await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)

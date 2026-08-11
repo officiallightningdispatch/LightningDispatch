@@ -274,6 +274,67 @@ await setup();
   check("pull recorded the imported transition", String(ev[0].to_status) === "en_route" && String(ev[0].note).includes("Towbook"), JSON.stringify(ev));
 }
 
+/* ============ 10b) BUG 4: pull captures the assigned driver from the raw call ============ */
+{
+  // A completed job's raw Towbook call carries the assigned driver
+  // (assets[].driver = {id, name} — recon-verified shape, call-single.json).
+  // The sync must persist it so the dashboard/history show the real driver
+  // instead of "Unassigned" (owner-reported 2026-08-11).
+  const base = {
+    customer: "QA Driver Job",
+    phone: "",
+    vehicle: "",
+    pickup: "Main St",
+    dropoff: "",
+    status: "completed",
+    towbookStatus: "5",
+    serviceType: "flatbed_tow",
+    createdAt: new Date().toISOString(),
+    note: "",
+  };
+  const pulled = await upsertPulledJobs(ORG, ACTOR, [{
+    ...base,
+    towbookJobId: "880101",
+    raw: { sourceUrl: "status-sync.test", assets: [{ id: 1, driver: { id: 603482, name: "Antone jerret" }, drivers: [{ driver: { id: 603482, name: "Antone jerret" } }] }] },
+  }], "sync:test");
+  check("BUG4: driver-carrying pull added 1", pulled.added === 1, JSON.stringify(pulled));
+  const row = await q`SELECT assigned_driver_towbook_id, assigned_driver_name FROM dispatch_jobs WHERE org_id=${ORG} AND towbook_job_id='880101'`;
+  check("BUG4: pull persisted the assigned driver (id + name)", row.length === 1 && String(row[0].assigned_driver_towbook_id) === "603482" && String(row[0].assigned_driver_name) === "Antone jerret", JSON.stringify(row));
+
+  // Re-sync after a RE-ASSIGNMENT (driver changed, everything else identical):
+  // the driver change must be detected and the row updated.
+  const re = await upsertPulledJobs(ORG, ACTOR, [{
+    ...base,
+    towbookJobId: "880101",
+    raw: { sourceUrl: "status-sync.test", assets: [{ id: 1, driver: { id: 103665, name: "Brittani Simms" } }] },
+  }], "sync:test");
+  check("BUG4: re-sync updated (driver change detected)", re.updated === 1, JSON.stringify(re));
+  const row2 = await q`SELECT assigned_driver_towbook_id, assigned_driver_name FROM dispatch_jobs WHERE org_id=${ORG} AND towbook_job_id='880101'`;
+  check("BUG4: re-sync corrected the driver", String(row2[0].assigned_driver_towbook_id) === "103665" && String(row2[0].assigned_driver_name) === "Brittani Simms", JSON.stringify(row2));
+
+  // A call with NO assignment → NULL columns, never a crash.
+  const plain = await upsertPulledJobs(ORG, ACTOR, [{ ...base, towbookJobId: "880102", raw: { sourceUrl: "status-sync.test" } }], "sync:test");
+  check("BUG4: no-driver call added cleanly", plain.added === 1, JSON.stringify(plain));
+  const row3 = await q`SELECT assigned_driver_towbook_id, assigned_driver_name FROM dispatch_jobs WHERE org_id=${ORG} AND towbook_job_id='880102'`;
+  check("BUG4: no-driver call → NULL driver columns", row3.length === 1 && row3[0].assigned_driver_towbook_id == null && row3[0].assigned_driver_name == null, JSON.stringify(row3));
+}
+/* ============ 10c) BUG 4: dashboard/history display resolves the driver for BOTH paths ============ */
+{
+  // The UI renders jobDriverName(job, contractors) ?? "Unassigned". Hermetic
+  // proof for the two assignment sources:
+  const { jobDriverName } = await import("./src/lib/job-ui.ts");
+  // (a) pull/AI path: assignedDriverName captured at sync → name shown.
+  check("BUG4: pull path → jobDriverName returns the synced driver", jobDriverName({ assignedDriverName: "Brittani Simms" }, []) === "Brittani Simms");
+  // (b) legacy assignJob path: assignedContractorId → dispatch_contractors name.
+  check("BUG4: assignJob path → jobDriverName returns the contractor name", jobDriverName({ assignedContractorId: "con-1" }, [{ id: "con-1", name: "Marcus Johnson" }]) === "Marcus Johnson");
+  // (c) precedence: the real Towbook driver wins over the legacy FK.
+  check("BUG4: synced driver wins over legacy FK", jobDriverName({ assignedDriverName: "Brittani Simms", assignedContractorId: "con-1" }, [{ id: "con-1", name: "Marcus Johnson" }]) === "Brittani Simms");
+  // (d) no assignment → null (the UI renders "Unassigned").
+  check("BUG4: no assignment → null (UI renders Unassigned)", jobDriverName({}, []) === null);
+  // (e) the migration exists (columns + backfill from raw_json).
+  const mig = readFileSync(new URL("./src/data/migrations.ts", import.meta.url), "utf8");
+  check("BUG4: migration 18 adds the driver columns + backfill", mig.includes("assigned_driver_towbook_id TEXT") && mig.includes("raw_json#>>'{assets,0,driver,id}'"));
+}
 /* ==================== 11) server-fn wiring + mapping parity ==================== */
 {
   const src = readFileSync(new URL("./src/data/server.ts", import.meta.url), "utf8");

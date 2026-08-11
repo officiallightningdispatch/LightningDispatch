@@ -21,6 +21,7 @@ const {
   listContractorsCore,
   addContractorCore,
   importContractorsCore,
+  removeContractorCore,
   deriveLoginHandle,
 } = await import("./src/data/contractor-management-core.ts");
 const { encryptSession } = await import("./src/data/towbook-key.ts");
@@ -230,6 +231,97 @@ await setup();
   const ids = r.ok ? r.data.map((c) => c.towbookDriverId) : [];
   check("final roster contains added + imported drivers", ["910001", "910002", "910004", "910008"].every((d) => ids.includes(d)), JSON.stringify(ids));
   check("final roster excludes skipped drivers", !ids.includes("910005") && !ids.includes("910006") && !ids.includes(HANDLE_TAG), JSON.stringify(ids));
+}
+
+/* ============ 8) BUG 2: owner/admin-kind session + LD portal session count ============ */
+{
+  // The owner logs into Towbook with their own DRIVER login; connectTowbook
+  // stores that driver id on the owner-kind session row. The roster must count
+  // ANY live session keyed to the user — driver-kind, owner/admin-kind Towbook
+  // sessions (by towbook_driver_id), and live LD portal sessions (by user_id).
+  const ownerSession = await q`SELECT org_id FROM towbook_sessions WHERE org_id=${ORG} AND session_kind='owner'`;
+  const sessId = String(ownerSession[0].org_id);
+  const userRow = await q`SELECT id FROM users WHERE towbook_driver_id='910008'`;
+  const userId = String(userRow[0].id);
+
+  // 8a. No session → not signed in (910008 has no driver-kind session yet).
+  let list = await listContractorsCore(ACTOR);
+  let row = list.ok ? list.data.find((c) => c.towbookDriverId === "910008") : null;
+  check("BUG2: no session → not signed in", row?.status === "not_signed_in" && row?.lastActivityAt === null, JSON.stringify(row));
+
+  // 8b. Owner-kind session linked to that driver → the roster row shows signed in.
+  await q`UPDATE towbook_sessions SET towbook_driver_id='910008' WHERE org_id=${sessId}`;
+  list = await listContractorsCore(ACTOR);
+  row = list.ok ? list.data.find((c) => c.towbookDriverId === "910008") : null;
+  check("BUG2: owner-kind session for the owner's user → roster row signed in", row?.status === "signed_in" && row?.lastActivityAt != null, JSON.stringify(row));
+
+  // 8c. Unlink the owner session → back to not signed in (no other session).
+  await q`UPDATE towbook_sessions SET towbook_driver_id=NULL WHERE org_id=${sessId}`;
+  list = await listContractorsCore(ACTOR);
+  row = list.ok ? list.data.find((c) => c.towbookDriverId === "910008") : null;
+  check("BUG2: owner session unlinked → not signed in again", row?.status === "not_signed_in", JSON.stringify(row));
+
+  // 8d. A live LD portal session (sessions row for the user) counts as signed in.
+  const expiredId = `sess-${randomUUID()}`, liveId = `sess-${randomUUID()}`;
+  await q`INSERT INTO sessions(id, user_id, expires_at) VALUES(${expiredId}, ${userId}, NOW() - INTERVAL '1 hour')`;
+  list = await listContractorsCore(ACTOR);
+  row = list.ok ? list.data.find((c) => c.towbookDriverId === "910008") : null;
+  check("BUG2: expired LD session does not count", row?.status === "not_signed_in", JSON.stringify(row));
+  await q`INSERT INTO sessions(id, user_id, expires_at) VALUES(${liveId}, ${userId}, NOW() + INTERVAL '1 day')`;
+  list = await listContractorsCore(ACTOR);
+  row = list.ok ? list.data.find((c) => c.towbookDriverId === "910008") : null;
+  check("BUG2: live LD portal session → signed in", row?.status === "signed_in" && row?.lastActivityAt != null, JSON.stringify(row));
+  // Cleanup: remove the test sessions (org cleanup cascades users, but keep the
+  // session table tidy for the remove-flow section that checks invalidation).
+  await q`DELETE FROM sessions WHERE id IN (${expiredId}, ${liveId})`;
+}
+
+/* ============ 9) BUG 1: removed (deactivated) contractor never appears; re-import skips ============ */
+{
+  const add = await addContractorCore(ACTOR, { name: "QA Remove Driver", towbookDriverId: "910100", email: "" });
+  check("BUG1: add the driver to remove", add.ok === true, JSON.stringify(add));
+  const driverId = "910100";
+  const userRow = await q`SELECT id FROM users WHERE towbook_driver_id=${driverId}`;
+  const userId = String(userRow[0].id);
+  // Give them a live LD session so removal must invalidate it.
+  await q`INSERT INTO sessions(id, user_id, expires_at) VALUES(${`sess-${randomUUID()}`}, ${userId}, NOW() + INTERVAL '1 day')`;
+
+  // Mock Towbook for the remove push: editor partial → disable POST → verify.
+  const fetchImpl = async (url, init = {}) => {
+    const u = String(url);
+    const method = init.method || "GET";
+    const json = (status, body) => ({ status, ok: status >= 200 && status < 300, text: async () => JSON.stringify(body), json: async () => JSON.parse(JSON.stringify(body)), headers: { get: () => null } });
+    const html = (status, body) => ({ status, ok: status >= 200 && status < 300, text: async () => body, json: async () => body, headers: { get: () => null } });
+    if (method === "GET" && u.includes("/ajax/settings/drivers/")) {
+      return html(200, `<input name="RequestVerificationToken" type="hidden" value="TOK${driverId}" /><input name="Name" value="QA Remove Driver" />`);
+    }
+    if (method === "POST" && u.endsWith(`/api/drivers/${driverId}/disable`)) return json(200, { ok: true });
+    if (method === "GET" && u.includes("/api/drivers/full?includeDeleted=true")) return json(200, [{ id: Number(driverId), name: "QA Remove Driver", deleted: true }]);
+    throw new Error(`unexpected ${method} ${u}`);
+  };
+
+  const removed = await removeContractorCore(ACTOR, { contractorId: userId, reason: "qa test" }, { fetchImpl });
+  check("BUG1: remove ok + verified on Towbook", removed.ok === true && removed.data.towbook.status === "verified" && removed.data.sessionsInvalidated >= 1, JSON.stringify(removed));
+
+  // The roster MUST NOT contain the removed contractor (deactivated_at filter).
+  let list = await listContractorsCore(ACTOR);
+  const ids = list.ok ? list.data.map((c) => c.towbookDriverId) : [];
+  check("BUG1: roster excludes the removed contractor", !ids.includes(driverId), JSON.stringify(ids));
+  // Soft-deactivate: the users row still exists for history, sessions revoked.
+  const dbRow = await q`SELECT deactivated_at FROM users WHERE id=${userId}`;
+  check("BUG1: row soft-deactivated (never hard-deleted)", dbRow.length === 1 && dbRow[0].deactivated_at != null, JSON.stringify(dbRow));
+  const sessLeft = await q`SELECT COUNT(*)::int AS n FROM sessions WHERE user_id=${userId}`;
+  check("BUG1: sessions invalidated", Number(sessLeft[0].n) === 0, JSON.stringify(sessLeft));
+
+  // Re-import the SAME driver from Towbook → must skip, never re-add.
+  const m = makeFetch([{ id: Number(driverId), name: "QA Remove Driver" }]);
+  const re = await importContractorsCore(ACTOR, { fetchImpl: m.fetchImpl });
+  const s = re.ok ? re.data : null;
+  check("BUG1: re-import skips the deactivated driver", s && s.imported === 0 && s.skipped.some((x) => String(x.towbookDriverId) === driverId && x.reason === "deactivated_in_lightning_dispatch"), JSON.stringify(s));
+  const still = await q`SELECT COUNT(*)::int AS n, MAX(deactivated_at) AS d FROM users WHERE towbook_driver_id=${driverId}`;
+  check("BUG1: re-import never re-adds / never re-activates", Number(still[0].n) === 1 && still[0].d != null, JSON.stringify(still));
+  // BUG 3 data source: the Performance tab count = active roster length.
+  check("BUG3: performance roster count = listContractorsCore length (active only)", list.ok === true && !list.data.some((c) => c.removedAt), JSON.stringify(list.ok ? list.data.map((c) => c.towbookDriverId) : list));
 }
 
 /* ================================ summary + cleanup ================================ */

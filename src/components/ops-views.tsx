@@ -26,6 +26,7 @@ import {
   CONFIDENCE_META,
   fmtDuration,
   HISTORY_STATUSES,
+  jobDriverName,
   JOB_LIFECYCLE,
   JOB_STATUS_META,
   nextStatus,
@@ -34,6 +35,7 @@ import {
   timeAgo,
 } from "~/lib/job-ui";
 import { mutationKey, useDispatchStore } from "~/lib/store";
+import { listContractors, type ContractorRow } from "~/data/contractor-management";
 import { getStatusEvents, type StatusEvent } from "~/data/server";
 import { getAllJobPhotoStatuses, type JobPhotoStatus } from "~/data/driver-photos";
 import { getAllCompletionCaptures, type CompletionCaptureStatus } from "~/data/completion";
@@ -321,7 +323,7 @@ export function HistoryView() {
         />
       ) : (
         history.map((job) => {
-          const contractor = contractorById(state.contractors, job.assignedContractorId);
+          const driverName = jobDriverName(job, state.contractors);
           const timeline = byJob.get(job.id) ?? [];
           const meta = JOB_STATUS_META[job.status];
           return (
@@ -338,8 +340,8 @@ export function HistoryView() {
                   </p>
                   <p className="mt-1 text-xs tabular-nums text-ink-400">
                     {job.status === "cancelled"
-                      ? `${contractor?.name ?? "Unassigned"} · cancelled ${timeAgo(job.createdAt)}`
-                      : `${contractor?.name ?? "Unassigned"} · ${fmtDuration(job.createdAt, job.completedAt)} · completed ${timeAgo(job.completedAt)}`}
+                      ? `${driverName ?? "Unassigned"} · cancelled ${timeAgo(job.createdAt)}`
+                      : `${driverName ?? "Unassigned"} · ${fmtDuration(job.createdAt, job.completedAt)} · completed ${timeAgo(job.completedAt)}`}
                   </p>
                 </div>
               </div>
@@ -438,13 +440,19 @@ export function ContractorsView() {
 
 /* -------------------------------- performance ------------------------------ */
 
-/** Owner performance tab — KPIs from real dispatch_jobs + status_events. */
+/** Owner performance tab — KPIs from real dispatch_jobs + status_events. The
+ *  "Contractors" stat reads the REAL roster (the same listContractorsCore the
+ *  Contractors tab renders — users rows in the org, deactivated excluded), NOT
+ *  the legacy dispatch_contractors demo table that is empty for real orgs
+ *  (BUG 3 fix 2026-08-11: the Performance tab previously showed 0). */
 export function PerformanceView() {
   const { state, loading } = useDispatchStore();
+  const [roster, setRoster] = useState<ContractorRow[] | null>(null);
   const [events, setEvents] = useState<StatusEvent[]>([]);
   const [eventsLoading, setEventsLoading] = useState(true);
   useEffect(() => {
     let live = true;
+    void listContractors().then((r) => { if (live && r.ok) setRoster(r.data); }).catch(() => {});
     void getStatusEvents().then((r) => {
       if (!live) return;
       if (Array.isArray(r)) setEvents(r);
@@ -487,13 +495,19 @@ export function PerformanceView() {
     }
     return n ? Math.round(sum / n) : 0;
   }, [completed, byJob]);
-  // Top contractors by completed count (real assigned jobs).
+  // Top contractors by completed count (real assigned jobs). Keyed by the
+  // driver NAME — for synced jobs that is the driver the AI dispatcher /
+  // Towbook assigned (assignedDriverName); for legacy manual assigns the
+  // dispatch_contractors name — so completed Towbook jobs count toward the
+  // right driver even when the legacy FK is unset (BUG 4 fix 2026-08-11).
   const topContractors = useMemo(() => {
     const m = new Map<string, number>();
-    for (const j of completed) if (j.assignedContractorId) m.set(j.assignedContractorId, (m.get(j.assignedContractorId) ?? 0) + 1);
+    for (const j of completed) {
+      const name = jobDriverName(j, state.contractors);
+      if (name) m.set(name, (m.get(name) ?? 0) + 1);
+    }
     return [...m.entries()]
-      .map(([id, count]) => ({ contractor: state.contractors.find((c) => c.id === id), count }))
-      .filter((r): r is { contractor: Contractor; count: number } => Boolean(r.contractor))
+      .map(([name, count]) => ({ name, count }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 5);
   }, [completed, state.contractors]);
@@ -506,7 +520,7 @@ export function PerformanceView() {
         <StatCard label="Total jobs" value={total} detail="all jobs in the system" topBar />
         <StatCard label="Completion rate" value={`${completionRate}%`} detail={`${completed.length} of ${eligible.length} completed${cancelled.length ? ` · ${cancelled.length} cancelled` : ""}`} />
         <StatCard label="Avg time to complete" value={`${avgMinutes} min`} detail="from first event to completed" />
-        <StatCard label="Contractors" value={state.contractors.length} detail="on the roster" />
+        <StatCard label="Contractors" value={roster === null ? "—" : roster.length} detail="on the roster" />
       </section>
 
       <section>
@@ -549,13 +563,13 @@ export function PerformanceView() {
           />
         ) : (
           <Card className="overflow-hidden">
-            {topContractors.map(({ contractor, count }, i) => (
-              <div key={contractor.id} className={`flex items-center gap-3 px-4 py-3.5 ${i === topContractors.length - 1 ? "" : "border-b border-ink-100"}`}>
+            {topContractors.map(({ name, count }, i) => (
+              <div key={name} className={`flex items-center gap-3 px-4 py-3.5 ${i === topContractors.length - 1 ? "" : "border-b border-ink-100"}`}>
                 <span className="w-6 shrink-0 text-center text-sm font-extrabold tabular-nums text-ink-300">{i + 1}</span>
-                <Avatar name={contractor.name} />
+                <Avatar name={name} />
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-semibold">{contractor.name}</p>
-                  <p className="text-xs text-ink-400">{contractor.vehicleTypes.join(" · ") || "No capabilities listed"}</p>
+                  <p className="truncate text-sm font-semibold">{name}</p>
+                  <p className="text-xs text-ink-400">assigned driver</p>
                 </div>
                 <div className="shrink-0 text-right">
                   <p className="text-sm font-bold tabular-nums text-ink-900">{count}</p>
@@ -814,7 +828,7 @@ function ActiveJobCard({ job, contractors }: { job: Job; contractors: Contractor
 /* ------------------------------ completed row ------------------------------ */
 
 function CompletedRow({ job, contractors, last }: { job: Job; contractors: Contractor[]; last: boolean }) {
-  const contractor = contractorById(contractors, job.assignedContractorId);
+  const driverName = jobDriverName(job, contractors);
   const duration = fmtDuration(job.assignedAt ?? job.createdAt, job.completedAt);
   return (
     <div className={`flex items-center gap-3 px-4 py-3 ${last ? "" : "border-b border-ink-100"}`}>
@@ -825,7 +839,7 @@ function CompletedRow({ job, contractors, last }: { job: Job; contractors: Contr
           <span className="font-medium text-ink-500">{SERVICE_LABELS[job.serviceType]}</span>
         </p>
         <p className="text-xs tabular-nums text-ink-400">
-          {contractor?.name ?? "Unassigned"} · {duration} · done {timeAgo(job.completedAt)}
+          {driverName ?? "Unassigned"} · {duration} · done {timeAgo(job.completedAt)}
         </p>
       </div>
       <StatusBadge className={`shrink-0 ${JOB_STATUS_META.completed.badge}`}>Done</StatusBadge>

@@ -124,32 +124,53 @@ const toIso = (v: unknown): string | null => {
 /* --------------------------------- list --------------------------------- */
 
 /** All contractor accounts in the org (role 'contractor'), with status derived
- *  from existing tables: signed_in ⇔ a driver-kind Towbook session row for that
- *  driver exists; last activity = newest of that session's refresh and the
- *  last GPS ping. One query; real data only. */
+ *  from existing tables. A contractor counts as signed in when ANY live session
+ *  is tied to them — the stored per-driver Towbook session (session_kind='driver'
+ *  keyed by towbook_driver_id), the org's OWNER/ADMIN-kind Towbook session when
+ *  it is linked to a driver (the owner logs into Towbook with their own driver
+ *  login — connectTowbook stores that driver id on the owner session row, so the
+ *  owner's own roster row shows signed in while they're using the portal; BUG 2
+ *  fix 2026-08-11), or a live LD portal session (sessions row for their user).
+ *  Last activity = newest of the session refresh and the last GPS ping.
+ *  Deactivated rows (deactivated_at set — the soft-delete the remove flow uses)
+ *  are EXCLUDED from the roster: a removed contractor must never appear in the
+ *  Contractors tab (BUG 1 fix 2026-08-11). One query; real data only. */
 export async function listContractorsCore(actor: ContractorMgmtActor): Promise<ContractorManagementResult<ContractorRow[]>> {
   if (!canManage(actor)) return { ok: false, code: "unauthorized", message: "Owner access required." };
   try {
     await ensure();
     const q = await db();
     const rows = await q`SELECT u.id, u.name, u.email, u.login_handle, u.towbook_driver_id, u.towbook_user_id, u.created_at, u.deactivated_at,
-        ts.updated_at AS session_updated_at,
+        ts.session_updated_at,
+        ls.last_login,
         dl.last_ping
       FROM users u
       JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND m.role = 'contractor'
-      LEFT JOIN towbook_sessions ts
-        ON ts.org_id = ${actor.orgId} AND ts.session_kind = 'driver' AND ts.towbook_driver_id = u.towbook_driver_id
+      LEFT JOIN LATERAL (
+        SELECT MAX(updated_at) AS session_updated_at
+        FROM towbook_sessions ts
+        WHERE ts.org_id = ${actor.orgId} AND ts.towbook_driver_id = u.towbook_driver_id
+      ) ts ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT MAX(created_at) AS last_login
+        FROM sessions s
+        WHERE s.user_id = u.id AND s.expires_at > NOW()
+      ) ls ON TRUE
       LEFT JOIN (
         SELECT driver_id, MAX(captured_at) AS last_ping
         FROM driver_locations WHERE org_id = ${actor.orgId}
         GROUP BY driver_id
       ) dl ON dl.driver_id = u.id
-      ORDER BY (u.deactivated_at IS NOT NULL), LOWER(u.name), u.created_at`;
+      WHERE u.deactivated_at IS NULL
+      ORDER BY LOWER(u.name), u.created_at`;
     const contractors: ContractorRow[] = (rows as Record<string, unknown>[]).map((r) => {
-      const signedIn = r.session_updated_at != null;
       const lastPing = r.last_ping != null ? new Date(String(r.last_ping)) : null;
       const sessionAt = r.session_updated_at != null ? new Date(String(r.session_updated_at)) : null;
-      const lastActivity = lastPing && sessionAt ? (lastPing > sessionAt ? lastPing : sessionAt) : (lastPing ?? sessionAt);
+      const loginAt = r.last_login != null ? new Date(String(r.last_login)) : null;
+      const signedIn = sessionAt != null || loginAt != null;
+      const lastActivity = [lastPing, sessionAt, loginAt]
+        .filter((d): d is Date => d != null)
+        .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
       return {
         id: String(r.id),
         name: String(r.name ?? ""),
@@ -160,7 +181,7 @@ export async function listContractorsCore(actor: ContractorMgmtActor): Promise<C
         status: signedIn ? "signed_in" : "not_signed_in",
         lastActivityAt: lastActivity ? lastActivity.toISOString() : null,
         createdAt: toIso(r.created_at),
-        removedAt: r.deactivated_at != null ? toIso(r.deactivated_at) : null,
+        removedAt: null, // deactivated rows are excluded above — never returned
       };
     });
     return { ok: true, data: contractors };
@@ -297,11 +318,16 @@ async function upsertRosterDriver(
   q: Q,
   actor: ContractorMgmtActor,
   driver: { driverId: string; name: string },
-  orgContractors: Map<string, { id: string; name: string; handle: string | null }>,
+  orgContractors: Map<string, { id: string; name: string; handle: string | null; deactivated: boolean }>,
 ): Promise<"imported" | "updated" | { skip: string }> {
   const { driverId, name } = driver;
   const existing = orgContractors.get(driverId);
   if (existing) {
+    // A REMOVED contractor (soft-deactivated) is never re-added, never
+    // re-activated, and never name-refreshed: re-import MUST skip it (BUG 1
+    // guard 2026-08-11 — the owner remove flow deactivates + disables the
+    // Towbook driver; re-importing the Towbook list must not resurrect them).
+    if (existing.deactivated) return { skip: "deactivated_in_lightning_dispatch" };
     if (name && name !== existing.name) {
       await q`UPDATE users SET name=${name} WHERE id=${existing.id}`;
     }
@@ -342,12 +368,18 @@ export async function importContractorsCore(actor: ContractorMgmtActor, opts: { 
     if (!Array.isArray(res.body)) return { ok: false, code: "towbook_failed", message: "Towbook returned an unexpected driver list." };
 
     // Preload the org's current contractors by Towbook driver id (one query).
-    const existingRows = await q`SELECT u.id, u.name, u.login_handle, u.towbook_driver_id
+    // Deactivated rows stay IN the map so a removed driver is never re-added —
+    // upsertRosterDriver returns the explicit skip for them.
+    const existingRows = await q`SELECT u.id, u.name, u.login_handle, u.towbook_driver_id, u.deactivated_at
       FROM users u JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND m.role = 'contractor'
       WHERE u.towbook_driver_id IS NOT NULL`;
-    const orgContractors = new Map<string, { id: string; name: string; handle: string | null }>();
+    const orgContractors = new Map<string, { id: string; name: string; handle: string | null; deactivated: boolean }>();
     for (const r of existingRows as Record<string, unknown>[]) {
-      orgContractors.set(String(r.towbook_driver_id), { id: String(r.id), name: String(r.name ?? ""), handle: r.login_handle != null ? String(r.login_handle) : null });
+      orgContractors.set(String(r.towbook_driver_id), {
+        id: String(r.id), name: String(r.name ?? ""),
+        handle: r.login_handle != null ? String(r.login_handle) : null,
+        deactivated: r.deactivated_at != null,
+      });
     }
 
     const summary: ImportSummary = { imported: 0, updated: 0, skipped: [] };

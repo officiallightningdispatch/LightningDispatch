@@ -293,7 +293,26 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
       offer_ids JSONB,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`;
-    await q`CREATE INDEX IF NOT EXISTS ai_dispatcher_runs_org_ran_idx ON ai_dispatcher_runs(org_id, ran_at DESC)`;
+      }],
+  [18, async (q) => {
+    // Job driver attribution (owner-reported bug batch 2026-08-11, BUG 4): the
+    // dashboard + history showed recently completed Towbook jobs as
+    // UNASSIGNED because the driver the AI dispatcher / Towbook selected was
+    // never persisted on dispatch_jobs (only the legacy dispatch_contractors
+    // FK existed, which real synced jobs never set). Capture the assigned
+    // driver (Towbook driver id + display name) from the raw call
+    // (assets[].driver.id / .name — recon-verified shape, call-single.json)
+    // at sync time; the columns are plain TEXT so a sync re-pull can correct
+    // them. The backfill fills already-imported rows from their stored
+    // raw_json (the same source the sync captures from), so completed jobs
+    // that predate this migration show their real driver too.
+    await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS assigned_driver_towbook_id TEXT`;
+    await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS assigned_driver_name TEXT`;
+    await q`UPDATE dispatch_jobs SET
+        assigned_driver_towbook_id = raw_json#>>'{assets,0,driver,id}',
+        assigned_driver_name = raw_json#>>'{assets,0,driver,name}'
+      WHERE assigned_driver_towbook_id IS NULL AND raw_json IS NOT NULL
+        AND raw_json#>>'{assets,0,driver,id}' IS NOT NULL`;
   }],
 ];
 export async function ensureSchema() {

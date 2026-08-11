@@ -6,7 +6,7 @@ import {
   Truck,
   type LucideIcon,
 } from "lucide-react";
-import type { JobStatus, ServiceType } from "~/data/seed";
+import type { Contractor, JobStatus, ServiceType } from "~/data/seed";
 
 /**
  * Human labels + design-system tokens for every job lifecycle status
@@ -133,4 +133,19 @@ export function fmtDuration(fromIso: string | undefined, toIso: string | undefin
   const mins = Math.max(0, Math.round((new Date(toIso).getTime() - new Date(fromIso).getTime()) / 60000));
   if (mins < 60) return `${mins} min`;
   return `${Math.floor(mins / 60)} h ${mins % 60} m`;
+}
+
+/** The human-readable driver for a job, from EITHER source: the driver the
+ *  AI dispatcher / Towbook assigned (assignedDriverName, captured at sync from
+ *  the raw call — the fix for the dashboard/history "UNASSIGNED" bug) or the
+ *  legacy manual assign (assignedContractorId → dispatch_contractors name).
+ *  Pure + client-safe so the UI and hermetic tests share one truth. Null when
+ *  the job has no assignment (UI renders "Unassigned"). */
+export function jobDriverName(job: { assignedDriverName?: string; assignedContractorId?: string }, contractors: Contractor[]): string | null {
+  if (job.assignedDriverName && job.assignedDriverName.trim() !== "") return job.assignedDriverName.trim();
+  if (job.assignedContractorId) {
+    const c = contractors.find((x) => x.id === job.assignedContractorId);
+    if (c) return c.name;
+  }
+  return null;
 }

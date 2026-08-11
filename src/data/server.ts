@@ -39,8 +39,8 @@ function prepare() {
 // fallback for runtimes that load modules lazily.
 
 function mapContractor(r: Record<string,unknown>): Contractor { return {id:String(r.id),name:String(r.name),status:r.status as ContractorStatus,location:{lat:Number(r.lat),lng:Number(r.lng),area:String(r.area)},vehicleTypes:(r.vehicle_types as string[])||[],rating:Number(r.rating),completedJobCount:Number(r.completed_job_count),responseTimeHistoryMinutes:(r.response_time_history_minutes as number[])||[]}; }
-function mapJob(r: Record<string,unknown>): Job { return {id:String(r.id),customerName:String(r.customer_name),phone:String(r.phone),location:{lat:Number(r.lat),lng:Number(r.lng),area:String(r.area)},serviceType:r.service_type as Job["serviceType"],status:r.status as JobStatus,createdAt:new Date(String(r.created_at)).toISOString(),assignedAt:r.assigned_at?new Date(String(r.assigned_at)).toISOString():undefined,arrivedAt:r.arrived_at?new Date(String(r.arrived_at)).toISOString():undefined,completedAt:r.completed_at?new Date(String(r.completed_at)).toISOString():undefined,assignedContractorId:r.assigned_contractor_id?String(r.assigned_contractor_id):undefined,note:String(r.note||"")}; }
-async function dataFor(u: AuthUser): Promise<DispatchData> { const q=sql(); const cs=await q`SELECT id,name,status,lat,lng,area,vehicle_types,rating,completed_job_count,response_time_history_minutes FROM dispatch_contractors WHERE org_id=${u.orgId} ${u.role==="contractor" ? q`AND id=${u.contractorId||""}` : q``}`; const js=await q`SELECT id,customer_name,phone,lat,lng,area,service_type,status,created_at,assigned_at,arrived_at,completed_at,assigned_contractor_id,note FROM dispatch_jobs WHERE org_id=${u.orgId} ${u.role==="contractor" ? q`AND assigned_contractor_id=${u.contractorId||""}` : q``} ORDER BY created_at DESC`; return {contractors:cs.map(mapContractor),jobs:js.map(mapJob)}; }
+function mapJob(r: Record<string,unknown>): Job { return {id:String(r.id),customerName:String(r.customer_name),phone:String(r.phone),location:{lat:Number(r.lat),lng:Number(r.lng),area:String(r.area)},serviceType:r.service_type as Job["serviceType"],status:r.status as JobStatus,createdAt:new Date(String(r.created_at)).toISOString(),assignedAt:r.assigned_at?new Date(String(r.assigned_at)).toISOString():undefined,arrivedAt:r.arrived_at?new Date(String(r.arrived_at)).toISOString():undefined,completedAt:r.completed_at?new Date(String(r.completed_at)).toISOString():undefined,assignedContractorId:r.assigned_contractor_id?String(r.assigned_contractor_id):undefined,assignedDriverName:r.assigned_driver_name?String(r.assigned_driver_name):undefined,assignedDriverTowbookId:r.assigned_driver_towbook_id?String(r.assigned_driver_towbook_id):undefined,note:String(r.note||"")}; }
+async function dataFor(u: AuthUser): Promise<DispatchData> { const q=sql(); const cs=await q`SELECT id,name,status,lat,lng,area,vehicle_types,rating,completed_job_count,response_time_history_minutes FROM dispatch_contractors WHERE org_id=${u.orgId} ${u.role==="contractor" ? q`AND id=${u.contractorId||""}` : q``}`; const js=await q`SELECT id,customer_name,phone,lat,lng,area,service_type,status,created_at,assigned_at,arrived_at,completed_at,assigned_contractor_id,assigned_driver_name,assigned_driver_towbook_id,note FROM dispatch_jobs WHERE org_id=${u.orgId} ${u.role==="contractor" ? q`AND assigned_contractor_id=${u.contractorId||""}` : q``} ORDER BY created_at DESC`; return {contractors:cs.map(mapContractor),jobs:js.map(mapJob)}; }
 async function result(u: AuthUser): Promise<CommandResult> { return {ok:true,data:await dataFor(u)}; }
 function can(u:AuthUser, roles:AuthUser["role"][]) { return roles.includes(u.role); }
 /** Portal → Towbook push for owner/admin/dispatcher job status changes
@@ -101,6 +101,20 @@ export const connectTowbook=createServerFn({method:"POST"}).validator(passthroug
   const result=await towbookLogin(d.username,d.password);
   if(!result.ok){ await persistTowbookFailure(u.orgId,result.facts); return towbookFail(result.error.code,result.error.message); }
   await persistTowbookSession(u.orgId,result.cookies);
+  // Owner-driver link (owner-reported bug batch 2026-08-11, BUG 2): resolve the
+  // Towbook DRIVER record behind this session (the owner logs in with their
+  // Towbook username — which IS a driver login on this account) and store the
+  // driver id on the owner-kind session row, so the Contractors roster counts
+  // the owner's own driver row as signed in (the roster's session join is
+  // keyed by towbook_driver_id across ALL session kinds). Best-effort: a
+  // resolution failure never fails the connect itself.
+  try {
+    const { identifyDriver } = await import("./driver-auth");
+    const identity = await identifyDriver({ cookies: result.cookies, baseUrl: TOWBOOK_ORIGIN });
+    if (identity.ok && identity.identity.driverId) {
+      await sql()`UPDATE towbook_sessions SET towbook_driver_id=${identity.identity.driverId} WHERE org_id=${u.orgId} AND session_kind='owner'`;
+    }
+  } catch { /* best-effort — the session is stored; the link can be retried on next connect */ }
   return {ok:true as const};
 });
 export const disconnectTowbook=createServerFn({method:"POST"}).handler(async()=>{if(!configured())return {ok:true as const};const {currentUser}=await import("./auth-server");const u=await currentUser();if(!u||!can(u,["owner","admin"]))return towbookFail("towbook_blocked","You cannot disconnect Towbook.");try{await prepare();await sql()`DELETE FROM towbook_sessions WHERE org_id=${u.orgId} AND session_kind='owner'`;return {ok:true as const};}catch{return towbookFail("towbook_unreachable","Unable to disconnect Towbook.");}});
@@ -757,6 +771,44 @@ function pickupCoords(raw: unknown): { lat: number | null; lng: number | null } 
   };
 }
 
+/** Assigned driver on a raw Towbook call (recon-verified shape, call-single.json):
+ *  assets[].driver = {id, name, ...} — the currently assigned driver — and
+ *  assets[].drivers[].driver the assignment mirror. Both carry the DRIVER id
+ *  (the same shape callHasDriver/verifyDispatch read in ai-dispatcher.ts).
+ *  Returns the Towbook driver id + display name, or nulls when the call has no
+ *  assignment. Pure — shared by the sync (server.ts) and the driver-portal
+ *  write-through (driver-auth.ts keeps a local copy per its module convention). */
+export function assignedDriverFromRawCall(raw: unknown): { towbookId: string | null; name: string | null } {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { towbookId: null, name: null };
+  const assets = (raw as Record<string, unknown>).assets;
+  if (!Array.isArray(assets)) return { towbookId: null, name: null };
+  for (const a of assets) {
+    if (!a || typeof a !== "object" || Array.isArray(a)) continue;
+    const o = a as Record<string, unknown>;
+    const direct = o.driver as Record<string, unknown> | undefined;
+    if (direct && typeof direct === "object" && direct.id != null) {
+      return {
+        towbookId: String(direct.id),
+        name: direct.name != null ? String(direct.name) : null,
+      };
+    }
+    const drivers = o.drivers;
+    if (Array.isArray(drivers)) {
+      for (const d of drivers) {
+        if (!d || typeof d !== "object" || Array.isArray(d)) continue;
+        const sub = ((d as Record<string, unknown>).driver ?? null) as Record<string, unknown> | null;
+        if (sub && typeof sub === "object" && sub.id != null) {
+          return {
+            towbookId: String(sub.id),
+            name: sub.name != null ? String(sub.name) : null,
+          };
+        }
+      }
+    }
+  }
+  return { towbookId: null, name: null };
+}
+
 /** Org-scoped upsert of normalized Towbook jobs (exported for the fixture test;
  *  INSERT first-seen ids, UPDATE re-synced ids in place — never duplicates).
  *
@@ -778,7 +830,7 @@ export async function upsertPulledJobs(
   // NOTE: towbook_job_id MUST be in the select list — it is the existing-map key.
   // (Bug fixed 2026-08-10: it was omitted, so every row was keyed "undefined" and
   // re-syncs re-INSERTed → pkey violation → all counted as failed.)
-  const existingRows = await q`SELECT id, status, customer_name, phone, pickup, dropoff, towbook_status, towbook_job_id FROM dispatch_jobs WHERE org_id=${orgId} AND towbook_job_id IS NOT NULL`;
+  const existingRows = await q`SELECT id, status, customer_name, phone, pickup, dropoff, towbook_status, towbook_job_id, assigned_driver_towbook_id FROM dispatch_jobs WHERE org_id=${orgId} AND towbook_job_id IS NOT NULL`;
   const existing = new Map(existingRows.map((r) => [String(r.towbook_job_id), r as Record<string, unknown>]));
   let added = 0, updated = 0, unchanged = 0, failed = 0;
   for (const job of jobs) {
@@ -788,8 +840,9 @@ export async function upsertPulledJobs(
         const slug = job.towbookJobId.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 60);
         const jobId = slug ? `tb-${slug}` : `tb-${Math.random().toString(36).slice(2, 10)}`;
         const coords = pickupCoords(job.raw);
-        await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, customer_phone, vehicle_desc, pickup, dropoff, towbook_status, raw_json, pickup_lat, pickup_lng)
-          VALUES(${jobId}, ${orgId}, ${job.customer}, ${job.phone || ""}, 0, 0, ${job.pickup || "Unknown"}, ${job.serviceType}, ${job.status}, ${job.createdAt}, ${job.note}, ${job.towbookJobId}, ${job.phone || ""}, ${job.vehicle}, ${job.pickup}, ${job.dropoff}, ${job.towbookStatus}, ${JSON.stringify(job.raw)}::jsonb, ${coords.lat}, ${coords.lng})`;
+        const assigned = assignedDriverFromRawCall(job.raw);
+        await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, customer_phone, vehicle_desc, pickup, dropoff, towbook_status, raw_json, pickup_lat, pickup_lng, assigned_driver_towbook_id, assigned_driver_name)
+          VALUES(${jobId}, ${orgId}, ${job.customer}, ${job.phone || ""}, 0, 0, ${job.pickup || "Unknown"}, ${job.serviceType}, ${job.status}, ${job.createdAt}, ${job.note}, ${job.towbookJobId}, ${job.phone || ""}, ${job.vehicle}, ${job.pickup}, ${job.dropoff}, ${job.towbookStatus}, ${JSON.stringify(job.raw)}::jsonb, ${coords.lat}, ${coords.lng}, ${assigned.towbookId}, ${assigned.name})`;
         await q`INSERT INTO status_events(id, org_id, job_id, from_status, to_status, actor_user_id, actor_role, note)
           SELECT gen_random_uuid()::text, ${orgId}, ${jobId}, ${previousStatusFromHistory(job.raw, job.status)}, ${job.status}, ${actor.id}, ${actor.role}, ${`imported from Towbook (${trigger})`}`;
         await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
@@ -798,16 +851,22 @@ export async function upsertPulledJobs(
         added++;
       } else {
         const statusChanged = String(cur.status) !== job.status;
+        const curDriverId = String((cur as Record<string, unknown>).assigned_driver_towbook_id ?? "");
+        const newDriver = assignedDriverFromRawCall(job.raw);
         const fieldsChanged =
           String(cur.customer_name ?? "") !== job.customer ||
           String(cur.phone ?? "") !== (job.phone || "") ||
           String(cur.pickup ?? "") !== job.pickup ||
           String(cur.dropoff ?? "") !== job.dropoff ||
-          String(cur.towbook_status ?? "") !== job.towbookStatus;
+          String(cur.towbook_status ?? "") !== job.towbookStatus ||
+          curDriverId !== (newDriver.towbookId ?? "");
         if (!statusChanged && !fieldsChanged) { unchanged++; continue; } // already current — no churn
         const coords = pickupCoords(job.raw);
+        const assigned = assignedDriverFromRawCall(job.raw);
         await q`UPDATE dispatch_jobs SET customer_name=${job.customer}, phone=${job.phone || ""}, area=${job.pickup || "Unknown"}, service_type=${job.serviceType}, status=${job.status}, note=${job.note}, towbook_status=${job.towbookStatus}, customer_phone=${job.phone || ""}, vehicle_desc=${job.vehicle}, pickup=${job.pickup}, dropoff=${job.dropoff}, raw_json=${JSON.stringify(job.raw)}::jsonb,
           pickup_lat=COALESCE(${coords.lat}, pickup_lat), pickup_lng=COALESCE(${coords.lng}, pickup_lng),
+          assigned_driver_towbook_id=COALESCE(${assigned.towbookId}, assigned_driver_towbook_id),
+          assigned_driver_name=COALESCE(${assigned.name}, assigned_driver_name),
           completed_at=CASE WHEN ${job.status}='completed' AND completed_at IS NULL THEN NOW() ELSE completed_at END,
           assigned_at=CASE WHEN ${job.status}='offered' AND assigned_at IS NULL THEN NOW() ELSE assigned_at END
           WHERE id=${String(cur.id)} AND org_id=${orgId}`;

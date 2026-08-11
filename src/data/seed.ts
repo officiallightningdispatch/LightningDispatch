@@ -43,6 +43,11 @@ export interface Job {
   arrivedAt?: string;
   completedAt?: string;
   assignedContractorId?: string;
+  /** Assigned driver captured from the Towbook call (assets[].driver) at sync
+   *  time — the REAL assignment the AI dispatcher / Towbook made. Populated for
+   *  synced jobs; legacy manual assigns use assignedContractorId instead. */
+  assignedDriverName?: string;
+  assignedDriverTowbookId?: string;
   note: string;
 }
 
