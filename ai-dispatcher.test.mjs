@@ -1,10 +1,12 @@
 // Hermetic AI-dispatcher test suite (decisions 2026-08-10/11): the owner-directed
 // auto-accept engine — zone math (haversine vs the 06606 centroid), ROAD-AWARE
 // driver selection + ETA (OSRM router is mocked; fallback factor model; buffer /
-// floor / ceiling), decision ledger + dedupe, every escalation path, and the
-// settings toggle gate. The accept/nearestDrivers/callRequests fetches AND the
-// road router are ALL mocked — this suite can never POST to real Towbook and
-// never calls the real OSRM API.
+// floor / ceiling), the ETA v3 TomTom traffic layer (provider chain: TomTom →
+// OSRM → factor; mocked TomTom + OSRM fetches — never real calls), decision
+// ledger + dedupe, every escalation path, and the settings toggle gate. The
+// accept/nearestDrivers/callRequests fetches AND the road router are ALL
+// mocked — this suite can never POST to real Towbook and never calls the real
+// OSRM or TomTom APIs.
 //
 //   DATABASE_URL=... bun ai-dispatcher.test.mjs
 //
@@ -20,6 +22,10 @@ const q = neon(process.env.DATABASE_URL);
 // resolution). The QA session rows are encrypted with it; the running server is
 // a separate process and never sees it.
 process.env.TOWBOOK_SESSION_KEY = Buffer.alloc(32, 7).toString("base64");
+// ETA v3: guarantee the real-path engine tests (27f/27g) resolve providers
+// from a known env — never inherit a key from the host.
+delete process.env.TOMTOM_API_KEY;
+delete process.env.ETA_ROUTER;
 
 const {
   runAutoDispatch,
@@ -30,6 +36,10 @@ const {
   fallbackRoadMinutes,
   validateOfferShape,
   shapeKeyOf,
+  resolveRouter,
+  etaProviderStatus,
+  osrmRoadSeconds,
+  tomtomRoadSeconds,
 } = await import("./src/data/ai-dispatcher.ts");
 const { encryptSession } = await import("./src/data/towbook-key.ts");
 const { ensureSchema } = await import("./src/data/migrations.ts");
@@ -42,6 +52,7 @@ const check = (name, cond, extra = "") => {
 
 const ORG = `qa-ad-${randomUUID()}`;
 const ORG2 = `qa-ad2-${randomUUID()}`;
+const ORG3 = `qa-ad3-${randomUUID()}`; // ETA v3 traffic-layer engine tests
 const USER = `qa-ad-user-${randomUUID()}`;
 let created = false;
 
@@ -81,6 +92,7 @@ const jsonResponse = (status, body) => ({
   status,
   ok: status >= 200 && status < 300,
   async text() { return JSON.stringify(body); },
+  async json() { return body; },
   headers: new Headers({ "content-type": "application/json" }),
 });
 
@@ -145,32 +157,80 @@ function makeFetch({ offers, drivers, acceptStatus = 200, acceptBody = null, acc
   return { fetchImpl, calls };
 }
 
-/** Mock road router (the OSRM stand-in). `routes` maps "fromLat,fromLng" →
- *  drive seconds (or null to simulate a routing failure). Any key not in the
- *  map falls back to a hermetic factor model on haversine — never network.
- *  The default floor of 60s keeps zero-distance drivers at a sane 1-min base. */
+/** Mock road router (the OSRM stand-in — returns the RoadResult shape the ETA
+ *  v3 providers use). `routes` maps "fromLat,fromLng" → drive seconds (wrapped
+ *  into an osrm RoadResult) or null (simulate a routing failure) or a full
+ *  RoadResult. Any key not in the map falls back to a hermetic factor model on
+ *  haversine — never network. The default floor of 60s keeps zero-distance
+ *  drivers at a sane 1-min base. */
 const makeRouter = (routes = {}) => async (fromLat, fromLng, toLat, toLng) => {
   const key = `${fromLat.toFixed(2)},${fromLng.toFixed(2)}`;
-  if (key in routes) return routes[key];
+  const hit = routes[key];
+  if (hit === null) return null;
+  if (typeof hit === "number") {
+    return { seconds: hit, provider: "osrm", liveTraffic: false, trafficDelaySeconds: null, notes: "static routing (mock)" };
+  }
+  if (hit && typeof hit === "object") return hit;
   const mi = haversineMiles(fromLat, fromLng, toLat, toLng);
-  return Math.max(60, Math.round((mi / 30) * 3600 * 1.35));
+  const seconds = Math.max(60, Math.round((mi / 30) * 3600 * 1.35));
+  return { seconds, provider: "osrm", liveTraffic: false, trafficDelaySeconds: null, notes: "static routing (mock)" };
 };
 
-const makeDeps = (fetchImpl, router) => {
-  const syncCalls = [];
-  return {
-    deps: {
-      syncForOrg: async (orgId, trigger, actor) => { syncCalls.push({ orgId, trigger, actor }); return { ok: true }; },
-      resolveOrgActor: async () => ({ id: USER, role: "owner" }),
-      fetchImpl,
-      roadRouter: router ?? makeRouter(),
-      verifyRetryDelayMs: 0,
-    },
-    syncCalls,
+/** Mock TomTom + OSRM routing fetch (ETA v3). Records the URLs it served and
+ *  returns canned bodies per host; any other URL throws (a stray call fails
+ *  the test). Defaults: TomTom 200 with travel 540s + delay 120s; OSRM 200
+ *  with duration 600s. */
+const tomtomJson = (travelSec, delaySec) => jsonResponse(200, { routes: [{ summary: { travelTimeInSeconds: travelSec, trafficDelayInSeconds: delaySec } }] });
+const osrmJson = (durationSec) => jsonResponse(200, { code: "Ok", routes: [{ duration: durationSec }] });
+
+function makeRouterFetch({ tomtomStatus = 200, tomtomBody = null, osrmStatus = 200, osrmBody = null } = {}) {
+  const tomtomCalls = [];
+  const osrmCalls = [];
+  const fetchImpl = async (url, init = {}) => {
+    const u = String(url);
+    if (u.includes("api.tomtom.com")) {
+      tomtomCalls.push(u);
+      if (tomtomStatus !== 200) return jsonResponse(tomtomStatus, { error: "tomtom boom" });
+      return tomtomBody ?? tomtomJson(540, 120);
+    }
+    if (u.includes("router.project-osrm.org")) {
+      osrmCalls.push(u);
+      if (osrmStatus !== 200) return jsonResponse(osrmStatus, { error: "osrm boom" });
+      return osrmBody ?? osrmJson(600);
+    }
+    throw new Error(`router mock fetch hit an unexpected URL: ${methodOf(init)} ${u}`);
   };
+  return { fetchImpl, tomtomCalls, osrmCalls };
+}
+
+/** Compose a Towbook mock with a router mock: Towbook URLs go to `base`,
+ *  TomTom/OSRM URLs to the router fetch. */
+const withRouter = (baseFetch, routerFetchImpl) => async (url, init = {}) => {
+  const u = String(url);
+  if (u.includes("api.tomtom.com") || u.includes("router.project-osrm.org")) return routerFetchImpl(url, init);
+  return baseFetch(url, init);
+};
+const methodOf = (init) => init.method || "GET";
+
+const makeDeps = (fetchImpl, router, opts = {}) => {
+  const syncCalls = [];
+  const deps = {
+    syncForOrg: async (orgId, trigger, actor) => { syncCalls.push({ orgId, trigger, actor }); return { ok: true }; },
+    resolveOrgActor: async () => ({ id: USER, role: "owner" }),
+    fetchImpl,
+    verifyRetryDelayMs: 0,
+    ...(opts.env ? { env: opts.env } : {}),
+  };
+  // Default: inject a hermetic router so tests never hit real OSRM/TomTom.
+  // opts.noRouterOverride exercises the real env-resolution path instead.
+  if (!opts.noRouterOverride) {
+    deps.routerOverride = { provider: "osrm", tomtomKeyConfigured: false, router: router ?? makeRouter() };
+  }
+  return { deps, syncCalls };
 };
 
 const decisions = () => q`SELECT call_request_id, call_id, decision, escalated, driver_id, driver_name, eta_minutes, zone_distance_miles, reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG} ORDER BY created_at, call_request_id`;
+const decisions3 = () => q`SELECT call_request_id, call_id, decision, escalated, driver_id, driver_name, eta_minutes, zone_distance_miles, reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG3} ORDER BY created_at, call_request_id`;
 const audits = () => q`SELECT count(*)::int n FROM audit_log WHERE org_id=${ORG} AND action='ai_dispatcher:accept'`;
 const posts = (calls) => calls.filter((c) => c.method === "POST");
 
@@ -179,9 +239,11 @@ try {
   await ensureSchema();
   await q`INSERT INTO organizations(id, name) VALUES(${ORG}, 'qa ai-dispatcher')`;
   await q`INSERT INTO organizations(id, name) VALUES(${ORG2}, 'qa ai-dispatcher no-session')`;
+  await q`INSERT INTO organizations(id, name) VALUES(${ORG3}, 'qa ai-dispatcher eta-v3')`;
   await q`INSERT INTO users(id, name, email, password_hash) VALUES(${USER}, 'QA AI Dispatcher Owner', ${`ad-${randomUUID()}@qa.local`}, 'x')`;
   await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${ORG}, ${USER}, 'owner')`;
   await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES(${ORG}, ${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))}, 'connected')`;
+  await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES(${ORG3}, ${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))}, 'connected')`;
   created = true;
   // Owner-org baseline: the REAL incident row (offer 326520203, auto-accepted
   // 2026-08-10 with a 3-min straight-line ETA) lives in the owner org — the
@@ -273,7 +335,7 @@ try {
     const rows = await decisions();
     check("decision row: driver 703785 + name + eta 14 + zone distance + raw accept response", rows.length === 1 && String(rows[0].driver_id) === "703785" && String(rows[0].driver_name) === "Jayden Fountain" && Number(rows[0].eta_minutes) === 14 && Number(rows[0].zone_distance_miles) > 0 && rows[0].raw_response?.accept?.callNumber === 25000, JSON.stringify(rows[0]));
     check("decision row: call_id reconciled from accept response", String(rows[0].call_id) === "279999999", String(rows[0].call_id));
-    check("decision row: reason carries the road breakdown note", String(rows[0].reason).includes("ETA 14 min (road 9 + buffer 5") && String(rows[0].reason).includes("straight-line 11") && String(rows[0].reason).includes("GPS 41.18,-73.15"), String(rows[0].reason));
+    check("decision row: reason carries the road breakdown note (provider-qualified)", String(rows[0].reason).includes("ETA 14 min (osrm road 9 + buffer 5") && String(rows[0].reason).includes("straight-line 11") && String(rows[0].reason).includes("GPS 41.18,-73.15"), String(rows[0].reason));
     check("decision row: raw_response.eta has road seconds + buffer/floor/ceiling facts", rows[0].raw_response?.eta?.roadSeconds === 540 && rows[0].raw_response?.eta?.usedFallback === false && rows[0].raw_response?.eta?.straightLineMinutes === 11 && rows[0].raw_response?.eta?.bufferMinutes === 5 && rows[0].raw_response?.eta?.floorMinutes === 5 && rows[0].raw_response?.eta?.ceilingMinutes === 45 && rows[0].raw_response?.eta?.finalMinutes === 14, JSON.stringify(rows[0].raw_response?.eta));
     const a = await audits();
     check("audit: 1 ai_dispatcher:accept row", Number(a[0].n) === 1, String(a[0].n));
@@ -576,6 +638,104 @@ try {
     const v5 = rows5.find((x) => String(x.call_request_id) === "8015");
     check("eligibility: reason names the eligible list + accepted without dispatch", v5 && String(v5.reason).includes("no ELIGIBLE") && String(v5.reason).includes("603482"), String(v5?.reason));
   }
+  /* ============ 27) ETA v3: TomTom traffic layer (provider chain) ============ */
+  // Hermetic: the TomTom/OSRM mocks are injected — no real routing calls ever.
+  {
+    // 27a) resolveRouter with a key → tomtom provider; the router returns the
+    // TomTom RoadResult (travelTimeInSeconds + trafficDelayInSeconds) and the
+    // URL carries traffic=true / routeType=fastest / departAt / vehicleCommercial=false.
+    const rf = makeRouterFetch();
+    const r1 = resolveRouter({ TOMTOM_API_KEY: "test-key-not-real" }, rf.fetchImpl);
+    check("resolveRouter: key set → tomtom + tomtomKeyConfigured true", r1.provider === "tomtom" && r1.tomtomKeyConfigured === true && typeof r1.router === "function");
+    const res1 = await r1.router(41.15, -73.1, 41.2, -73.2);
+    check("tomtom router: travelTimeInSeconds + trafficDelayInSeconds reported", res1?.provider === "tomtom" && res1.liveTraffic === true && res1.seconds === 540 && res1.trafficDelaySeconds === 120 && String(res1.notes).includes("delay 120"), JSON.stringify(res1));
+    check("tomtom URL: traffic=true & routeType=fastest & departAt & vehicleCommercial=false", rf.tomtomCalls.length === 1 && rf.tomtomCalls[0].includes("traffic=true") && rf.tomtomCalls[0].includes("routeType=fastest") && rf.tomtomCalls[0].includes("departAt=") && rf.tomtomCalls[0].includes("vehicleCommercial=false"), rf.tomtomCalls[0]);
+  }
+  {
+    // 27b) resolveRouter WITHOUT a key → osrm provider; OSRM static RoadResult.
+    const rf = makeRouterFetch();
+    const r2 = resolveRouter({}, rf.fetchImpl);
+    check("resolveRouter: no key → osrm + tomtomKeyConfigured false", r2.provider === "osrm" && r2.tomtomKeyConfigured === false && typeof r2.router === "function");
+    const res2 = await r2.router(41.15, -73.1, 41.2, -73.2);
+    check("osrm router: duration seconds + static provider (no traffic)", res2?.provider === "osrm" && res2.seconds === 600 && res2.liveTraffic === false && rf.osrmCalls.length === 1 && rf.tomtomCalls.length === 0, JSON.stringify(res2));
+  }
+  {
+    // 27c) TomTom 429 → chained fall-through to OSRM (provider flips to osrm).
+    const rf = makeRouterFetch({ tomtomStatus: 429 });
+    const r3 = resolveRouter({ TOMTOM_API_KEY: "test-key-not-real" }, rf.fetchImpl);
+    const res3 = await r3.router(41.15, -73.1, 41.2, -73.2);
+    check("tomtom 429 → OSRM fallback (1 call each, provider osrm)", res3?.provider === "osrm" && res3.seconds === 600 && rf.tomtomCalls.length === 1 && rf.osrmCalls.length === 1, JSON.stringify(res3));
+  }
+  {
+    // 27d) TomTom failure AND OSRM failure → null → caller uses the factor model.
+    const rf = makeRouterFetch({ tomtomStatus: 500, osrmStatus: 500 });
+    const r4 = resolveRouter({ TOMTOM_API_KEY: "test-key-not-real" }, rf.fetchImpl);
+    const res4 = await r4.router(41.15, -73.1, 41.2, -73.2);
+    check("tomtom+osrm both fail → null (factor fallback by caller)", res4 === null);
+  }
+  {
+    // 27e) ETA_ROUTER=off → factor-only (router null); osrmRoadSeconds/
+    // tomtomRoadSeconds also return the RoadResult shape directly.
+    const r5 = resolveRouter({ ETA_ROUTER: "off" }, makeRouterFetch().fetchImpl);
+    check("resolveRouter: ETA_ROUTER=off → factor + router null", r5.provider === "factor" && r5.router === null && r5.tomtomKeyConfigured === false);
+    const rf5 = makeRouterFetch();
+    const osrmRes = await osrmRoadSeconds(41.15, -73.1, 41.2, -73.2, rf5.fetchImpl);
+    check("osrmRoadSeconds returns RoadResult shape", osrmRes?.provider === "osrm" && osrmRes.seconds === 600 && osrmRes.trafficDelaySeconds === null, JSON.stringify(osrmRes));
+    const rf5b = makeRouterFetch();
+    const ttRes = await tomtomRoadSeconds("test-key-not-real", 41.15, -73.1, 41.2, -73.2, rf5b.fetchImpl);
+    check("tomtomRoadSeconds returns RoadResult shape (delay carried)", ttRes?.provider === "tomtom" && ttRes.seconds === 540 && ttRes.trafficDelaySeconds === 120, JSON.stringify(ttRes));
+  }
+  {
+    // 27f) engine end-to-end WITH a key, through the REAL resolveRouter path
+    // (no routerOverride): TomTom URL hit, ETA = ceil(540/60)=9 + buffer 5 = 14,
+    // reason names tomtom-traffic + delay, raw_response.eta carries provider/
+    // liveTraffic/trafficDelaySeconds/routerNotes.
+    const m = makeFetch({ offers: [offer(8021)], drivers: [driver(603482, "Antone jerret", { lat: 41.15, lng: -73.1, etaSec: 1255 })] });
+    const rf = makeRouterFetch();
+    const { deps } = makeDeps(withRouter(m.fetchImpl, rf.fetchImpl), null, { noRouterOverride: true, env: { TOMTOM_API_KEY: "test-key-not-real" } });
+    const r = await runAutoDispatch(ORG3, deps);
+    check("engine+key: auto_accept_with_driver + reason names tomtom-traffic + delay 2", r.decisions[0]?.decision === "auto_accept_with_driver" && String(r.decisions[0]?.reason).includes("tomtom-traffic road") && String(r.decisions[0]?.reason).includes("delay 2"), String(r.decisions[0]?.reason));
+    check("engine+key: exactly one TomTom call, zero OSRM calls (key path)", rf.tomtomCalls.length === 1 && rf.osrmCalls.length === 0, `${rf.tomtomCalls.length}/${rf.osrmCalls.length}`);
+    const rows = await decisions3();
+    const v = rows.find((x) => String(x.call_request_id) === "8021");
+    check("engine+key: ETA 14 min + raw_response.eta provider tomtom/liveTraffic/delay/routerNotes", v && Number(v.eta_minutes) === 14 && v.raw_response?.eta?.provider === "tomtom" && v.raw_response?.eta?.liveTraffic === true && v.raw_response?.eta?.trafficDelaySeconds === 120 && String(v.raw_response?.eta?.routerNotes).includes("delay 120"), JSON.stringify(v?.raw_response?.eta));
+  }
+  {
+    // 27g) engine end-to-end WITHOUT a key, through the REAL resolveRouter path:
+    // OSRM URL hit (600s → 10 min), reason names osrm, no TomTom call.
+    const m = makeFetch({ offers: [offer(8022)], drivers: [driver(603482, "Antone jerret", { lat: 41.15, lng: -73.1, etaSec: 1255 })] });
+    const rf = makeRouterFetch();
+    const { deps } = makeDeps(withRouter(m.fetchImpl, rf.fetchImpl), null, { noRouterOverride: true });
+    const r = await runAutoDispatch(ORG3, deps);
+    check("engine no-key: auto_accept_with_driver + reason names osrm road", r.decisions[0]?.decision === "auto_accept_with_driver" && String(r.decisions[0]?.reason).includes("osrm road"), String(r.decisions[0]?.reason));
+    check("engine no-key: exactly one OSRM call, zero TomTom calls", rf.osrmCalls.length === 1 && rf.tomtomCalls.length === 0, `${rf.osrmCalls.length}/${rf.tomtomCalls.length}`);
+    const rows = await decisions3();
+    const v = rows.find((x) => String(x.call_request_id) === "8022");
+    check("engine no-key: raw_response.eta provider osrm + liveTraffic false", v && v.raw_response?.eta?.provider === "osrm" && v.raw_response?.eta?.liveTraffic === false && v.raw_response?.eta?.trafficDelaySeconds === null, JSON.stringify(v?.raw_response?.eta));
+  }
+  {
+    // 27h) engine with a routerOverride tomtom provider (hermetic seam): the
+    // decision reason records the provider without any real routing call.
+    const m = makeFetch({ offers: [offer(8023)], drivers: [driver(603482, "Antone jerret", { lat: 41.15, lng: -73.1, etaSec: 1255 })] });
+    const router = makeRouter({ "41.15,-73.10": { seconds: 480, provider: "tomtom", liveTraffic: true, trafficDelaySeconds: 45, notes: "travel 480s; traffic delay 45s" } });
+    const { deps } = makeDeps(m.fetchImpl, router);
+    const r = await runAutoDispatch(ORG3, deps);
+    check("engine override-tomtom: reason names tomtom-traffic + delay 1", r.decisions[0]?.decision === "auto_accept_with_driver" && String(r.decisions[0]?.reason).includes("tomtom-traffic road") && String(r.decisions[0]?.reason).includes("delay 1"), String(r.decisions[0]?.reason));
+    const rows = await decisions3();
+    const v = rows.find((x) => String(x.call_request_id) === "8023");
+    check("engine override-tomtom: eta.provider tomtom + delay 45s recorded", v && v.raw_response?.eta?.provider === "tomtom" && v.raw_response?.eta?.trafficDelaySeconds === 45 && Number(v.eta_minutes) === 13, JSON.stringify(v?.raw_response?.eta));
+  }
+  {
+    // 27i) etaProviderStatus — the exact surface getAiDispatcherStatus exposes
+    // (server.ts imports this pure fn): correct with/without the key + factor.
+    const withKey = etaProviderStatus({ TOMTOM_API_KEY: "test-key-not-real" });
+    const noKey = etaProviderStatus({});
+    const off = etaProviderStatus({ ETA_ROUTER: "off" });
+    check("etaProviderStatus: key → tomtom + keyConfigured true (never the key)", withKey.etaProvider === "tomtom" && withKey.tomtomKeyConfigured === true && JSON.stringify(withKey).includes("test-key") === false);
+    check("etaProviderStatus: no key → osrm + keyConfigured false", noKey.etaProvider === "osrm" && noKey.tomtomKeyConfigured === false);
+    check("etaProviderStatus: ETA_ROUTER=off → factor", off.etaProvider === "factor" && off.tomtomKeyConfigured === false);
+  }
+
   /* ============ 26) ledger totals + owner org untouched ============ */
   {
     const rows = await decisions();
@@ -598,6 +758,7 @@ try {
   if (created) {
     await q`DELETE FROM organizations WHERE id=${ORG}`.catch(() => {});
     await q`DELETE FROM organizations WHERE id=${ORG2}`.catch(() => {});
+    await q`DELETE FROM organizations WHERE id=${ORG3}`.catch(() => {});
     await q`DELETE FROM users WHERE id=${USER}`.catch(() => {});
   }
   const leftover = await q`SELECT
@@ -610,9 +771,12 @@ try {
     (SELECT count(*) FROM organization_memberships WHERE org_id=${ORG}) AS members,
     (SELECT count(*) FROM users WHERE id=${USER}) AS users,
     (SELECT count(*) FROM ai_dispatcher_decisions WHERE org_id=${ORG2}) AS ad2,
-    (SELECT count(*) FROM org_settings WHERE org_id=${ORG2}) AS os2`;
+    (SELECT count(*) FROM org_settings WHERE org_id=${ORG2}) AS os2,
+    (SELECT count(*) FROM ai_dispatcher_decisions WHERE org_id=${ORG3}) AS ad3,
+    (SELECT count(*) FROM org_settings WHERE org_id=${ORG3}) AS os3,
+    (SELECT count(*) FROM towbook_sessions WHERE org_id=${ORG3}) AS sess3`;
   const l = leftover[0];
-  console.log(`\ncleanup: ai_decisions=${l.ad} settings=${l.os} jobs=${l.jobs} events=${l.ev} audit=${l.audit} sessions=${l.sess} members=${l.members} users=${l.users} ad2=${l.ad2} settings2=${l.os2}`);
+  console.log(`\ncleanup: ai_decisions=${l.ad} settings=${l.os} jobs=${l.jobs} events=${l.ev} audit=${l.audit} sessions=${l.sess} members=${l.members} users=${l.users} ad2=${l.ad2} settings2=${l.os2} ad3=${l.ad3} settings3=${l.os3} sess3=${l.sess3}`);
   if (Object.values(l).some((v) => Number(v) > 0)) {
     console.error("WARNING: QA rows remain!");
     process.exitCode = 1;

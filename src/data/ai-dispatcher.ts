@@ -12,10 +12,17 @@ import { decryptSession } from "./towbook-key";
  * offer 326520203 quoted Towbook's straight-line estimatedTimeSeconds (~3 min)
  * which the owner had to manually extend by 35 min): the quoted ETA is now the
  * ROAD-AWARE drive time from the driver's precise GPS (nearestDrivers lat/lng)
- * to the offer's pickup, via OSRM public routing (duration = routes[0].duration,
- * 4s timeout, fallback haversine ÷ 30 mph × 1.35 road factor on any failure),
- * plus a prep buffer, never below the floor, never above the ceiling
- * (org max_eta_minutes, lowered by the offer's own maxEta when smaller).
+ * to the offer's pickup, via the ETA v3 provider chain (owner-approved 2026-08-10:
+ * TomTom as the traffic-aware routing provider): TomTom Routing (live traffic +
+ * construction-aware, ONLY when TOMTOM_API_KEY is set in the server env) →
+ * OSRM public routing (static; duration = routes[0].duration) → haversine ÷
+ * 30 mph × 1.35 road factor on any failure. Each provider has a 4s timeout; a
+ * failure (429/5xx/network/bad shape) falls through to the next. Until the
+ * owner supplies TOMTOM_API_KEY the behavior is UNCHANGED: OSRM, then the
+ * factor model. The drive time then gets a prep buffer, never below the floor,
+ * never above the ceiling (org max_eta_minutes, lowered by the offer's own
+ * maxEta when smaller). Every decision reason records WHICH provider produced
+ * the ETA (tomtom-traffic / osrm / factor fallback).
  * Choice is BY ROAD ETA: each candidate (checked in && has GPS && no current
  * calls) is routed and the minimum road ETA wins — a driver with a better real
  * drive time beats one with a better straight-line time. Drivers with no GPS
@@ -52,22 +59,59 @@ import { decryptSession } from "./towbook-key";
  * Hard rails: only act on the documented offer shape (callRequestId, status,
  * startLocationLatitude/Longitude, expirationDateUtc); ANY unexpected shape →
  * escalated_unexpected_shape with the full offer JSON, NO accept. Out-of-zone
- * and unverifiable → never accept. Fetch and the road router are injectable
- * (tests never hit real Towbook or OSRM); the loop wiring passes the real
- * fetch and the default OSRM router.
+ * and unverifiable → never accept. Fetch, the env bag, and the router provider
+ * are injectable (tests never hit real Towbook, TomTom, or OSRM); the loop
+ * wiring resolves the provider from the server env (TomTom when TOMTOM_API_KEY
+ * is set, else OSRM static — see resolveRouter).
  * ----------------------------------------------------------------------------- */
 
 export type AiDispatcherActor = { id: string; role: string };
-/** Road-aware drive-time source (injectable so tests are hermetic). Returns
- *  drive SECONDS between two lat/lng pairs, or null when routing failed
- *  (network / timeout / 429 / 5xx / bad body) — the caller falls back to the
- *  haversine ÷ 30 mph × 1.35 factor model. */
+
+/** One road-routing result — what a provider returns on success. Both the
+ *  TomTom and OSRM providers return this shape so the engine (and the decision
+ *  record) always knows WHICH provider produced the ETA and whether live
+ *  traffic was included. */
+export type RoadResult = {
+  /** Drive time in seconds (TomTom travelTimeInSeconds / OSRM duration). */
+  seconds: number;
+  /** Which provider produced this result. */
+  provider: "tomtom" | "osrm";
+  /** True when the result reflects live traffic (TomTom traffic=true). */
+  liveTraffic: boolean;
+  /** TomTom's trafficDelayInSeconds (0 when reported as none; null for OSRM). */
+  trafficDelaySeconds: number | null;
+  /** Human-readable router notes (TomTom: travel + delay; OSRM: static). */
+  notes?: string | null;
+};
+
+/** Road-aware drive-time source (injectable so tests are hermetic). Returns a
+ *  RoadResult (drive SECONDS between two lat/lng pairs + provider metadata), or
+ *  null when routing failed (network / timeout / 429 / 5xx / bad body) — the
+ *  caller falls back to the next provider in the chain, then to the haversine
+ *  ÷ 30 mph × 1.35 factor model. */
 export type RoadRouter = (
   fromLat: number,
   fromLng: number,
   toLat: number,
   toLng: number,
-) => Promise<number | null>;
+) => Promise<RoadResult | null>;
+
+/** Which ETA provider is active for a deployment. */
+export type EtaProvider = "tomtom" | "osrm" | "factor";
+
+/** The resolved router for an env bag: the provider to use plus the router
+ *  itself. `router` is null ONLY when provider === "factor" (routing is
+ *  disabled — the engine goes straight to the distance model). */
+export type ResolvedRouter = {
+  /** Active provider: tomtom when TOMTOM_API_KEY is set (live traffic +
+   *  construction), osrm static otherwise, factor when routing is disabled. */
+  provider: EtaProvider;
+  /** The road router to call; null → factor model only. */
+  router: RoadRouter | null;
+  /** Boolean presence of TOMTOM_API_KEY — NEVER the key itself. */
+  tomtomKeyConfigured: boolean;
+};
+
 export type AiDispatcherDeps = {
   /** Runs a full Towbook sync for the org (imported from server.ts by the caller;
    *  injected so this module never imports server.ts — avoids a module cycle). */
@@ -76,8 +120,13 @@ export type AiDispatcherDeps = {
   resolveOrgActor: (orgId: string) => Promise<AiDispatcherActor | null>;
   /** Injectable fetch for hermetic tests; defaults to the global fetch. */
   fetchImpl?: typeof fetch;
-  /** Injectable road router (defaults to the OSRM public API via fetchImpl). */
-  roadRouter?: RoadRouter;
+  /** Router provider override for hermetic tests — bypasses env resolution
+   *  entirely so tests never hit real TomTom/OSRM. When omitted the provider
+   *  is resolved from `env` (defaults to process.env). */
+  routerOverride?: ResolvedRouter;
+  /** Env bag for provider resolution (defaults to process.env). Tests inject
+   *  { TOMTOM_API_KEY } here without touching the process environment. */
+  env?: Record<string, string | undefined>;
   /** Post-accept verification retry delay for the call-fetch race (default 5s;
    *  tests inject 0). */
   verifyRetryDelayMs?: number;
@@ -150,24 +199,25 @@ export function fallbackRoadMinutes(distanceMiles: number): number {
 }
 
 const OSRM_ENDPOINT = "https://router.project-osrm.org/route/v1/driving";
-const OSRM_TIMEOUT_MS = 4000;
+const ROUTER_TIMEOUT_MS = 4000;
 
-/** Default road router: OSRM public routing API. drive time = routes[0].duration
- *  (seconds). Returns null on ANY failure — network error, timeout, non-2xx
- *  (429/5xx included), or a malformed body — so the engine always falls back
- *  to the factor model instead of quoting a fabricated number. */
+/** Default road router, link 2 of the ETA v3 chain: OSRM public routing API
+ *  (static — no live traffic). drive time = routes[0].duration (seconds).
+ *  Returns null on ANY failure — network error, timeout, non-2xx (429/5xx
+ *  included), or a malformed body — so the engine always falls back to the
+ *  factor model instead of quoting a fabricated number. */
 export async function osrmRoadSeconds(
   fromLat: number,
   fromLng: number,
   toLat: number,
   toLng: number,
   fetchImpl: typeof fetch = globalThis.fetch,
-): Promise<number | null> {
+): Promise<RoadResult | null> {
   try {
     const url = `${OSRM_ENDPOINT}/${fromLng},${fromLat};${toLng},${toLat}?overview=false`;
     const res = await fetchImpl(url, {
       headers: { accept: "application/json" },
-      signal: AbortSignal.timeout(OSRM_TIMEOUT_MS),
+      signal: AbortSignal.timeout(ROUTER_TIMEOUT_MS),
     });
     if (!res.ok) return null;
     const body: unknown = await res.json().catch(() => null);
@@ -175,10 +225,116 @@ export async function osrmRoadSeconds(
     const o = body as Record<string, unknown>;
     if (o.code !== "Ok" || !Array.isArray(o.routes) || !o.routes.length) return null;
     const duration = Number((o.routes[0] as Record<string, unknown>)?.duration);
-    return Number.isFinite(duration) && duration > 0 ? duration : null;
+    if (!Number.isFinite(duration) || duration <= 0) return null;
+    return {
+      seconds: duration,
+      provider: "osrm",
+      liveTraffic: false,
+      trafficDelaySeconds: null,
+      notes: "static routing (no traffic)",
+    };
   } catch {
     return null;
   }
+}
+
+const TOMTOM_ENDPOINT = "https://api.tomtom.com/routing/1/calculateRoute";
+
+/** Default road router, link 1 of the ETA v3 chain: TomTom Routing with live
+ *  traffic + construction awareness (traffic=true, routeType=fastest, and
+ *  departAt=<now> so the route reflects current conditions). drive time =
+ *  routes[0].summary.travelTimeInSeconds; the extra traffic delay is carried
+ *  separately (summary.trafficDelayInSeconds) and reported in notes + the
+ *  decision row. vehicleCommercial=false keeps the route on LIGHT-DUTY rules
+ *  (our trucks are not commercial-vehicle restricted). Returns null on ANY
+ *  failure (429/5xx/network/timeout/bad shape) so the chain falls through to
+ *  OSRM. The API key comes from the env ONLY — it is never logged or stored. */
+export async function tomtomRoadSeconds(
+  apiKey: string,
+  fromLat: number,
+  fromLng: number,
+  toLat: number,
+  toLng: number,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<RoadResult | null> {
+  try {
+    const params = new URLSearchParams({
+      key: apiKey,
+      traffic: "true",
+      routeType: "fastest",
+      departAt: new Date().toISOString(),
+      vehicleCommercial: "false",
+    });
+    const url = `${TOMTOM_ENDPOINT}/${fromLat},${fromLng}:${toLat},${toLng}/json?${params.toString()}`;
+    const res = await fetchImpl(url, {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(ROUTER_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    const body: unknown = await res.json().catch(() => null);
+    if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+    const routes = (body as Record<string, unknown>).routes;
+    if (!Array.isArray(routes) || !routes.length) return null;
+    const summary = (routes[0] as Record<string, unknown>).summary as Record<string, unknown> | undefined;
+    if (!summary || typeof summary !== "object") return null;
+    const travel = Number(summary.travelTimeInSeconds);
+    if (!Number.isFinite(travel) || travel <= 0) return null;
+    const delay = Number(summary.trafficDelayInSeconds);
+    const delaySec = Number.isFinite(delay) && delay > 0 ? delay : 0;
+    return {
+      seconds: travel,
+      provider: "tomtom",
+      liveTraffic: true,
+      trafficDelaySeconds: delaySec,
+      notes: `travel ${travel}s; traffic delay ${delaySec}s`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** ETA v3 provider selection. Chain: TomTom (live traffic + construction, only
+ *  when TOMTOM_API_KEY is configured) → OSRM static → haversine factor model
+ *  (caller side). With NO key the behavior is exactly the pre-traffic default:
+ *  OSRM, then the factor model. The TomTom provider internally falls through to
+ *  OSRM on any TomTom failure, so a 429/5xx never loses the ETA. ETA_ROUTER=off
+ *  is the explicit opt-out: no routing calls at all, straight to the factor
+ *  model. The env bag is injectable so tests never touch process.env. */
+export function resolveRouter(
+  env: Record<string, string | undefined>,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): ResolvedRouter {
+  const key = (env.TOMTOM_API_KEY ?? "").trim();
+  if (key) {
+    return {
+      provider: "tomtom",
+      tomtomKeyConfigured: true,
+      router: async (fromLat, fromLng, toLat, toLng) => {
+        const tomtom = await tomtomRoadSeconds(key, fromLat, fromLng, toLat, toLng, fetchImpl);
+        if (tomtom) return tomtom;
+        return osrmRoadSeconds(fromLat, fromLng, toLat, toLng, fetchImpl);
+      },
+    };
+  }
+  if ((env.ETA_ROUTER ?? "").trim() === "off") {
+    return { provider: "factor", tomtomKeyConfigured: false, router: null };
+  }
+  return {
+    provider: "osrm",
+    tomtomKeyConfigured: false,
+    router: (fromLat, fromLng, toLat, toLng) => osrmRoadSeconds(fromLat, fromLng, toLat, toLng, fetchImpl),
+  };
+}
+
+/** The provider status surface for the owner panel (getAiDispatcherStatus):
+ *  which ETA provider is active for this deployment + whether the TomTom key
+ *  is present — the boolean only, never the key itself. */
+export function etaProviderStatus(env: Record<string, string | undefined>): {
+  etaProvider: EtaProvider;
+  tomtomKeyConfigured: boolean;
+} {
+  const r = resolveRouter(env);
+  return { etaProvider: r.provider, tomtomKeyConfigured: r.tomtomKeyConfigured };
 }
 
 /* ------------------------------- settings + ledger ------------------------------- */
@@ -337,6 +493,15 @@ export type ChosenDriverEta = {
   straightLineMinutes: number;
   /** True when the router failed and the fallback factor model was used. */
   usedFallback: boolean;
+  /** Which provider produced the drive time: "tomtom" (live traffic),
+   *  "osrm" (static), or "factor" (fallback model — usedFallback true). */
+  provider: EtaProvider;
+  /** True when the drive time reflects live traffic (TomTom traffic=true). */
+  liveTraffic: boolean;
+  /** TomTom trafficDelayInSeconds when TomTom reported it (osrm/factor: null). */
+  trafficDelaySeconds: number | null;
+  /** Router notes (TomTom travel/delay detail; osrm static; null on fallback). */
+  routerNotes: string | null;
 };
 
 /** Road-aware driver choice: same rails as before (checked in, real GPS — lat/lng
@@ -344,13 +509,15 @@ export type ChosenDriverEta = {
  *  candidate is routed from its precise GPS to the pickup and the minimum ROAD
  *  ETA wins — a driver with a better real drive time beats one with a better
  *  straight-line time. Routing failures fall back to the factor model per
- *  candidate, so a driver is never dropped for a router hiccup. Returns null
- *  when no driver qualifies (→ accept with driverId 0 + escalate; no ETA quoted). */
+ *  candidate, so a driver is never dropped for a router hiccup. `roadRouter`
+ *  may be null (routing disabled — every candidate uses the factor model).
+ *  Returns null when no driver qualifies (→ accept with driverId 0 + escalate;
+ *  no ETA quoted). */
 export async function chooseBestDriverByRoad(
   drivers: unknown[],
   pickupLat: number,
   pickupLng: number,
-  roadRouter: RoadRouter,
+  roadRouter: RoadRouter | null,
 ): Promise<ChosenDriverEta | null> {
   const eligible = drivers.filter((d): d is NearestDriver => {
     if (!d || typeof d !== "object" || Array.isArray(d)) return false;
@@ -367,19 +534,40 @@ export async function chooseBestDriverByRoad(
   const routed = await Promise.all(
     eligible.map(async (d): Promise<ChosenDriverEta> => {
       const straightLineMinutes = Math.max(1, Math.ceil(Number(d.estimatedTimeSeconds) / 60));
-      let roadSeconds: number | null = null;
+      let result: RoadResult | null = null;
       try {
-        roadSeconds = await roadRouter(
+        result = roadRouter ? await roadRouter(
           Number(d.latitude), Number(d.longitude), pickupLat, pickupLng,
-        );
-      } catch { roadSeconds = null; }
-      if (roadSeconds != null && Number.isFinite(roadSeconds) && roadSeconds > 0) {
-        return { driver: d, roadSeconds, baseMinutes: Math.ceil(roadSeconds / 60), straightLineMinutes, usedFallback: false };
+        ) : null;
+      } catch { result = null; }
+      if (result && Number.isFinite(result.seconds) && result.seconds > 0) {
+        return {
+          driver: d,
+          roadSeconds: result.seconds,
+          baseMinutes: Math.ceil(result.seconds / 60),
+          straightLineMinutes,
+          usedFallback: false,
+          provider: result.provider,
+          liveTraffic: result.liveTraffic === true,
+          trafficDelaySeconds: result.provider === "tomtom" && Number.isFinite(result.trafficDelaySeconds as number)
+            ? (result.trafficDelaySeconds as number) : null,
+          routerNotes: result.notes ?? null,
+        };
       }
       const fallback = fallbackRoadMinutes(
         haversineMiles(Number(d.latitude), Number(d.longitude), pickupLat, pickupLng),
       );
-      return { driver: d, roadSeconds: null, baseMinutes: fallback, straightLineMinutes, usedFallback: true };
+      return {
+        driver: d,
+        roadSeconds: null,
+        baseMinutes: fallback,
+        straightLineMinutes,
+        usedFallback: true,
+        provider: "factor",
+        liveTraffic: false,
+        trafficDelaySeconds: null,
+        routerNotes: null,
+      };
     }),
   );
   routed.sort((a, b) =>
@@ -402,11 +590,21 @@ export function finalEtaMinutes(
   return Math.min(ceiling, Math.max(floor, raw));
 }
 
-/** Human-readable ETA breakdown for decision reasons:
- *  "ETA 14 min (road 9 + buffer 5; floor 5, ceiling 45; straight-line 11; GPS 41.18,-73.15)" */
+/** Human-readable ETA breakdown for decision reasons. The label NAMES the
+ *  provider so the ledger is transparent about where each ETA came from:
+ *  "ETA 14 min (tomtom-traffic road 9 + buffer 5; delay 2; floor 5, ceiling
+ *  45; straight-line 11; GPS 41.18,-73.15)" vs "osrm road …" vs "road fallback
+ *  … (factor model)". */
 export function etaDetailLabel(c: ChosenDriverEta, buffer: number, floor: number, ceiling: number, finalMinutes: number): string {
-  const base = c.usedFallback ? `road fallback ${c.baseMinutes}` : `road ${c.baseMinutes}`;
-  return `ETA ${finalMinutes} min (${base} + buffer ${buffer}; floor ${floor}, ceiling ${ceiling}; straight-line ${c.straightLineMinutes}; GPS ${Number(c.driver.latitude)},${Number(c.driver.longitude)})`;
+  const base = c.usedFallback
+    ? `road fallback ${c.baseMinutes} (factor model)`
+    : c.provider === "tomtom"
+      ? `tomtom-traffic road ${c.baseMinutes}`
+      : `osrm road ${c.baseMinutes}`;
+  const delay = !c.usedFallback && c.provider === "tomtom" && c.trafficDelaySeconds != null && c.trafficDelaySeconds > 0
+    ? `; delay ${Math.round(c.trafficDelaySeconds / 60)}`
+    : "";
+  return `ETA ${finalMinutes} min (${base} + buffer ${buffer}${delay}; floor ${floor}, ceiling ${ceiling}; straight-line ${c.straightLineMinutes}; GPS ${Number(c.driver.latitude)},${Number(c.driver.longitude)})`;
 }
 
 /* ----------------------------------- Towbook HTTP ----------------------------------- */
@@ -788,13 +986,16 @@ export async function runAutoDispatch(orgId: string, deps: AiDispatcherDeps): Pr
             return Number.isFinite(id) && eligibleIds.has(id);
           })
         : (nd.body as unknown[]);
-      const roadRouter: RoadRouter = deps.roadRouter ?? ((fromLat, fromLng, toLat, toLng) =>
-        osrmRoadSeconds(fromLat, fromLng, toLat, toLng, fetchImpl));
+      // ETA v3 provider resolution: TomTom when TOMTOM_API_KEY is set (with
+      // automatic fall-through to OSRM on any TomTom failure), else OSRM static,
+      // else null (ETA_ROUTER=off → factor model only). Tests inject
+      // routerOverride/env so this never hits real TomTom/OSRM.
+      const resolved: ResolvedRouter = deps.routerOverride ?? resolveRouter(deps.env ?? process.env, fetchImpl);
       const chosen = await chooseBestDriverByRoad(
         candidates,
         offer.startLocationLatitude,
         offer.startLocationLongitude,
-        roadRouter,
+        resolved.router,
       );
       const driver = chosen?.driver ?? null;
       const effectiveMaxEta = Math.min(settings.maxEtaMinutes, offer.maxEta ?? settings.maxEtaMinutes);
@@ -815,6 +1016,10 @@ export async function runAutoDispatch(orgId: string, deps: AiDispatcherDeps): Pr
         baseMinutes: chosen.baseMinutes,
         roadSeconds: chosen.roadSeconds,
         usedFallback: chosen.usedFallback,
+        provider: chosen.provider,
+        liveTraffic: chosen.liveTraffic,
+        trafficDelaySeconds: chosen.trafficDelaySeconds,
+        routerNotes: chosen.routerNotes,
         straightLineMinutes: chosen.straightLineMinutes,
         bufferMinutes: settings.etaBufferMinutes,
         floorMinutes: settings.etaFloorMinutes,

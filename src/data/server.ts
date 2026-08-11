@@ -2,7 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { sql } from "~/db";
 import { decryptSession, encryptSession } from "./towbook-key";
-import { runAutoDispatch, getOrgSettings } from "./ai-dispatcher";
+import { runAutoDispatch, getOrgSettings, etaProviderStatus } from "./ai-dispatcher";
 import { contractors as seedContractors, jobs as seedJobs } from "./seed";
 import type { AuthUser } from "./auth-server";
 import type { ContractorStatus, JobStatus, Contractor, Job, ServiceType } from "./seed";
@@ -1149,6 +1149,12 @@ export type AiDispatcherStatus = {
   maxEtaMinutes: number;
   etaBufferMinutes: number;
   etaFloorMinutes: number;
+  /** Which ETA provider is active for this deployment: "tomtom" (live traffic)
+   *  when TOMTOM_API_KEY is set in the server env, "osrm" static otherwise,
+   *  "factor" when routing is disabled (ETA_ROUTER=off). */
+  etaProvider: "tomtom" | "osrm" | "factor";
+  /** Boolean presence of TOMTOM_API_KEY in the server env — never the key. */
+  tomtomKeyConfigured: boolean;
   lastDecisionAt: string | null;
   decisionsLast24h: number;
   escalationsOpen: number;
@@ -1192,6 +1198,10 @@ export const getAiDispatcherStatus = createServerFn({ method: "GET" }).handler(a
     const sess = await q`SELECT status, last_sync_at FROM towbook_sessions WHERE org_id=${u.orgId}`;
     const a = (agg[0] ?? {}) as Record<string, unknown>;
     const s = sess[0] as Record<string, unknown> | undefined;
+    // ETA provider surface for the panel (v3): tomtom when the key is set in
+    // this server's env, else osrm static, else factor. Only the boolean
+    // presence of the key is ever exposed — never the key itself.
+    const etaStatus = etaProviderStatus(process.env as Record<string, string | undefined>);
     const st: AiDispatcherStatus = {
       enabled: settings.aiDispatcherEnabled,
       zoneLat: settings.zoneLat,
@@ -1200,6 +1210,8 @@ export const getAiDispatcherStatus = createServerFn({ method: "GET" }).handler(a
       maxEtaMinutes: settings.maxEtaMinutes,
       etaBufferMinutes: settings.etaBufferMinutes,
       etaFloorMinutes: settings.etaFloorMinutes,
+      etaProvider: etaStatus.etaProvider,
+      tomtomKeyConfigured: etaStatus.tomtomKeyConfigured,
       lastDecisionAt: a.last_decision_at ? new Date(String(a.last_decision_at)).toISOString() : null,
       decisionsLast24h: Number(a.last24h ?? 0),
       escalationsOpen: Number(a.escalations_open ?? 0),

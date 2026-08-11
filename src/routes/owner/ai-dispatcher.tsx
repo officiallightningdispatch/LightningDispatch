@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { Bot, Clock, MapPin, Plug } from "lucide-react";
+import { Bot, Clock, MapPin, Plug, TrafficCone } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AppShell } from "~/components/app-shell";
 import { AiDecisionsEmpty, AiDecisionRow, AiToggle } from "~/components/ai-dispatcher-views";
@@ -14,6 +14,18 @@ import {
 import { timeAgo } from "~/lib/job-ui";
 
 export const Route = createFileRoute("/owner/ai-dispatcher")({ component: OwnerAiDispatcher });
+
+/** ETA source labels for the panel — which provider produces the quoted ETA
+ *  (v3 traffic layer: TomTom live traffic when the key is configured, else
+ *  OSRM static routing, else the distance model). */
+const ETA_SOURCE_LABEL: Record<string, string> = {
+  tomtom: "TomTom live traffic",
+  osrm: "OSRM static (no traffic key set)",
+  factor: "Distance estimate",
+};
+const ETA_SOURCE_DEFAULT = "OSRM static (no traffic key set)";
+const etaSourceLabel = (s: AiDispatcherStatus | null) =>
+  s ? ETA_SOURCE_LABEL[s.etaProvider] ?? ETA_SOURCE_DEFAULT : ETA_SOURCE_DEFAULT;
 
 /** Owner control panel for the AI dispatcher engine: live toggle, zone card,
  *  recent decision ledger with collapsible raw responses, and a Towbook
@@ -128,6 +140,13 @@ function OwnerAiDispatcher() {
             </div>
             <div className="mt-4 space-y-1.5 text-sm">
               <p className="flex justify-between gap-3"><span className="text-ink-400">Max ETA</span><span className="font-semibold">{status ? status.maxEtaMinutes : 45} minutes</span></p>
+              <p className="flex justify-between gap-3">
+                <span className="text-ink-400">ETA source</span>
+                <span className="flex items-center gap-1.5 font-semibold">
+                  <TrafficCone className={`size-3.5 ${status?.etaProvider === "tomtom" ? "text-brand-500" : "text-ink-300"}`} aria-hidden="true" />
+                  {etaSourceLabel(status)}
+                </span>
+              </p>
               <p className="flex justify-between gap-3">
                 <span className="text-ink-400">Towbook</span>
                 <span className={`font-semibold ${status?.connected ? "text-success-700" : "text-danger-600"}`}>
