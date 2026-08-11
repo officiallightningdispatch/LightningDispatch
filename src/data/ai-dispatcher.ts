@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { sql } from "~/db";
 import { decryptSession, findSiteRoot } from "./towbook-key";
+import type { RecoveryResult } from "./towbook-recovery";
 
 /* ============================ AI dispatcher engine ============================
  * Owner-directed 2026-08-10: auto-accept ALL Towbook motor-club offers inside
@@ -136,6 +137,10 @@ export type AiDispatcherDeps = {
   /** Post-accept verification retry delay for the call-fetch race (default 5s;
    *  tests inject 0). */
   verifyRetryDelayMs?: number;
+  /** Injectable session recovery for hermetic tests; defaults to the real
+   *  recoverTowbookSession (self-healing re-login with the stored owner
+   *  credentials — the owner-directed "set up Towbook and forget" behavior). */
+  recoverSession?: (orgId: string) => Promise<RecoveryResult>;
 };
 
 export type OrgAiSettings = {
@@ -690,6 +695,39 @@ async function towbookFetch(
   }
 }
 
+/* --------------------------- session self-healing --------------------------- */
+/* Owner-directed 2026-08-11 ("set up Towbook and forget"): an expired stored
+ * session must be healed by the engine itself, not by the owner. These helpers
+ * classify a Towbook API response as session-dead (401/403, or a 200 that is
+ * actually the MVC login page — the same fingerprint status-push-core uses)
+ * and reload the org's OWNER session row after recovery. */
+
+/** True when a Towbook API response means the stored session is dead. */
+const SESSION_EXPIRED_STATUSES = new Set([401, 403]);
+function isSessionExpiredResponse(r: FetchResult): boolean {
+  if (r.status != null && SESSION_EXPIRED_STATUSES.has(r.status)) return true;
+  return r.status === 200 && typeof r.body === "string" && /<form/i.test(r.body) && /RequestVerificationToken/i.test(r.body);
+}
+const hasSessionExpiredAttempt = (attempts: FetchResult[]): boolean => attempts.some(isSessionExpiredResponse);
+const hasSessionExpiredVerification = (attempts: DispatchVerification["attempts"]): boolean =>
+  attempts.some((a) => a.status != null && SESSION_EXPIRED_STATUSES.has(a.status));
+
+/** Load + decrypt the org's owner Towbook session (cookie jar + base URL), or
+ *  null when there is no usable connected owner row. Used to pick up the
+ *  freshly recovered session after recoverTowbookSession rewrites the row. */
+async function loadOwnerSession(orgId: string): Promise<{ cookie: string; baseUrl: string } | null> {
+  const sess = await sql()`SELECT encrypted_session, status FROM towbook_sessions WHERE org_id=${orgId} AND session_kind='owner'`;
+  if (!sess.length || String(sess[0].status) !== "connected" || !String(sess[0].encrypted_session || "").length) return null;
+  try {
+    const plain = await decryptSession(String(sess[0].encrypted_session));
+    const parsed = JSON.parse(plain) as { cookies?: string; baseUrl?: string };
+    return { cookie: parsed.cookies || "", baseUrl: parsed.baseUrl || "https://app.towbook.com" };
+  } catch {
+    return null;
+  }
+}
+
+
 /** Extract a resulting call id from an accept response (response shape is an
  *  unknown until the first real accept; scan the documented keys). */
 const callIdFromAcceptResponse = (body: unknown): string | null => {
@@ -964,6 +1002,15 @@ async function runAutoDispatchInternal(
   const settings = await getOrgSettings(orgId);
     if (!settings.aiDispatcherEnabled) return { result: { ...base, gated: true }, seenOffers: [] };
 
+    // Session recovery seam: tests inject a mock; production uses the real
+    // self-healing re-login (towbook-recovery.ts). The recovery module is
+    // server-only (node:fs + node:url for the stable .secrets key) — it must
+    // never be statically imported from a client-reachable module, so it is
+    // reached by a dynamic import inside this PRIVATE function (tree-shaken
+    // out of the client bundle — same pattern as status-push-core).
+    const recoverSession: (oid: string) => Promise<RecoveryResult> =
+      deps.recoverSession ?? (async (oid: string) => (await import("./towbook-recovery")).recoverTowbookSession(oid));
+
     const sess = await sql()`SELECT encrypted_session, status FROM towbook_sessions WHERE org_id=${orgId} AND session_kind='owner'`;
     if (!sess.length || String(sess[0].status) !== "connected" || !String(sess[0].encrypted_session || "").length) {
       return { result: { ...base, skipped: "not_connected" }, seenOffers: [] };
@@ -979,7 +1026,26 @@ async function runAutoDispatchInternal(
       return { result: { ...base, skipped: "session_unavailable" }, seenOffers: [] };
     }
 
-    const offersRes = await towbookFetch(fetchImpl, `${baseUrl}/api/callRequests/`, cookies);
+    const offersRes0 = await towbookFetch(fetchImpl, `${baseUrl}/api/callRequests/`, cookies);
+    // Self-healing (owner-directed 2026-08-11): a session that died between
+    // ticks is healed HERE — detect expiry on ticks, not only at push time —
+    // and the feed is retried once with the recovered session so the offer is
+    // still processed in this tick. Recovery is throttled + in-flight guarded
+    // inside towbook-recovery; a failure keeps the run's skip reason honest.
+    let offersRes = offersRes0;
+    if (!offersRes.ok && isSessionExpiredResponse(offersRes)) {
+      const recovery = await recoverSession(orgId);
+      if (recovery.recovered) {
+        const fresh = await loadOwnerSession(orgId);
+        if (fresh) {
+          cookies = fresh.cookie;
+          baseUrl = fresh.baseUrl;
+          offersRes = await towbookFetch(fetchImpl, `${baseUrl}/api/callRequests/`, cookies);
+        }
+      } else {
+        return { result: { ...base, skipped: `offer_fetch_failed (${offersRes.error ?? offersRes.status}; session recovery failed: ${recovery.reason})` }, seenOffers: [] };
+      }
+    }
     if (!offersRes.ok) return { result: { ...base, skipped: `offer_fetch_failed (${offersRes.error ?? offersRes.status})` }, seenOffers: [] };
     if (!Array.isArray(offersRes.body)) return { result: { ...base, skipped: "offer_payload_unexpected" }, seenOffers: [] };
     const offers = offersRes.body as unknown[];
@@ -1127,10 +1193,31 @@ async function runAutoDispatchInternal(
         : eligibleIds
           ? `no ELIGIBLE checked-in free driver with GPS (offer eligible list [${offer.drivers!.join(", ")}]; accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually, ETA quoted at the ${effectiveMaxEta}-min ceiling — no ETA recorded)`
           : "no checked-in free driver with GPS — accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually (ETA quoted at the SLA ceiling — no ETA recorded)";
-      // --- accept (the ONE state-changing call) ---
-      const accept = await postAccept(fetchImpl, baseUrl, cookies, offer.callRequestId, postEta, driverId, postNotes);
+      // --- accept (the ONE state-changing call) — with a self-healing retry:
+      // an expired session mid-offer (401/403/login-page on the POST) triggers
+      // recovery, and the accept is retried once with the recovered session.
+      // Only if recovery or the retry fails is the escalation recorded.
+      let accept = await postAccept(fetchImpl, baseUrl, cookies, offer.callRequestId, postEta, driverId, postNotes);
+      let acceptRecoveryNote: string | null = null;
+      if (!accept.ok && hasSessionExpiredAttempt(accept.attempts)) {
+        const recovery = await recoverSession(orgId);
+        if (recovery.recovered) {
+          const fresh = await loadOwnerSession(orgId);
+          if (fresh) {
+            cookies = fresh.cookie;
+            baseUrl = fresh.baseUrl;
+            const retried = await postAccept(fetchImpl, baseUrl, cookies, offer.callRequestId, postEta, driverId, postNotes);
+            accept = retried;
+            acceptRecoveryNote = "session recovered; accept retried";
+          } else {
+            acceptRecoveryNote = "session recovered but reload failed";
+          }
+        } else {
+          acceptRecoveryNote = `session recovery failed (${recovery.reason})`;
+        }
+      }
       if (!accept.ok) {
-        const reason = `accept POST failed after retry (${accept.attempts.map((a) => a.error ?? `HTTP ${a.status}`).join("; ")}) — offer NOT auto-accepted, needs a human${chosen ? `; ${etaDetailLabel(chosen, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta, etaMinutes as number)}` : ""}`;
+        const reason = `accept POST failed after retry (${accept.attempts.map((a) => a.error ?? `HTTP ${a.status}`).join("; ")}) — offer NOT auto-accepted, needs a human${acceptRecoveryNote ? `; ${acceptRecoveryNote}` : ""}${chosen ? `; ${etaDetailLabel(chosen, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta, etaMinutes as number)}` : ""}`;
         await record({
           decision: "escalated_accept_failed",
           driverId: driver ? String(driver.driverId) : null,
@@ -1146,12 +1233,35 @@ async function runAutoDispatchInternal(
         // seeing the chosen driver on the fetched call (assets[].driver.id /
         // assets[].drivers[].driver.id). Not verified → one assign attempt →
         // re-verify → still not assigned → escalated_dispatch_failed. ---
-        const verification = await verifyDispatch(fetchImpl, baseUrl, cookies, offer, callIdFromAcceptResponse(accept.raw), driverId, {
+        // Self-healing: when the assignDrivers push (or a verification fetch)
+        // hits an expired session (the 2026-08-11 13:10Z incident), recover the
+        // session and RETRY the push once with the fresh session — the owner's
+        // alert fires only if recovery or the retry fails.
+        let verification = await verifyDispatch(fetchImpl, baseUrl, cookies, offer, callIdFromAcceptResponse(accept.raw), driverId, {
           retryDelayMs: deps.verifyRetryDelayMs ?? 5000,
           allowAssign: true,
         });
+        let verificationRecoveryNote: string | null = null;
+        if (!verification.ok && hasSessionExpiredVerification(verification.attempts)) {
+          const recovery = await recoverSession(orgId);
+          if (recovery.recovered) {
+            const fresh = await loadOwnerSession(orgId);
+            if (fresh) {
+              const retried = await verifyDispatch(fetchImpl, fresh.baseUrl, fresh.cookie, offer, callIdFromAcceptResponse(accept.raw), driverId, {
+                retryDelayMs: deps.verifyRetryDelayMs ?? 5000,
+                allowAssign: true,
+              });
+              verification = { ...retried, attempts: [...verification.attempts, ...retried.attempts] };
+              verificationRecoveryNote = "session recovered; dispatch push retried";
+            } else {
+              verificationRecoveryNote = "session recovered but reload failed";
+            }
+          } else {
+            verificationRecoveryNote = `session recovery failed (${recovery.reason})`;
+          }
+        }
         if (verification.ok) {
-          const reason = `accepted and dispatched to ${String(driver.driverName ?? driver.driverId)} (driver ${driver.driverId}, VERIFIED on call ${verification.callId}) — ${etaDetailLabel(chosen, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta, etaMinutes)}`;
+          const reason = `accepted and dispatched to ${String(driver.driverName ?? driver.driverId)} (driver ${driver.driverId}, VERIFIED on call ${verification.callId})${verificationRecoveryNote ? `; ${verificationRecoveryNote}` : ""} — ${etaDetailLabel(chosen, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta, etaMinutes)}`;
           await record({
             decision: "auto_accept_with_driver",
             callId: verification.callId,
@@ -1161,7 +1271,7 @@ async function runAutoDispatchInternal(
           });
           result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "auto_accept_with_driver", escalated: false, reason });
         } else {
-          const reason = `accepted (call ${verification.callId ?? "unknown"}) but dispatch NOT verified for ${String(driver.driverName ?? driver.driverId)} (driver ${driver.driverId}) — ${verification.error}; needs a human to assign on Towbook (ETA ${etaMinutes} min quoted)`;
+          const reason = `accepted (call ${verification.callId ?? "unknown"}) but dispatch NOT verified for ${String(driver.driverName ?? driver.driverId)} (driver ${driver.driverId}) — ${verification.error}${verificationRecoveryNote ? `; ${verificationRecoveryNote}` : ""}; needs a human to assign on Towbook (ETA ${etaMinutes} min quoted)`;
           await record({
             decision: "escalated_dispatch_failed",
             callId: verification.callId,

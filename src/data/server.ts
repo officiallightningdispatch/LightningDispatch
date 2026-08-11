@@ -888,6 +888,18 @@ export async function upsertPulledJobs(
 
 /* ----------------------------------- core sync ----------------------------------- */
 
+/** Full Towbook sync for an org. When the stored session is detected as
+ *  expired (login-page redirect on the discovered pages), the sync triggers
+ *  the self-healing recovery (recoverTowbookSession — owner-directed
+ *  2026-08-11: "set up Towbook and forget") so the NEXT tick starts with a
+ *  fresh session: expiry is healed on ticks, not only at push time. Recovery
+ *  is throttled + in-flight guarded inside towbook-recovery and never throws —
+ *  a failure keeps this org's session_expired result and the caller's
+ *  escalation/alert path. PRIVATE: it touches towbook-key (node:url) and
+ *  towbook-recovery (node:fs), so it must never be exported from this
+ *  client-reachable module — the recovery module is reached by a dynamic
+ *  import inside this private function (tree-shaken out of the client bundle,
+ *  same pattern as status-push-core). */
 async function doSyncForOrg(orgId: string, trigger: string, actorHint?: { id: string; role: AuthUser["role"] }): Promise<TowbookSyncResult> {
   const q = sql();
   const sess = await q`SELECT encrypted_session, status FROM towbook_sessions WHERE org_id=${orgId} AND session_kind='owner'`;
@@ -906,6 +918,16 @@ async function doSyncForOrg(orgId: string, trigger: string, actorHint?: { id: st
   const { diagnostics, pages, sessionExpired } = await discoverJobPages(cookies, baseUrl);
   if (sessionExpired) {
     await q`UPDATE towbook_sessions SET last_sync_at=NOW() WHERE org_id=${orgId} AND session_kind='owner'`;
+    // Self-healing (owner-directed 2026-08-11): heal the expired session on the
+    // tick itself so the NEXT tick runs with a fresh session — no owner action.
+    // Best-effort + throttled inside recovery (never hammers Towbook); a
+    // failure leaves this org's session_expired result + alert path intact.
+    // The recovery module is server-only (node:fs/node:url) — dynamic import
+    // inside this private function, never a static import from this module.
+    try {
+      const { recoverTowbookSession } = await import("./towbook-recovery");
+      await recoverTowbookSession(orgId);
+    } catch { /* recovery never throws — keep the sync result clean */ }
     return syncResult("session_expired", "The Towbook session expired or was rejected — reconnect Towbook in Settings.", { diagnostics });
   }
   if (!pages.length) {
