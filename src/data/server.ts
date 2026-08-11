@@ -1119,6 +1119,50 @@ export const getAiDispatcherStatus = createServerFn({ method: "GET" }).handler(a
   }
 });
 
+/** One tick row for the AI Dispatcher card's "last run" line — the newest
+ *  ai_dispatcher_runs row (the engine writes one per tick at the 3s cadence).
+ *  LIGHT on purpose: id/ranAt/gated/offersSeen/processed/offerIds + skipped.
+ *  This answers "did the dispatcher run, what did it see, why did it skip"
+ *  at a glance. Owner/admin/dispatcher (same reader gate as the ledger).
+ *  Seroval: skipped is omitted when null (never undefined-valued). */
+export type AiDispatcherRunRow = {
+  id: string;
+  ranAt: string;
+  gated: boolean;
+  offersSeen: number;
+  processed: number;
+  /** Every offer that tick SAW (id + status), including silent skips
+   *  (status!==0, already-processed) — status may be absent for offers that
+   *  failed the shape rail (no usable id either; the id is a content hash). */
+  offerIds: Array<{ id: string; status?: number }>;
+  skipped?: string;
+};
+export const latestDispatcherRun = createServerFn({ method: "GET" }).handler(async () => {
+  if (!configured()) return null;
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u || !aiDispatcherReader(u)) return null;
+  try {
+    await prepare();
+    const rows = await sql()`SELECT id, ran_at, gated, offers_seen, processed, skipped, offer_ids
+      FROM ai_dispatcher_runs WHERE org_id=${u.orgId} ORDER BY ran_at DESC, created_at DESC LIMIT 1`;
+    if (!rows.length) return null;
+    const r = rows[0] as Record<string, unknown>;
+    const row: AiDispatcherRunRow = {
+      id: String(r.id),
+      ranAt: new Date(String(r.ran_at)).toISOString(),
+      gated: Boolean(r.gated),
+      offersSeen: Number(r.offers_seen),
+      processed: Number(r.processed),
+      offerIds: Array.isArray(r.offer_ids) ? (r.offer_ids as Array<{ id: string; status?: number }>) : [],
+    };
+    if (r.skipped != null && String(r.skipped) !== "") row.skipped = String(r.skipped);
+    return row;
+  } catch {
+    return null;
+  }
+});
+
 /** Flip the engine on/off for the org (owner/admin only). Upserts org_settings
  *  and writes an audit row so every toggle is attributable. */
 export const setAiDispatcherEnabled = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }) => {

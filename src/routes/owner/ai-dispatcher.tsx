@@ -6,9 +6,11 @@ import { AiDecisionsEmpty, AiDecisionRow, AiToggle } from "~/components/ai-dispa
 import { Alert, Card } from "~/components/ui";
 import {
   getAiDispatcherStatus,
+  latestDispatcherRun,
   listAiDispatcherDecisions,
   setAiDispatcherEnabled,
   type AiDispatcherDecisionRow,
+  type AiDispatcherRunRow,
   type AiDispatcherStatus,
 } from "~/data/server";
 import { timeAgo } from "~/lib/job-ui";
@@ -26,17 +28,35 @@ const ETA_SOURCE_LABEL: Record<string, string> = {
 const ETA_SOURCE_DEFAULT = "OSRM static (no traffic key set)";
 const etaSourceLabel = (s: AiDispatcherStatus | null) =>
   s ? ETA_SOURCE_LABEL[s.etaProvider] ?? ETA_SOURCE_DEFAULT : ETA_SOURCE_DEFAULT;
+/** One-line summary of the newest tick row for the "last run" line — the
+ *  at-a-glance answer to "is it working?": what the engine saw on its latest
+ *  poll and why it did (or didn't) act. */
+const dispatcherRunSummary = (run: AiDispatcherRunRow | null): string => {
+  if (!run) return "no tick recorded yet";
+  if (run.gated) return "paused — no auto-accepts";
+  if (run.skipped) return `skipped: ${run.skipped}`;
+  if (run.offersSeen === 0) return "feed empty";
+  if (run.processed > 0) {
+    return run.processed === 1 ? "offer seen — auto-accepted" : `${run.processed} offers seen — processed`;
+  }
+  return `${run.offersSeen} offer${run.offersSeen === 1 ? "" : "s"} seen — none processed`;
+};
 
 /** Owner control panel for the AI dispatcher engine: live toggle, zone card,
  *  recent decision ledger with collapsible raw responses, and a Towbook
  *  connect prompt when the engine can't see offers. */
 function OwnerAiDispatcher() {
   const [status, setStatus] = useState<AiDispatcherStatus | null>(null);
+  const [run, setRun] = useState<AiDispatcherRunRow | null>(null);
   const [decisions, setDecisions] = useState<AiDispatcherDecisionRow[] | null>(null);
   const [toggling, setToggling] = useState(false);
   const [toggleError, setToggleError] = useState("");
 
-  const refresh = async () => setStatus(await getAiDispatcherStatus());
+  const refresh = async () => {
+    const [st, r] = await Promise.all([getAiDispatcherStatus(), latestDispatcherRun()]);
+    setStatus(st);
+    setRun(r);
+  };
   useEffect(() => { void refresh(); }, []);
   useEffect(() => { void listAiDispatcherDecisions({ data: { limit: 25 } }).then(setDecisions); }, []);
 
@@ -86,6 +106,9 @@ function OwnerAiDispatcher() {
                     {status.lastDecisionAt ? ` · last decision ${timeAgo(status.lastDecisionAt)}` : ""}
                   </p>
                 )}
+                <p className="mt-1 text-xs font-medium text-ink-500" aria-live="polite">
+                  Last check {run ? timeAgo(run.ranAt) : "—"} · {dispatcherRunSummary(run)}
+                </p>
               </div>
             </div>
             <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">

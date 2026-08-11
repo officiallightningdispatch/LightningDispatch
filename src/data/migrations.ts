@@ -270,6 +270,31 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`DROP INDEX IF EXISTS completion_tips_idempotency_uidx`;
     await q`CREATE UNIQUE INDEX IF NOT EXISTS completion_tips_idempotency_uidx ON completion_tips(idempotency_key)`;
   }],
+  [17, async (q) => {
+    // Auto-dispatch tick observability (owner-approved backlog #1, 2026-08-11
+    // incident follow-up): every runAutoDispatch tick persists ONE row so
+    // "did the dispatcher run, what did it see, why did it skip" is answerable
+    // after the fact — skipped/empty states previously left no trace. This is
+    // tick-level and complements ai_dispatcher_decisions (per-offer rows).
+    // offer_ids records EVERY offer the tick SAW (id + status) — including
+    // ones skipped silently (status!==0, already-processed) — so "the engine
+    // saw it and chose not to touch it" is visible, not just processed offers.
+    // Volume note: at the 3s cadence this is ~28,800 rows/day/org — acceptable
+    // (small rows), but a later cleanup job should prune >14 days; retention
+    // automation is deliberately NOT built here.
+    await q`CREATE TABLE IF NOT EXISTS ai_dispatcher_runs (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      ran_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      gated BOOLEAN NOT NULL DEFAULT FALSE,
+      offers_seen INTEGER NOT NULL DEFAULT 0,
+      processed INTEGER NOT NULL DEFAULT 0,
+      skipped TEXT,
+      offer_ids JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    await q`CREATE INDEX IF NOT EXISTS ai_dispatcher_runs_org_ran_idx ON ai_dispatcher_runs(org_id, ran_at DESC)`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

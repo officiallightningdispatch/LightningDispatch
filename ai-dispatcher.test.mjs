@@ -105,7 +105,7 @@ const jsonResponse = (status, body) => ({
  *  The created call mirrors the accept body's driverId in assets[].driver.id
  *  (so verification passes by default) unless `callDriverId` overrides it
  *  (simulating the 2026-08-10 incident: accepted driver ≠ driver on the call). */
-function makeFetch({ offers, drivers, acceptStatus = 200, acceptBody = null, acceptFails = 0, nearestDriversStatus = 200, callDriverId = null, assignSucceeds = true, acceptResponseId = null, callsFailures = 0 }) {
+function makeFetch({ offers, drivers, offersStatus = 200, offersBody = null, acceptStatus = 200, acceptBody = null, acceptFails = 0, nearestDriversStatus = 200, callDriverId = null, assignSucceeds = true, acceptResponseId = null, callsFailures = 0 }) {
   const calls = [];
   let call = null; // the call created by the accept POST
   let callsFailuresLeft = callsFailures;
@@ -114,7 +114,10 @@ function makeFetch({ offers, drivers, acceptStatus = 200, acceptBody = null, acc
     const method = init.method || "GET";
     const parsedBody = init.body ? JSON.parse(init.body) : null;
     calls.push({ method, url: u, body: parsedBody });
-    if (u.endsWith("/api/callRequests/") && method === "GET") return jsonResponse(200, offers);
+    if (u.endsWith("/api/callRequests/") && method === "GET") {
+      if (offersStatus !== 200) return jsonResponse(offersStatus, { error: "boom" });
+      return jsonResponse(200, offersBody ?? offers);
+    }
     if (u.includes("/api/nearestDrivers")) {
       if (nearestDriversStatus !== 200) return jsonResponse(nearestDriversStatus, { error: "boom" });
       return jsonResponse(200, drivers);
@@ -766,6 +769,101 @@ try {
     rmSync(dir, { recursive: true, force: true });
   }
 
+  /* ============ 27k) tick observability: ai_dispatcher_runs (backlog #1) ============ */
+  {
+    // Every tick leaves a run row: gated, every skipped state, empty feed,
+    // offers seen (incl. silent skips: status!==0, already-processed), and
+    // auto-accept. Assertions use FILTERED queries so the live 3s background
+    // loop — which also writes rows for these connected QA orgs (its real
+    // Towbook fetch with the fake cookie always fails → skipped rows) — can
+    // never race a check. ORG3 carries the decision-creating runs (its decision
+    // count is never total-checked; ORG's exact ledger totals in section 26
+    // must stay untouched, so ORG only gets non-decision runs here).
+    const runRows = (org, where) => q`SELECT id, ran_at, gated, offers_seen, processed, skipped, offer_ids FROM ai_dispatcher_runs WHERE org_id=${org} ${where ? where : q``} ORDER BY ran_at DESC, created_at DESC`;
+
+    // a) gated tick → gated=true row (engine did nothing, but the trace exists)
+    await q`UPDATE org_settings SET ai_dispatcher_enabled=FALSE WHERE org_id=${ORG3}`;
+    const rg = await runAutoDispatch(ORG3, makeDeps(makeFetch({ offers: [offer(9100)], drivers: [] }).fetchImpl).deps);
+    check("run-row gated: engine returns gated=true, offersSeen=0", rg.gated === true && rg.offersSeen === 0 && rg.skipped === null, JSON.stringify(rg));
+    const gRow = (await runRows(ORG3, q`AND gated=TRUE`))[0];
+    check("run-row gated: row persisted (gated, offers_seen=0, processed=0, skipped null, offer_ids [])", gRow && gRow.gated === true && Number(gRow.offers_seen) === 0 && Number(gRow.processed) === 0 && gRow.skipped === null && Array.isArray(gRow.offer_ids) && gRow.offer_ids.length === 0, JSON.stringify(gRow));
+    await q`UPDATE org_settings SET ai_dispatcher_enabled=TRUE WHERE org_id=${ORG3}`;
+
+    // b) not_connected (ORG2 has no session row at all) → skipped row
+    const rnc = await runAutoDispatch(ORG2, makeDeps(makeFetch({ offers: [], drivers: [] }).fetchImpl).deps);
+    check("run-row not_connected: engine skipped not_connected", rnc.skipped === "not_connected" && rnc.decisions.length === 0, JSON.stringify(rnc));
+    const ncRow = (await runRows(ORG2, q`AND skipped='not_connected'`))[0];
+    check("run-row not_connected: row persisted with skipped='not_connected'", ncRow && String(ncRow.skipped) === "not_connected" && ncRow.gated === false && Number(ncRow.offers_seen) === 0 && Number(ncRow.processed) === 0, JSON.stringify(ncRow));
+
+    // c) session_unavailable (undecryptable session) → skipped row. ORG2 gets a
+    //    temporary garbage session for the skipped-state tests; cascade delete
+    //    at cleanup removes it (leftover check verifies).
+    await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES(${ORG2}, 'v1.garbage', 'connected')`;
+    const rsu = await runAutoDispatch(ORG2, makeDeps(makeFetch({ offers: [], drivers: [] }).fetchImpl).deps);
+    check("run-row session_unavailable: engine skipped session_unavailable", rsu.skipped === "session_unavailable", JSON.stringify(rsu));
+    const suRow = (await runRows(ORG2, q`AND skipped='session_unavailable'`))[0];
+    check("run-row session_unavailable: row persisted with skipped='session_unavailable'", suRow && String(suRow.skipped) === "session_unavailable" && Number(suRow.offers_seen) === 0, JSON.stringify(suRow));
+    // For the fetch-level skip tests, ORG2 needs a DECRYPTABLE session (the
+    // garbage one above only exercises the decrypt failure path).
+    await q`UPDATE towbook_sessions SET encrypted_session=${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))} WHERE org_id=${ORG2}`;
+
+    // d) offer fetch failed (HTTP 500) → skipped row with the reason
+    const rff = await runAutoDispatch(ORG2, makeDeps(makeFetch({ offers: [], drivers: [], offersStatus: 500 }).fetchImpl).deps);
+    check("run-row offer_fetch_failed: engine skipped with reason", String(rff.skipped).startsWith("offer_fetch_failed"), JSON.stringify(rff));
+    const ffRow = (await runRows(ORG2, q`AND skipped LIKE 'offer_fetch_failed%'`))[0];
+    check("run-row offer_fetch_failed: row persisted with the reason + offers_seen=0", ffRow && String(ffRow.skipped).startsWith("offer_fetch_failed") && Number(ffRow.offers_seen) === 0 && Number(ffRow.processed) === 0, String(ffRow?.skipped));
+
+    // e) offer payload unexpected (non-array body) → skipped row
+    const rpu = await runAutoDispatch(ORG2, makeDeps(makeFetch({ offers: [], drivers: [], offersBody: { not: "an array" } }).fetchImpl).deps);
+    check("run-row offer_payload_unexpected: engine skipped", rpu.skipped === "offer_payload_unexpected", JSON.stringify(rpu));
+    const puRow = (await runRows(ORG2, q`AND skipped='offer_payload_unexpected'`))[0];
+    check("run-row offer_payload_unexpected: row persisted with skipped='offer_payload_unexpected'", puRow && String(puRow.skipped) === "offer_payload_unexpected" && Number(puRow.offers_seen) === 0, JSON.stringify(puRow));
+
+    // f) empty feed → offers_seen=0 row (no skip, no decisions)
+    const ref = await runAutoDispatch(ORG, makeDeps(makeFetch({ offers: [], drivers: [] }).fetchImpl).deps);
+    check("run-row empty feed: engine offersSeen=0, no skip", ref.offersSeen === 0 && ref.skipped === null && ref.decisions.length === 0, JSON.stringify(ref));
+    const efRow = (await runRows(ORG, q`AND offers_seen=0 AND skipped IS NULL`))[0];
+    check("run-row empty feed: row persisted (offers_seen=0, processed=0, offer_ids [])", efRow && Number(efRow.offers_seen) === 0 && Number(efRow.processed) === 0 && efRow.skipped === null && Array.isArray(efRow.offer_ids) && efRow.offer_ids.length === 0, JSON.stringify(efRow));
+
+    // g) auto-accept tick → run row alongside the decision row, offer_ids
+    //    carries the offer id + status
+    const aa = makeFetch({ offers: [offer(9001)], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })] });
+    const raa = await runAutoDispatch(ORG3, makeDeps(aa.fetchImpl).deps);
+    check("run-row auto-accept: engine offersSeen=1 processed=1", raa.offersSeen === 1 && raa.processed === 1 && raa.skipped === null, JSON.stringify(raa));
+    const aaRow = (await runRows(ORG3, q`AND processed>0`))[0];
+    check("run-row auto-accept: row persisted with offers_seen=1 processed=1", aaRow && Number(aaRow.offers_seen) === 1 && Number(aaRow.processed) === 1 && aaRow.skipped === null, JSON.stringify(aaRow));
+    check("run-row auto-accept: offer_ids records the offer id+status", aaRow && Array.isArray(aaRow.offer_ids) && aaRow.offer_ids.length === 1 && String(aaRow.offer_ids[0].id) === "9001" && aaRow.offer_ids[0].status === 0, JSON.stringify(aaRow?.offer_ids));
+    const aaDec = await q`SELECT count(*)::int n FROM ai_dispatcher_decisions WHERE org_id=${ORG3} AND call_request_id='9001'`;
+    check("run-row auto-accept: decision row exists alongside the run row", Number(aaDec[0].n) === 1, String(aaDec[0].n));
+
+    // h) silent skip: status!==0 offer → recorded in offer_ids, NOT touched
+    const ss = makeFetch({ offers: [offer(9002, { status: 1 })], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })] });
+    const rss = await runAutoDispatch(ORG, makeDeps(ss.fetchImpl).deps);
+    check("run-row silent-skip: status=1 offer seen but not processed, no POSTs", rss.offersSeen === 1 && rss.processed === 0 && rss.decisions.length === 0 && posts(ss.calls).length === 0, JSON.stringify(rss));
+    const ssRow = (await runRows(ORG, q`AND offer_ids @> '[{"id":"9002","status":1}]'::jsonb`))[0];
+    check("run-row silent-skip: offer_ids records the status=1 offer (id+status)", ssRow && Number(ssRow.offers_seen) === 1 && Number(ssRow.processed) === 0, JSON.stringify(ssRow?.offer_ids));
+    const ssDec = await q`SELECT count(*)::int n FROM ai_dispatcher_decisions WHERE org_id=${ORG} AND call_request_id='9002'`;
+    check("run-row silent-skip: no decision row (offer left untouched)", Number(ssDec[0].n) === 0, String(ssDec[0].n));
+
+    // i) already-processed offer re-polled → recorded in offer_ids (silent
+    //    skip) while the new offer still processes
+    const dp = makeFetch({ offers: [offer(9001), offer(9101)], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })] });
+    const rdp = await runAutoDispatch(ORG3, makeDeps(dp.fetchImpl).deps);
+    check("run-row dedupe: 9001 seen+skipped silently, 9101 processed", rdp.offersSeen === 2 && rdp.processed === 1 && rdp.decisions[0]?.callRequestId === "9101", JSON.stringify(rdp));
+    const dpRow = (await runRows(ORG3, q`AND offers_seen=2`))[0];
+    check("run-row dedupe: offer_ids lists BOTH offers (9001 + 9101)", dpRow && Array.isArray(dpRow.offer_ids) && dpRow.offer_ids.length === 2 && dpRow.offer_ids.some((o) => String(o.id) === "9001" && o.status === 0) && dpRow.offer_ids.some((o) => String(o.id) === "9101" && o.status === 0), JSON.stringify(dpRow?.offer_ids));
+
+    // j) newest-row read (the latestDispatcherRun SELECT shape): a row with a
+    //    future ran_at must win over everything before it. Role-gating reuses
+    //    the exact aiDispatcherReader guard the ledger fns use.
+    const markerId = `run-${randomUUID()}`;
+    await q`INSERT INTO ai_dispatcher_runs(id, org_id, ran_at, gated, offers_seen, processed, skipped, offer_ids)
+      VALUES(${markerId}, ${ORG2}, NOW() + INTERVAL '1 minute', FALSE, 3, 2, NULL, ${JSON.stringify([{ id: "9901", status: 0 }])}::jsonb)`;
+    const newest = (await q`SELECT id, ran_at, gated, offers_seen, processed, skipped, offer_ids FROM ai_dispatcher_runs WHERE org_id=${ORG2} ORDER BY ran_at DESC, created_at DESC LIMIT 1`)[0];
+    check("run-row newest: latestDispatcherRun SELECT returns the newest row (future marker wins)", newest && String(newest.id) === markerId && newest.gated === false && Number(newest.offers_seen) === 3 && Number(newest.processed) === 2 && newest.skipped === null && Array.isArray(newest.offer_ids) && newest.offer_ids.length === 1 && String(newest.offer_ids[0].id) === "9901", JSON.stringify(newest));
+    await q`DELETE FROM ai_dispatcher_runs WHERE id=${markerId}`;
+  }
+
   /* ============ 26) ledger totals + owner org untouched ============ */
   {
     const rows = await decisions();
@@ -803,13 +901,16 @@ try {
     (SELECT count(*) FROM towbook_sessions WHERE org_id=${ORG}) AS sess,
     (SELECT count(*) FROM organization_memberships WHERE org_id=${ORG}) AS members,
     (SELECT count(*) FROM users WHERE id=${USER}) AS users,
+    (SELECT count(*) FROM ai_dispatcher_runs WHERE org_id=${ORG}) AS runs,
     (SELECT count(*) FROM ai_dispatcher_decisions WHERE org_id=${ORG2}) AS ad2,
     (SELECT count(*) FROM org_settings WHERE org_id=${ORG2}) AS os2,
+    (SELECT count(*) FROM ai_dispatcher_runs WHERE org_id=${ORG2}) AS runs2,
     (SELECT count(*) FROM ai_dispatcher_decisions WHERE org_id=${ORG3}) AS ad3,
     (SELECT count(*) FROM org_settings WHERE org_id=${ORG3}) AS os3,
-    (SELECT count(*) FROM towbook_sessions WHERE org_id=${ORG3}) AS sess3`;
+    (SELECT count(*) FROM towbook_sessions WHERE org_id=${ORG3}) AS sess3,
+    (SELECT count(*) FROM ai_dispatcher_runs WHERE org_id=${ORG3}) AS runs3`;
   const l = leftover[0];
-  console.log(`\ncleanup: ai_decisions=${l.ad} settings=${l.os} jobs=${l.jobs} events=${l.ev} audit=${l.audit} sessions=${l.sess} members=${l.members} users=${l.users} ad2=${l.ad2} settings2=${l.os2} ad3=${l.ad3} settings3=${l.os3} sess3=${l.sess3}`);
+  console.log(`\ncleanup: ai_decisions=${l.ad} settings=${l.os} jobs=${l.jobs} events=${l.ev} audit=${l.audit} sessions=${l.sess} members=${l.members} users=${l.users} runs=${l.runs} ad2=${l.ad2} settings2=${l.os2} runs2=${l.runs2} ad3=${l.ad3} settings3=${l.os3} sess3=${l.sess3} runs3=${l.runs3}`);
   if (Object.values(l).some((v) => Number(v) > 0)) {
     console.error("WARNING: QA rows remain!");
     process.exitCode = 1;

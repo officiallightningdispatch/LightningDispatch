@@ -918,13 +918,55 @@ function firstDriverIdOnCall(call: Record<string, unknown>): string | null {
 export async function runAutoDispatch(orgId: string, deps: AiDispatcherDeps): Promise<AutoDispatchRunResult> {
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
   const base: AutoDispatchRunResult = { gated: false, offersSeen: 0, processed: 0, decisions: [], skipped: null };
+  // Observability (owner-approved backlog #1, 2026-08-11 incident follow-up):
+  // every tick persists a run row INSIDE the engine so the trace exists
+  // regardless of caller — the 3s background loop, a manual run, or a test.
+  // The internal poll returns the run result plus every offer it SAW (id +
+  // status, including silent skips); this wrapper writes one cheap INSERT and
+  // never lets a write failure crash the sync loop or mask the run result.
+  let result: AutoDispatchRunResult;
+  let seenOffers: Array<{ id: string; status?: number }> = [];
   try {
-    const settings = await getOrgSettings(orgId);
-    if (!settings.aiDispatcherEnabled) return { ...base, gated: true };
+    const internal = await runAutoDispatchInternal(orgId, deps, fetchImpl, base);
+    result = internal.result;
+    seenOffers = internal.seenOffers;
+  } catch (err) {
+    // Database or unexpected failure — never crash the sync loop.
+    result = { ...base, skipped: `engine_error (${String(err).slice(0, 200)})` };
+  }
+  await persistDispatcherRun(orgId, result, seenOffers);
+  return result;
+}
+/** One cheap INSERT per tick (3s cadence ≈ 28,800 rows/day/org — small rows;
+ *  acceptable, but a later cleanup job should prune > 14 days; retention
+ *  automation is deliberately NOT built here). Never throws: a failed
+ *  run-row write must not crash the sync loop or mask the run result. */
+async function persistDispatcherRun(
+  orgId: string,
+  run: AutoDispatchRunResult,
+  seenOffers: Array<{ id: string; status?: number }>,
+): Promise<void> {
+  try {
+    await sql()`INSERT INTO ai_dispatcher_runs(id, org_id, gated, offers_seen, processed, skipped, offer_ids)
+      VALUES(gen_random_uuid()::text, ${orgId}, ${run.gated}, ${run.offersSeen}, ${run.processed}, ${run.skipped}, ${JSON.stringify(seenOffers)}::jsonb)`;
+  } catch { /* never crash the sync loop on a run-row write */ }
+}
+/** The engine poll itself (see runAutoDispatch): returns the run result plus
+ *  offer_ids for EVERY offer the tick saw — including offers skipped silently
+ *  (status!==0, already-processed, shape-failed) — so the run row proves the
+ *  engine saw an offer and chose not to touch it. */
+async function runAutoDispatchInternal(
+  orgId: string,
+  deps: AiDispatcherDeps,
+  fetchImpl: typeof fetch,
+  base: AutoDispatchRunResult,
+): Promise<{ result: AutoDispatchRunResult; seenOffers: Array<{ id: string; status?: number }> }> {
+  const settings = await getOrgSettings(orgId);
+    if (!settings.aiDispatcherEnabled) return { result: { ...base, gated: true }, seenOffers: [] };
 
     const sess = await sql()`SELECT encrypted_session, status FROM towbook_sessions WHERE org_id=${orgId} AND session_kind='owner'`;
     if (!sess.length || String(sess[0].status) !== "connected" || !String(sess[0].encrypted_session || "").length) {
-      return { ...base, skipped: "not_connected" };
+      return { result: { ...base, skipped: "not_connected" }, seenOffers: [] };
     }
     let cookies: string;
     let baseUrl: string;
@@ -934,14 +976,24 @@ export async function runAutoDispatch(orgId: string, deps: AiDispatcherDeps): Pr
       cookies = parsed.cookies || "";
       baseUrl = parsed.baseUrl || "https://app.towbook.com";
     } catch {
-      return { ...base, skipped: "session_unavailable" };
+      return { result: { ...base, skipped: "session_unavailable" }, seenOffers: [] };
     }
 
     const offersRes = await towbookFetch(fetchImpl, `${baseUrl}/api/callRequests/`, cookies);
-    if (!offersRes.ok) return { ...base, skipped: `offer_fetch_failed (${offersRes.error ?? offersRes.status})` };
-    if (!Array.isArray(offersRes.body)) return { ...base, skipped: "offer_payload_unexpected" };
+    if (!offersRes.ok) return { result: { ...base, skipped: `offer_fetch_failed (${offersRes.error ?? offersRes.status})` }, seenOffers: [] };
+    if (!Array.isArray(offersRes.body)) return { result: { ...base, skipped: "offer_payload_unexpected" }, seenOffers: [] };
     const offers = offersRes.body as unknown[];
-    if (!offers.length) return { ...base, offersSeen: 0 };
+    // Every offer this tick SAW, id + status — shape-failed offers are keyed by
+    // their content hash (the same pseudo-key the decision ledger uses), and a
+    // non-numeric status is omitted (JSON.stringify drops the property).
+    const seenOffers = offers.map((rawOffer: unknown) => {
+      const shape = validateOfferShape(rawOffer);
+      if (shape.ok) return { id: shape.offer.callRequestId, status: shape.offer.status };
+      const o = rawOffer as Record<string, unknown>;
+      const s = numeric(o?.status);
+      return s != null ? { id: shapeKeyOf(rawOffer), status: s } : { id: shapeKeyOf(rawOffer) };
+    });
+    if (!offers.length) return { result: { ...base, offersSeen: 0 }, seenOffers: [] };
 
     const actor = await deps.resolveOrgActor(orgId);
     const result: AutoDispatchRunResult = { ...base, offersSeen: offers.length };
@@ -1135,9 +1187,5 @@ export async function runAutoDispatch(orgId: string, deps: AiDispatcherDeps): Pr
       // call.id/callNumber happens inside the sync's upsert).
       try { await deps.syncForOrg(orgId, "sync:auto-accept", actor ?? undefined); } catch { /* engine never throws */ }
     }
-    return result;
-  } catch (err) {
-    // Database or unexpected failure — never crash the sync loop.
-    return { ...base, skipped: `engine_error (${String(err).slice(0, 200)})` };
+    return { result, seenOffers };
   }
-}
