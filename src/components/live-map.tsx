@@ -15,7 +15,7 @@
  */
 import { LocateFixed, MapPin, Minus, Plus, Radar, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Card, EmptyState } from "~/components/ui";
+import { Card } from "~/components/ui";
 import { getLiveMapData, type LiveMapData } from "~/data/server";
 
 const TILE = 256;
@@ -123,8 +123,10 @@ export function LiveMap({
   const [data, setData] = useState<LiveMapData | null>(null);
   const [error, setError] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const [center, setCenter] = useState<{ lat: number; lng: number }>({ lat: 41.2, lng: -73.1 });
-  const [zoom, setZoom] = useState(11);
+  // Default view: the org's operating area (Bridgeport CT / 06606) so the
+  // street map is always visible even before any pings arrive.
+  const [center, setCenter] = useState<{ lat: number; lng: number }>({ lat: 41.19, lng: -73.2 });
+  const [zoom, setZoom] = useState(12);
   const [viewport, setViewport] = useState<Viewport | null>(null);
   const [tilesUnavailable, setTilesUnavailable] = useState(false);
 
@@ -364,33 +366,14 @@ export function LiveMap({
   const now = Date.now();
 
   /* ------------------------------- empty states ------------------------------- */
+  // Loading: keep the tile skeleton (pulse) — never swap in a card mid-load.
   if (data === null && !error) {
     return (
       <div className={`${heightClass} animate-pulse bg-ink-100/70 ${isHero ? "" : "rounded-xl"}`} aria-busy="true" />
     );
   }
-  if (data === null || pins.length === 0) {
-    if (isHero) {
-      return (
-        <div className={`relative w-full overflow-hidden bg-ink-50 ${heightClass}`}>
-          <EmptyState
-            icon={data === null ? Radar : MapPin}
-            title={data === null ? emptyTitle : "No jobs or drivers to show yet"}
-            body={data === null ? emptyBody : "When jobs are dispatched and drivers' phones ping, their positions appear here."}
-          />
-        </div>
-      );
-    }
-    return (
-      <Card className="p-4">
-        <EmptyState
-          icon={data === null ? Radar : MapPin}
-          title={data === null ? emptyTitle : "No jobs or drivers to show yet"}
-          body={data === null ? emptyBody : "When jobs are dispatched and drivers' phones ping, their positions appear here."}
-        />
-      </Card>
-    );
-  }
+  // NOTE: no early return for pins.length === 0 — the street map always renders
+  // (owner 2026-08-11); an honest overlay note covers the zero-data case below.
 
   return (
     <Card className={`overflow-hidden p-0 ${isHero ? "border-0 shadow-none" : ""}`}>
@@ -463,6 +446,17 @@ export function LiveMap({
           <FallbackPlot pins={pins} tilesUnavailable={tilesUnavailable} />
         )}
 
+        {/* honest empty note — the street map still renders; only the pins are
+            missing (owner 2026-08-11: no more empty-state card over the map) */}
+        {(data === null || pins.length === 0) && (
+          <p className="absolute left-1/2 top-3 z-20 flex w-max max-w-[92vw] -translate-x-1/2 items-center gap-1.5 rounded-full border border-ink-200 bg-surface/95 px-3 py-1.5 text-[11px] font-semibold text-ink-600 shadow-card backdrop-blur">
+            <Radar className="size-3.5 shrink-0 text-amber-600" />
+            {data === null
+              ? `${emptyTitle} — ${emptyBody}`
+              : "No live driver positions yet — positions appear when drivers' phones ping"}
+          </p>
+        )}
+
         {/* waiting-for-GPS chip (hero: slim floating chip top-center — it is
             safety-relevant so it stays visible) */}
         {isHero && waitingForGps && (
@@ -503,7 +497,7 @@ export function LiveMap({
         </div>
       )}
 
-      {!isHero && showDriverList && data.drivers.length > 0 && (
+      {!isHero && showDriverList && data !== null && data.drivers.length > 0 && (
         <div className="divide-y divide-ink-100 border-t border-ink-100">
           {data.drivers.map((d) => (
             <div key={d.driverId} className="flex items-center gap-3 px-4 py-3">
@@ -578,6 +572,16 @@ function FallbackPlot({ pins, tilesUnavailable }: { pins: MapPin[]; tilesUnavail
   const W = 800;
   const H = 360;
   const PAD = 34;
+  // Zero pins with unreachable tiles: nothing to plot — just the note.
+  if (pins.length === 0) {
+    return (
+      <div className="grid h-full w-full place-items-center bg-ink-50">
+        <p className="rounded-full bg-amber-100 px-3 py-1 text-[11px] font-semibold text-amber-800 shadow-sm">
+          Map tiles unavailable — showing positions only
+        </p>
+      </div>
+    );
+  }
   const lats = pins.map((p) => p.lat);
   const lngs = pins.map((p) => p.lng);
   const minLat = Math.min(...lats);
