@@ -1,0 +1,593 @@
+/**
+ * Live map (owner's #1 priority, 2026-08-11): a REAL map (street tiles +
+ * markers) for the owner portal (dashboard, queue, drivers) and the
+ * contractor portal (home, active). Zero new dependencies — plain <img> OSM
+ * raster tiles (tile.openstreetmap.org) under a small custom pan/zoom
+ * wrapper (drag, wheel, pinch, +/- buttons, recenter). Markers:
+ *  - driver pins  — fresh GPS pings (green) / stale (gray)
+ *  - job pins     — active jobs' pickup waypoints (rose), with the AI
+ *                   dispatcher's quoted ETA when one exists
+ *  - self pin     — the signed-in contractor's own position (blue)
+ * Data comes from getLiveMapData (LOCAL DB only — never Towbook), polled at
+ * the app's existing 15s cadence. If the tile host is unreachable the map
+ * degrades to an SVG pin plot with a "map unavailable" note — it never
+ * crashes the page.
+ */
+import { LocateFixed, MapPin, Minus, Plus, Radar, RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Card, EmptyState } from "~/components/ui";
+import { getLiveMapData, type LiveMapData } from "~/data/server";
+
+const TILE = 256;
+const MIN_ZOOM = 3;
+const MAX_ZOOM = 18;
+/** Cap auto-fit zoom so a lone pin still has street context. */
+const FIT_MAX_ZOOM = 15;
+const OSM = "https://tile.openstreetmap.org";
+
+/* ------------------------------ projections ------------------------------ */
+
+function latLngToWorld(lat: number, lng: number, zoom: number): { x: number; y: number } {
+  const n = Math.pow(2, zoom);
+  const x = ((lng + 180) / 360) * TILE * n;
+  const siny = Math.sin((lat * Math.PI) / 180);
+  const y = (0.5 - Math.log((1 + siny) / (1 - siny)) / (4 * Math.PI)) * TILE * n;
+  return { x, y };
+}
+function worldToLatLng(x: number, y: number, zoom: number): { lat: number; lng: number } {
+  const n = Math.pow(2, zoom);
+  const lng = (x / (TILE * n)) * 360 - 180;
+  const n2 = Math.PI - (2 * Math.PI * y) / (TILE * n);
+  const lat = (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n2) - Math.exp(-n2)));
+  return { lat, lng };
+}
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+/** New center/zoom so the world point under `anchor` (client px inside the
+ *  viewport) stays fixed when the zoom changes. */
+function zoomAtPoint(
+  g: { center: { lat: number; lng: number }; zoom: number; viewport: { w: number; h: number } },
+  anchor: { x: number; y: number },
+  newZoom: number,
+): { center: { lat: number; lng: number }; zoom: number } {
+  const cw = latLngToWorld(g.center.lat, g.center.lng, g.zoom);
+  const aw = { x: cw.x + anchor.x - g.viewport.w / 2, y: cw.y + anchor.y - g.viewport.h / 2 };
+  const scale = Math.pow(2, newZoom - g.zoom);
+  const nc = worldToLatLng(
+    aw.x * scale - (anchor.x - g.viewport.w / 2),
+    aw.y * scale - (anchor.y - g.viewport.h / 2),
+    newZoom,
+  );
+  return { center: nc, zoom: newZoom };
+}
+
+/* --------------------------------- pins --------------------------------- */
+
+export type MapPin = {
+  id: string;
+  kind: "driver" | "job" | "self";
+  lat: number;
+  lng: number;
+  title: string;
+  sub: string | null;
+  fresh?: boolean;
+  mine?: boolean;
+  eta?: number | null;
+};
+
+type Viewport = { w: number; h: number };
+
+/* ------------------------------ the component ---------------------------- */
+
+export type LiveMapProps = {
+  /** Tailwind height class for the tile viewport (default h-72 sm:h-80). */
+  heightClass?: string;
+  /** Data poll interval — app cadence is 15s (matches the old driver map). */
+  pollMs?: number;
+  /** Shown when the feed is unavailable (demo mode / not signed in). */
+  emptyTitle?: string;
+  emptyBody?: string;
+  /** Rendered under the map on the /owner/drivers page (roster rows). */
+  showDriverList?: boolean;
+};
+
+const timeAgoLabel = (iso: string, now: number): string => {
+  const s = Math.max(0, Math.floor((now - new Date(iso).getTime()) / 1000));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  return `${Math.floor(s / 3600)}h ago`;
+};
+
+export function LiveMap({
+  heightClass = "h-72 sm:h-80",
+  pollMs = 15000,
+  emptyTitle = "Live map unavailable",
+  emptyBody = "Sign in and connect a database to see driver positions and active job pickups here.",
+  showDriverList = false,
+}: LiveMapProps) {
+  const [data, setData] = useState<LiveMapData | null>(null);
+  const [error, setError] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [center, setCenter] = useState<{ lat: number; lng: number }>({ lat: 41.2, lng: -73.1 });
+  const [zoom, setZoom] = useState(11);
+  const [viewport, setViewport] = useState<Viewport | null>(null);
+  const [tilesUnavailable, setTilesUnavailable] = useState(false);
+
+  const mapRef = useRef<HTMLDivElement>(null);
+  const geomRef = useRef({ center, zoom, viewport });
+  geomRef.current = { center, zoom, viewport };
+  const dragRef = useRef<{ sx: number; sy: number; cwx: number; cwy: number } | null>(null);
+  const pointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const pinchRef = useRef<{ startDist: number; mid: { x: number; y: number }; zoom: number } | null>(null);
+  const tileOkRef = useRef<Set<string>>(new Set());
+  const tileFailRef = useRef<Set<string>>(new Set());
+
+  /* ------------------------------ data + poll ------------------------------ */
+  const load = useCallback(async (quiet = false) => {
+    if (!quiet) setError(false);
+    try {
+      const r = await getLiveMapData();
+      setData(r);
+      setLastUpdated(new Date());
+    } catch {
+      setError(true);
+    }
+  }, []);
+  useEffect(() => {
+    void load(true);
+    const t = setInterval(() => void load(true), pollMs);
+    return () => clearInterval(t);
+  }, [load, pollMs]);
+
+  /* -------------------------------- viewport -------------------------------- */
+  useEffect(() => {
+    const el = mapRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const r = entries[0]?.contentRect;
+      if (r && r.width > 0 && r.height > 0) setViewport((v) => (v && Math.abs(v.w - r.width) < 1 && Math.abs(v.h - r.height) < 1 ? v : { w: r.width, h: r.height }));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  /* ---------------------------------- pins ---------------------------------- */
+  const pins = useMemo<MapPin[]>(() => {
+    if (!data) return [];
+    const list: MapPin[] = [];
+    if (data.self) list.push({ id: "self", kind: "self", lat: data.self.lat, lng: data.self.lng, title: "You", sub: null, fresh: true });
+    for (const d of data.drivers) {
+      list.push({
+        id: `d-${d.driverId}`,
+        kind: "driver",
+        lat: d.lat,
+        lng: d.lng,
+        title: d.driverName,
+        sub: d.fresh ? (d.jobStatus ?? "available") : "stale",
+        fresh: d.fresh,
+      });
+    }
+    for (const j of data.jobs) {
+      list.push({
+        id: `j-${j.jobId}`,
+        kind: "job",
+        lat: j.lat,
+        lng: j.lng,
+        title: j.customerName ?? "Roadside job",
+        sub: j.etaMinutes != null ? `${j.etaMinutes} min ETA` : j.driverName ?? j.serviceType ?? j.status,
+        mine: j.mine,
+        eta: j.etaMinutes,
+      });
+    }
+    return list;
+  }, [data]);
+
+  /* --------------------------- fit to pins (once) --------------------------- */
+  const fit = useCallback((pts: MapPin[], vw: number, vh: number) => {
+    if (!pts.length || vw <= 0 || vh <= 0) return;
+    const lats = pts.map((p) => p.lat);
+    const lngs = pts.map((p) => p.lng);
+    const minLat = Math.min(...lats);
+    const maxLat = Math.max(...lats);
+    const minLng = Math.min(...lngs);
+    const maxLng = Math.max(...lngs);
+    const pad = 64;
+    let z = FIT_MAX_ZOOM;
+    for (; z >= MIN_ZOOM; z--) {
+      const tl = latLngToWorld(maxLat, minLng, z);
+      const br = latLngToWorld(minLat, maxLng, z);
+      if (br.x - tl.x <= vw - pad * 2 && br.y - tl.y <= vh - pad * 2) break;
+    }
+    setZoom(z);
+    setCenter({ lat: (minLat + maxLat) / 2, lng: (minLng + maxLng) / 2 });
+  }, []);
+  const pinsKey = pins.map((p) => p.id).sort().join("|");
+  const fittedRef = useRef<string>("");
+  useEffect(() => {
+    if (!viewport || pins.length === 0) return;
+    if (fittedRef.current === pinsKey) return;
+    fittedRef.current = pinsKey;
+    fit(pins, viewport.w, viewport.h);
+  }, [pinsKey, pins, viewport, fit]);
+
+  /* ------------------------------- tile geometry ------------------------------- */
+  const geo = useMemo(() => {
+    if (!viewport) return null;
+    const cw = latLngToWorld(center.lat, center.lng, zoom);
+    const left = cw.x - viewport.w / 2;
+    const top = cw.y - viewport.h / 2;
+    const x0 = Math.floor(left / TILE);
+    const x1 = Math.floor((left + viewport.w) / TILE);
+    const y0 = Math.floor(top / TILE);
+    const y1 = Math.floor((top + viewport.h) / TILE);
+    const span = Math.pow(2, zoom);
+    const tiles: { key: string; px: number; py: number; src: string }[] = [];
+    for (let tx = x0; tx <= x1; tx++) {
+      for (let ty = y0; ty <= y1; ty++) {
+        const wx = ((tx % span) + span) % span; // wrap around the antimeridian
+        if (ty < 0 || ty >= span) continue; // above/below the world — no tiles
+        tiles.push({ key: `${zoom}/${tx}/${ty}`, px: tx * TILE - left, py: ty * TILE - top, src: `${OSM}/${zoom}/${wx}/${ty}.png` });
+      }
+    }
+    const markers = pins.map((p) => {
+      const w = latLngToWorld(p.lat, p.lng, zoom);
+      return { pin: p, px: w.x - left, py: w.y - top };
+    });
+    return { tiles, markers };
+  }, [viewport, center, zoom, pins]);
+
+  /* -------------------------------- interaction -------------------------------- */
+  const panBy = (dx: number, dy: number) => {
+    const g = geomRef.current;
+    if (!g.viewport) return;
+    const cw = latLngToWorld(g.center.lat, g.center.lng, g.zoom);
+    setCenter(worldToLatLng(cw.x - dx, cw.y - dy, g.zoom));
+  };
+  const zoomBy = (dir: 1 | -1) => {
+    const g = geomRef.current;
+    const vp = g.viewport;
+    if (!vp) return;
+    const next = zoomAtPoint({ center: g.center, zoom: g.zoom, viewport: vp }, { x: vp.w / 2, y: vp.h / 2 }, clamp(g.zoom + dir, MIN_ZOOM, MAX_ZOOM));
+    setCenter(next.center);
+    setZoom(next.zoom);
+  };
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    e.currentTarget.setPointerCapture(e.pointerId);
+    if (pointersRef.current.size === 1) {
+      const cw = latLngToWorld(center.lat, center.lng, zoom);
+      dragRef.current = { sx: e.clientX, sy: e.clientY, cwx: cw.x, cwy: cw.y };
+    } else if (pointersRef.current.size === 2) {
+      dragRef.current = null;
+      const pts = [...pointersRef.current.values()];
+      pinchRef.current = {
+        startDist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y),
+        mid: { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 },
+        zoom,
+      };
+    }
+  };
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const pinch = pinchRef.current;
+    if (pinch) {
+      const pts = [...pointersRef.current.values()];
+      if (pts.length === 2) {
+        const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+        if (pinch.startDist > 0) {
+          const g = geomRef.current;
+          const vp = g.viewport;
+          const target = clamp(pinch.zoom + Math.round(Math.log2(dist / pinch.startDist)), MIN_ZOOM, MAX_ZOOM);
+          if (vp && target !== g.zoom) {
+            const rect = mapRef.current?.getBoundingClientRect();
+            const anchor = rect ? { x: (pts[0].x + pts[1].x) / 2 - rect.left, y: (pts[0].y + pts[1].y) / 2 - rect.top } : { x: vp.w / 2, y: vp.h / 2 };
+            const next = zoomAtPoint({ center: g.center, zoom: g.zoom, viewport: vp }, anchor, target);
+            setCenter(next.center);
+            setZoom(next.zoom);
+          }
+        }
+      }
+      return;
+    }
+    const d = dragRef.current;
+    if (!d) return;
+    panBy(e.clientX - d.sx, e.clientY - d.sy);
+  };
+  const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    pointersRef.current.delete(e.pointerId);
+    if (pointersRef.current.size < 2) pinchRef.current = null;
+    if (pointersRef.current.size === 0) dragRef.current = null;
+  };
+  const onPointerCancel = (e: React.PointerEvent<HTMLDivElement>) => {
+    pointersRef.current.delete(e.pointerId);
+    pinchRef.current = null;
+    dragRef.current = null;
+  };
+  // Wheel zoom must be non-passive to preventDefault — attach natively.
+  useEffect(() => {
+    const el = mapRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const g = geomRef.current;
+      const vp = g.viewport;
+      if (!vp) return;
+      const rect = el.getBoundingClientRect();
+      const anchor = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      const dir = e.deltaY < 0 ? 1 : -1;
+      const next = zoomAtPoint({ center: g.center, zoom: g.zoom, viewport: vp }, anchor, clamp(g.zoom + dir, MIN_ZOOM, MAX_ZOOM));
+      setCenter(next.center);
+      setZoom(next.zoom);
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
+  /* ------------------------------ tile failures ------------------------------ */
+  const onTileLoad = (key: string) => {
+    tileOkRef.current.add(key);
+    if (tilesUnavailable) setTilesUnavailable(false);
+  };
+  const onTileError = (key: string) => {
+    tileFailRef.current.add(key);
+    if (tileOkRef.current.size === 0) setTilesUnavailable(true);
+  };
+
+  /* ------------------------------ derived counts ------------------------------ */
+  const freshDrivers = pins.filter((p) => p.kind === "driver" && p.fresh).length;
+  const staleDrivers = pins.filter((p) => p.kind === "driver" && !p.fresh).length;
+  const jobPins = pins.filter((p) => p.kind === "job").length;
+  const hasSelf = pins.some((p) => p.kind === "self");
+  const waitingForGps = pins.length > 0 && freshDrivers === 0 && staleDrivers === 0 && hasSelf === false;
+  const now = Date.now();
+
+  /* ------------------------------- empty states ------------------------------- */
+  if (data === null && !error) {
+    return (
+      <Card className="p-4">
+        <div className={`${heightClass} animate-pulse rounded-xl bg-ink-100/70`} aria-busy="true" />
+      </Card>
+    );
+  }
+  if (data === null || pins.length === 0) {
+    return (
+      <Card className="p-4">
+        <EmptyState
+          icon={data === null ? Radar : MapPin}
+          title={data === null ? emptyTitle : "No jobs or drivers to show yet"}
+          body={data === null ? emptyBody : "When jobs are dispatched and drivers' phones ping, their positions appear here."}
+        />
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="overflow-hidden p-0">
+      {/* header: live counts + waiting-for-GPS note */}
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-ink-100 px-4 py-2.5">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-medium text-ink-500">
+          <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-success-500" /> {freshDrivers} live</span>
+          {staleDrivers > 0 && <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-ink-300" /> {staleDrivers} stale</span>}
+          <span className="flex items-center gap-1.5"><MapPin className="size-3.5 text-danger-500" /> {jobPins} jobs</span>
+          {hasSelf && <span className="flex items-center gap-1.5"><span className="size-2 rounded-full bg-blue-500" /> you</span>}
+        </div>
+        <div className="flex items-center gap-2">
+          {lastUpdated && <span className="text-[11px] tabular-nums text-ink-400">updated {lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</span>}
+          <button
+            type="button"
+            aria-label="Refresh map"
+            onClick={() => void load(false)}
+            className="grid size-7 place-items-center rounded-lg text-ink-400 transition-colors duration-150 hover:bg-ink-50 hover:text-ink-600"
+          >
+            <RefreshCw className="size-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {waitingForGps && (
+        <p className="flex items-center gap-2 border-b border-amber-100 bg-amber-50 px-4 py-2 text-xs font-medium text-amber-800">
+          <Radar className="size-3.5 shrink-0" /> Waiting for driver GPS — no fresh pings in the last 2 minutes.
+        </p>
+      )}
+
+      {/* the map viewport */}
+      <div
+        ref={mapRef}
+        className={`relative w-full select-none overflow-hidden bg-ink-50 ${heightClass}`}
+        style={{ touchAction: "none", cursor: "grab" }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerCancel}
+        role="application"
+        aria-label="Live map"
+      >
+        {geo && !tilesUnavailable ? (
+          <>
+            {geo.tiles.map((t) => (
+              <img
+                key={t.key}
+                src={t.src}
+                alt=""
+                draggable={false}
+                referrerPolicy="no-referrer"
+                loading="eager"
+                className="pointer-events-none absolute"
+                style={{ left: t.px, top: t.py, width: TILE, height: TILE, imageRendering: "auto" }}
+                onLoad={() => onTileLoad(t.key)}
+                onError={() => onTileError(t.key)}
+              />
+            ))}
+            {geo.markers.map((m) => (
+              <MapMarker key={m.pin.id} pin={m.pin} px={m.px} py={m.py} zoom={zoom} />
+            ))}
+            {/* attribution — required by OSM's tile policy */}
+            <span className="pointer-events-none absolute bottom-1 right-1 rounded bg-white/85 px-1.5 py-0.5 text-[9px] font-medium text-ink-500 shadow-sm">
+              © OpenStreetMap
+            </span>
+          </>
+        ) : (
+          <FallbackPlot pins={pins} tilesUnavailable={tilesUnavailable} />
+        )}
+
+        {/* zoom + recenter controls */}
+        <div className="absolute right-2 top-2 flex flex-col overflow-hidden rounded-xl border border-ink-200 bg-surface shadow-card">
+          <button type="button" aria-label="Zoom in" onClick={() => zoomBy(1)} className="grid size-9 place-items-center text-ink-600 transition-colors duration-150 hover:bg-ink-50">
+            <Plus className="size-4" />
+          </button>
+          <span className="h-px bg-ink-100" />
+          <button type="button" aria-label="Zoom out" onClick={() => zoomBy(-1)} className="grid size-9 place-items-center text-ink-600 transition-colors duration-150 hover:bg-ink-50">
+            <Minus className="size-4" />
+          </button>
+          <span className="h-px bg-ink-100" />
+          <button
+            type="button"
+            aria-label="Re-center map"
+            onClick={() => viewport && fit(pins, viewport.w, viewport.h)}
+            className="grid size-9 place-items-center text-brand-600 transition-colors duration-150 hover:bg-brand-50"
+          >
+            <LocateFixed className="size-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* legend */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-ink-100 px-4 py-2.5 text-[11px] font-medium text-ink-500">
+        <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-full bg-success-500 ring-2 ring-success-100" /> driver live</span>
+        <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-full bg-ink-300 ring-2 ring-ink-100" /> driver stale</span>
+        <span className="flex items-center gap-1.5"><MapPin className="size-3.5 text-danger-500" /> job pickup</span>
+        {hasSelf && <span className="flex items-center gap-1.5"><span className="size-2.5 rounded-full bg-blue-500 ring-2 ring-blue-100" /> you</span>}
+        <span className="ml-auto hidden text-[10px] text-ink-400 sm:inline">drag · scroll/pinch to zoom</span>
+      </div>
+
+      {showDriverList && data.drivers.length > 0 && (
+        <div className="divide-y divide-ink-100 border-t border-ink-100">
+          {data.drivers.map((d) => (
+            <div key={d.driverId} className="flex items-center gap-3 px-4 py-3">
+              <span className={`size-2.5 shrink-0 rounded-full ${d.fresh ? "bg-success-500" : "bg-ink-300"}`} />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold text-ink-800">{d.driverName}</p>
+                <p className="text-[11px] text-ink-400">
+                  {d.jobStatus ?? "no active job"} · pinged {timeAgoLabel(d.capturedAt, now)}
+                </p>
+              </div>
+              <p className="shrink-0 text-[11px] tabular-nums text-ink-400">
+                {d.lat.toFixed(4)}, {d.lng.toFixed(4)}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/* --------------------------------- markers --------------------------------- */
+
+function MapMarker({ pin, px, py, zoom }: { pin: MapPin; px: number; py: number; zoom: number }) {
+  const showLabel = zoom >= 12;
+  if (pin.kind === "job") {
+    return (
+      <div className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-full" style={{ left: px, top: py }}>
+        <svg viewBox="0 0 24 24" className="size-6 drop-shadow-md" aria-hidden="true">
+          <path d="M12 1.8C7.5 1.8 3.9 5.4 3.9 9.9c0 5.4 8.1 12.3 8.1 12.3s8.1-6.9 8.1-12.3c0-4.5-3.6-8.1-8.1-8.1z" fill={pin.mine ? "#7c3aed" : "#e11d48"} stroke="#fff" strokeWidth="1.6" />
+          <circle cx="12" cy="9.9" r="3" fill="#fff" />
+        </svg>
+        {showLabel && (
+          <span className="absolute left-1/2 top-full mt-0.5 max-w-36 -translate-x-1/2 truncate rounded-md bg-white/95 px-1.5 py-0.5 text-[10px] font-bold text-ink-700 shadow-sm">
+            {pin.title}
+          </span>
+        )}
+      </div>
+    );
+  }
+  if (pin.kind === "self") {
+    return (
+      <div className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-1/2" style={{ left: px, top: py }}>
+        <span className="relative grid place-items-center">
+          <span className="absolute size-9 animate-ping rounded-full bg-blue-400/30" style={{ animationDuration: "2.4s" }} />
+          <span className="size-4 rounded-full border-[3px] border-white bg-blue-600 shadow-md" />
+        </span>
+        <span className="absolute left-1/2 top-full mt-0.5 -translate-x-1/2 rounded-md bg-blue-600 px-1.5 py-0.5 text-[10px] font-bold text-white shadow-sm">You</span>
+      </div>
+    );
+  }
+  // driver
+  const fresh = pin.fresh !== false;
+  return (
+    <div className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-1/2" style={{ left: px, top: py }}>
+      <span className="relative grid place-items-center">
+        {fresh && <span className="absolute size-8 animate-ping rounded-full bg-success-400/25" style={{ animationDuration: "2.4s" }} />}
+        <span className={`size-4 rounded-full border-[3px] border-white shadow-md ${fresh ? "bg-success-500" : "bg-ink-300"}`} />
+      </span>
+      {showLabel && (
+        <span className="absolute left-1/2 top-full mt-0.5 -translate-x-1/2 whitespace-nowrap rounded-md bg-white/95 px-1.5 py-0.5 text-[10px] font-bold text-ink-700 shadow-sm">
+          {pin.title}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------- fallback (tiles unreachable) ------------------------- */
+
+function FallbackPlot({ pins, tilesUnavailable }: { pins: MapPin[]; tilesUnavailable: boolean }) {
+  const W = 800;
+  const H = 360;
+  const PAD = 34;
+  const lats = pins.map((p) => p.lat);
+  const lngs = pins.map((p) => p.lng);
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const minLng = Math.min(...lngs);
+  const maxLng = Math.max(...lngs);
+  let spanLat = maxLat - minLat;
+  let spanLng = maxLng - minLng;
+  if (spanLat < 0.02) spanLat = 0.02;
+  if (spanLng < 0.02) spanLng = 0.02;
+  const cLat = (minLat + maxLat) / 2;
+  const cLng = (minLng + maxLng) / 2;
+  const xMin = cLng - spanLng / 2 - spanLng * 0.15;
+  const xMax = cLng + spanLng / 2 + spanLng * 0.15;
+  const yMin = cLat - spanLat / 2 - spanLat * 0.15;
+  const yMax = cLat + spanLat / 2 + spanLat * 0.15;
+  const px = (lng: number) => PAD + ((lng - xMin) / (xMax - xMin)) * (W - PAD * 2);
+  const py = (lat: number) => H - PAD - ((lat - yMin) / (yMax - yMin)) * (H - PAD * 2);
+  const color = (p: MapPin) => (p.kind === "job" ? (p.mine ? "#7c3aed" : "#e11d48") : p.kind === "self" ? "#2563eb" : p.fresh === false ? "#9aa3af" : "#10b981");
+  return (
+    <div className="relative h-full w-full">
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet" className="h-full w-full" role="img" aria-label="Live map (fallback)">
+        <rect width={W} height={H} fill="#f8fafc" />
+        {[0.25, 0.5, 0.75].map((f) => (
+          <line key={`v${f}`} x1={W * f} y1={0} x2={W * f} y2={H} stroke="#e4e7ec" strokeWidth="1" />
+        ))}
+        {[0.25, 0.5, 0.75].map((f) => (
+          <line key={`h${f}`} x1={0} y1={H * f} x2={W} y2={H * f} stroke="#e4e7ec" strokeWidth="1" />
+        ))}
+        {pins.map((p) => (
+          <g key={p.id}>
+            {p.kind === "job" ? (
+              <>
+                <path d={`M${px(p.lng)} ${py(p.lat) - 16} c-4 0 -7 3.2 -7 7.2 0 4.8 7 11 7 11 s7-6.2 7-11 c0-4 -3-7.2 -7-7.2z`} fill={color(p)} stroke="#fff" strokeWidth="1.5" />
+                <circle cx={px(p.lng)} cy={py(p.lat) - 9} r="2.6" fill="#fff" />
+              </>
+            ) : (
+              <>
+                <circle cx={px(p.lng)} cy={py(p.lat)} r={13} fill={color(p)} opacity={p.kind === "self" ? 0.25 : 0.15} />
+                <circle cx={px(p.lng)} cy={py(p.lat)} r={6} fill={color(p)} stroke="#fff" strokeWidth="2.5" />
+              </>
+            )}
+            <text x={px(p.lng)} y={py(p.lat) + (p.kind === "job" ? 14 : 20)} textAnchor="middle" fontSize={11} fontWeight={700} fill="#334155">
+              {p.title.split(" ")[0]}
+            </text>
+          </g>
+        ))}
+      </svg>
+      {tilesUnavailable && (
+        <p className="absolute inset-x-0 top-2 mx-auto w-fit rounded-full bg-amber-100 px-3 py-1 text-[11px] font-semibold text-amber-800 shadow-sm">
+          Map tiles unavailable — showing positions only
+        </p>
+      )}
+    </div>
+  );
+}

@@ -2,6 +2,7 @@ import { BarChart3, Briefcase, History, Inbox, Plug, Star, Users, Zap } from "lu
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { authStatus, type Role } from "~/data/auth";
+import { LiveMap } from "~/components/live-map";
 import { JobStatusStepper } from "~/components/job-status-stepper";
 import { InlineError } from "~/components/mutation-status";
 import {
@@ -173,6 +174,14 @@ export function QueueView() {
         <StatCard label="Active jobs" value={active.length} detail="in flight now" />
         <StatCard label="Contractors online" value={onlineCount} detail="available now" />
         <StatCard label="Completed" value={completed.length} detail="in total" />
+      </section>
+
+      <section>
+        <SectionTitle title="Live map" hint="Drivers' current positions and active job pickups — refreshed every 15 seconds" />
+        <LiveMap
+          emptyTitle="Live map unavailable"
+          emptyBody="Sign in with an owner or dispatcher account to see driver positions and active job pickups here."
+        />
       </section>
 
       <section>

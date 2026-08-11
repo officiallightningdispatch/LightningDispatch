@@ -12,6 +12,7 @@
  */
 import { Truck } from "lucide-react";
 import { AppShell } from "~/components/app-shell";
+import { LiveMap } from "~/components/live-map";
 import {
   DriverJobCard,
   DriverToolbar,
@@ -30,6 +31,12 @@ export function RealDriverPortal() {
       <DriverNotificationBanners calls={calls} />
       <DriverToolbar loading={loading} onRefresh={() => void load(false)} onSignOut={() => void signOut()} />
       <GpsStatusChip state={gpsState} />
+      <div className="mb-4">
+        <LiveMap
+          emptyTitle="Live map unavailable"
+          emptyBody="Sign in as a contractor to see your position, your active job, and nearby jobs here."
+        />
+      </div>
       {expired && <ExpiredBanner onReconnect={() => void signOut()} />}
       {error && !expired && <p role="alert" className="mb-4 rounded-xl bg-danger-50 p-3 text-sm text-danger-600">{error}</p>}
       {loading && calls === null ? (

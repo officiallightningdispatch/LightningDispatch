@@ -6,6 +6,7 @@ import { towbookBrowserHeaders, towbookDetail, towbookLogin, TOWBOOK_ORIGIN, typ
 import { runAutoDispatch, getOrgSettings, etaProviderStatus } from "./ai-dispatcher";
 import { contractors as seedContractors, jobs as seedJobs } from "./seed";
 import type { AuthUser } from "./auth-server";
+import type { LiveMapData } from "./live-map-core";
 import type { ContractorStatus, JobStatus, Contractor, Job, ServiceType } from "./seed";
 
 export type DispatchData = { contractors: Contractor[]; jobs: Job[] };
@@ -1695,4 +1696,19 @@ export const getAiDispatcherDecisionDetail = createServerFn({ method: "GET" }).v
   } catch {
     return { ok: false as const, error: "Unable to load the raw response." };
   }
+});
+
+/* ------------------------------- live map ------------------------------- */
+/** Live map feed (owner's #1 priority, 2026-08-11): driver positions from
+ *  fresh GPS pings + active job pickup pins — LOCAL DB only (driver_locations
+ *  + dispatch_jobs), never Towbook. Auth-gated: owner/admin/dispatcher see all
+ *  drivers and all active jobs; contractors see their own position (self),
+ *  their own active jobs with full customer detail, and anonymized nearby job
+ *  pins. Polled by the client LiveMap at the app's 15s cadence. Query layer
+ *  lives in the server-only ./live-map-core.ts (dynamic-imported here so the
+ *  client bundle never touches driver-gps-core/db/auth-server). */
+export type { LiveMapData, LiveMapDriverPin, LiveMapJobPin, LiveMapSelfPin } from "./live-map-core";
+export const getLiveMapData = createServerFn({ method: "GET" }).handler(async (): Promise<LiveMapData | null> => {
+  const core = await import("./live-map-core");
+  return core.liveMapDataHandler();
 });

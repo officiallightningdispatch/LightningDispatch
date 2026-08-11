@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { BarChart3, CheckCircle2, Star, Users, Zap } from "lucide-react";
 import { AppShell } from "~/components/app-shell";
+import { LiveMap } from "~/components/live-map";
 import { InlineError } from "~/components/mutation-status";
 import {
   Avatar,
@@ -69,6 +70,14 @@ function OwnerDashboard() {
           <StatCard label="Contractors online" value={`${online} / ${state.contractors.length}`} detail="available now" />
           <StatCard label="Completed jobs" value={completed.length} detail={`${completedToday(completed)} completed today`} />
           <StatCard label="Avg completion" value={`${averageDuration} min`} detail="from completed jobs" />
+        </section>
+
+        <section>
+          <SectionTitle title="Live map" hint="Drivers' current positions and active job pickups — refreshed every 15 seconds" />
+          <LiveMap
+            emptyTitle="Live map unavailable"
+            emptyBody="Sign in with an owner account to see driver positions and active job pickups here."
+          />
         </section>
 
         <Card className="border-l-4 border-l-brand-500 p-4">
