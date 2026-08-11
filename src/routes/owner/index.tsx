@@ -37,7 +37,7 @@ function OwnerDashboard() {
   const active = state.jobs.filter((j) => ACTIVE_STATUSES.includes(j.status));
   const completed = state.jobs.filter((j) => j.status === "completed");
   const online = state.contractors.filter((c) => c.status === "online").length;
-  const assigned = state.jobs.filter((j) => !!j.assignedContractorId);
+  const assigned = state.jobs.filter((j) => !!j.assignedContractorId || !!j.assignedDriverName);
   const adopted = assigned.filter((j) => {
     const rec = recommendForJob(j, state.contractors);
     return rec.top?.contractor.id === j.assignedContractorId;

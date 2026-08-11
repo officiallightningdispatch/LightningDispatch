@@ -26,6 +26,7 @@ import {
   CONFIDENCE_META,
   fmtDuration,
   JOB_STATUS_META,
+  jobDriverName,
   nextStatus,
   SERVICE_ICONS,
   SERVICE_LABELS,
@@ -420,6 +421,7 @@ function ActiveJobCard({ job, contractors }: { job: Job; contractors: Contractor
   const { advanceJob, isPending, getError } = useDispatchStore();
   const toast = useToast();
   const contractor = contractorById(contractors, job.assignedContractorId);
+  const driverName = jobDriverName(job, contractors);
   const rec = useMemo(() => recommendForJob(job, contractors), [job, contractors]);
   const overridden = contractor && rec.top && contractor.id !== rec.top.contractor.id;
   const next = nextStatus(job.status);
@@ -452,11 +454,11 @@ function ActiveJobCard({ job, contractors }: { job: Job; contractors: Contractor
           <p className="mt-0.5 text-sm text-ink-600">
             {SERVICE_LABELS[job.serviceType]} · {job.location.area}
           </p>
-          {contractor && (
+          {(contractor || driverName) && (
             <p className="mt-1 flex flex-wrap items-center gap-x-2 text-xs text-ink-500">
               <span className="inline-flex items-center gap-1.5 font-semibold text-ink-700">
                 <span className="inline-block size-1.5 rounded-full bg-success-500" />
-                {contractor.name}
+                {driverName ?? contractor?.name}
               </span>
               {overridden && (
                 <span className="rounded-full bg-accent-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-accent-700">
@@ -498,7 +500,7 @@ function CompletedRow({
   contractors: Contractor[];
   last: boolean;
 }) {
-  const contractor = contractorById(contractors, job.assignedContractorId);
+  const driverName = jobDriverName(job, contractors);
   const duration = fmtDuration(job.assignedAt ?? job.createdAt, job.completedAt);
   return (
     <div className={`flex items-center gap-3 px-4 py-3 ${last ? "" : "border-b border-ink-100"}`}>
@@ -509,7 +511,7 @@ function CompletedRow({
           <span className="font-medium text-ink-500">{SERVICE_LABELS[job.serviceType]}</span>
         </p>
         <p className="text-xs tabular-nums text-ink-400">
-          {contractor?.name ?? "Unassigned"} · {duration} · done {timeAgo(job.completedAt)}
+          {driverName ?? "Unassigned"} · {duration} · done {timeAgo(job.completedAt)}
         </p>
       </div>
       <StatusBadge className={`shrink-0 ${JOB_STATUS_META.completed.badge}`}>Done</StatusBadge>

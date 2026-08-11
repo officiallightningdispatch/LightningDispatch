@@ -770,6 +770,7 @@ function ActiveJobCard({ job, contractors }: { job: Job; contractors: Contractor
   const { advanceJob, isPending, getError } = useDispatchStore();
   const toast = useToast();
   const contractor = contractorById(contractors, job.assignedContractorId);
+  const driverName = jobDriverName(job, contractors);
   const rec = useMemo(() => recommendForJob(job, contractors), [job, contractors]);
   const overridden = contractor && rec.top && contractor.id !== rec.top.contractor.id;
   const next = nextStatus(job.status);
@@ -794,11 +795,11 @@ function ActiveJobCard({ job, contractors }: { job: Job; contractors: Contractor
             <StatusBadge className={JOB_STATUS_META[job.status].badge}>{JOB_STATUS_META[job.status].label}</StatusBadge>
           </div>
           <p className="mt-0.5 text-sm text-ink-600">{SERVICE_LABELS[job.serviceType]} · {job.location.area}</p>
-          {contractor && (
+          {(contractor || driverName) && (
             <p className="mt-1 flex flex-wrap items-center gap-x-2 text-xs text-ink-500">
               <span className="inline-flex items-center gap-1.5 font-semibold text-ink-700">
                 <span className="inline-block size-1.5 rounded-full bg-success-500" />
-                {contractor.name}
+                {driverName ?? contractor?.name}
               </span>
               {overridden && (
                 <span className="rounded-full bg-accent-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-accent-700">Override — AI suggested {rec.top.contractor.name}</span>
