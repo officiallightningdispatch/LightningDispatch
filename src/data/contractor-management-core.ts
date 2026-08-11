@@ -1,0 +1,389 @@
+/**
+ * Contractor management + Towbook driver import (plan milestone 2, backlog
+ * "Driver import + Towbook credentials" / "Contractor management") —
+ * SERVER-ONLY core.
+ *
+ * The owner sees every contractor account in Lightning Dispatch (users with
+ * role 'contractor' in the org), can add one manually (name + Towbook driver
+ * id + optional email), and can bulk-import the REAL contractor list from
+ * Towbook using the owner's already-connected session — the same session the
+ * AI dispatcher uses (towbook_sessions session_kind='owner', decrypted via
+ * towbook-key.ts) and the same GET-only Towbook roster endpoint driver-auth's
+ * identifyDriver already calls: GET /api/drivers (roster; `endDate` present =
+ * inactive). No writes to Towbook ever.
+ *
+ * A manually added / imported user is exactly the shape driver-auth's
+ * upsertDriverUser expects to find: a users row carrying towbook_driver_id (so
+ * the driver's existing Towbook login links to it on first sign-in), a unique
+ * login_handle derived from the driver id + name (never the Towbook password —
+ * the LD password hash is random and unusable; drivers authenticate through
+ * Towbook), and a unique email. Status is DERIVED from existing tables — no
+ * new columns: signed in at least once ⇔ a towbook_sessions row with
+ * session_kind='driver' keyed to that driver; last activity is the newest of
+ * the driver-session refresh and the last GPS ping (driver_locations).
+ *
+ * Every add/import is recorded in audit_log (entity_type 'contractor', actions
+ * 'contractor_added' / 'contractor_imported').
+ *
+ * Testability (same split as completion-core): every handler is a thin auth
+ * wrapper over a `*Core` function that takes an explicit actor + injectable
+ * fetchImpl — hermetic tests call the cores directly with mock Towbook fetches
+ * and real Neon QA orgs.
+ *
+ * Imported ONLY by the client-safe facade (src/data/contractor-management.ts,
+ * whose createServerFn handlers dynamic-import this module) and by hermetic
+ * tests. Every exported function RE-CHECKS the actor role (owner/admin) so the
+ * role gate is enforced at the core, not just the handler.
+ */
+import { z } from "zod";
+import { decryptSession } from "./towbook-key";
+
+const configured = () => Boolean(process.env.DATABASE_URL);
+let schemaInit: Promise<void> | undefined;
+function ensure() {
+  if (!configured()) return Promise.resolve();
+  schemaInit ??= (async () => {
+    const { ensureAuthSchema } = await import("./auth-server");
+    await ensureAuthSchema();
+    const { ensureSchema } = await import("./migrations");
+    await ensureSchema();
+  })();
+  return schemaInit;
+}
+const db = () => import("~/db").then((m) => m.sql());
+
+/** The actor context every core takes (mirrors the AuthUser subset we need). */
+export type ContractorMgmtActor = { orgId: string; id: string; role: string };
+const ALLOWED_ROLES = ["owner", "admin"];
+const canManage = (a: ContractorMgmtActor) => ALLOWED_ROLES.includes(a.role);
+
+/* --------------------------------- types --------------------------------- */
+
+export type ContractorStatus = "signed_in" | "not_signed_in";
+/** Seroval-safe row: every property defined (null, never undefined). */
+export type ContractorRow = {
+  id: string;
+  name: string;
+  email: string;
+  loginHandle: string | null;
+  towbookDriverId: string | null;
+  towbookUserId: string | null;
+  status: ContractorStatus;
+  lastActivityAt: string | null;
+  createdAt: string | null;
+};
+
+export type ImportSkip = { towbookDriverId: string; name: string | null; reason: string };
+export type ImportSummary = { imported: number; updated: number; skipped: ImportSkip[] };
+
+export type ContractorManagementResult<T> =
+  | { ok: true; data: T }
+  | { ok: false; code: "unauthorized" | "invalid_input" | "duplicate" | "towbook_not_connected" | "towbook_failed" | "database_error"; message: string };
+
+/* ------------------------------- helpers ------------------------------- */
+
+/** Deterministic login handle: slugged name + Towbook driver id suffix. Unique
+ *  per driver (each towbook_driver_id is unique), human-readable, and never
+ *  the driver's Towbook password — drivers authenticate through Towbook and
+ *  driver-auth links this row by towbook_driver_id on first sign-in. */
+export function deriveLoginHandle(name: string, driverId: string): string {
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").replace(/-{2,}/g, "-").slice(0, 48);
+  return `${slug || "driver"}-${driverId}`;
+}
+
+const emailLike = (handle: string) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(handle);
+/** Unique email: the provided one when valid, else a derived address keyed by
+ *  the login handle (matches driver-auth's @towbook.driver convention). */
+function deriveEmail(handle: string, provided?: string): string {
+  if (provided && emailLike(provided)) return provided.trim().toLowerCase();
+  return `${handle.replace(/[^a-z0-9._-]/g, "") || "driver"}@towbook.driver`;
+}
+
+const toIso = (v: unknown): string | null => {
+  if (v == null) return null;
+  const d = v instanceof Date ? v : new Date(String(v));
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+};
+
+/* --------------------------------- list --------------------------------- */
+
+/** All contractor accounts in the org (role 'contractor'), with status derived
+ *  from existing tables: signed_in ⇔ a driver-kind Towbook session row for that
+ *  driver exists; last activity = newest of that session's refresh and the
+ *  last GPS ping. One query; real data only. */
+export async function listContractorsCore(actor: ContractorMgmtActor): Promise<ContractorManagementResult<ContractorRow[]>> {
+  if (!canManage(actor)) return { ok: false, code: "unauthorized", message: "Owner access required." };
+  try {
+    await ensure();
+    const q = await db();
+    const rows = await q`SELECT u.id, u.name, u.email, u.login_handle, u.towbook_driver_id, u.towbook_user_id, u.created_at,
+        ts.updated_at AS session_updated_at,
+        dl.last_ping
+      FROM users u
+      JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND m.role = 'contractor'
+      LEFT JOIN towbook_sessions ts
+        ON ts.org_id = ${actor.orgId} AND ts.session_kind = 'driver' AND ts.towbook_driver_id = u.towbook_driver_id
+      LEFT JOIN (
+        SELECT driver_id, MAX(captured_at) AS last_ping
+        FROM driver_locations WHERE org_id = ${actor.orgId}
+        GROUP BY driver_id
+      ) dl ON dl.driver_id = u.id
+      ORDER BY LOWER(u.name), u.created_at`;
+    const contractors: ContractorRow[] = (rows as Record<string, unknown>[]).map((r) => {
+      const signedIn = r.session_updated_at != null;
+      const lastPing = r.last_ping != null ? new Date(String(r.last_ping)) : null;
+      const sessionAt = r.session_updated_at != null ? new Date(String(r.session_updated_at)) : null;
+      const lastActivity = lastPing && sessionAt ? (lastPing > sessionAt ? lastPing : sessionAt) : (lastPing ?? sessionAt);
+      return {
+        id: String(r.id),
+        name: String(r.name ?? ""),
+        email: String(r.email ?? ""),
+        loginHandle: r.login_handle != null ? String(r.login_handle) : null,
+        towbookDriverId: r.towbook_driver_id != null ? String(r.towbook_driver_id) : null,
+        towbookUserId: r.towbook_user_id != null ? String(r.towbook_user_id) : null,
+        status: signedIn ? "signed_in" : "not_signed_in",
+        lastActivityAt: lastActivity ? lastActivity.toISOString() : null,
+        createdAt: toIso(r.created_at),
+      };
+    });
+    return { ok: true, data: contractors };
+  } catch (err) {
+    return { ok: false, code: "database_error", message: err instanceof Error ? err.message : "Unable to load contractors." };
+  }
+}
+
+/* ------------------------------ manual add ------------------------------ */
+
+const ADD_SCHEMA = z.object({
+  name: z.string().trim().min(1).max(120),
+  towbookDriverId: z.string().trim().min(1).max(24).regex(/^\d+$/, "Towbook driver ID must be numeric."),
+  email: z.string().trim().max(200).optional().or(z.literal("")),
+});
+
+/** Owner enters name + Towbook driver ID (+ optional email) → creates the LD
+ *  users row (role contractor in the org, login_handle derived, random unusable
+ *  password hash) so the driver can sign in with their existing Towbook
+ *  credentials (driver-auth links this row by towbook_driver_id). Clear errors
+ *  on duplicate towbook_driver_id / login_handle / email — never a crash. */
+export async function addContractorCore(actor: ContractorMgmtActor, data: unknown): Promise<ContractorManagementResult<ContractorRow>> {
+  if (!canManage(actor)) return { ok: false, code: "unauthorized", message: "Owner access required." };
+  const v = ADD_SCHEMA.safeParse(data);
+  if (!v.success) {
+    const issue = v.error.issues[0];
+    return { ok: false, code: "invalid_input", message: issue ? issue.message : "Enter a name and a Towbook driver ID." };
+  }
+  const name = v.data.name;
+  const driverId = v.data.towbookDriverId;
+  const handle = deriveLoginHandle(name, driverId);
+  const providedEmail = v.data.email && v.data.email.trim() ? v.data.email.trim() : "";
+  if (providedEmail && !emailLike(providedEmail)) {
+    return { ok: false, code: "invalid_input", message: "That email address doesn't look valid." };
+  }
+  const email = deriveEmail(handle, providedEmail || undefined);
+  try {
+    await ensure();
+    const q = await db();
+    const byDriver = await q`SELECT id FROM users WHERE towbook_driver_id = ${driverId} LIMIT 1`;
+    if (byDriver.length) {
+      return { ok: false, code: "duplicate", message: `A contractor with Towbook driver ID ${driverId} already exists (${String(byDriver[0].id).slice(0, 8)}…).` };
+    }
+    const byHandle = await q`SELECT id FROM users WHERE login_handle = ${handle} LIMIT 1`;
+    if (byHandle.length) {
+      return { ok: false, code: "duplicate", message: `The login handle "${handle}" is already in use — use a different name or driver ID.` };
+    }
+    const byEmail = await q`SELECT id FROM users WHERE email = ${email} LIMIT 1`;
+    if (byEmail.length) {
+      return { ok: false, code: "duplicate", message: "That email address is already in use by another account." };
+    }
+    const { makeId, hash } = await import("./auth-server");
+    const userId = makeId();
+    const randomPassword = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    await q`INSERT INTO users(id, name, email, password_hash, login_handle, towbook_driver_id) VALUES(${userId}, ${name}, ${email}, ${hash(randomPassword)}, ${handle}, ${driverId})`;
+    await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${actor.orgId}, ${userId}, 'contractor')`;
+    try {
+      await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
+        SELECT gen_random_uuid()::text, ${actor.orgId}, ${actor.id}, ${actor.role}, 'contractor_added', 'contractor', ${userId},
+          ${JSON.stringify({ name, towbookDriverId: driverId, loginHandle: handle, email })}::jsonb, 'contractor-management'`;
+    } catch { /* best-effort audit */ }
+    const contractor: ContractorRow = {
+      id: userId, name, email, loginHandle: handle, towbookDriverId: driverId, towbookUserId: null,
+      status: "not_signed_in", lastActivityAt: null, createdAt: new Date().toISOString(),
+    };
+    return { ok: true, data: contractor };
+  } catch (err) {
+    return { ok: false, code: "database_error", message: err instanceof Error ? err.message : "Unable to add the contractor." };
+  }
+}
+
+/* ------------------------------ Towbook import ------------------------------ */
+
+const TOWBOOK_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
+const towbookHeaders = (cookie: string) => ({
+  "user-agent": TOWBOOK_UA,
+  accept: "application/json,text/plain,*/*",
+  "accept-language": "en-US,en;q=0.9",
+  ...(cookie ? { cookie } : {}),
+});
+type FetchResult = { ok: boolean; status: number | null; body: unknown; error: string | null };
+/** Same GET pattern the AI dispatcher uses for the owner session (headers,
+ *  redirect: manual, 15s timeout, JSON-or-text body parse). GET-only. */
+async function towbookGet(fetchImpl: typeof fetch, url: string, cookie: string): Promise<FetchResult> {
+  try {
+    const res = await fetchImpl(url, {
+      method: "GET",
+      headers: towbookHeaders(cookie),
+      redirect: "manual",
+      signal: AbortSignal.timeout(15000),
+    });
+    const text = await res.text();
+    let body: unknown = text;
+    if (text) { try { body = JSON.parse(text); } catch { /* keep raw text */ } }
+    const ok = res.status >= 200 && res.status < 300;
+    return { ok, status: res.status, body, error: ok ? null : `HTTP ${res.status}` };
+  } catch (err) {
+    return { ok: false, status: null, body: null, error: String(err).slice(0, 200) };
+  }
+}
+
+/** Load the org's owner Towbook session (the one the AI dispatcher uses) and
+ *  return its cookies + baseUrl, or null with a reason when unavailable. */
+async function loadOwnerSession(orgId: string): Promise<{ cookies: string; baseUrl: string } | null> {
+  const q = await db();
+  const sess = await q`SELECT encrypted_session, status FROM towbook_sessions WHERE org_id=${orgId} AND session_kind='owner'`;
+  if (!sess.length || String(sess[0].status) !== "connected" || !String(sess[0].encrypted_session || "").length) return null;
+  try {
+    const plain = await decryptSession(String(sess[0].encrypted_session));
+    const parsed = JSON.parse(plain) as { cookies?: string; baseUrl?: string };
+    return { cookies: parsed.cookies || "", baseUrl: parsed.baseUrl || "https://app.towbook.com" };
+  } catch {
+    return null;
+  }
+}
+
+/** Normalize one roster row from GET /api/drivers: the driver id (required),
+ *  the display name, and inactivity (`endDate` present = inactive, per the
+ *  towbook-live-recon evidence). */
+function rosterDriver(raw: unknown): { driverId: string; name: string; active: boolean } | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const id = o.id != null ? String(o.id).trim() : "";
+  if (!id) return null;
+  const name = typeof o.name === "string" && o.name.trim() ? o.name.trim() : "";
+  const inactive = o.endDate != null && String(o.endDate) !== "" && String(o.endDate) !== "null";
+  return { driverId: id, name, active: !inactive };
+}
+
+/** Upsert one roster driver into the org's contractor list. Returns the row's
+ *  disposition: 'imported' | 'updated' | a skip reason. */
+type Q = Awaited<ReturnType<typeof db>>;
+async function upsertRosterDriver(
+  q: Q,
+  actor: ContractorMgmtActor,
+  driver: { driverId: string; name: string },
+  orgContractors: Map<string, { id: string; name: string; handle: string | null }>,
+): Promise<"imported" | "updated" | { skip: string }> {
+  const { driverId, name } = driver;
+  const existing = orgContractors.get(driverId);
+  if (existing) {
+    if (name && name !== existing.name) {
+      await q`UPDATE users SET name=${name} WHERE id=${existing.id}`;
+    }
+    return "updated";
+  }
+  const handle = deriveLoginHandle(name, driverId);
+  // The login_handle unique index is global — a collision with a DIFFERENT
+  // user's row means the handle is taken; skip rather than crash.
+  const byHandle = await q`SELECT id FROM users WHERE login_handle = ${handle} LIMIT 1`;
+  if (byHandle.length) return { skip: `login_handle_conflict` };
+  const email = deriveEmail(handle);
+  const byEmail = await q`SELECT id FROM users WHERE email = ${email} LIMIT 1`;
+  if (byEmail.length) return { skip: "email_conflict" };
+  const { makeId, hash } = await import("./auth-server");
+  const userId = makeId();
+  const randomPassword = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  await q`INSERT INTO users(id, name, email, password_hash, login_handle, towbook_driver_id) VALUES(${userId}, ${name}, ${email}, ${hash(randomPassword)}, ${handle}, ${driverId})`;
+  await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${actor.orgId}, ${userId}, 'contractor')`;
+  return "imported";
+}
+
+/** Pull the REAL contractor list from Towbook via the owner's connected session
+ *  (GET /api/drivers — the same roster endpoint driver-auth's identifyDriver
+ *  uses, with the same session-decrypt path as the AI dispatcher) and upsert:
+ *  existing towbook_driver_id rows update their name; new rows insert. Inactive
+ *  drivers (endDate present) and malformed rows are skipped with reasons.
+ *  GET-only against Towbook — never a write. */
+export async function importContractorsCore(actor: ContractorMgmtActor, opts: { fetchImpl?: typeof fetch } = {}): Promise<ContractorManagementResult<ImportSummary>> {
+  if (!canManage(actor)) return { ok: false, code: "unauthorized", message: "Owner access required." };
+  const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
+  try {
+    await ensure();
+    const q = await db();
+    const session = await loadOwnerSession(actor.orgId);
+    if (!session) return { ok: false, code: "towbook_not_connected", message: "Towbook isn't connected — connect it in Settings before importing." };
+    const res = await towbookGet(fetchImpl, `${session.baseUrl}/api/drivers`, session.cookies);
+    if (!res.ok) return { ok: false, code: "towbook_failed", message: `Towbook rejected the driver list (${res.error ?? "unknown error"}).` };
+    if (!Array.isArray(res.body)) return { ok: false, code: "towbook_failed", message: "Towbook returned an unexpected driver list." };
+
+    // Preload the org's current contractors by Towbook driver id (one query).
+    const existingRows = await q`SELECT u.id, u.name, u.login_handle, u.towbook_driver_id
+      FROM users u JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND m.role = 'contractor'
+      WHERE u.towbook_driver_id IS NOT NULL`;
+    const orgContractors = new Map<string, { id: string; name: string; handle: string | null }>();
+    for (const r of existingRows as Record<string, unknown>[]) {
+      orgContractors.set(String(r.towbook_driver_id), { id: String(r.id), name: String(r.name ?? ""), handle: r.login_handle != null ? String(r.login_handle) : null });
+    }
+
+    const summary: ImportSummary = { imported: 0, updated: 0, skipped: [] };
+    for (const raw of res.body as unknown[]) {
+      const driver = rosterDriver(raw);
+      if (!driver) { summary.skipped.push({ towbookDriverId: "?", name: null, reason: "missing_driver_id" }); continue; }
+      if (!driver.active) { summary.skipped.push({ towbookDriverId: driver.driverId, name: driver.name, reason: "inactive_in_towbook" }); continue; }
+      if (!driver.name) { summary.skipped.push({ towbookDriverId: driver.driverId, name: null, reason: "missing_name" }); continue; }
+      const disposition = await upsertRosterDriver(q, actor, driver, orgContractors);
+      if (disposition === "imported") summary.imported++;
+      else if (disposition === "updated") summary.updated++;
+      else summary.skipped.push({ towbookDriverId: driver.driverId, name: driver.name, reason: disposition.skip });
+    }
+    try {
+      await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
+        SELECT gen_random_uuid()::text, ${actor.orgId}, ${actor.id}, ${actor.role}, 'contractor_imported', 'contractor', ${actor.orgId},
+          ${JSON.stringify({ imported: summary.imported, updated: summary.updated, skipped: summary.skipped })}::jsonb, 'contractor-management'`;
+    } catch { /* best-effort audit */ }
+    return { ok: true, data: summary };
+  } catch (err) {
+    return { ok: false, code: "database_error", message: err instanceof Error ? err.message : "Unable to import contractors." };
+  }
+}
+
+/* -------------------------------- handlers -------------------------------- */
+
+/** Thin auth wrapper shared by the facade handlers: owner/admin only. Returns
+ *  the actor or a ready-made unauthorized result. */
+async function resolveActor(): Promise<ContractorMgmtActor | null> {
+  if (!configured()) return null;
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u || !ALLOWED_ROLES.includes(u.role)) return null;
+  return { orgId: u.orgId, id: u.id, role: u.role };
+}
+
+export async function listContractorsHandler(): Promise<ContractorManagementResult<ContractorRow[]>> {
+  if (!configured()) return { ok: false, code: "database_error", message: "Contractor management requires database mode." };
+  const actor = await resolveActor();
+  if (!actor) return { ok: false, code: "unauthorized", message: "Owner access required." };
+  return listContractorsCore(actor);
+}
+
+export async function addContractorHandler(data: unknown): Promise<ContractorManagementResult<ContractorRow>> {
+  if (!configured()) return { ok: false, code: "database_error", message: "Contractor management requires database mode." };
+  const actor = await resolveActor();
+  if (!actor) return { ok: false, code: "unauthorized", message: "Owner access required." };
+  return addContractorCore(actor, data);
+}
+
+export async function importContractorsHandler(opts: { fetchImpl?: typeof fetch } = {}): Promise<ContractorManagementResult<ImportSummary>> {
+  if (!configured()) return { ok: false, code: "database_error", message: "Contractor management requires database mode." };
+  const actor = await resolveActor();
+  if (!actor) return { ok: false, code: "unauthorized", message: "Owner access required." };
+  return importContractorsCore(actor, opts);
+}
