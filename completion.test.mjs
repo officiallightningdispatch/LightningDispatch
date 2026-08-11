@@ -233,7 +233,7 @@ const orgFetch = makeFetch({ callId: CONF[ORG].call });
   check("location id in order", body.order?.location_id === "loc_test", JSON.stringify(body.order));
   const item = body.order?.line_items?.[0];
   check("line item name carries driver + job attribution", String(item?.name).includes("QA Completion Driver") && String(item?.name).includes("job 445005"), JSON.stringify(item));
-  check("line item amount + currency", item?.quantity === "1" && item?.base_money?.amount === 500 && item?.base_money?.currency === "USD", JSON.stringify(item));
+  check("line item amount + currency", item?.quantity === "1" && item?.base_price_money?.amount === 500 && item?.base_price_money?.currency === "USD", JSON.stringify(item));
   const row = await q`SELECT tip FROM job_completions WHERE org_id=${ORG} AND job_id=${c.job}`;
   const tip = row[0].tip;
   check("tip row stored (link_created, amount, link id, driver)", tip && tip.status === "link_created" && tip.amount_cents === 500 && tip.currency === "USD" && tip.square_payment_link_id === "pl_test_123" && tip.driver_towbook_id === "15", JSON.stringify(tip));

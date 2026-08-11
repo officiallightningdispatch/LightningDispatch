@@ -98,7 +98,7 @@ export async function createPaymentLink(opts: {
           {
             name: opts.lineItemName,
             quantity: "1",
-            base_money: { amount: opts.amountCents, currency },
+            base_price_money: { amount: opts.amountCents, currency },
           },
         ],
       },
