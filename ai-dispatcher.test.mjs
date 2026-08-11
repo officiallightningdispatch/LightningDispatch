@@ -775,7 +775,10 @@ try {
     check("audit: 16 ai_dispatcher:accept rows (every accept incl. no-driver)", Number(a[0].n) === 16, String(a[0].n));
     const adAudit = await q`SELECT count(*)::int n FROM audit_log WHERE org_id=${ORG} AND action='ai_dispatcher:decision'`;
     check("audit: 7 ai_dispatcher:decision rows (escalations)", Number(adAudit[0].n) === 7, String(adAudit[0].n));
-    const ownerSession = await q`SELECT status FROM towbook_sessions WHERE org_id=${"89e15ce587651cc47c3bc45b1c612a220955"}`;
+    // Scope to the OWNER session row: since migration 10 a real contractor
+    // sign-in (driver-auth.ts) legitimately adds session_kind='driver' rows to
+    // the same org — the check's intent is that the owner session is untouched.
+    const ownerSession = await q`SELECT status FROM towbook_sessions WHERE org_id=${"89e15ce587651cc47c3bc45b1c612a220955"} AND session_kind='owner'`;
     check("owner org session untouched", ownerSession.length === 1 && String(ownerSession[0].status) === "connected", JSON.stringify(ownerSession));
     const ownerDecisions = await q`SELECT count(*)::int n FROM ai_dispatcher_decisions WHERE org_id=${"89e15ce587651cc47c3bc45b1c612a220955"}`;
     check("owner org untouched: decision count unchanged by this run", Number(ownerDecisions[0].n) === ownerBaseline, `${ownerBaseline} → ${Number(ownerDecisions[0].n)}`);

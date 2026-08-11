@@ -24,6 +24,7 @@ export const AI_DECISION_META: Record<string, { label: string; badge: string }> 
   escalated_dispatch_failed: { label: "Escalated · dispatch failed", badge: "bg-danger-50 text-danger-700" },
   escalated_auto_arrive_failed: { label: "Escalated · auto-arrive failed", badge: "bg-danger-50 text-danger-700" },
   escalated_photo_upload_failed: { label: "Escalated · PO photo upload failed", badge: "bg-danger-50 text-danger-700" },
+  escalated_status_push_failed: { label: "Escalated · status sync to Towbook failed", badge: "bg-danger-50 text-danger-700" },
 };
 const DECISION_FALLBACK = { label: "Decision", badge: "bg-ink-100 text-ink-600" };
 
@@ -140,6 +141,7 @@ const ACTIONABLE_ESCALATIONS = new Set([
   "escalated_expired",
   "escalated_dispatch_failed",
   "escalated_photo_upload_failed",
+  "escalated_status_push_failed",
 ]);
 
 /** Ops queue banner: "Needs attention" when the engine escalated anything a

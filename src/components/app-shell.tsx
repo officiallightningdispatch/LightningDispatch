@@ -24,7 +24,6 @@ const NAV: Record<Portal, { links: NavItem[]; mobile: NavItem[] }> = {
       { to: "/owner/history", label: "History", icon: History },
       { to: "/owner/performance", label: "Performance", icon: BarChart3 },
       { to: "/owner/money", label: "Money", icon: Wallet },
-      { to: "/owner/team", label: "Team", icon: Users },
       { to: "/owner/ai-dispatcher", label: "AI Dispatcher", icon: Bot },
       { to: "/owner/settings", label: "Settings", icon: Settings },
     ],
