@@ -27,3 +27,22 @@ export const sql = () => {
   }
   return neon(url);
 };
+
+/**
+ * `sql` with a hard per-handle deadline: every query issued through the returned
+ * handle aborts (underlying fetch aborted) once `ms` elapses from handle
+ * creation. Used ONLY by the background Towbook sync / AI-dispatch path so a
+ * wedged/hung Neon query can never stall the 3s loop forever — the sync's
+ * per-tick race still clears the in-flight guard on timeout, but the abort also
+ * frees the underlying HTTP fetch so the zombie tick actually dies instead of
+ * lingering. Keep the budget generous (sync alone can legitimately take ~12s).
+ */
+export const sqlWithTimeout = (ms: number) => {
+  const url = process.env.DATABASE_URL;
+  if (!url) {
+    throw new Error(
+      "DATABASE_URL is not set — connect a database (via the database card) before running queries.",
+    );
+  }
+  return neon(url, { fetchOptions: { signal: AbortSignal.timeout(ms) } });
+};

@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
-import { sql } from "~/db";
+import { sql, sqlWithTimeout } from "~/db";
 import { decryptSession, encryptSession } from "./towbook-key";
 import { towbookBrowserHeaders, towbookDetail, towbookLogin, TOWBOOK_ORIGIN, type TowbookFacts } from "./towbook-login";
 import { runAutoDispatch, getOrgSettings, etaProviderStatus } from "./ai-dispatcher";
@@ -211,7 +211,7 @@ export const resetDemo=createServerFn({method:"POST"}).validator(passthrough).ha
  * in-flight guard prevents overlapping syncs.
  * ---------------------------------------------------------------------------------- */
 
-export type TowbookSyncCode = "ok" | "not_connected" | "session_unavailable" | "session_expired" | "no_jobs" | "unauthorized" | "error";
+export type TowbookSyncCode = "ok" | "not_connected" | "session_unavailable" | "session_expired" | "no_jobs" | "unauthorized" | "error" | "timeout";
 export type TowbookSyncDiag = { url: string; status: number | null; contentType: string | null; hint: string };
 export type TowbookSyncResult = { ok: boolean; code: TowbookSyncCode; message: string; added: number; updated: number; failed: number; diagnostics: TowbookSyncDiag[]; ranAt: string; sample?: Record<string, unknown>[]; statusShapes?: string[]; sampleByStatus?: Record<string, Record<string, unknown>> };
 const syncResult = (code: TowbookSyncCode, message: string, extra?: Partial<TowbookSyncResult>): TowbookSyncResult => ({ ok: code === "ok", code, message, added: 0, updated: 0, failed: 0, diagnostics: [], ranAt: new Date().toISOString(), ...extra });
@@ -540,19 +540,49 @@ const findText = (o: Record<string, unknown>, keys: string[], nestedKeys: string
   }
   return "";
 };
+/** Color text from a color DTO ({name:"Black"}) or a plain string. */
+const colorText = (c: unknown): string => {
+  if (c == null) return "";
+  if (typeof c === "string") return c.trim();
+  if (typeof c === "number") return String(c);
+  if (typeof c === "object" && !Array.isArray(c)) return pickString(c as Record<string, unknown>, "name", "label", "value");
+  return "";
+};
 /** Best-effort human vehicle description from whatever shape the call uses. */
 const vehicleText = (v: unknown): string => {
   if (v == null) return "";
   if (typeof v === "string" || typeof v === "number") return String(v).trim();
   if (typeof v === "object" && !Array.isArray(v)) {
     const parts: string[] = [];
-    for (const k of ["year", "make", "model", "color", "plate", "description", "name", "label"]) {
+    for (const k of ["year", "make", "model", "plate", "description", "name", "label"]) {
       const s = pickString(v as Record<string, unknown>, k);
       if (s) parts.push(s);
     }
+    const c = colorText((v as Record<string, unknown>).color);
+    if (c) parts.push(c);
     return parts.join(" ");
   }
   return "";
+};
+/** Vehicle description from the call's `assets` array — the recon-verified
+ *  Towbook shape (assets[0] = {year, make, model, color:{name}, vin, driver…}).
+ *  Deliberately omits `name` (a truck/driver nickname on the asset) and `vin`
+ *  (noise for a human vehicle line). */
+const assetVehicleText = (assets: unknown): string => {
+  if (!Array.isArray(assets) || !assets.length) return "";
+  const a = assets[0];
+  if (!a || typeof a !== "object" || Array.isArray(a)) return "";
+  const o = a as Record<string, unknown>;
+  const parts: string[] = [];
+  for (const k of ["year", "make", "model"]) {
+    const s = pickString(o, k);
+    if (s) parts.push(s);
+  }
+  const c = colorText(o.color);
+  if (c) parts.push(c);
+  const desc = pickString(o, "description", "label");
+  if (desc) parts.push(desc);
+  return parts.join(" ");
 };
 /** Derive a status id from the CALL OBJECT itself (fallback when call.status is
  *  missing). Only explicit status keys — never a numeric sweep of the whole call,
@@ -560,13 +590,86 @@ const vehicleText = (v: unknown): string => {
 const callLevelStatusId = (call: Record<string, unknown>): number | null =>
   numericStatusId(call.statusId) ?? numericStatusId(call.currentStatusId) ?? numericStatusId(call.stateId) ?? null;
 
+/** First contact (the real customer/member) on a Towbook call: `contacts` is an
+ *  array of contact DTOs ({name, phone, ...}) or, in some shapes, a single object. */
+const firstContact = (call: Record<string, unknown>): Record<string, unknown> | null => {
+  const c = call.contacts;
+  if (Array.isArray(c) && c.length) {
+    const first = c[0];
+    if (first && typeof first === "object" && !Array.isArray(first)) return first as Record<string, unknown>;
+    return null;
+  }
+  if (c && typeof c === "object" && !Array.isArray(c)) return c as Record<string, unknown>;
+  return null;
+};
+/** Address text for one waypoint DTO: full `address` string when present, else
+ *  street/city/state/zip parts joined. */
+const formatWaypointAddress = (o: Record<string, unknown>): string => {
+  const full = pickString(o, "address", "formattedAddress", "fullAddress", "streetAddress");
+  if (full) return full;
+  const parts = [
+    pickString(o, "street", "address1", "addressLine1"),
+    pickString(o, "city"),
+    pickString(o, "state", "stateCode"),
+    pickString(o, "zip", "postalCode"),
+  ].filter(Boolean);
+  return parts.join(", ");
+};
+type WaypointInfo = { address: string; lat: number | null; lng: number | null };
+/** Pickup/dropoff waypoint lookup: prefer the waypoint whose title names the
+ *  role ("Pickup" / "Dropoff" / "Destination", case-insensitive, punctuation
+ *  stripped - "Drop Off" matches too), else fall back to position order
+ *  (pickup = lowest position, dropoff = a SECOND waypoint's position;
+ *  single-waypoint calls have no dropoff). */
+const findWaypoint = (call: Record<string, unknown>, want: "pickup" | "dropoff"): WaypointInfo | null => {
+  const wps = call.waypoints;
+  if (!Array.isArray(wps) || !wps.length) return null;
+  const entries: Array<{ title: string; position: number; info: WaypointInfo }> = [];
+  for (const w of wps) {
+    if (!w || typeof w !== "object" || Array.isArray(w)) continue;
+    const o = w as Record<string, unknown>;
+    const latN = Number(o.latitude);
+    const lngN = Number(o.longitude);
+    const pos = Number(o.position);
+    const title = pickString(o, "title", "name", "label", "type").toLowerCase().replace(/[^a-z0-9]/g, "");
+    entries.push({
+      title,
+      position: Number.isFinite(pos) ? pos : 0,
+      info: {
+        address: formatWaypointAddress(o),
+        lat: Number.isFinite(latN) && latN !== 0 ? latN : null,
+        lng: Number.isFinite(lngN) && lngN !== 0 ? lngN : null,
+      },
+    });
+  }
+  for (const e of entries) {
+    if (want === "pickup" && e.title.includes("pickup")) return e.info;
+    if (want === "dropoff" && (e.title.includes("dropoff") || e.title.includes("destination"))) return e.info;
+  }
+  if (want === "pickup") {
+    entries.sort((a, b) => a.position - b.position);
+    return entries[0].info;
+  }
+  if (entries.length >= 2) {
+    entries.sort((a, b) => b.position - a.position);
+    return entries[0].info;
+  }
+  return null;
+};
 type JsonCallResult = { ok: true; job: NormalizedJob } | { ok: false; reason: string };
 /** Normalize one Towbook /api/calls array item (the raw JSON object) into a
  *  dispatch job. Field names are read DIRECTLY from the real call object
- *  (id/callNumber, status, account.company, vehicle, addresses, notes…) and the
- *  whole object is kept as raw_json for reconciliation. Returns ok:false with a
- *  human reason when the call must be skipped (no id, or an unmapped status id —
- *  unknown status ids are NEVER imported). */
+ *  (id/callNumber, status, contacts, waypoints, assets, notes...) and the whole
+ *  object is kept as raw_json for reconciliation. Returns ok:false with a human
+ *  reason when the call must be skipped (no id, or an unmapped status id -
+ *  unknown status ids are NEVER imported).
+ *
+ *  REAL-SHAPE NOTES (live /api/calls recon, 2026-08-11): `account` is the MOTOR
+ *  CLUB (Agero & co) - never the member; the member is `contacts[0].name`.
+ *  `owner` is the LD account owner. Pickup/dropoff live in `waypoints` (title
+ *  "Pickup" position 1 with address + latitude/longitude), with `towSource` as
+ *  a string fallback. The vehicle is `assets[0]` ({year, make, model,
+ *  color:{name}}), NOT a top-level `vehicle` key. */
 export function normalizeJsonCall(call: Record<string, unknown>, sourceUrl: string): JsonCallResult {
   const idRaw = call.id ?? call.callNumber;
   if (idRaw == null) return { ok: false, reason: "no id/status" };
@@ -577,13 +680,32 @@ export function normalizeJsonCall(call: Record<string, unknown>, sourceUrl: stri
   if (statusId == null || !status) {
     return { ok: false, reason: `unmapped status ${stringifyStatus(call.status)} (statusId=${statusId ?? "none"})` };
   }
+  // Customer: the REAL member is the call's first contact (contacts[0].name,
+  // e.g. "Morgan R R."), then member/customer/caller keys. `account.company` is
+  // only a LAST fallback so motor-club jobs show the member, never the club.
+  const contact = firstContact(call);
+  const contactName = contact ? pickString(contact, "name", "fullName", "contactName", "customerName", "displayName") : "";
   const customer =
-    findText(call, ["account", "customer", "member", "caller", "client", "customerName", "memberName"], ["company", "name"]) ||
+    contactName ||
+    findText(call, ["member", "customer", "caller", "client", "customerName", "memberName"], ["name", "fullName"]) ||
+    findText(call, ["account"], ["company", "name"]) ||
     `Towbook job ${towbookJobId}`;
-  const phone = findText(call, ["phone", "customerPhone", "callerPhone", "mobile", "telephone", "account", "accountPhone"], ["phone", "mobile", "telephone"]);
-  const pickup = findText(call, ["pickup", "pickupAddress", "fromAddress", "origin", "source", "address"], ["street", "address", "city", "state", "zip", "postalCode"]);
-  const dropoff = findText(call, ["dropoff", "dropoffAddress", "toAddress", "destination", "dest"], ["street", "address", "city", "state", "zip", "postalCode"]);
-  // call.type is a numeric enum we do not know yet — derive service from TEXT only.
+  const contactPhone = contact ? pickString(contact, "phone", "mobile", "telephone", "phoneNumber", "cell") : "";
+  const phone = contactPhone ||
+    findText(call, ["phone", "customerPhone", "callerPhone", "mobile", "telephone", "accountPhone"], ["phone", "mobile", "telephone"]) ||
+    findText(call, ["account"], ["phone"]);
+  // Location: waypoints carry the real pickup/dropoff; towSource is the string
+  // fallback for the pickup address when waypoints are absent.
+  const pickupWp = findWaypoint(call, "pickup");
+  const dropoffWp = findWaypoint(call, "dropoff");
+  const pickup = pickupWp?.address || pickString(call, "towSource") ||
+    findText(call, ["pickup", "pickupAddress", "fromAddress", "origin", "source", "address"], ["street", "address", "city", "state", "zip", "postalCode"]);
+  const dropoff = dropoffWp?.address ||
+    findText(call, ["dropoff", "dropoffAddress", "toAddress", "destination", "dest"], ["street", "address", "city", "state", "zip", "postalCode"]);
+  // Vehicle: the recon-verified shape is call.assets[0]; call.vehicle only
+  // exists in other shapes.
+  const vehicle = vehicleText(call.vehicle) || assetVehicleText(call.assets) || "";
+  // call.type is a numeric enum we do not know yet - derive service from TEXT only.
   const serviceText = findText(call, ["service", "serviceType", "workType", "jobType", "serviceDescription", "category", "reason"], ["name", "label", "description"]);
   const note = pickString(call, "notes", "note", "comment", "comments", "instructions");
   const dateTxt = pickString(call, "createdAt", "created", "createdOn", "date", "openDate", "receivedAt", "startTime", "createdDate");
@@ -594,9 +716,11 @@ export function normalizeJsonCall(call: Record<string, unknown>, sourceUrl: stri
       towbookJobId,
       customer,
       phone,
-      vehicle: vehicleText(call.vehicle),
+      vehicle,
       pickup,
       dropoff,
+      pickupLat: pickupWp?.lat ?? null,
+      pickupLng: pickupWp?.lng ?? null,
       status,
       towbookStatus: String(statusId),
       serviceType: mapTowbookService(serviceText || ""),
@@ -606,7 +730,6 @@ export function normalizeJsonCall(call: Record<string, unknown>, sourceUrl: stri
     },
   };
 }
-
 /** Keys that are large and not needed for a status-id decision; dropped first when
  *  a raw call object must be trimmed to the per-shape byte cap. */
 const SAMPLE_DROP_FIRST: readonly string[] = [
@@ -711,6 +834,8 @@ type NormalizedJob = {
   vehicle: string;
   pickup: string;
   dropoff: string;
+  pickupLat: number | null;
+  pickupLng: number | null;
   status: JobStatus;
   towbookStatus: string;
   serviceType: ServiceType;
@@ -734,6 +859,8 @@ export function normalizeRawJob(rec: RawJob, sourceUrl: string): NormalizedJob |
     vehicle: (rec.vehicle || "").trim(),
     pickup,
     dropoff: (rec.dropoff || "").trim(),
+    pickupLat: null,
+    pickupLng: null,
     status,
     towbookStatus,
     serviceType: mapTowbookService(rec.service || ""),
@@ -846,6 +973,22 @@ function pickupCoords(raw: unknown): { lat: number | null; lng: number | null } 
     lng: Number.isFinite(lng) && lng !== 0 ? lng : null,
   };
 }
+/** Pickup coordinates for a normalized job: prefer the waypoint-derived
+ *  coordinates captured during normalization (title/position-aware pickup),
+ *  fall back to the raw waypoints[0] scan for HTML-table jobs that carry no
+ *  waypoint info on the normalized record. */
+const jobCoords = (job: NormalizedJob): { lat: number | null; lng: number | null } => {
+  if (job.pickupLat != null && job.pickupLng != null) return { lat: job.pickupLat, lng: job.pickupLng };
+  return pickupCoords(job.raw);
+};
+/** Numeric-coordinate equality: null/undefined/NaN count as "absent", so an
+ *  absent stored coordinate and an absent normalized coordinate compare equal
+ *  (absent -> absent is never a spurious update). */
+const sameCoord = (a: unknown, b: number | null | undefined): boolean => {
+  const na = a == null ? 0 : Number(a);
+  const nb = b == null ? 0 : Number(b);
+  return (Number.isFinite(na) ? na : 0) === (Number.isFinite(nb) ? nb : 0);
+};
 
 /** Assigned driver on a raw Towbook call (recon-verified shape, call-single.json):
  *  assets[].driver = {id, name, ...} — the currently assigned driver — and
@@ -902,11 +1045,11 @@ export async function upsertPulledJobs(
   jobs: NormalizedJob[],
   trigger: string,
 ): Promise<{ added: number; updated: number; unchanged: number; failed: number }> {
-  const q = sql();
+  const q = sqlWithTimeout(SYNC_TICK_TIMEOUT_MS);
   // NOTE: towbook_job_id MUST be in the select list — it is the existing-map key.
   // (Bug fixed 2026-08-10: it was omitted, so every row was keyed "undefined" and
   // re-syncs re-INSERTed → pkey violation → all counted as failed.)
-  const existingRows = await q`SELECT id, status, customer_name, phone, pickup, dropoff, towbook_status, towbook_job_id, assigned_driver_towbook_id FROM dispatch_jobs WHERE org_id=${orgId} AND towbook_job_id IS NOT NULL`;
+  const existingRows = await q`SELECT id, status, customer_name, phone, pickup, dropoff, area, pickup_lat, pickup_lng, towbook_status, towbook_job_id, assigned_driver_towbook_id FROM dispatch_jobs WHERE org_id=${orgId} AND towbook_job_id IS NOT NULL`;
   const existing = new Map(existingRows.map((r) => [String(r.towbook_job_id), r as Record<string, unknown>]));
   let added = 0, updated = 0, unchanged = 0, failed = 0;
   for (const job of jobs) {
@@ -915,7 +1058,7 @@ export async function upsertPulledJobs(
       if (!cur) {
         const slug = job.towbookJobId.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 60);
         const jobId = slug ? `tb-${slug}` : `tb-${Math.random().toString(36).slice(2, 10)}`;
-        const coords = pickupCoords(job.raw);
+        const coords = jobCoords(job);
         const assigned = assignedDriverFromRawCall(job.raw);
         await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, customer_phone, vehicle_desc, pickup, dropoff, towbook_status, raw_json, pickup_lat, pickup_lng, assigned_driver_towbook_id, assigned_driver_name)
           VALUES(${jobId}, ${orgId}, ${job.customer}, ${job.phone || ""}, 0, 0, ${job.pickup || "Unknown"}, ${job.serviceType}, ${job.status}, ${job.createdAt}, ${job.note}, ${job.towbookJobId}, ${job.phone || ""}, ${job.vehicle}, ${job.pickup}, ${job.dropoff}, ${job.towbookStatus}, ${JSON.stringify(job.raw)}::jsonb, ${coords.lat}, ${coords.lng}, ${assigned.towbookId}, ${assigned.name})`;
@@ -923,21 +1066,27 @@ export async function upsertPulledJobs(
           SELECT gen_random_uuid()::text, ${orgId}, ${jobId}, ${previousStatusFromHistory(job.raw, job.status)}, ${job.status}, ${actor.id}, ${actor.role}, ${`imported from Towbook (${trigger})`}`;
         await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
           SELECT gen_random_uuid()::text, ${orgId}, ${actor.id}, ${actor.role}, 'towbook_import', 'job', ${jobId}, ${JSON.stringify({ towbookJobId: job.towbookJobId, towbookStatus: job.towbookStatus, status: job.status, source: job.raw.sourceUrl })}::jsonb, ${trigger}`;
-        existing.set(job.towbookJobId, { id: jobId, status: job.status, customer_name: job.customer, phone: job.phone, pickup: job.pickup, dropoff: job.dropoff, towbook_status: job.towbookStatus });
+        existing.set(job.towbookJobId, { id: jobId, status: job.status, customer_name: job.customer, phone: job.phone, pickup: job.pickup, dropoff: job.dropoff, area: job.pickup || "Unknown", towbook_status: job.towbookStatus });
         added++;
       } else {
         const statusChanged = String(cur.status) !== job.status;
         const curDriverId = String((cur as Record<string, unknown>).assigned_driver_towbook_id ?? "");
         const newDriver = assignedDriverFromRawCall(job.raw);
+        const coords = jobCoords(job);
+        const curArea = String((cur as Record<string, unknown>).area ?? "");
+        const curLat = (cur as Record<string, unknown>).pickup_lat;
+        const curLng = (cur as Record<string, unknown>).pickup_lng;
         const fieldsChanged =
           String(cur.customer_name ?? "") !== job.customer ||
           String(cur.phone ?? "") !== (job.phone || "") ||
           String(cur.pickup ?? "") !== job.pickup ||
           String(cur.dropoff ?? "") !== job.dropoff ||
+          curArea !== (job.pickup || "Unknown") ||
+          !sameCoord(curLat, coords.lat) ||
+          !sameCoord(curLng, coords.lng) ||
           String(cur.towbook_status ?? "") !== job.towbookStatus ||
           curDriverId !== (newDriver.towbookId ?? "");
         if (!statusChanged && !fieldsChanged) { unchanged++; continue; } // already current — no churn
-        const coords = pickupCoords(job.raw);
         const assigned = assignedDriverFromRawCall(job.raw);
         await q`UPDATE dispatch_jobs SET customer_name=${job.customer}, phone=${job.phone || ""}, area=${job.pickup || "Unknown"}, service_type=${job.serviceType}, status=${job.status}, note=${job.note}, towbook_status=${job.towbookStatus}, customer_phone=${job.phone || ""}, vehicle_desc=${job.vehicle}, pickup=${job.pickup}, dropoff=${job.dropoff}, raw_json=${JSON.stringify(job.raw)}::jsonb,
           pickup_lat=COALESCE(${coords.lat}, pickup_lat), pickup_lng=COALESCE(${coords.lng}, pickup_lng),
@@ -952,7 +1101,7 @@ export async function upsertPulledJobs(
           await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
             SELECT gen_random_uuid()::text, ${orgId}, ${actor.id}, ${actor.role}, 'towbook_status_change', 'job', ${String(cur.id)}, ${JSON.stringify({ towbookJobId: job.towbookJobId, from: String(cur.status), to: job.status, towbookStatus: job.towbookStatus })}::jsonb, ${trigger}`;
         }
-        existing.set(job.towbookJobId, { ...cur, status: job.status, customer_name: job.customer, phone: job.phone, pickup: job.pickup, dropoff: job.dropoff, towbook_status: job.towbookStatus });
+        existing.set(job.towbookJobId, { ...cur, status: job.status, customer_name: job.customer, phone: job.phone, pickup: job.pickup, dropoff: job.dropoff, area: job.pickup || "Unknown", towbook_status: job.towbookStatus });
         updated++;
       }
     } catch {
@@ -977,7 +1126,7 @@ export async function upsertPulledJobs(
  *  import inside this private function (tree-shaken out of the client bundle,
  *  same pattern as status-push-core). */
 async function doSyncForOrg(orgId: string, trigger: string, actorHint?: { id: string; role: AuthUser["role"] }): Promise<TowbookSyncResult> {
-  const q = sql();
+  const q = sqlWithTimeout(SYNC_TICK_TIMEOUT_MS);
   const sess = await q`SELECT encrypted_session, status FROM towbook_sessions WHERE org_id=${orgId} AND session_kind='owner'`;
   if (!sess.length || String(sess[0].status) !== "connected" || !String(sess[0].encrypted_session || "").length) {
     return syncResult("not_connected", "Towbook is not connected for this organization — connect it in Settings first.");
@@ -1086,6 +1235,27 @@ async function doSyncForOrg(orgId: string, trigger: string, actorHint?: { id: st
 /** Per-org in-flight guard: concurrent triggers (manual button, pull-on-read,
  *  interval) share one sync per org instead of overlapping. */
 const syncInFlight = new Map<string, Promise<TowbookSyncResult>>();
+/** Hard per-tick deadline for the 3s Towbook sync + auto-dispatch loop. Sync
+ *  alone can legitimately take ~12s (discovery + pull + upsert + dispatch), so
+ *  30s is a generous cap that still guarantees a hung DB call cannot wedge the
+ *  loop forever: the race below ALWAYS clears the in-flight guard (via .finally
+ *  on a timeout that rejects), so the next interval fire starts a fresh tick. */
+const SYNC_TICK_TIMEOUT_MS = 30_000;
+/** Diagnostic-write deadline: persisting a sync result must itself be
+ *  time-bounded, or the wedge could hide behind its own diagnostic write. */
+const SYNC_DIAG_TIMEOUT_MS = 10_000;
+/** Race `p` against a timer that rejects after `ms`; always clears the timer
+ *  when either side settles, so timers never linger. The timed-out side becomes
+ *  an ordinary error for the caller to persist + rethrow. */
+function withHardTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    const t = timer as unknown as { unref?: () => void };
+    if (typeof t.unref === "function") t.unref();
+  });
+  return Promise.race([p, timeout]).finally(() => { if (timer) clearTimeout(timer); });
+}
 
 /** Persist the result of EVERY sync run (self-documenting): counts + code +
  *  message + diagnostics, so a run that finds nothing is explainable from the
@@ -1107,16 +1277,36 @@ export async function persistSyncResult(orgId: string, r: TowbookSyncResult): Pr
     // undefined value (JSON.stringify drops them silently) — the 2026-08-10 bug
     // persisted a coerced "undefined" STRING; this makes that class of bug
     // impossible and keeps every field a real JSON value.
-    await sql()`UPDATE towbook_sessions SET last_result=${JSON.stringify(JSON.parse(JSON.stringify(payload)))}::jsonb WHERE org_id=${orgId} AND session_kind='owner'`;
+    await sqlWithTimeout(SYNC_DIAG_TIMEOUT_MS)`UPDATE towbook_sessions SET last_result=${JSON.stringify(JSON.parse(JSON.stringify(payload)))}::jsonb WHERE org_id=${orgId} AND session_kind='owner'`;
   } catch { /* never mask the sync result with a diagnostics-write failure */ }
 }
 
 function syncForOrg(orgId: string, trigger: string, actor?: { id: string; role: AuthUser["role"] }): Promise<TowbookSyncResult> {
   const running = syncInFlight.get(orgId);
   if (running) return running;
-  const p = doSyncForOrg(orgId, trigger, actor).then(async (r) => { await persistSyncResult(orgId, r); return r; }).finally(() => { syncInFlight.delete(orgId); });
-  syncInFlight.set(orgId, p);
-  return p;
+  const tick = doSyncForOrg(orgId, trigger, actor).then(async (r) => { await persistSyncResult(orgId, r); return r; });
+  const tracked = withHardTimeout(tick, SYNC_TICK_TIMEOUT_MS, `towbook sync (${trigger})`)
+    .catch(async (err) => {
+      // Wedge observability: a timed-out (or otherwise thrown) tick writes a
+      // diagnostic to towbook_sessions.last_result so a future hang is visible
+      // in the DB, never silent. The write itself is time-bounded and must
+      // never block the guard clearing below.
+      try {
+        const msg = String((err as Error)?.message ?? err).slice(0, 280);
+        await persistSyncResult(orgId, {
+          ok: false,
+          code: msg.includes("timed out after") ? "timeout" : "error",
+          message: `${trigger}: ${msg}`,
+          added: 0, updated: 0, failed: 0,
+          diagnostics: [],
+          ranAt: new Date().toISOString(),
+        });
+      } catch { /* a diagnostic write never blocks the guard clearing */ }
+      throw err;
+    })
+    .finally(() => { syncInFlight.delete(orgId); });
+  syncInFlight.set(orgId, tracked);
+  return tracked;
 }
 
 /** Pull-on-read trigger: fire-and-forget refresh when the org's session is connected
@@ -1126,7 +1316,7 @@ function syncForOrg(orgId: string, trigger: string, actor?: { id: string; role: 
 async function maybeAutoSync(orgId: string): Promise<void> {
   try {
     if (!configured()) return;
-    const rows = await sql()`SELECT last_sync_at FROM towbook_sessions WHERE org_id=${orgId} AND session_kind='owner' AND status='connected' AND encrypted_session <> ''`;
+    const rows = await sqlWithTimeout(SYNC_DIAG_TIMEOUT_MS)`SELECT last_sync_at FROM towbook_sessions WHERE org_id=${orgId} AND session_kind='owner' AND status='connected' AND encrypted_session <> ''`;
     if (!rows.length) return;
     const last = rows[0].last_sync_at ? new Date(String(rows[0].last_sync_at)).getTime() : 0;
     if (Date.now() - last > 3_000) void syncForOrg(orgId, "sync:pull-on-read");
@@ -1148,20 +1338,31 @@ function startBackgroundSync() {
     void (async () => {
       try {
         if (!configured()) return;
-        const rows = await sql()`SELECT org_id FROM towbook_sessions WHERE session_kind='owner' AND status='connected' AND encrypted_session <> '' AND (last_sync_at IS NULL OR last_sync_at < NOW() - INTERVAL '3 seconds')`;
+        const rows = await sqlWithTimeout(SYNC_TICK_TIMEOUT_MS)`SELECT org_id FROM towbook_sessions WHERE session_kind='owner' AND status='connected' AND encrypted_session <> '' AND (last_sync_at IS NULL OR last_sync_at < NOW() - INTERVAL '3 seconds')`;
         for (const r of rows) {
           const orgId = String(r.org_id);
           void (async () => {
             try {
-              await syncForOrg(orgId, "sync:interval");
-              // Adapter: AI-dispatcher deps type the actor role loosely (string);
-              // syncForOrg expects the narrow AuthUser role union — cast is safe
-              // because every actor passed here comes from resolveOrgActor.
-              await runAutoDispatch(orgId, {
-                syncForOrg: (oid: string, trigger: string, actor?: { id: string; role: string }) =>
-                  syncForOrg(oid, trigger, actor as { id: string; role: AuthUser["role"] } | undefined),
-                resolveOrgActor,
-              });
+              // Per-org tick body (sync + auto-dispatch) is hard-timeout-wrapped:
+              // a hung DB call inside either half can never hold this async chain
+              // forever — the next interval fire starts a fresh tick. The sync's
+              // own in-flight guard is also cleared on timeout (syncForOrg), so
+              // the loop keeps firing even when one tick is stuck.
+              await withHardTimeout(
+                (async () => {
+                  await syncForOrg(orgId, "sync:interval");
+                  // Adapter: AI-dispatcher deps type the actor role loosely (string);
+                  // syncForOrg expects the narrow AuthUser role union — cast is safe
+                  // because every actor passed here comes from resolveOrgActor.
+                  await runAutoDispatch(orgId, {
+                    syncForOrg: (oid: string, trigger: string, actor?: { id: string; role: string }) =>
+                      syncForOrg(oid, trigger, actor as { id: string; role: AuthUser["role"] } | undefined),
+                    resolveOrgActor,
+                  });
+                })(),
+                SYNC_TICK_TIMEOUT_MS,
+                `background tick ${orgId}`,
+              );
             } catch { /* best-effort — one org's failure never stops the loop */ }
           })();
         }

@@ -146,6 +146,71 @@ try {
   await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${ORG}, ${USER}, 'owner')`;
   await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES(${ORG}, '', 'error')`;
   created = true;
+  // ---- Agero motor-club call normalization (owner bug 2026-08-11: live queue
+  //      showed the ACCOUNT name 'Agero (Swoop) Bridgeport' + location 'Unknown').
+  //      Real /api/calls shape: account = motor club, contacts[0] = the member,
+  //      waypoints[0] = pickup with coords, assets[0] = the vehicle.
+  const ageroCall = {
+    id: 279754520,
+    callNumber: 279754520,
+    type: 1,
+    tags: [],
+    status: { id: 1, next: { statusId: 2, waypointId: 516941812 } },
+    account: { id: 894873, zip: "06606", city: "Bridgeport", state: "CT", typeId: 5, address: "70 Pitt Street", company: "Agero (Swoop) Bridgeport", masterAccountId: 29 },
+    contacts: [{ id: 250891316, zip: "", city: "", name: "Morgan R R.", type: 0, email: "", phone: "475-238-5705", state: "", address: "", isProblemCustomer: false, enableRoadsideMessages: false }],
+    waypoints: [{ id: 516941812, zip: "06513", title: "Pickup", address: "55 Thompson St East Haven, CT 06513", hasToll: false, latitude: 41.323631, position: 1, longitude: -72.849784 }],
+    towSource: "55 Thompson St East Haven, CT 06513",
+    assets: [{ id: 281812512, vin: "2G1105SA7G9135427", make: "Chevrolet", year: 2016, color: { id: 1, name: "Black" }, model: "Impala", drivable: false }],
+    reason: { id: 365, name: "Jump Start" },
+    owner: { id: 116012, fullName: "Brittani Simms" },
+    createDate: "2026-08-11T16:00:00",
+  };
+  const nA = normalizeJsonCall(ageroCall, "");
+  check("Agero: call normalizes ok", nA.ok === true, nA.ok ? "" : nA.reason);
+  if (nA.ok) {
+    const j = nA.job;
+    check("Agero: customer is the MEMBER (contacts[0].name), never the account", j.customer === "Morgan R R.", j.customer);
+    check("Agero: phone comes from contacts[0].phone", j.phone === "475-238-5705", j.phone);
+    check("Agero: pickup is the Pickup waypoint address", j.pickup === "55 Thompson St East Haven, CT 06513", j.pickup);
+    check("Agero: area derives from pickup (never 'Unknown')", (j.pickup || "Unknown") !== "Unknown");
+    check("Agero: pickup coords from the waypoint", j.pickupLat === 41.323631 && j.pickupLng === -72.849784, `${j.pickupLat},${j.pickupLng}`);
+    check("Agero: vehicle make/model/year from assets[0]", j.vehicle.includes("2016") && j.vehicle.includes("Chevrolet") && j.vehicle.includes("Impala") && j.vehicle.includes("Black"), j.vehicle);
+    check("Agero: single waypoint -> no spurious dropoff", j.dropoff === "", j.dropoff);
+    check("Agero: service type derived from reason.name", typeof j.serviceType === "string" && j.serviceType.length > 0, j.serviceType);
+    // upsert-level: the 3s loop's next pull must rewrite stored rows (backfill).
+    // dispatch_jobs.id = "tb-<towbookId>" is a GLOBAL pkey: the owner org already
+    // holds tb-279754520, so the DB-level insert uses a cloned call with a fresh id.
+    const jIns = normalizeJsonCall({ ...ageroCall, id: 279999520, callNumber: 279999520 }, "").job;
+    const rA = await upsertPulledJobs(ORG, { id: USER, role: "owner" }, [jIns], "sync:fixture-agero");
+    check("Agero: first upsert adds 1", rA.added === 1, JSON.stringify(rA));
+    const rowA = await q`SELECT customer_name, area, pickup, pickup_lat, pickup_lng FROM dispatch_jobs WHERE towbook_job_id='279999520' AND org_id=${ORG}`;
+    check("Agero: stored customer_name is the member", rowA.length === 1 && rowA[0].customer_name === "Morgan R R.", JSON.stringify(rowA[0]));
+    check("Agero: stored area is the pickup address, not 'Unknown'", rowA.length === 1 && rowA[0].area === "55 Thompson St East Haven, CT 06513", JSON.stringify(rowA[0]));
+    check("Agero: stored pickup + coords", rowA.length === 1 && rowA[0].pickup === "55 Thompson St East Haven, CT 06513" && Math.abs(Number(rowA[0].pickup_lat) - 41.323631) < 1e-6 && Math.abs(Number(rowA[0].pickup_lng) - -72.849784) < 1e-6, JSON.stringify(rowA[0]));
+    const rA2 = await upsertPulledJobs(ORG, { id: USER, role: "owner" }, [jIns], "sync:fixture-agero");
+    check("Agero: re-sync reports unchanged (no churn)", rA2.unchanged === 1 && rA2.updated === 0, JSON.stringify(rA2));
+    // Simulate the pre-fix stored state, then confirm the re-sync backfills it.
+    await q`UPDATE dispatch_jobs SET customer_name='Agero (Swoop) Bridgeport', area='Unknown', pickup='', pickup_lat=NULL, pickup_lng=NULL WHERE towbook_job_id='279999520' AND org_id=${ORG}`;
+    const rA3 = await upsertPulledJobs(ORG, { id: USER, role: "owner" }, [jIns], "sync:fixture-agero");
+    check("Agero: backfill re-sync updates the row", rA3.updated === 1 && rA3.unchanged === 0, JSON.stringify(rA3));
+    const rowA3 = await q`SELECT customer_name, area, pickup, pickup_lat, pickup_lng FROM dispatch_jobs WHERE towbook_job_id='279999520' AND org_id=${ORG}`;
+    check("Agero: backfilled customer/area/pickup/coords", rowA3.length === 1 && rowA3[0].customer_name === "Morgan R R." && rowA3[0].area === "55 Thompson St East Haven, CT 06513" && rowA3[0].pickup === "55 Thompson St East Haven, CT 06513" && Number(rowA3[0].pickup_lat) === 41.323631 && Number(rowA3[0].pickup_lng) === -72.849784, JSON.stringify(rowA3[0]));
+    await q`DELETE FROM status_events WHERE org_id=${ORG} AND job_id='tb-279999520'`.catch(() => {});
+    await q`DELETE FROM audit_log WHERE org_id=${ORG} AND entity_id='tb-279999520'`.catch(() => {});
+    await q`DELETE FROM dispatch_jobs WHERE towbook_job_id='279999520' AND org_id=${ORG}`.catch(() => {});
+  }
+  // two-waypoint variant: dropoff must come from the second waypoint
+  const twoWp = { ...ageroCall, id: 999001, waypoints: [{ title: "Pickup", address: "A St", latitude: 41.1, longitude: -72.1, position: 1 }, { title: "Dropoff", address: "B St", latitude: 41.2, longitude: -72.2, position: 2 }] };
+  const nT = normalizeJsonCall(twoWp, "");
+  check("two-waypoint: pickup + dropoff both extracted", nT.ok && nT.job.pickup === "A St" && nT.job.dropoff === "B St", nT.ok ? `${nT.job.pickup} -> ${nT.job.dropoff}` : nT.reason);
+  // club-only (no contacts): must still fall back to account.company
+  const clubOnly = { ...ageroCall, id: 999002, contacts: [] };
+  const nC = normalizeJsonCall(clubOnly, "");
+  check("club-only (no contacts): falls back to account.company", nC.ok && nC.job.customer === "Agero (Swoop) Bridgeport", nC.ok ? nC.job.customer : nC.reason);
+  // plain call with a top-level customer string: member wins over account
+  const plain = { ...ageroCall, id: 999003, contacts: [], customer: "Jane Public" };
+  const nP = normalizeJsonCall(plain, "");
+  check("plain call: top-level customer wins over account", nP.ok && nP.job.customer === "Jane Public", nP.ok ? nP.job.customer : nP.reason);
 
   // ---- 0) mapping consts: 255 → cancelled, 252 → completed, 0..5 unchanged,
   //        nothing left unmapped
