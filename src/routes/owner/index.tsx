@@ -25,6 +25,7 @@ import {
   timeAgo,
 } from "~/lib/job-ui";
 import { mutationKey, useDispatchStore } from "~/lib/store";
+import { JobDetailDisclosure } from "~/components/job-detail";
 
 export const Route = createFileRoute("/owner/")({ component: OwnerDashboard });
 
@@ -243,21 +244,24 @@ function CompletedRow({ job, contractors }: { job: Job; contractors: Contractor[
   const driverName = jobDriverName(job, contractors);
   const Icon = SERVICE_ICONS[job.serviceType];
   return (
-    <div className="flex items-center gap-3 border-b border-ink-100 px-4 py-3.5 transition-colors duration-150 last:border-0 hover:bg-hover">
-      <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-ink-50 text-ink-500">
-        <Icon className="size-5" strokeWidth={2} aria-hidden="true" />
-      </span>
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-semibold">
-          {job.customerName} <span className="font-normal text-ink-400">·</span>{" "}
-          <span className="font-medium text-ink-500">{SERVICE_LABELS[job.serviceType]}</span>
-        </p>
-        <p className="text-xs tabular-nums text-ink-400">
-          {driverName ?? "Unassigned"} · {fmtDuration(job.createdAt, job.completedAt)} · done{" "}
-          {timeAgo(job.completedAt)}
-        </p>
+    <div className="border-b border-ink-100 transition-colors duration-150 last:border-0 hover:bg-hover">
+      <div className="flex items-center gap-3 px-4 py-3.5">
+        <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-ink-50 text-ink-500">
+          <Icon className="size-5" strokeWidth={2} aria-hidden="true" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-semibold">
+            {job.customerName} <span className="font-normal text-ink-400">·</span>{" "}
+            <span className="font-medium text-ink-500">{SERVICE_LABELS[job.serviceType]}</span>
+          </p>
+          <p className="text-xs tabular-nums text-ink-400">
+            {driverName ?? "Unassigned"} · {fmtDuration(job.createdAt, job.completedAt)} · done{" "}
+            {timeAgo(job.completedAt)}
+          </p>
+        </div>
+        <StatusBadge className={`shrink-0 ${JOB_STATUS_META.completed.badge}`}>Done</StatusBadge>
       </div>
-      <StatusBadge className={`shrink-0 ${JOB_STATUS_META.completed.badge}`}>Done</StatusBadge>
+      <JobDetailDisclosure jobId={job.id} label="Details & photos" />
     </div>
   );
 }

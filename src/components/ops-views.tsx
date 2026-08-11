@@ -39,6 +39,7 @@ import { listContractors, type ContractorRow } from "~/data/contractor-managemen
 import { getStatusEvents, type StatusEvent } from "~/data/server";
 import { getAllJobPhotoStatuses, type JobPhotoStatus } from "~/data/driver-photos";
 import { getAllCompletionCaptures, type CompletionCaptureStatus } from "~/data/completion";
+import { JobDetailDisclosure } from "~/components/job-detail";
 
 /* ============================================================================
  * Shared dispatch views — rendered inside BOTH the ops shell (/ops/*) and the
@@ -236,8 +237,7 @@ export function QueueView() {
               .map((job, i) => (
                 <CompletedRow key={job.id} job={job} contractors={state.contractors} last={i === 4} />
               ))}
-          </Card>
-        )}
+          </Card>        )}
       </section>
     </div>
   );
@@ -363,6 +363,7 @@ export function HistoryView() {
                   </ol>
                 </div>
               )}
+              <JobDetailDisclosure jobId={job.id} label="Details & photos" />
             </Card>
           );
         })
@@ -672,6 +673,8 @@ function IncomingJobCard({ job, contractors }: { job: Job; contractors: Contract
       )}
 
       {picking && <OverridePicker job={job} rec={rec} contractors={contractors} onAssign={(id) => void assign(id)} />}
+
+      <JobDetailDisclosure jobId={job.id} />
     </Card>
   );
 }
@@ -821,6 +824,8 @@ function ActiveJobCard({ job, contractors }: { job: Job; contractors: Contractor
           </Button>
         </div>
       )}
+
+      <JobDetailDisclosure jobId={job.id} />
     </Card>
   );
 }
@@ -831,18 +836,21 @@ function CompletedRow({ job, contractors, last }: { job: Job; contractors: Contr
   const driverName = jobDriverName(job, contractors);
   const duration = fmtDuration(job.assignedAt ?? job.createdAt, job.completedAt);
   return (
-    <div className={`flex items-center gap-3 px-4 py-3 ${last ? "" : "border-b border-ink-100"}`}>
-      <ServiceChip serviceType={job.serviceType} tone="ink" />
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-semibold">
-          {job.customerName} <span className="font-normal text-ink-400">·</span>{" "}
-          <span className="font-medium text-ink-500">{SERVICE_LABELS[job.serviceType]}</span>
-        </p>
-        <p className="text-xs tabular-nums text-ink-400">
-          {driverName ?? "Unassigned"} · {duration} · done {timeAgo(job.completedAt)}
-        </p>
+    <div className={`${last ? "" : "border-b border-ink-100"}`}>
+      <div className="flex items-center gap-3 px-4 py-3">
+        <ServiceChip serviceType={job.serviceType} tone="ink" />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-semibold">
+            {job.customerName} <span className="font-normal text-ink-400">·</span>{" "}
+            <span className="font-medium text-ink-500">{SERVICE_LABELS[job.serviceType]}</span>
+          </p>
+          <p className="text-xs tabular-nums text-ink-400">
+            {driverName ?? "Unassigned"} · {duration} · done {timeAgo(job.completedAt)}
+          </p>
+        </div>
+        <StatusBadge className={`shrink-0 ${JOB_STATUS_META.completed.badge}`}>Done</StatusBadge>
       </div>
-      <StatusBadge className={`shrink-0 ${JOB_STATUS_META.completed.badge}`}>Done</StatusBadge>
+      <JobDetailDisclosure jobId={job.id} label="Details & photos" />
     </div>
   );
 }

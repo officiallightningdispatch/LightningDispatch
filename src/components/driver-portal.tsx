@@ -15,6 +15,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AppShell } from "~/components/app-shell";
 import { Button, Card, useToast } from "~/components/ui";
 import { JobPhotoFlow } from "~/components/driver-photos-ui";
+import { JobDetailDisclosure } from "~/components/job-detail";
 import { driverJobAction, driverJobs, driverLogout, type DriverCall } from "~/data/driver-auth";
 import { pingDriverLocation } from "~/data/driver-gps";
 
@@ -248,6 +249,8 @@ function DriverJobCard({ call, acting, onAct, onQueueChanged }: { call: DriverCa
       {(call.statusId === 3 || call.statusId === 4) && (
         <JobPhotoFlow callId={call.id} jobStatus={jobStatus} onCompleted={onQueueChanged} />
       )}
+
+      <JobDetailDisclosure jobId={call.id} label="Details & photos" />
     </Card>
   );
 }
