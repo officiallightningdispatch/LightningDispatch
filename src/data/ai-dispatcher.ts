@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { sql } from "~/db";
-import { decryptSession } from "./towbook-key";
+import { decryptSession, findSiteRoot } from "./towbook-key";
 
 /* ============================ AI dispatcher engine ============================
  * Owner-directed 2026-08-10: auto-accept ALL Towbook motor-club offers inside
@@ -14,11 +16,12 @@ import { decryptSession } from "./towbook-key";
  * ROAD-AWARE drive time from the driver's precise GPS (nearestDrivers lat/lng)
  * to the offer's pickup, via the ETA v3 provider chain (owner-approved 2026-08-10:
  * TomTom as the traffic-aware routing provider): TomTom Routing (live traffic +
- * construction-aware, ONLY when TOMTOM_API_KEY is set in the server env) →
+ * construction-aware, ONLY when a TomTom API key is configured — env
+ * TOMTOM_API_KEY or the stable key file, see resolveTomtomKey) →
  * OSRM public routing (static; duration = routes[0].duration) → haversine ÷
  * 30 mph × 1.35 road factor on any failure. Each provider has a 4s timeout; a
- * failure (429/5xx/network/bad shape) falls through to the next. Until the
- * owner supplies TOMTOM_API_KEY the behavior is UNCHANGED: OSRM, then the
+ * failure (429/5xx/network/bad shape) falls through to the next. Until a
+ * TomTom key is configured the behavior is UNCHANGED: OSRM, then the
  * factor model. The drive time then gets a prep buffer, never below the floor,
  * never above the ceiling (org max_eta_minutes, lowered by the offer's own
  * maxEta when smaller). Every decision reason records WHICH provider produced
@@ -61,8 +64,9 @@ import { decryptSession } from "./towbook-key";
  * escalated_unexpected_shape with the full offer JSON, NO accept. Out-of-zone
  * and unverifiable → never accept. Fetch, the env bag, and the router provider
  * are injectable (tests never hit real Towbook, TomTom, or OSRM); the loop
- * wiring resolves the provider from the server env (TomTom when TOMTOM_API_KEY
- * is set, else OSRM static — see resolveRouter).
+ * wiring resolves the provider from the server env (TomTom when a key is
+ * configured — env TOMTOM_API_KEY or the stable key file — else OSRM static;
+ * see resolveRouter).
  * ----------------------------------------------------------------------------- */
 
 export type AiDispatcherActor = { id: string; role: string };
@@ -103,12 +107,13 @@ export type EtaProvider = "tomtom" | "osrm" | "factor";
  *  itself. `router` is null ONLY when provider === "factor" (routing is
  *  disabled — the engine goes straight to the distance model). */
 export type ResolvedRouter = {
-  /** Active provider: tomtom when TOMTOM_API_KEY is set (live traffic +
-   *  construction), osrm static otherwise, factor when routing is disabled. */
+  /** Active provider: tomtom when a TomTom key is configured (env or the
+   *  stable key file — live traffic + construction), osrm static otherwise,
+   *  factor when routing is disabled. */
   provider: EtaProvider;
   /** The road router to call; null → factor model only. */
   router: RoadRouter | null;
-  /** Boolean presence of TOMTOM_API_KEY — NEVER the key itself. */
+  /** Boolean presence of a TomTom key — NEVER the key itself. */
   tomtomKeyConfigured: boolean;
 };
 
@@ -125,7 +130,8 @@ export type AiDispatcherDeps = {
    *  is resolved from `env` (defaults to process.env). */
   routerOverride?: ResolvedRouter;
   /** Env bag for provider resolution (defaults to process.env). Tests inject
-   *  { TOMTOM_API_KEY } here without touching the process environment. */
+   *  { TOMTOM_API_KEY } / { TOMTOM_KEY_FILE } here without touching the process
+   *  environment. */
   env?: Record<string, string | undefined>;
   /** Post-accept verification retry delay for the call-fetch race (default 5s;
    *  tests inject 0). */
@@ -248,7 +254,8 @@ const TOMTOM_ENDPOINT = "https://api.tomtom.com/routing/1/calculateRoute";
  *  decision row. vehicleCommercial=false keeps the route on LIGHT-DUTY rules
  *  (our trucks are not commercial-vehicle restricted). Returns null on ANY
  *  failure (429/5xx/network/timeout/bad shape) so the chain falls through to
- *  OSRM. The API key comes from the env ONLY — it is never logged or stored. */
+ *  OSRM. The API key is supplied by resolveTomtomKey (env or the stable key
+ *  file) — it is never logged, stored, or serialized. */
 export async function tomtomRoadSeconds(
   apiKey: string,
   fromLat: number,
@@ -293,18 +300,54 @@ export async function tomtomRoadSeconds(
   }
 }
 
+/** Stable, publish-proof TomTom key path: sibling of the site root, OUTSIDE
+ *  the repo and outside the build output — /home/team/shared/.secrets/tomtom.key
+ *  for this deployment (the same pattern as the Towbook session key,
+ *  towbook-key.ts). A publish/clean rebuild can never touch it. */
+const STABLE_TOMTOM_KEY_FILE = join(dirname(findSiteRoot(import.meta.url)), ".secrets", "tomtom.key");
+
+/** Resolve the TomTom Routing API key for this deployment. Resolution order
+ *  (first match wins, mirroring the Towbook session key):
+ *    1. env TOMTOM_API_KEY — non-empty (trimmed).
+ *    2. env TOMTOM_KEY_FILE — an explicit key-file path (unreadable → null, so
+ *       the chain degrades instead of crashing).
+ *    3. The stable key file at <site-root-parent>/.secrets/tomtom.key (outside
+ *       the repo and the build output).
+ *  Returns null when nothing is configured. Whitespace/newlines are trimmed
+ *  (a key file with a trailing newline resolves cleanly). The key VALUE is
+ *  never logged, stored, or serialized — callers expose only the boolean
+ *  (tomtomKeyConfigured). */
+export function resolveTomtomKey(env: Record<string, string | undefined>): string | null {
+  const fromEnv = (env.TOMTOM_API_KEY ?? "").trim();
+  if (fromEnv) return fromEnv;
+  const explicitFile = (env.TOMTOM_KEY_FILE ?? "").trim();
+  if (explicitFile) {
+    try {
+      return readFileSync(explicitFile, "utf8").trim() || null;
+    } catch {
+      return null;
+    }
+  }
+  try {
+    return readFileSync(STABLE_TOMTOM_KEY_FILE, "utf8").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 /** ETA v3 provider selection. Chain: TomTom (live traffic + construction, only
- *  when TOMTOM_API_KEY is configured) → OSRM static → haversine factor model
- *  (caller side). With NO key the behavior is exactly the pre-traffic default:
- *  OSRM, then the factor model. The TomTom provider internally falls through to
- *  OSRM on any TomTom failure, so a 429/5xx never loses the ETA. ETA_ROUTER=off
- *  is the explicit opt-out: no routing calls at all, straight to the factor
- *  model. The env bag is injectable so tests never touch process.env. */
+ *  when a TomTom key is configured — env TOMTOM_API_KEY or the stable key file
+ *  via resolveTomtomKey) → OSRM static → haversine factor model (caller side).
+ *  With NO key the behavior is exactly the pre-traffic default: OSRM, then the
+ *  factor model. The TomTom provider internally falls through to OSRM on any
+ *  TomTom failure, so a 429/5xx never loses the ETA. ETA_ROUTER=off is the
+ *  explicit opt-out: no routing calls at all, straight to the factor model.
+ *  The env bag is injectable so tests never touch process.env. */
 export function resolveRouter(
   env: Record<string, string | undefined>,
   fetchImpl: typeof fetch = globalThis.fetch,
 ): ResolvedRouter {
-  const key = (env.TOMTOM_API_KEY ?? "").trim();
+  const key = resolveTomtomKey(env);
   if (key) {
     return {
       provider: "tomtom",
@@ -327,8 +370,8 @@ export function resolveRouter(
 }
 
 /** The provider status surface for the owner panel (getAiDispatcherStatus):
- *  which ETA provider is active for this deployment + whether the TomTom key
- *  is present — the boolean only, never the key itself. */
+ *  which ETA provider is active for this deployment + whether a TomTom key is
+ *  configured (env or the stable key file) — the boolean only, never the key. */
 export function etaProviderStatus(env: Record<string, string | undefined>): {
   etaProvider: EtaProvider;
   tomtomKeyConfigured: boolean;

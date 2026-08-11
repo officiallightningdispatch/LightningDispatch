@@ -1150,10 +1150,11 @@ export type AiDispatcherStatus = {
   etaBufferMinutes: number;
   etaFloorMinutes: number;
   /** Which ETA provider is active for this deployment: "tomtom" (live traffic)
-   *  when TOMTOM_API_KEY is set in the server env, "osrm" static otherwise,
-   *  "factor" when routing is disabled (ETA_ROUTER=off). */
+   *  when a TomTom key is configured (env TOMTOM_API_KEY or the stable key
+   *  file), "osrm" static otherwise, "factor" when routing is disabled
+   *  (ETA_ROUTER=off). */
   etaProvider: "tomtom" | "osrm" | "factor";
-  /** Boolean presence of TOMTOM_API_KEY in the server env — never the key. */
+  /** Boolean presence of a TomTom key — never the key. */
   tomtomKeyConfigured: boolean;
   lastDecisionAt: string | null;
   decisionsLast24h: number;
@@ -1198,9 +1199,10 @@ export const getAiDispatcherStatus = createServerFn({ method: "GET" }).handler(a
     const sess = await q`SELECT status, last_sync_at FROM towbook_sessions WHERE org_id=${u.orgId}`;
     const a = (agg[0] ?? {}) as Record<string, unknown>;
     const s = sess[0] as Record<string, unknown> | undefined;
-    // ETA provider surface for the panel (v3): tomtom when the key is set in
-    // this server's env, else osrm static, else factor. Only the boolean
-    // presence of the key is ever exposed — never the key itself.
+    // ETA provider surface for the panel (v3): tomtom when a key is configured
+    // (env TOMTOM_API_KEY or the stable key file — resolveTomtomKey), else osrm
+    // static, else factor. Only the boolean presence of the key is ever exposed
+    // — never the key itself.
     const etaStatus = etaProviderStatus(process.env as Record<string, string | undefined>);
     const st: AiDispatcherStatus = {
       enabled: settings.aiDispatcherEnabled,

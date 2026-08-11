@@ -36,7 +36,7 @@ import { fileURLToPath } from "node:url";
  * The key value itself is never logged and never written to any tracked file.
  */
 
-function findSiteRoot(fromUrl: string): string {
+export function findSiteRoot(fromUrl: string): string {
   let dir = dirname(fileURLToPath(fromUrl));
   for (let i = 0; i < 10; i++) {
     if (existsSync(join(dir, "package.json"))) return dir;

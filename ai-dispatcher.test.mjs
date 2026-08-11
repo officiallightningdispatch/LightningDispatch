@@ -37,6 +37,7 @@ const {
   validateOfferShape,
   shapeKeyOf,
   resolveRouter,
+  resolveTomtomKey,
   etaProviderStatus,
   osrmRoadSeconds,
   tomtomRoadSeconds,
@@ -652,9 +653,11 @@ try {
     check("tomtom URL: traffic=true & routeType=fastest & departAt & vehicleCommercial=false", rf.tomtomCalls.length === 1 && rf.tomtomCalls[0].includes("traffic=true") && rf.tomtomCalls[0].includes("routeType=fastest") && rf.tomtomCalls[0].includes("departAt=") && rf.tomtomCalls[0].includes("vehicleCommercial=false"), rf.tomtomCalls[0]);
   }
   {
-    // 27b) resolveRouter WITHOUT a key → osrm provider; OSRM static RoadResult.
+    // 27b) resolveRouter with NO key anywhere (env empty, key file unreadable —
+    // TOMTOM_KEY_FILE points nowhere so the real stable key file never leaks
+    // into this hermetic test) → osrm provider; OSRM static RoadResult.
     const rf = makeRouterFetch();
-    const r2 = resolveRouter({}, rf.fetchImpl);
+    const r2 = resolveRouter({ TOMTOM_KEY_FILE: "/nonexistent/tomtom.key" }, rf.fetchImpl);
     check("resolveRouter: no key → osrm + tomtomKeyConfigured false", r2.provider === "osrm" && r2.tomtomKeyConfigured === false && typeof r2.router === "function");
     const res2 = await r2.router(41.15, -73.1, 41.2, -73.2);
     check("osrm router: duration seconds + static provider (no traffic)", res2?.provider === "osrm" && res2.seconds === 600 && res2.liveTraffic === false && rf.osrmCalls.length === 1 && rf.tomtomCalls.length === 0, JSON.stringify(res2));
@@ -676,7 +679,7 @@ try {
   {
     // 27e) ETA_ROUTER=off → factor-only (router null); osrmRoadSeconds/
     // tomtomRoadSeconds also return the RoadResult shape directly.
-    const r5 = resolveRouter({ ETA_ROUTER: "off" }, makeRouterFetch().fetchImpl);
+    const r5 = resolveRouter({ ETA_ROUTER: "off", TOMTOM_KEY_FILE: "/nonexistent/tomtom.key" }, makeRouterFetch().fetchImpl);
     check("resolveRouter: ETA_ROUTER=off → factor + router null", r5.provider === "factor" && r5.router === null && r5.tomtomKeyConfigured === false);
     const rf5 = makeRouterFetch();
     const osrmRes = await osrmRoadSeconds(41.15, -73.1, 41.2, -73.2, rf5.fetchImpl);
@@ -701,11 +704,13 @@ try {
     check("engine+key: ETA 14 min + raw_response.eta provider tomtom/liveTraffic/delay/routerNotes", v && Number(v.eta_minutes) === 14 && v.raw_response?.eta?.provider === "tomtom" && v.raw_response?.eta?.liveTraffic === true && v.raw_response?.eta?.trafficDelaySeconds === 120 && String(v.raw_response?.eta?.routerNotes).includes("delay 120"), JSON.stringify(v?.raw_response?.eta));
   }
   {
-    // 27g) engine end-to-end WITHOUT a key, through the REAL resolveRouter path:
-    // OSRM URL hit (600s → 10 min), reason names osrm, no TomTom call.
+    // 27g) engine end-to-end WITHOUT a key anywhere, through the REAL
+    // resolveRouter path (no routerOverride): TOMTOM_KEY_FILE points nowhere so
+    // the real stable key file never leaks into the test → OSRM URL hit (600s →
+    // 10 min), reason names osrm, no TomTom call.
     const m = makeFetch({ offers: [offer(8022)], drivers: [driver(603482, "Antone jerret", { lat: 41.15, lng: -73.1, etaSec: 1255 })] });
     const rf = makeRouterFetch();
-    const { deps } = makeDeps(withRouter(m.fetchImpl, rf.fetchImpl), null, { noRouterOverride: true });
+    const { deps } = makeDeps(withRouter(m.fetchImpl, rf.fetchImpl), null, { noRouterOverride: true, env: { TOMTOM_KEY_FILE: "/nonexistent/tomtom.key" } });
     const r = await runAutoDispatch(ORG3, deps);
     check("engine no-key: auto_accept_with_driver + reason names osrm road", r.decisions[0]?.decision === "auto_accept_with_driver" && String(r.decisions[0]?.reason).includes("osrm road"), String(r.decisions[0]?.reason));
     check("engine no-key: exactly one OSRM call, zero TomTom calls", rf.osrmCalls.length === 1 && rf.tomtomCalls.length === 0, `${rf.osrmCalls.length}/${rf.tomtomCalls.length}`);
@@ -728,12 +733,37 @@ try {
   {
     // 27i) etaProviderStatus — the exact surface getAiDispatcherStatus exposes
     // (server.ts imports this pure fn): correct with/without the key + factor.
+    // The no-key cases point TOMTOM_KEY_FILE nowhere so the real stable key
+    // file never leaks into this hermetic test.
     const withKey = etaProviderStatus({ TOMTOM_API_KEY: "test-key-not-real" });
-    const noKey = etaProviderStatus({});
-    const off = etaProviderStatus({ ETA_ROUTER: "off" });
+    const noKey = etaProviderStatus({ TOMTOM_KEY_FILE: "/nonexistent/tomtom.key" });
+    const off = etaProviderStatus({ ETA_ROUTER: "off", TOMTOM_KEY_FILE: "/nonexistent/tomtom.key" });
     check("etaProviderStatus: key → tomtom + keyConfigured true (never the key)", withKey.etaProvider === "tomtom" && withKey.tomtomKeyConfigured === true && JSON.stringify(withKey).includes("test-key") === false);
     check("etaProviderStatus: no key → osrm + keyConfigured false", noKey.etaProvider === "osrm" && noKey.tomtomKeyConfigured === false);
     check("etaProviderStatus: ETA_ROUTER=off → factor", off.etaProvider === "factor" && off.tomtomKeyConfigured === false);
+  }
+  {
+    // 27j) resolveTomtomKey — env-first, then TOMTOM_KEY_FILE, then the stable
+    // key file (the LIVE production source). Hermetic: the temp file is written
+    // and removed within this block; the stable-path read is read-only and the
+    // VALUE is never printed (length only) — the key never appears in output.
+    const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = mkdtempSync(join(tmpdir(), "ttkey-"));
+    const f = join(dir, "tomtom.key");
+    writeFileSync(f, "  file-key-abc\n\n"); // whitespace + trailing newline must trim
+    const viaFile = resolveTomtomKey({ TOMTOM_KEY_FILE: f });
+    check("resolveTomtomKey: TOMTOM_KEY_FILE read + whitespace trimmed", viaFile === "file-key-abc", String(viaFile));
+    const envWins = resolveTomtomKey({ TOMTOM_API_KEY: "env-key", TOMTOM_KEY_FILE: f });
+    check("resolveTomtomKey: env TOMTOM_API_KEY wins over the key file", envWins === "env-key", String(envWins));
+    const missing = resolveTomtomKey({ TOMTOM_KEY_FILE: join(dir, "nope.key") });
+    check("resolveTomtomKey: unreadable file → null (degrades, never crashes)", missing === null, String(missing));
+    const stable = resolveTomtomKey({});
+    check("resolveTomtomKey: empty env → stable key file resolves non-empty (value never echoed)", typeof stable === "string" && stable.length > 0, `len=${stable?.length ?? -1}`);
+    const routerViaFile = resolveRouter({ TOMTOM_KEY_FILE: f }, makeRouterFetch().fetchImpl);
+    check("resolveRouter: key from file → tomtom provider + keyConfigured true", routerViaFile.provider === "tomtom" && routerViaFile.tomtomKeyConfigured === true && typeof routerViaFile.router === "function");
+    rmSync(dir, { recursive: true, force: true });
   }
 
   /* ============ 26) ledger totals + owner org untouched ============ */
