@@ -41,6 +41,13 @@ const {
   etaProviderStatus,
   osrmRoadSeconds,
   tomtomRoadSeconds,
+  queueInclusiveArrivalMinutes,
+  gpsPingAgeMinutes,
+  driverActiveCount,
+  loadOrgDriverQueues,
+  etaDetailLabel,
+  MAX_DRIVER_QUEUE,
+  SERVICE_MINUTES_PER_JOB,
 } = await import("./src/data/ai-dispatcher.ts");
 const { encryptSession } = await import("./src/data/towbook-key.ts");
 const { ensureSchema } = await import("./src/data/migrations.ts");
@@ -54,6 +61,7 @@ const check = (name, cond, extra = "") => {
 const ORG = `qa-ad-${randomUUID()}`;
 const ORG2 = `qa-ad2-${randomUUID()}`;
 const ORG3 = `qa-ad3-${randomUUID()}`; // ETA v3 traffic-layer engine tests
+const ORG4 = `qa-ad4-${randomUUID()}`; // queue-aware capacity + all-loaded engine tests
 const USER = `qa-ad-user-${randomUUID()}`;
 let created = false;
 
@@ -244,10 +252,16 @@ try {
   await q`INSERT INTO organizations(id, name) VALUES(${ORG}, 'qa ai-dispatcher')`;
   await q`INSERT INTO organizations(id, name) VALUES(${ORG2}, 'qa ai-dispatcher no-session')`;
   await q`INSERT INTO organizations(id, name) VALUES(${ORG3}, 'qa ai-dispatcher eta-v3')`;
+  await q`INSERT INTO organizations(id, name) VALUES(${ORG4}, 'qa ai-dispatcher queue-aware')`;
   await q`INSERT INTO users(id, name, email, password_hash) VALUES(${USER}, 'QA AI Dispatcher Owner', ${`ad-${randomUUID()}@qa.local`}, 'x')`;
   await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${ORG}, ${USER}, 'owner')`;
   await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES(${ORG}, ${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))}, 'connected')`;
   await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES(${ORG3}, ${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))}, 'connected')`;
+  await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES(${ORG4}, ${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))}, 'connected')`;
+  // ORG4: raise the ETA ceiling so the queue-inclusive ETA is quoted UNCLAMPED
+  // (a 3-job queue always exceeds the default 45-min SLA ceiling).
+  await q`INSERT INTO org_settings(org_id) VALUES(${ORG4}) ON CONFLICT(org_id) DO NOTHING`;
+  await q`UPDATE org_settings SET max_eta_minutes=180 WHERE org_id=${ORG4}`;
   created = true;
   // Owner-org baseline: the REAL incident row (offer 326520203, auto-accepted
   // 2026-08-10 with a 3-min straight-line ETA) lives in the owner org — the
@@ -269,7 +283,10 @@ try {
   const R = makeRouter({ "41.10,-73.00": 3600, "41.15,-73.10": 600, "41.19,-73.15": null });
   const freeFast = driver(703785, "Jayden Fountain", { lat: 41.1, lng: -73.0, etaSec: 604 });   // 5.7 mi straight-line, 11 min — but 60 min ROAD
   const freeSlow = driver(603482, "Antone jerret", { lat: 41.15, lng: -73.1, etaSec: 1255 });   // 21 min straight-line — but 10 min ROAD
-  const busy = driver(668209, "George Boyd", { calls: [{ callId: 1, status: 3 }] });
+  // 3 active payload calls = at the owner-directed 3-job cap → NOT eligible
+  // (a 1-2 call driver now IS eligible — the old "no current calls" rule is
+  // replaced by the < MAX_DRIVER_QUEUE capacity rule, 2026-08-11).
+  const busy = driver(668209, "George Boyd", { calls: [{ callId: 1, status: 3 }, { callId: 2, status: 3 }, { callId: 3, status: 3 }] });
   const noGps = driver(103665, "Brittani Simms", { lat: 0, lng: 0, etaSec: 5 });
   const offline = driver(717660, "Levi C Martin", { checkedIn: false, etaSec: 10 });
   const pick2 = await chooseBestDriverByRoad([freeSlow, freeFast, busy, noGps, offline], 41.2, -73.2, R);
@@ -457,7 +474,7 @@ try {
   {
     const m = makeFetch({
       offers: [offer(7012)],
-      drivers: [driver(603482, "Antone jerret", { etaSec: 10, calls: [{ callId: 1, status: 3 }] }), driver(103665, "Brittani Simms", { lat: 0, lng: 0 }), driver(717660, "Levi C Martin", { checkedIn: false })],
+      drivers: [driver(603482, "Antone jerret", { etaSec: 10, calls: [{ callId: 1, status: 3 }, { callId: 2, status: 3 }, { callId: 3, status: 3 }] }), driver(103665, "Brittani Simms", { lat: 0, lng: 0 }), driver(717660, "Levi C Martin", { checkedIn: false })],
     });
     const { deps, syncCalls } = makeDeps(m.fetchImpl);
     const r = await runAutoDispatch(ORG, deps);
@@ -571,7 +588,7 @@ try {
       offers: [offer(7019)],
       drivers: [
         driver(103665, "Brittani Simms", { lat: 0, lng: 0, etaSec: 5 }),          // no GPS
-        driver(703785, "Jayden Fountain", { lat: 41.2, lng: -73.2, etaSec: 10, calls: [{ callId: 1, status: 3 }] }), // busy
+        driver(703785, "Jayden Fountain", { lat: 41.2, lng: -73.2, etaSec: 10, calls: [{ callId: 1, status: 3 }, { callId: 2, status: 3 }, { callId: 3, status: 3 }] }), // at the 3-job cap
       ],
     });
     const { deps } = makeDeps(m.fetchImpl);
@@ -671,6 +688,7 @@ try {
     const r3 = resolveRouter({ TOMTOM_API_KEY: "test-key-not-real" }, rf.fetchImpl);
     const res3 = await r3.router(41.15, -73.1, 41.2, -73.2);
     check("tomtom 429 → OSRM fallback (1 call each, provider osrm)", res3?.provider === "osrm" && res3.seconds === 600 && rf.tomtomCalls.length === 1 && rf.osrmCalls.length === 1, JSON.stringify(res3));
+    check("tomtom 429: transient failure surfaced (tomtomFailure HTTP 429) — ETA honesty", res3?.tomtomFailure === "HTTP 429", JSON.stringify(res3));
   }
   {
     // 27d) TomTom failure AND OSRM failure → null → caller uses the factor model.
@@ -767,6 +785,160 @@ try {
     const routerViaFile = resolveRouter({ TOMTOM_KEY_FILE: f }, makeRouterFetch().fetchImpl);
     check("resolveRouter: key from file → tomtom provider + keyConfigured true", routerViaFile.provider === "tomtom" && routerViaFile.tomtomKeyConfigured === true && typeof routerViaFile.router === "function");
     rmSync(dir, { recursive: true, force: true });
+  }
+
+  /* ============ 28) queue-aware capacity + all-loaded arrival (owner 2026-08-11) ============ */
+  // Rules: a driver may hold up to MAX_DRIVER_QUEUE (=3) active jobs; eligible
+  // = checked-in && GPS && active < 3 (active = dispatch_jobs lifecycle
+  // statuses new/offered/accepted/en_route/arrived, cross-checked against the
+  // payload calls). All candidates at the cap → queue-inclusive arrival model.
+  {
+    check("constants: MAX_DRIVER_QUEUE=3, SERVICE_MINUTES_PER_JOB=30", MAX_DRIVER_QUEUE === 3 && SERVICE_MINUTES_PER_JOB === 30, `cap=${MAX_DRIVER_QUEUE} service=${SERVICE_MINUTES_PER_JOB}`);
+    // (a) 2-job driver eligible, 3-job driver NOT — even when the 3-job driver
+    // is road-nearer.
+    const q2 = new Map([["1001", { activeCount: 2, queuedJobs: [
+      { pickupLat: 41.16, pickupLng: -73.11, status: "en_route", createdAt: "t1" },
+      { pickupLat: 41.17, pickupLng: -73.12, status: "arrived", createdAt: "t2" },
+    ] }]]);
+    const q3 = new Map([["1002", { activeCount: 3, queuedJobs: [
+      { pickupLat: 41.18, pickupLng: -73.13, status: "en_route", createdAt: "t1" },
+      { pickupLat: 41.19, pickupLng: -73.14, status: "arrived", createdAt: "t2" },
+      { pickupLat: 41.20, pickupLng: -73.15, status: "accepted", createdAt: "t3" },
+    ] }]]);
+    const twoJob = driver(1001, "Two Job", { lat: 41.19, lng: -73.15, etaSec: 604 });
+    const threeJob = driver(1002, "Three Job", { lat: 41.18, lng: -73.14, etaSec: 300 }); // road-nearer
+    const Rq = makeRouter({ "41.19,-73.15": 900, "41.18,-73.14": 300 }); // three-job road-closer
+    const pickCap = await chooseBestDriverByRoad([twoJob, threeJob], 41.2, -73.2, Rq, new Map([...q2, ...q3]));
+    check("queue cap: 2-job driver eligible, 3-job driver excluded (road-nearer loses)", pickCap?.driver.driverId === 1001 && pickCap?.queueInclusive === false, JSON.stringify(pickCap));
+    // payload-calls cross-check: 2 active payload calls eligible, 3 not
+    const pay2 = driver(2001, "Pay Two", { lat: 41.19, lng: -73.15, etaSec: 604, calls: [{ callId: 1, status: 3 }, { callId: 2, status: 4 }] });
+    const pay3 = driver(2002, "Pay Three", { lat: 41.18, lng: -73.14, etaSec: 300, calls: [{ callId: 1, status: 3 }, { callId: 2, status: 3 }, { callId: 3, status: 3 }] });
+    const pickPay = await chooseBestDriverByRoad([pay2, pay3], 41.2, -73.2, Rq);
+    check("queue cap via payload calls: 2-call driver eligible, 3-call driver excluded", pickPay?.driver.driverId === 2001, JSON.stringify(pickPay));
+    check("driverActiveCount: max(payload, dispatch_jobs) per driver", driverActiveCount(pay2, new Map()) === 2 && driverActiveCount(pay3, new Map()) === 3 && driverActiveCount(twoJob, q2) === 2 && driverActiveCount(threeJob, q3) === 3, "");
+    // completed/cancelled payload calls never count toward the cap
+    const payDone = driver(2003, "Pay Done", { lat: 41.19, lng: -73.15, etaSec: 604, calls: [{ callId: 1, status: 5 }, { callId: 2, status: 252 }, { callId: 3, status: 255 }] });
+    check("driverActiveCount: completed/cancelled payload calls never count", driverActiveCount(payDone, new Map()) === 0, String(driverActiveCount(payDone, new Map())));
+    // (b) nearest (min road ETA) wins among sub-3-job drivers
+    const subFar = driver(2004, "Sub Far", { lat: 41.1, lng: -73.0, etaSec: 604, calls: [{ callId: 1, status: 3 }] });
+    const subNear = driver(2005, "Sub Near", { lat: 41.19, lng: -73.15, etaSec: 604, calls: [{ callId: 1, status: 3 }] });
+    const pickSub = await chooseBestDriverByRoad([subFar, subNear], 41.2, -73.2, makeRouter({ "41.10,-73.00": 3600, "41.19,-73.15": 600 }));
+    check("nearest wins among sub-3-job drivers (road ETA 10 min vs 60 min)", pickSub?.driver.driverId === 2005 && pickSub?.baseMinutes === 10, JSON.stringify(pickSub));
+    // (c) ALL-LOADED: both at the cap → queue-inclusive arrival wins + math recorded
+    // A: legs 600s(10m) + 300s(5m) + 300s(5m) + 3×30 service = 110 queue; final 600s=10 → 120
+    // B: legs 900s(15m) + 300s(5m) + 300s(5m) + 3×30 service = 115 queue; final 900s=15 → 130
+    const qA3 = new Map([["3001", { activeCount: 3, queuedJobs: [
+      { pickupLat: 41.16, pickupLng: -73.11, status: "en_route", createdAt: "t1" },
+      { pickupLat: 41.17, pickupLng: -73.12, status: "arrived", createdAt: "t2" },
+      { pickupLat: 41.18, pickupLng: -73.13, status: "accepted", createdAt: "t3" },
+    ] }]]);
+    const qB3 = new Map([["3002", { activeCount: 3, queuedJobs: [
+      { pickupLat: 41.26, pickupLng: -73.26, status: "en_route", createdAt: "t1" },
+      { pickupLat: 41.27, pickupLng: -73.27, status: "arrived", createdAt: "t2" },
+      { pickupLat: 41.28, pickupLng: -73.28, status: "accepted", createdAt: "t3" },
+    ] }]]);
+    const dA = driver(3001, "Queue A", { lat: 41.15, lng: -73.10, etaSec: 604 });
+    const dB = driver(3002, "Queue B", { lat: 41.25, lng: -73.25, etaSec: 604 });
+    const Rq3 = makeRouter({
+      "41.15,-73.10": 600, // A GPS → J1 AND A GPS → offer (final leg)
+      "41.16,-73.11": 300,
+      "41.17,-73.12": 300,
+      "41.25,-73.25": 900, // B GPS → J1 AND B GPS → offer
+      "41.26,-73.26": 300,
+      "41.27,-73.27": 300,
+    });
+    const pickAll = await chooseBestDriverByRoad([dA, dB], 41.2, -73.2, Rq3, new Map([...qA3, ...qB3]));
+    check("all-loaded: queue-inclusive arrival picks A (120 min < 130 min)", pickAll?.driver.driverId === 3001 && pickAll?.queueInclusive === true, JSON.stringify(pickAll));
+    check("all-loaded: queue math recorded (3 jobs ≈ 110 min + final leg 10; arrival 120)", pickAll?.queueMinutes === 110 && pickAll?.queuedJobCount === 3 && pickAll?.finalLegMinutes === 10 && pickAll?.baseMinutes === 120, JSON.stringify(pickAll));
+    check("all-loaded: quoted ETA includes queue time (ceil(120)+5 = 125)", finalEtaMinutes(pickAll.baseMinutes, 5, 5, 180) === 125, String(finalEtaMinutes(pickAll.baseMinutes, 5, 5, 180)));
+    check("all-loaded: clamps at the ceiling (45 default) — floor/ceiling rails kept", finalEtaMinutes(pickAll.baseMinutes, 5, 5, 45) === 45, String(finalEtaMinutes(pickAll.baseMinutes, 5, 5, 45)));
+    // queueInclusiveArrivalMinutes directly: fallback factor when routing fails
+    const dirQ = await queueInclusiveArrivalMinutes(dA, qA3.get("3001").queuedJobs, 41.2, -73.2, makeRouter({ "41.15,-73.10": null, "41.16,-73.11": null, "41.17,-73.12": null }));
+    check("queue model: router failure → factor fallback per leg (still > 90 min service)", dirQ && dirQ.arrivalMinutes > 90 && dirQ.queueMinutes > 90 && dirQ.finalLegMinutes > 0, JSON.stringify(dirQ));
+    // queue model: empty geometry → null (never fabricate a queue ETA)
+    check("queue model: no routable jobs → null (honest, no fabricated ETA)", (await queueInclusiveArrivalMinutes(dA, [], 41.2, -73.2, Rq3)) === null, "");
+    // gps ping age surface (best-effort — the live payload has no timestamp)
+    const stale = { ...driver(2006, "Stale GPS", { lat: 41.19, lng: -73.15, etaSec: 604 }), gpsUpdatedAtUtc: new Date(Date.now() - 30 * 60000).toISOString() };
+    check("gpsPingAgeMinutes: detects a 30-min-old ping", gpsPingAgeMinutes(stale) != null && gpsPingAgeMinutes(stale) >= 29 && gpsPingAgeMinutes(stale) <= 31, String(gpsPingAgeMinutes(stale)));
+    check("gpsPingAgeMinutes: no timestamp → null (nothing to flag)", gpsPingAgeMinutes(driver(2007, "Fresh", { etaSec: 604 })) === null, "");
+    const stalePick = await chooseBestDriverByRoad([stale], 41.2, -73.2, makeRouter({ "41.19,-73.15": 600 }));
+    check("stale GPS: decision label flags 'GPS ping age 30 min'", stalePick != null && String(etaDetailLabel(stalePick, 5, 5, 45, 15)).includes("GPS ping age 30 min"), String(stalePick && etaDetailLabel(stalePick, 5, 5, 45, 15)));
+  }
+
+  /* ============ 29) engine: queue-aware dispatch end-to-end (ORG4) ============ */
+  {
+    // Seed dispatch_jobs queues for ORG4 (3s-sync persists calls with assigned
+    // driver + pickup coords; the engine counts from exactly this table).
+    const seedJob = (id, driverId, lat, lng, createdAgoH) => q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, pickup_lat, pickup_lng, assigned_driver_towbook_id)
+      VALUES(${id}, ${ORG4}, 'QA Queued', '555-0101', 0, 0, 'Bridgeport', 'jump', 'en_route', ${new Date(Date.now() - createdAgoH * 3600e3).toISOString()}, '', ${lat}, ${lng}, ${driverId})`;
+    await seedJob(`qa4-a1`, "3001", 41.16, -73.11, 3);
+    await seedJob(`qa4-a2`, "3001", 41.17, -73.12, 2);
+    await seedJob(`qa4-a3`, "3001", 41.18, -73.13, 1);
+    await seedJob(`qa4-b1`, "3002", 41.26, -73.26, 3);
+    await seedJob(`qa4-b2`, "3002", 41.27, -73.27, 2);
+    await seedJob(`qa4-b3`, "3002", 41.28, -73.28, 1);
+    await seedJob(`qa4-c1`, "3003", 41.10, -73.00, 2);
+    await seedJob(`qa4-c2`, "3003", 41.11, -73.01, 1);
+    const queues = await loadOrgDriverQueues(ORG4);
+    check("loadOrgDriverQueues: counts per driver from dispatch_jobs (3/3/2)", queues.get("3001")?.activeCount === 3 && queues.get("3002")?.activeCount === 3 && queues.get("3003")?.activeCount === 2 && queues.get("3001")?.queuedJobs.length === 3, JSON.stringify([...queues].map(([k, v]) => [k, v.activeCount])));
+
+    const router = makeRouter({
+      "41.15,-73.10": 600, "41.16,-73.11": 300, "41.17,-73.12": 300,
+      "41.25,-73.25": 900, "41.26,-73.26": 300, "41.27,-73.27": 300,
+      "41.19,-73.15": 600,
+    });
+    // (d) accept still posts the chosen driverId + quoted ETA — all-loaded case:
+    // both candidates at the 3-job cap → queue-inclusive winner 3001, ETA 125.
+    {
+      const m = makeFetch({
+        offers: [{ ...offer(8031), drivers: [3001, 3002] }],
+        drivers: [driver(3001, "Queue A", { lat: 41.15, lng: -73.10, etaSec: 604 }), driver(3002, "Queue B", { lat: 41.25, lng: -73.25, etaSec: 604 })],
+      });
+      const { deps } = makeDeps(m.fetchImpl, router);
+      const r = await runAutoDispatch(ORG4, deps);
+      check("engine all-loaded: auto_accept_with_driver + winner 3001", r.decisions[0]?.decision === "auto_accept_with_driver" && r.decisions[0]?.escalated === false && r.decisions[0]?.reason.includes("VERIFIED"), JSON.stringify(r.decisions[0]));
+      const p = posts(m.calls);
+      check("engine all-loaded: accept posts driverId 3001 + queue-inclusive ETA 125", p.length === 1 && p[0]?.body?.driverId === 3001 && p[0]?.body?.ETA === 125, JSON.stringify(p[0]?.body));
+      const rows = await q`SELECT call_request_id, decision, driver_id, eta_minutes, reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG4} AND call_request_id='8031'`;
+      const row = rows[0];
+      check("engine all-loaded: reason names winner + queue math (queued 3 jobs ≈ 110 min; ETA 125 min)", row && String(row.driver_id) === "3001" && Number(row.eta_minutes) === 125 && String(row.reason).includes("queued 3 jobs ≈ 110 min") && String(row.reason).includes("final leg 10") && String(row.reason).includes("ETA 125 min"), String(row?.reason));
+      check("engine all-loaded: raw_response.eta queue facts recorded", row && row.raw_response?.eta?.queueInclusive === true && row.raw_response?.eta?.queueMinutes === 110 && row.raw_response?.eta?.queuedJobCount === 3 && row.raw_response?.eta?.finalLegMinutes === 10 && row.raw_response?.eta?.finalMinutes === 125, JSON.stringify(row?.raw_response?.eta));
+    }
+    // (a/b) engine: under-cap driver beats an over-cap driver, even when
+    // road-farther (3003 has 2 jobs → eligible; 3001 has 3 → excluded).
+    {
+      const m = makeFetch({
+        offers: [{ ...offer(8032), drivers: [3001, 3003] }],
+        drivers: [driver(3001, "Queue A", { lat: 41.15, lng: -73.10, etaSec: 604 }), driver(3003, "Two Job", { lat: 41.19, lng: -73.15, etaSec: 604 })],
+      });
+      const { deps } = makeDeps(m.fetchImpl, router);
+      const r = await runAutoDispatch(ORG4, deps);
+      const p = posts(m.calls);
+      check("engine under-cap: 2-job driver 3003 dispatched over 3-job 3001", r.decisions[0]?.decision === "auto_accept_with_driver" && p[0]?.body?.driverId === 3003 && p[0]?.body?.ETA === 15, JSON.stringify({ d: r.decisions[0], p: p[0]?.body }));
+      const rows = await q`SELECT reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG4} AND call_request_id='8032'`;
+      check("engine under-cap: reason is plain road (osrm), no queue math", rows[0] && String(rows[0].reason).includes("osrm road 10 + buffer 5") && !String(rows[0].reason).includes("queued") && rows[0].raw_response?.eta?.queueInclusive === false, String(rows[0]?.reason));
+    }
+    // (e) regression: single-driver happy path with dispatch_jobs EMPTY still
+    // dispatches (no queue rows → 0 active → eligible, ETA normal).
+    {
+      const m = makeFetch({ offers: [offer(8033)], drivers: [driver(703785, "Jayden Fountain", { lat: 41.18, lng: -73.15, etaSec: 604 })] });
+      const router2 = makeRouter({ "41.18,-73.15": 540 });
+      const { deps } = makeDeps(m.fetchImpl, router2);
+      const r = await runAutoDispatch(ORG4, deps);
+      const p = posts(m.calls);
+      check("engine regression: empty queue → driver eligible, ETA 14 (road 9 + buffer 5)", r.decisions[0]?.decision === "auto_accept_with_driver" && p[0]?.body?.driverId === 703785 && p[0]?.body?.ETA === 14, JSON.stringify({ d: r.decisions[0], p: p[0]?.body }));
+    }
+    // ETA honesty: transient TomTom failure is surfaced in the reason when the
+    // chained router falls through (engine-level, real resolveRouter path).
+    {
+      const m = makeFetch({ offers: [offer(8034)], drivers: [driver(603482, "Antone jerret", { lat: 41.15, lng: -73.1, etaSec: 1255 })] });
+      const rf = makeRouterFetch({ tomtomStatus: 429 });
+      const { deps } = makeDeps(withRouter(m.fetchImpl, rf.fetchImpl), null, { noRouterOverride: true, env: { TOMTOM_API_KEY: "test-key-not-real" } });
+      const r = await runAutoDispatch(ORG4, deps);
+      const rows = await q`SELECT reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG4} AND call_request_id='8034'`;
+      check("engine tomtom-429: reason surfaces 'tomtom failed (HTTP 429) → osrm' + ETA still quoted", rows[0] && String(rows[0].reason).includes("tomtom failed (HTTP 429) → osrm") && String(rows[0].reason).includes("osrm road 10 + buffer 5") && rows[0].raw_response?.eta?.tomtomFailure === "HTTP 429", String(rows[0]?.reason));
+      check("engine tomtom-429: 1 TomTom call, 1 OSRM call (chain attempted live first)", rf.tomtomCalls.length === 1 && rf.osrmCalls.length === 1, `${rf.tomtomCalls.length}/${rf.osrmCalls.length}`);
+    }
   }
 
   /* ============ 27k) tick observability: ai_dispatcher_runs (backlog #1) ============ */
@@ -890,6 +1062,7 @@ try {
     await q`DELETE FROM organizations WHERE id=${ORG}`.catch(() => {});
     await q`DELETE FROM organizations WHERE id=${ORG2}`.catch(() => {});
     await q`DELETE FROM organizations WHERE id=${ORG3}`.catch(() => {});
+    await q`DELETE FROM organizations WHERE id=${ORG4}`.catch(() => {});
     await q`DELETE FROM users WHERE id=${USER}`.catch(() => {});
   }
   const leftover = await q`SELECT
@@ -908,9 +1081,14 @@ try {
     (SELECT count(*) FROM ai_dispatcher_decisions WHERE org_id=${ORG3}) AS ad3,
     (SELECT count(*) FROM org_settings WHERE org_id=${ORG3}) AS os3,
     (SELECT count(*) FROM towbook_sessions WHERE org_id=${ORG3}) AS sess3,
-    (SELECT count(*) FROM ai_dispatcher_runs WHERE org_id=${ORG3}) AS runs3`;
+    (SELECT count(*) FROM ai_dispatcher_runs WHERE org_id=${ORG3}) AS runs3,
+    (SELECT count(*) FROM ai_dispatcher_decisions WHERE org_id=${ORG4}) AS ad4,
+    (SELECT count(*) FROM org_settings WHERE org_id=${ORG4}) AS os4,
+    (SELECT count(*) FROM dispatch_jobs WHERE org_id=${ORG4}) AS jobs4,
+    (SELECT count(*) FROM towbook_sessions WHERE org_id=${ORG4}) AS sess4,
+    (SELECT count(*) FROM ai_dispatcher_runs WHERE org_id=${ORG4}) AS runs4`;
   const l = leftover[0];
-  console.log(`\ncleanup: ai_decisions=${l.ad} settings=${l.os} jobs=${l.jobs} events=${l.ev} audit=${l.audit} sessions=${l.sess} members=${l.members} users=${l.users} runs=${l.runs} ad2=${l.ad2} settings2=${l.os2} runs2=${l.runs2} ad3=${l.ad3} settings3=${l.os3} sess3=${l.sess3} runs3=${l.runs3}`);
+  console.log(`\ncleanup: ai_decisions=${l.ad} settings=${l.os} jobs=${l.jobs} events=${l.ev} audit=${l.audit} sessions=${l.sess} members=${l.members} users=${l.users} runs=${l.runs} ad2=${l.ad2} settings2=${l.os2} runs2=${l.runs2} ad3=${l.ad3} settings3=${l.os3} sess3=${l.sess3} runs3=${l.runs3} ad4=${l.ad4} settings4=${l.os4} jobs4=${l.jobs4} sess4=${l.sess4} runs4=${l.runs4}`);
   if (Object.values(l).some((v) => Number(v) > 0)) {
     console.error("WARNING: QA rows remain!");
     process.exitCode = 1;

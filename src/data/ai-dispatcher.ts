@@ -27,12 +27,19 @@ import type { RecoveryResult } from "./towbook-recovery";
  * never above the ceiling (org max_eta_minutes, lowered by the offer's own
  * maxEta when smaller). Every decision reason records WHICH provider produced
  * the ETA (tomtom-traffic / osrm / factor fallback).
- * Choice is BY ROAD ETA: each candidate (checked in && has GPS && no current
- * calls) is routed and the minimum road ETA wins — a driver with a better real
- * drive time beats one with a better straight-line time. Drivers with no GPS
- * (0,0) are NEVER auto-dispatched and NO ETA is quoted for them: the offer is
- * accepted with driverId 0 + escalated (auto_accept_no_driver) so it can never
- * expire but no fabricated ETA goes to the club.
+ * Choice is BY ROAD ETA: each candidate (checked in && has GPS && fewer than
+ * MAX_DRIVER_QUEUE active jobs — queue-aware capacity, owner-directed
+ * 2026-08-11; active = new/offered/accepted/en_route/arrived, counted from
+ * the org's dispatch_jobs cross-checked against the payload's `calls`) is
+ * routed and the minimum road ETA wins — a driver with a better real
+ * drive time beats one with a better straight-line time. When EVERY candidate
+ * is at the 3-job cap, the engine dispatches to whoever would ARRIVE fastest
+ * after their queue (queue travel + SERVICE_MINUTES_PER_JOB per queued job +
+ * the final road leg to the offer) and quotes THAT queue-inclusive ETA
+ * (clamped to [floor, ceiling]). Drivers with no GPS (0,0) are NEVER
+ * auto-dispatched and NO ETA is quoted for them: the offer is accepted with
+ * driverId 0 + escalated (auto_accept_no_driver) so it can never expire but
+ * no fabricated ETA goes to the club.
  *
  * Per-offer sequence (the accept POST is the ONLY state-changing call this
  * module makes):
@@ -40,9 +47,10 @@ import type { RecoveryResult } from "./towbook-recovery";
  *   2. Zone check (haversine vs 06606 centroid) — out of zone / no coords → escalate
  *   3. Expiration check — expired → escalate (we never use acceptMissedRequest)
  *   4. GET /api/nearestDrivers?latitude=<pickup>&longitude=<pickup>&checkInForAllDrivers=true
- *      → choose best driver: checked in && has GPS && no current calls,
- *        minimizing ROAD drive time (OSRM per candidate; fallback model on
- *        routing failure)
+ *      → choose best driver: checked in && has GPS && < MAX_DRIVER_QUEUE active
+ *        jobs (queue-aware), minimizing ROAD drive time (OSRM per candidate;
+ *        fallback model on routing failure); all-loaded → queue-inclusive
+ *        arrival model
  *   5. POST /api/callRequests/{id}/accept {id, ETA, driverId|0, notes} — one
  *      retry on failure, then escalate (never silently drop). No eligible driver
  *      → driverId 0, ETA = the club's SLA ceiling (honest "not yet assigned"),
@@ -87,6 +95,12 @@ export type RoadResult = {
   trafficDelaySeconds: number | null;
   /** Human-readable router notes (TomTom: travel + delay; OSRM: static). */
   notes?: string | null;
+  /** Set ONLY when the TomTom provider was attempted and FAILED and the chain
+   *  fell through to OSRM (e.g. "HTTP 429" / "timeout" / "bad body"). Lets the
+   *  decision reason be honest about the transient failure instead of silently
+   *  recording "osrm" — ETA honesty (owner-directed 2026-08-11 incident: a live
+   *  5-min-understating quote was OSRM-only while TomTom was momentarily down). */
+  tomtomFailure?: string | null;
 };
 
 /** Road-aware drive-time source (injectable so tests are hermetic). Returns a
@@ -209,6 +223,160 @@ export function fallbackRoadMinutes(distanceMiles: number): number {
   return Math.ceil((distanceMiles / FALLBACK_ROAD_SPEED_MPH) * 60 * FALLBACK_ROAD_FACTOR);
 }
 
+/* ------------------ queue-aware capacity (owner-directed 2026-08-11) ------------------
+ * A driver may hold up to MAX_DRIVER_QUEUE active (queued) jobs at a time.
+ * Active = the lifecycle statuses new/offered/accepted/en_route/arrived
+ * (completed/cancelled are terminal and never count). An incoming offer goes
+ * to the NEAREST driver with < MAX_DRIVER_QUEUE jobs (by road-aware ETA, as
+ * before); when EVERY candidate is at the cap, the engine dispatches to
+ * whoever would ARRIVE fastest after finishing their queue: queue travel
+ * between consecutive job pickups + SERVICE_MINUTES_PER_JOB of on-scene time
+ * per queued job + the road leg to the incoming offer — and quotes THAT
+ * queue-inclusive ETA (still clamped to [floor, ceiling]). */
+
+/** Owner cap (2026-08-11): a driver with this many active jobs is NOT
+ *  eligible for a new auto-dispatch. */
+export const MAX_DRIVER_QUEUE = 3;
+
+/** Tunable on-scene service-time estimate per queued job (minutes) used by the
+ *  all-loaded queue-inclusive arrival model. Tune with the owner when real
+ *  service-time data accumulates. */
+export const SERVICE_MINUTES_PER_JOB = 30;
+
+/** dispatch_jobs lifecycle statuses that count toward a driver's queue
+ *  (terminal states never count). */
+export const ACTIVE_JOB_STATUSES = ["new", "offered", "accepted", "en_route", "arrived"] as const;
+
+/** Towbook status ids that count as active when the nearestDrivers payload
+ *  carries a driver's `calls` (0 new, 1 offered, 2 accepted, 3 en_route,
+ *  4 arrived; 5/252 completed and 255 cancelled never count). An UNKNOWN
+ *  status counts conservatively (never under-count a driver's load). */
+const ACTIVE_TOWBOOK_STATUS_IDS = new Set([0, 1, 2, 3, 4]);
+
+/** A GPS ping older than this (minutes) is surfaced in the decision reason as
+ *  stale — never silently quoted on an old ping (ETA honesty 2026-08-11). The
+ *  live nearestDrivers payload carries no ping timestamp today, so this only
+ *  fires when a payload starts including one (best-effort, future-proof). */
+const STALE_GPS_MINUTES = 5;
+
+/** One queued (active) job for a driver, with the pickup coords the queue
+ *  travel model needs. Jobs are ordered the driver will do them (oldest
+ *  created/assigned first — FIFO, the natural dispatch assumption). */
+export type QueuedJob = {
+  pickupLat: number;
+  pickupLng: number;
+  status: string;
+  createdAt: string;
+};
+
+/** A driver's queue, from the org's dispatch_jobs (the sync already persists
+ *  calls with the assigned driver + pickup lat/lng): the active-job count and
+ *  the queued jobs that carry usable pickup coords (only those are routable —
+ *  a job without coords still counts toward the cap). */
+export type DriverQueue = {
+  activeCount: number;
+  queuedJobs: QueuedJob[];
+};
+
+/** Load every driver's queue for an org from dispatch_jobs — ONE org-scoped
+ *  read (indexed by dispatch_jobs_org_idx), no live Towbook calls in the
+ *  selection path (owner-directed: use what's already stored). Terminal
+ *  statuses are excluded by the WHERE clause; rows are ordered oldest-first
+ *  (the queue order the driver will work). */
+export async function loadOrgDriverQueues(orgId: string): Promise<Map<string, DriverQueue>> {
+  const rows = await sql()`SELECT assigned_driver_towbook_id AS did, status, pickup_lat, pickup_lng, created_at
+    FROM dispatch_jobs
+    WHERE org_id=${orgId}
+      AND assigned_driver_towbook_id IS NOT NULL
+      AND status IN ('new','offered','accepted','en_route','arrived')
+    ORDER BY created_at ASC`;
+  const map = new Map<string, DriverQueue>();
+  for (const r of rows as Array<Record<string, unknown>>) {
+    const did = String(r.did ?? "");
+    if (!did) continue;
+    const entry = map.get(did) ?? { activeCount: 0, queuedJobs: [] };
+    entry.activeCount++;
+    const lat = Number(r.pickup_lat);
+    const lng = Number(r.pickup_lng);
+    if (Number.isFinite(lat) && lat !== 0 && Number.isFinite(lng) && lng !== 0) {
+      entry.queuedJobs.push({ pickupLat: lat, pickupLng: lng, status: String(r.status ?? ""), createdAt: String(r.created_at ?? "") });
+    }
+    map.set(did, entry);
+  }
+  return map;
+}
+
+/** Active calls the nearestDrivers payload carries for a driver (statuses 0-4;
+ *  unknown status counts conservatively; completed/cancelled never count).
+ *  Each call's own pickup coords are kept when present (real payload evidence:
+ *  every call entry carries latitude/longitude of its pickup) — they backfill
+ *  queue geometry when dispatch_jobs lags the payload. */
+function activePayloadCalls(driver: NearestDriver): Array<{ pickupLat: number; pickupLng: number }> {
+  const calls = (driver as Record<string, unknown>).calls;
+  if (!Array.isArray(calls)) return [];
+  const out: Array<{ pickupLat: number; pickupLng: number }> = [];
+  for (const c of calls) {
+    if (!c || typeof c !== "object") { out.push({ pickupLat: NaN, pickupLng: NaN }); continue; }
+    const s = Number((c as Record<string, unknown>).status);
+    if (Number.isFinite(s) && !ACTIVE_TOWBOOK_STATUS_IDS.has(s)) continue;
+    const lat = Number((c as Record<string, unknown>).latitude);
+    const lng = Number((c as Record<string, unknown>).longitude);
+    out.push(Number.isFinite(lat) && Number.isFinite(lng) ? { pickupLat: lat, pickupLng: lng } : { pickupLat: NaN, pickupLng: NaN });
+  }
+  return out;
+}
+
+/** A driver's total active-job count = max(dispatch_jobs queue, payload calls)
+ *  — the max is deliberately conservative so a 3s sync lag can never
+ *  under-count a driver's load (capacity rails protect the drivers). */
+export function driverActiveCount(driver: NearestDriver, queues: Map<string, DriverQueue>): number {
+  const payload = activePayloadCalls(driver).length;
+  const db = queues.get(String((driver as Record<string, unknown>).driverId))?.activeCount ?? 0;
+  return Math.max(payload, db);
+}
+
+/** The driver's queue geometry for the arrival model: dispatch_jobs jobs
+ *  first (ordered), then any payload calls whose coords the sync hasn't
+ *  persisted yet (deduped by position — the db count is authoritative). */
+function queueGeometryFor(driver: NearestDriver, queues: Map<string, DriverQueue>): QueuedJob[] {
+  const db = queues.get(String((driver as Record<string, unknown>).driverId));
+  const jobs = [...(db?.queuedJobs ?? [])];
+  const payload = activePayloadCalls(driver);
+  for (let i = (db?.activeCount ?? 0) - (db?.queuedJobs.length ?? 0); i < payload.length; i++) {
+    const p = payload[i];
+    if (Number.isFinite(p.pickupLat) && Number.isFinite(p.pickupLng)) {
+      jobs.push({ pickupLat: p.pickupLat, pickupLng: p.pickupLng, status: "payload", createdAt: "" });
+    }
+  }
+  return jobs;
+}
+
+/** Best-effort GPS ping age (minutes) for a driver, from the payload fields
+ *  that plausibly carry a last-ping timestamp (none exists in today's live
+ *  payload — scanned defensively). Returns null when no timestamp is present
+ *  or it is unparseable; the caller surfaces a STALE ping in the reason. */
+export function gpsPingAgeMinutes(driver: NearestDriver): number | null {
+  const o = driver as Record<string, unknown>;
+  const keys = ["lastCheckInUtc", "lastCheckInDateUtc", "lastGpsUtc", "gpsUpdatedAtUtc", "lastPingUtc", "checkInDateUtc", "lastSeenUtc", "gpsPingEpochMs", "lastPingEpochMs"];
+  for (const k of keys) {
+    const v = o[k];
+    if (v == null) continue;
+    let ms: number | null = null;
+    if (typeof v === "number" && Number.isFinite(v)) {
+      ms = v > 1e12 ? v : v * 1000; // epoch ms (or seconds)
+    } else if (typeof v === "string" && v.trim() !== "") {
+      const t = Date.parse(v);
+      if (Number.isFinite(t)) ms = t;
+      else if (/^\d+(\.\d+)?$/.test(v.trim())) ms = Number(v.trim()) > 1e12 ? Number(v.trim()) : Number(v.trim()) * 1000;
+    }
+    if (ms != null && Number.isFinite(ms)) {
+      const ageMin = (Date.now() - ms) / 60000;
+      if (Number.isFinite(ageMin) && ageMin >= 0) return ageMin;
+    }
+  }
+  return null;
+}
+
 const OSRM_ENDPOINT = "https://router.project-osrm.org/route/v1/driving";
 const ROUTER_TIMEOUT_MS = 4000;
 
@@ -251,6 +419,61 @@ export async function osrmRoadSeconds(
 
 const TOMTOM_ENDPOINT = "https://api.tomtom.com/routing/1/calculateRoute";
 
+/** One TomTom attempt: the RoadResult (or null) PLUS a short failure reason
+ *  ("HTTP 429" / "HTTP 5xx" / "timeout" / "network" / "bad body") when the
+ *  call failed. The failure reason is what the chained router attaches to the
+ *  OSRM fallback so the decision ledger is honest about WHY live traffic was
+ *  not used (ETA honesty, 2026-08-11 incident: OSRM-only 150s quote vs the
+ *  TomTom live 283s for the same pair — the transient TomTom failure must be
+ *  visible, not silently swallowed). */
+async function tomtomAttempt(
+  apiKey: string,
+  fromLat: number,
+  fromLng: number,
+  toLat: number,
+  toLng: number,
+  fetchImpl: typeof fetch,
+): Promise<{ result: RoadResult | null; failure: string | null }> {
+  try {
+    const params = new URLSearchParams({
+      key: apiKey,
+      traffic: "true",
+      routeType: "fastest",
+      departAt: new Date().toISOString(),
+      vehicleCommercial: "false",
+    });
+    const url = `${TOMTOM_ENDPOINT}/${fromLat},${fromLng}:${toLat},${toLng}/json?${params.toString()}`;
+    const res = await fetchImpl(url, {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(ROUTER_TIMEOUT_MS),
+    });
+    if (!res.ok) return { result: null, failure: `HTTP ${res.status}` };
+    const body: unknown = await res.json().catch(() => null);
+    if (!body || typeof body !== "object" || Array.isArray(body)) return { result: null, failure: "bad body" };
+    const routes = (body as Record<string, unknown>).routes;
+    if (!Array.isArray(routes) || !routes.length) return { result: null, failure: "bad shape" };
+    const summary = (routes[0] as Record<string, unknown>).summary as Record<string, unknown> | undefined;
+    if (!summary || typeof summary !== "object") return { result: null, failure: "bad shape" };
+    const travel = Number(summary.travelTimeInSeconds);
+    if (!Number.isFinite(travel) || travel <= 0) return { result: null, failure: "bad shape" };
+    const delay = Number(summary.trafficDelayInSeconds);
+    const delaySec = Number.isFinite(delay) && delay > 0 ? delay : 0;
+    return {
+      result: {
+        seconds: travel,
+        provider: "tomtom",
+        liveTraffic: true,
+        trafficDelaySeconds: delaySec,
+        notes: `travel ${travel}s; traffic delay ${delaySec}s`,
+      },
+      failure: null,
+    };
+  } catch (err) {
+    const msg = String(err);
+    return { result: null, failure: msg.includes("timeout") ? "timeout" : "network" };
+  }
+}
+
 /** Default road router, link 1 of the ETA v3 chain: TomTom Routing with live
  *  traffic + construction awareness (traffic=true, routeType=fastest, and
  *  departAt=<now> so the route reflects current conditions). drive time =
@@ -269,40 +492,8 @@ export async function tomtomRoadSeconds(
   toLng: number,
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<RoadResult | null> {
-  try {
-    const params = new URLSearchParams({
-      key: apiKey,
-      traffic: "true",
-      routeType: "fastest",
-      departAt: new Date().toISOString(),
-      vehicleCommercial: "false",
-    });
-    const url = `${TOMTOM_ENDPOINT}/${fromLat},${fromLng}:${toLat},${toLng}/json?${params.toString()}`;
-    const res = await fetchImpl(url, {
-      headers: { accept: "application/json" },
-      signal: AbortSignal.timeout(ROUTER_TIMEOUT_MS),
-    });
-    if (!res.ok) return null;
-    const body: unknown = await res.json().catch(() => null);
-    if (!body || typeof body !== "object" || Array.isArray(body)) return null;
-    const routes = (body as Record<string, unknown>).routes;
-    if (!Array.isArray(routes) || !routes.length) return null;
-    const summary = (routes[0] as Record<string, unknown>).summary as Record<string, unknown> | undefined;
-    if (!summary || typeof summary !== "object") return null;
-    const travel = Number(summary.travelTimeInSeconds);
-    if (!Number.isFinite(travel) || travel <= 0) return null;
-    const delay = Number(summary.trafficDelayInSeconds);
-    const delaySec = Number.isFinite(delay) && delay > 0 ? delay : 0;
-    return {
-      seconds: travel,
-      provider: "tomtom",
-      liveTraffic: true,
-      trafficDelaySeconds: delaySec,
-      notes: `travel ${travel}s; traffic delay ${delaySec}s`,
-    };
-  } catch {
-    return null;
-  }
+  const attempt = await tomtomAttempt(apiKey, fromLat, fromLng, toLat, toLng, fetchImpl);
+  return attempt.result;
 }
 
 /** Stable, publish-proof TomTom key path: sibling of the site root, OUTSIDE
@@ -358,9 +549,14 @@ export function resolveRouter(
       provider: "tomtom",
       tomtomKeyConfigured: true,
       router: async (fromLat, fromLng, toLat, toLng) => {
-        const tomtom = await tomtomRoadSeconds(key, fromLat, fromLng, toLat, toLng, fetchImpl);
-        if (tomtom) return tomtom;
-        return osrmRoadSeconds(fromLat, fromLng, toLat, toLng, fetchImpl);
+        const attempt = await tomtomAttempt(key, fromLat, fromLng, toLat, toLng, fetchImpl);
+        if (attempt.result) return attempt.result;
+        // TomTom failed (transient 429/5xx/timeout/network/bad shape) — fall
+        // through to OSRM and CARRY the failure so the decision reason is
+        // honest about why live traffic was not used (ETA honesty 2026-08-11).
+        const osrm = await osrmRoadSeconds(fromLat, fromLng, toLat, toLng, fetchImpl);
+        if (osrm) return { ...osrm, tomtomFailure: attempt.failure ?? "unavailable" };
+        return null;
       },
     };
   }
@@ -535,14 +731,18 @@ export type ChosenDriverEta = {
   /** Route seconds from the road router; null when routing failed (fallback used). */
   roadSeconds: number | null;
   /** Minutes used for ranking + the ETA formula: road minutes when routing
-   *  succeeded, fallback-model minutes when it failed. */
+   *  succeeded, fallback-model minutes when it failed. For the all-loaded
+   *  queue case this is the QUEUE-INCLUSIVE arrival minutes (queue travel +
+   *  service + final leg to the offer). */
   baseMinutes: number;
   /** Towbook straight-line minutes (informational; the old ETA source). */
   straightLineMinutes: number;
   /** True when the router failed and the fallback factor model was used. */
   usedFallback: boolean;
   /** Which provider produced the drive time: "tomtom" (live traffic),
-   *  "osrm" (static), or "factor" (fallback model — usedFallback true). */
+   *  "osrm" (static), or "factor" (fallback model — usedFallback true). For
+   *  the all-loaded queue case: the FINAL leg's provider (the leg to the
+   *  offer). */
   provider: EtaProvider;
   /** True when the drive time reflects live traffic (TomTom traffic=true). */
   liveTraffic: boolean;
@@ -550,78 +750,199 @@ export type ChosenDriverEta = {
   trafficDelaySeconds: number | null;
   /** Router notes (TomTom travel/delay detail; osrm static; null on fallback). */
   routerNotes: string | null;
+  /** True when this choice came from the all-loaded queue-inclusive arrival
+   *  model (every candidate was at the MAX_DRIVER_QUEUE cap). */
+  queueInclusive: boolean;
+  /** Queue travel + service minutes (queue-inclusive case only; null otherwise). */
+  queueMinutes: number | null;
+  /** Number of queued jobs modeled (queue-inclusive case only; null otherwise). */
+  queuedJobCount: number | null;
+  /** Final road leg minutes driver-GPS → offer (queue-inclusive only; null otherwise). */
+  finalLegMinutes: number | null;
+  /** Why TomTom live traffic was NOT used (chained fallback; null = TomTom OK
+   *  or no TomTom key). ETA honesty: transient TomTom failures are recorded. */
+  tomtomFailure: string | null;
+  /** GPS ping age in minutes when the payload carried a timestamp (null when
+   *  the payload has none). A stale ping is surfaced in the decision reason. */
+  gpsPingAgeMinutes: number | null;
 };
 
-/** Road-aware driver choice: same rails as before (checked in, real GPS — lat/lng
- *  nonzero AND finite, NO current calls, finite estimatedTimeSeconds), but each
- *  candidate is routed from its precise GPS to the pickup and the minimum ROAD
- *  ETA wins — a driver with a better real drive time beats one with a better
- *  straight-line time. Routing failures fall back to the factor model per
- *  candidate, so a driver is never dropped for a router hiccup. `roadRouter`
- *  may be null (routing disabled — every candidate uses the factor model).
- *  Returns null when no driver qualifies (→ accept with driverId 0 + escalate;
- *  no ETA quoted). */
+/** Queue-inclusive arrival model (owner spec 2026-08-11, all-loaded case):
+ *  arrival = Σ over queued jobs of (road travel to that job's pickup +
+ *  SERVICE_MINUTES_PER_JOB) + the road leg from the driver's current GPS to
+ *  the offer. Travel legs reuse the road router (TomTom → OSRM chain); a leg
+ *  that fails falls back to the straight-line factor model — never fabricated.
+ *  The driver's current GPS is the literal start of the model (owner formula:
+ *  "road drive from their current position to the offer"), which errs toward
+ *  a longer — safer — ETA. Returns null when the queue has no routable job
+ *  pickups (the model can't be honest without geometry). */
+export async function queueInclusiveArrivalMinutes(
+  driver: NearestDriver,
+  queue: QueuedJob[],
+  pickupLat: number,
+  pickupLng: number,
+  roadRouter: RoadRouter | null,
+): Promise<{ arrivalMinutes: number; queueMinutes: number; finalLegMinutes: number; finalLegProvider: EtaProvider } | null> {
+  if (!queue.length) return null;
+  const legMinutes = async (fromLat: number, fromLng: number, toLat: number, toLng: number): Promise<{ minutes: number; provider: EtaProvider }> => {
+    let result: RoadResult | null = null;
+    try {
+      result = roadRouter ? await roadRouter(fromLat, fromLng, toLat, toLng) : null;
+    } catch { result = null; }
+    if (result && Number.isFinite(result.seconds) && result.seconds > 0) {
+      return { minutes: result.seconds / 60, provider: result.provider };
+    }
+    return { minutes: fallbackRoadMinutes(haversineMiles(fromLat, fromLng, toLat, toLng)), provider: "factor" };
+  };
+  const lat = Number(driver.latitude);
+  const lng = Number(driver.longitude);
+  let queueMinutes = 0;
+  let prevLat = lat;
+  let prevLng = lng;
+  for (const job of queue) {
+    const leg = await legMinutes(prevLat, prevLng, job.pickupLat, job.pickupLng);
+    queueMinutes += leg.minutes + SERVICE_MINUTES_PER_JOB;
+    prevLat = job.pickupLat;
+    prevLng = job.pickupLng;
+  }
+  const finalLeg = await legMinutes(lat, lng, pickupLat, pickupLng);
+  return {
+    arrivalMinutes: queueMinutes + finalLeg.minutes,
+    queueMinutes,
+    finalLegMinutes: finalLeg.minutes,
+    finalLegProvider: finalLeg.provider,
+  };
+}
+
+/** Road-aware driver choice (owner-directed 2026-08-11, queue-aware):
+ *  rails = checked in && real GPS (lat/lng nonzero AND finite) && finite
+ *  estimatedTimeSeconds && active-job-count < MAX_DRIVER_QUEUE (active =
+ *  dispatch_jobs lifecycle statuses new/offered/accepted/en_route/arrived,
+ *  cross-checked against the payload `calls` — a driver at the 3-job cap is
+ *  NOT eligible). Each ELIGIBLE candidate is routed from its precise GPS to
+ *  the pickup and the minimum ROAD ETA wins — a driver with a better real
+ *  drive time beats one with a better straight-line time. Routing failures
+ *  fall back to the factor model per candidate, so a driver is never dropped
+ *  for a router hiccup.
+ *  ALL-LOADED path: when EVERY candidate is at the cap, dispatch to whoever
+ *  would ARRIVE fastest after their queue — queue travel between consecutive
+ *  job pickups + SERVICE_MINUTES_PER_JOB per queued job + the road leg to the
+ *  offer (queueInclusiveArrivalMinutes) — and baseMinutes carries that
+ *  queue-inclusive arrival so the quoted ETA tracks reality.
+ *  `roadRouter` may be null (routing disabled — every leg uses the factor
+ *  model). Returns null when no driver qualifies (→ accept with driverId 0 +
+ *  escalate; no ETA quoted). */
 export async function chooseBestDriverByRoad(
   drivers: unknown[],
   pickupLat: number,
   pickupLng: number,
   roadRouter: RoadRouter | null,
+  driverQueues?: Map<string, DriverQueue>,
 ): Promise<ChosenDriverEta | null> {
-  const eligible = drivers.filter((d): d is NearestDriver => {
+  const queues = driverQueues ?? new Map<string, DriverQueue>();
+  const baseEligible = drivers.filter((d): d is NearestDriver => {
     if (!d || typeof d !== "object" || Array.isArray(d)) return false;
     const o = d as NearestDriver;
     return (
       o.isCheckedIn === true &&
       typeof o.latitude === "number" && Number.isFinite(o.latitude) && o.latitude !== 0 &&
       typeof o.longitude === "number" && Number.isFinite(o.longitude) && o.longitude !== 0 &&
-      Array.isArray(o.calls) && o.calls.length === 0 &&
       typeof o.estimatedTimeSeconds === "number" && Number.isFinite(o.estimatedTimeSeconds)
     );
   });
-  if (!eligible.length) return null;
-  const routed = await Promise.all(
-    eligible.map(async (d): Promise<ChosenDriverEta> => {
-      const straightLineMinutes = Math.max(1, Math.ceil(Number(d.estimatedTimeSeconds) / 60));
-      let result: RoadResult | null = null;
-      try {
-        result = roadRouter ? await roadRouter(
-          Number(d.latitude), Number(d.longitude), pickupLat, pickupLng,
-        ) : null;
-      } catch { result = null; }
-      if (result && Number.isFinite(result.seconds) && result.seconds > 0) {
-        return {
-          driver: d,
-          roadSeconds: result.seconds,
-          baseMinutes: Math.ceil(result.seconds / 60),
-          straightLineMinutes,
-          usedFallback: false,
-          provider: result.provider,
-          liveTraffic: result.liveTraffic === true,
-          trafficDelaySeconds: result.provider === "tomtom" && Number.isFinite(result.trafficDelaySeconds as number)
-            ? (result.trafficDelaySeconds as number) : null,
-          routerNotes: result.notes ?? null,
-        };
-      }
-      const fallback = fallbackRoadMinutes(
-        haversineMiles(Number(d.latitude), Number(d.longitude), pickupLat, pickupLng),
-      );
+  if (!baseEligible.length) return null;
+
+  const underCap = baseEligible.filter((d) => driverActiveCount(d, queues) < MAX_DRIVER_QUEUE);
+  const pickCandidates = underCap.length ? underCap : baseEligible;
+  const routeOne = async (d: NearestDriver): Promise<ChosenDriverEta> => {
+    const straightLineMinutes = Math.max(1, Math.ceil(Number(d.estimatedTimeSeconds) / 60));
+    const pingAge = gpsPingAgeMinutes(d);
+    let result: RoadResult | null = null;
+    try {
+      result = roadRouter ? await roadRouter(
+        Number(d.latitude), Number(d.longitude), pickupLat, pickupLng,
+      ) : null;
+    } catch { result = null; }
+    if (result && Number.isFinite(result.seconds) && result.seconds > 0) {
       return {
         driver: d,
-        roadSeconds: null,
-        baseMinutes: fallback,
+        roadSeconds: result.seconds,
+        baseMinutes: Math.ceil(result.seconds / 60),
         straightLineMinutes,
-        usedFallback: true,
-        provider: "factor",
-        liveTraffic: false,
-        trafficDelaySeconds: null,
-        routerNotes: null,
+        usedFallback: false,
+        provider: result.provider,
+        liveTraffic: result.liveTraffic === true,
+        trafficDelaySeconds: result.provider === "tomtom" && Number.isFinite(result.trafficDelaySeconds as number)
+          ? (result.trafficDelaySeconds as number) : null,
+        routerNotes: result.notes ?? null,
+        queueInclusive: false,
+        queueMinutes: null,
+        queuedJobCount: null,
+        finalLegMinutes: null,
+        tomtomFailure: result.tomtomFailure ?? null,
+        gpsPingAgeMinutes: pingAge,
       };
-    }),
-  );
-  routed.sort((a, b) =>
+    }
+    const fallback = fallbackRoadMinutes(
+      haversineMiles(Number(d.latitude), Number(d.longitude), pickupLat, pickupLng),
+    );
+    return {
+      driver: d,
+      roadSeconds: null,
+      baseMinutes: fallback,
+      straightLineMinutes,
+      usedFallback: true,
+      provider: "factor",
+      liveTraffic: false,
+      trafficDelaySeconds: null,
+      routerNotes: null,
+      queueInclusive: false,
+      queueMinutes: null,
+      queuedJobCount: null,
+      finalLegMinutes: null,
+      tomtomFailure: null,
+      gpsPingAgeMinutes: pingAge,
+    };
+  };
+
+  if (underCap.length) {
+    const routed = await Promise.all(pickCandidates.map(routeOne));
+    routed.sort((a, b) =>
+      a.baseMinutes - b.baseMinutes ||
+      String(a.driver.driverId ?? "").localeCompare(String(b.driver.driverId ?? "")));
+    return routed[0];
+  }
+
+  // --- all-loaded: EVERY candidate is at the cap → queue-inclusive arrival ---
+  const modeled = await Promise.all(baseEligible.map(async (d): Promise<ChosenDriverEta | null> => {
+    const geometry = queueGeometryFor(d, queues);
+    const arrival = await queueInclusiveArrivalMinutes(d, geometry, pickupLat, pickupLng, roadRouter);
+    if (!arrival) return null; // queue not modelable — cannot quote an honest ETA
+    const straightLineMinutes = Math.max(1, Math.ceil(Number(d.estimatedTimeSeconds) / 60));
+    return {
+      driver: d,
+      roadSeconds: null,
+      baseMinutes: arrival.arrivalMinutes,
+      straightLineMinutes,
+      usedFallback: arrival.finalLegProvider === "factor",
+      provider: arrival.finalLegProvider,
+      liveTraffic: arrival.finalLegProvider === "tomtom",
+      trafficDelaySeconds: null,
+      routerNotes: `queue-inclusive; ${geometry.length} queued jobs`,
+      queueInclusive: true,
+      queueMinutes: arrival.queueMinutes,
+      queuedJobCount: geometry.length,
+      finalLegMinutes: arrival.finalLegMinutes,
+      tomtomFailure: null,
+      gpsPingAgeMinutes: gpsPingAgeMinutes(d),
+    };
+  }));
+  const winners = modeled.filter((m): m is ChosenDriverEta => m != null);
+  if (!winners.length) return null;
+  winners.sort((a, b) =>
     a.baseMinutes - b.baseMinutes ||
     String(a.driver.driverId ?? "").localeCompare(String(b.driver.driverId ?? "")));
-  return routed[0];
+  return winners[0];
 }
 
 /** Final quoted ETA: ceil(base minutes) + prep buffer, clamped to
@@ -642,17 +963,27 @@ export function finalEtaMinutes(
  *  provider so the ledger is transparent about where each ETA came from:
  *  "ETA 14 min (tomtom-traffic road 9 + buffer 5; delay 2; floor 5, ceiling
  *  45; straight-line 11; GPS 41.18,-73.15)" vs "osrm road …" vs "road fallback
- *  … (factor model)". */
+ *  … (factor model)". All-loaded queue case: "ETA 120 min (queued 3 jobs ≈ 105
+ *  min + final leg 10 (osrm) + buffer 5; floor 5, ceiling 45; straight-line
+ *  11; GPS 41.15,-73.10)". A transient TomTom failure is surfaced
+ *  ("tomtom failed (HTTP 429) → osrm") and a stale GPS ping is flagged
+ *  ("GPS ping age 30 min") — ETA honesty (2026-08-11). */
 export function etaDetailLabel(c: ChosenDriverEta, buffer: number, floor: number, ceiling: number, finalMinutes: number): string {
-  const base = c.usedFallback
-    ? `road fallback ${c.baseMinutes} (factor model)`
-    : c.provider === "tomtom"
-      ? `tomtom-traffic road ${c.baseMinutes}`
-      : `osrm road ${c.baseMinutes}`;
-  const delay = !c.usedFallback && c.provider === "tomtom" && c.trafficDelaySeconds != null && c.trafficDelaySeconds > 0
+  const base = c.queueInclusive
+    ? `queued ${c.queuedJobCount} jobs ≈ ${Math.round(c.queueMinutes ?? 0)} min + final leg ${Math.round(c.finalLegMinutes ?? 0)} (${c.provider === "tomtom" ? "tomtom-traffic" : c.provider === "osrm" ? "osrm" : "factor"})`
+    : c.usedFallback
+      ? `road fallback ${c.baseMinutes} (factor model)`
+      : c.provider === "tomtom"
+        ? `tomtom-traffic road ${c.baseMinutes}`
+        : `osrm road ${c.baseMinutes}`;
+  const delay = !c.queueInclusive && !c.usedFallback && c.provider === "tomtom" && c.trafficDelaySeconds != null && c.trafficDelaySeconds > 0
     ? `; delay ${Math.round(c.trafficDelaySeconds / 60)}`
     : "";
-  return `ETA ${finalMinutes} min (${base} + buffer ${buffer}${delay}; floor ${floor}, ceiling ${ceiling}; straight-line ${c.straightLineMinutes}; GPS ${Number(c.driver.latitude)},${Number(c.driver.longitude)})`;
+  const tomtomNote = c.tomtomFailure ? `; tomtom failed (${c.tomtomFailure}) → ${c.provider}` : "";
+  const pingNote = c.gpsPingAgeMinutes != null && c.gpsPingAgeMinutes >= STALE_GPS_MINUTES
+    ? `; GPS ping age ${Math.round(c.gpsPingAgeMinutes)} min`
+    : "";
+  return `ETA ${finalMinutes} min (${base} + buffer ${buffer}${delay}${tomtomNote}${pingNote}; floor ${floor}, ceiling ${ceiling}; straight-line ${c.straightLineMinutes}; GPS ${Number(c.driver.latitude)},${Number(c.driver.longitude)})`;
 }
 
 /* ----------------------------------- Towbook HTTP ----------------------------------- */
@@ -1152,11 +1483,17 @@ async function runAutoDispatchInternal(
       // else null (ETA_ROUTER=off → factor model only). Tests inject
       // routerOverride/env so this never hits real TomTom/OSRM.
       const resolved: ResolvedRouter = deps.routerOverride ?? resolveRouter(deps.env ?? process.env, fetchImpl);
+      // Queue-aware capacity (owner-directed 2026-08-11): load every driver's
+      // active-job count + queue geometry from the org's dispatch_jobs (the
+      // sync already persists calls with assigned driver + pickup coords) —
+      // one indexed read, no live Towbook calls in the selection path.
+      const driverQueues = await loadOrgDriverQueues(orgId);
       const chosen = await chooseBestDriverByRoad(
         candidates,
         offer.startLocationLatitude,
         offer.startLocationLongitude,
         resolved.router,
+        driverQueues,
       );
       const driver = chosen?.driver ?? null;
       const effectiveMaxEta = Math.min(settings.maxEtaMinutes, offer.maxEta ?? settings.maxEtaMinutes);
@@ -1187,12 +1524,36 @@ async function runAutoDispatchInternal(
         ceilingMinutes: effectiveMaxEta,
         driverLatitude: Number(chosen.driver.latitude),
         driverLongitude: Number(chosen.driver.longitude),
+        // Queue-aware facts (owner-directed 2026-08-11): when every candidate
+        // was at the 3-job cap, the ETA is queue-inclusive — the ledger records
+        // the queue math (travel + service per queued job + final leg).
+        queueInclusive: chosen.queueInclusive,
+        queueMinutes: chosen.queueMinutes,
+        queuedJobCount: chosen.queuedJobCount,
+        finalLegMinutes: chosen.finalLegMinutes,
+        tomtomFailure: chosen.tomtomFailure,
+        gpsPingAgeMinutes: chosen.gpsPingAgeMinutes,
       } : null;
+      const allLoadedNote = driver
+        ? null
+        : (() => {
+            // Only checked-in, GPS-carrying, routable candidates can be
+            // dispatched at all — the cap note applies to those.
+            const baseCands = (candidates as NearestDriver[]).filter((d) =>
+              d && typeof d === "object" && !Array.isArray(d) &&
+              d.isCheckedIn === true &&
+              Number.isFinite(Number(d.latitude)) && Number(d.latitude) !== 0 &&
+              Number.isFinite(Number(d.longitude)) && Number(d.longitude) !== 0 &&
+              Number.isFinite(Number(d.estimatedTimeSeconds)));
+            return baseCands.length > 0 && baseCands.every((d) => driverActiveCount(d, driverQueues) >= MAX_DRIVER_QUEUE)
+              ? `; every candidate is at the ${MAX_DRIVER_QUEUE}-job cap but the queue-inclusive arrival could not be modeled (no pickup coords on the queued jobs) — assign manually`
+              : null;
+          })();
       const noDriverReason = driver
         ? null
         : eligibleIds
-          ? `no ELIGIBLE checked-in free driver with GPS (offer eligible list [${offer.drivers!.join(", ")}]; accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually, ETA quoted at the ${effectiveMaxEta}-min ceiling — no ETA recorded)`
-          : "no checked-in free driver with GPS — accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually (ETA quoted at the SLA ceiling — no ETA recorded)";
+          ? `no ELIGIBLE checked-in free driver with GPS under the ${MAX_DRIVER_QUEUE}-job cap (offer eligible list [${offer.drivers!.join(", ")}]${allLoadedNote ?? ""}; accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually, ETA quoted at the ${effectiveMaxEta}-min ceiling — no ETA recorded)`
+          : `no checked-in free driver with GPS under the ${MAX_DRIVER_QUEUE}-job cap${allLoadedNote ?? ""} — accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually (ETA quoted at the SLA ceiling — no ETA recorded)`;
       // --- accept (the ONE state-changing call) — with a self-healing retry:
       // an expired session mid-offer (401/403/login-page on the POST) triggers
       // recovery, and the accept is retried once with the recovered session.
