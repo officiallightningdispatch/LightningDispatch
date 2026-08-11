@@ -314,6 +314,46 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
       WHERE assigned_driver_towbook_id IS NULL AND raw_json IS NOT NULL
         AND raw_json#>>'{assets,0,driver,id}' IS NOT NULL`;
   }],
+  [19, async (q) => {
+    // Payment engine (owner spec 2026-08-11, backlog #1 first slice): the
+    // payment ledger. An agent scans the owner's Gmail (lightroad29@gmail.com)
+    // for motor-club card-charge notifications (Allied Dispatch, Honk, Allstate)
+    // and STAGES them here — staging is the safety rail, the owner reviews
+    // staged rows and triggers chargeStagedCore per row (bulk auto-charge +
+    // payday come in later slices). kind ∈ club_charge | tip | payout |
+    // adjustment; tips keep living in completion_tips (driver attribution) and
+    // MIRROR here as kind='tip' via mirrorTipCore (idempotency key
+    // tip-mirror-<tipId>). status staged → charged | failed (voided reserved).
+    // card_source_id holds a Square card NONCE or card-on-file id (ccof:…) —
+    // NEVER the PAN: Square's Payments API (POST /v2/payments) only accepts a
+    // nonce/token/card-on-file id in source_id; raw card fields are not
+    // supported (verified against the Square docs 2026-08-11). The unique
+    // (org, source_email_message_id) index makes a re-scan never double-stage.
+    await q`CREATE TABLE IF NOT EXISTS payment_transactions (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      job_id TEXT,
+      kind TEXT NOT NULL CHECK (kind IN ('club_charge','tip','payout','adjustment')),
+      amount_cents INTEGER NOT NULL,
+      currency TEXT NOT NULL DEFAULT 'USD',
+      square_payment_id TEXT,
+      status TEXT NOT NULL DEFAULT 'staged' CHECK (status IN ('staged','charged','failed','voided')),
+      club_name TEXT,
+      card_last4 TEXT,
+      card_brand TEXT,
+      card_source_id TEXT,
+      po_ref TEXT,
+      source_email_message_id TEXT,
+      source_email_received_at TIMESTAMPTZ,
+      idempotency_key TEXT UNIQUE,
+      attempt INTEGER NOT NULL DEFAULT 0,
+      error TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    await q`CREATE INDEX IF NOT EXISTS payment_transactions_org_created_idx ON payment_transactions(org_id, created_at)`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS payment_transactions_org_msgid_uidx ON payment_transactions(org_id, source_email_message_id) WHERE source_email_message_id IS NOT NULL`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();
