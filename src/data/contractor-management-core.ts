@@ -415,11 +415,6 @@ async function tbRequest(fetchImpl: typeof fetch, url: string, cookie: string, i
  *  redirect towards the login page, or a 200 that is actually the login page
  *  (its username field is `UserName` — the driver editor uses `Username`, so
  *  the editor partial can never be mistaken for a login page). */
-const statusLabel = (r: TbRes): string => {
-  if (r.status != null) return String(r.status);
-  const raw = typeof r.body === "string" ? r.body : JSON.stringify(r.body);
-  return "network error" + (raw && raw !== "{}" ? `: ${raw.slice(0, 160)}` : "");
-};
   if (r.status === 401 || r.status === 403) return true;
   if (r.status != null && r.status >= 300 && r.status < 400 && r.location) {
     if (/login|security/i.test(r.location)) return true;
@@ -478,7 +473,7 @@ function outcome(status: TowbookPushOutcome["status"], notice: string, escalated
 async function pushDriverEdit(fetchImpl: typeof fetch, baseUrl: string, cookie: string, driverId: string, changes: { name: string; email: string | null }): Promise<TowbookPushOutcome> {
   const attempts: string[] = [];
   const editor = await fetchEditorPartial(fetchImpl, baseUrl, cookie, driverId);
-  attempts.push(`GET /ajax/settings/drivers/${driverId} → ${statusLabel(editor.res)} (${editor.res.ok ? "ok" : "failed"})`);
+  attempts.push(`GET /ajax/settings/drivers/${driverId} → ${editor.res.status ?? "network error"} (${editor.res.ok ? "ok" : "failed"})`);
   if (isExpired(editor.res)) return outcome("failed", "The Towbook session expired — reconnect Towbook in Settings.", true, attempts);
   if (!editor.res.ok) {
     if (editor.res.status === 404 || editor.res.status === 405) {
@@ -527,7 +522,7 @@ async function pushDriverEdit(fetchImpl: typeof fetch, baseUrl: string, cookie: 
 async function pushDriverDisable(fetchImpl: typeof fetch, baseUrl: string, cookie: string, driverId: string): Promise<TowbookPushOutcome> {
   const attempts: string[] = [];
   const editor = await fetchEditorPartial(fetchImpl, baseUrl, cookie, driverId);
-  attempts.push(`GET /ajax/settings/drivers/${driverId} → ${statusLabel(editor.res)} (${editor.res.ok ? "ok" : "failed"})`);
+  attempts.push(`GET /ajax/settings/drivers/${driverId} → ${editor.res.status ?? "network error"} (${editor.res.ok ? "ok" : "failed"})`);
   if (isExpired(editor.res)) return outcome("failed", "The Towbook session expired — reconnect Towbook in Settings.", true, attempts);
   if (!editor.res.ok) {
     if (editor.res.status === 404 || editor.res.status === 405) return outcome("unsupported", "Towbook does not support removing drivers from Lightning Dispatch (HTTP " + (editor.res.status ?? "?") + ").", false, attempts);
