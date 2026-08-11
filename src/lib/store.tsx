@@ -9,16 +9,19 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { Contractor, ContractorStatus, Job } from "~/data/seed";
+import type { Contractor, ContractorStatus, Job, JobStatus } from "~/data/seed";
 import {
   advanceJob as advanceJobServer,
   assignJob as assignJobServer,
+  canSetJobStatus,
   declineJob as declineJobServer,
   getDispatchData,
   resetDemo as resetDemoServer,
   setContractorStatus as setContractorStatusServer,
+  setJobStatus as setJobStatusServer,
   type CommandResult,
   type DispatchData,
+  type StatusPushOutcome,
 } from "~/data/server";
 import { JOB_LIFECYCLE } from "~/lib/job-ui";
 
@@ -53,6 +56,7 @@ type DispatchAction =
   | { type: "hydrate"; payload: DispatchState }
   | { type: "assignJob"; jobId: string; contractorId: string }
   | { type: "advanceJob"; jobId: string }
+  | { type: "setJobStatus"; jobId: string; status: JobStatus }
   | { type: "declineJob"; jobId: string }
   | { type: "setContractorStatus"; contractorId: string; status: ContractorStatus }
   | { type: "clear" };
@@ -116,6 +120,20 @@ function reducer(state: DispatchState, action: DispatchAction): DispatchState {
           };
         }),
       };
+    case "setJobStatus":
+      return {
+        ...state,
+        jobs: state.jobs.map((j) =>
+          j.id === action.jobId
+            ? {
+                ...j,
+                status: action.status,
+                arrivedAt: action.status === "arrived" ? nowIso() : j.arrivedAt,
+                completedAt: action.status === "completed" ? nowIso() : j.completedAt,
+              }
+            : j,
+        ),
+      };
     case "declineJob":
       // Contractor turns down an offer: return the job to the unassigned queue
       // (status "new", no contractor) so the dispatcher sees it as incoming
@@ -145,6 +163,7 @@ function reducer(state: DispatchState, action: DispatchAction): DispatchState {
 export const mutationKey = {
   assign: (jobId: string) => `assign:${jobId}`,
   advance: (jobId: string) => `advance:${jobId}`,
+  setStatus: (jobId: string) => `set-status:${jobId}`,
   decline: (jobId: string) => `decline:${jobId}`,
   status: (contractorId: string) => `status:${contractorId}`,
   reset: () => "reset",
@@ -205,6 +224,13 @@ export interface DispatchStoreValue {
   assignJob: (jobId: string, contractorId: string) => Promise<boolean>;
   /** Move a job to the next lifecycle status (offered → accepted → en_route → arrived → completed). */
   advanceJob: (jobId: string) => Promise<boolean>;
+  /** Set a job to an EXACT lifecycle status (owner/admin/dispatcher) — the
+   *  chosen status lands in dispatch_jobs and is pushed to Towbook; the push
+   *  outcome (verified/skipped/reason) is available via getPushResult(key). */
+  setJobStatus: (jobId: string, status: JobStatus) => Promise<boolean>;
+  /** Last exact-status push outcome for a mutation key (from setJobStatus),
+   *  or null when no push result has been recorded yet. */
+  getPushResult: (key: string) => StatusPushOutcome | null;
   /** Contractor turns down an offer: back to status "new", unassigned, so the dispatcher re-dispatches. */
   declineJob: (jobId: string) => Promise<boolean>;
   setContractorStatus: (contractorId: string, status: ContractorStatus) => Promise<boolean>;
@@ -352,6 +378,35 @@ export function DispatchStoreProvider({ children }: { children: ReactNode }) {
     [run, hydrateFromServer, fail],
   );
 
+  // Push outcomes from the exact-status selector (setJobStatus) — kept in a ref
+  // so the UI can read the outcome synchronously right after the awaited action.
+  const pushRef = useRef<Record<string, StatusPushOutcome | null>>({});
+
+  const setJobStatus = useCallback(
+    (jobId: string, status: JobStatus) =>
+      run(mutationKey.setStatus(jobId), async () => {
+        if (dbMode.current) {
+          const res = await setJobStatusServer({ data: { jobId, status } });
+          if (!res.ok) { fail(mutationKey.setStatus(jobId), res.error.message); return false; }
+          const outcome: StatusPushOutcome | null = "push" in res ? res.push : null;
+          pushRef.current = { ...pushRef.current, [mutationKey.setStatus(jobId)]: outcome };
+          hydrateFromServer(res.data);
+          return true;
+        }
+        const job = stateRef.current.jobs.find((j) => j.id === jobId);
+        if (!job) { fail(mutationKey.setStatus(jobId), "Job not found — refresh to resync."); return false; }
+        if (!canSetJobStatus(job.status, status)) {
+          fail(mutationKey.setStatus(jobId), `This job is ${job.status} — it can only move forward in the lifecycle (or stay put).`);
+          return false;
+        }
+        dispatch({ type: "setJobStatus", jobId, status });
+        return true;
+      }),
+    [run, hydrateFromServer, fail],
+  );
+
+  const getPushResult = useCallback((key: string) => pushRef.current[key] ?? null, []);
+
   const declineJob = useCallback(
     (jobId: string) =>
       run(mutationKey.decline(jobId), async () => {
@@ -450,12 +505,14 @@ export function DispatchStoreProvider({ children }: { children: ReactNode }) {
       clearError,
       assignJob,
       advanceJob,
+      setJobStatus,
+      getPushResult,
       declineJob,
       setContractorStatus,
       resetDemo,
       refresh,
     }),
-    [state, loading, isDemoMode, pending, errors, clearError, assignJob, advanceJob, declineJob, setContractorStatus, resetDemo, refresh],
+    [state, loading, isDemoMode, pending, errors, clearError, assignJob, advanceJob, setJobStatus, getPushResult, declineJob, setContractorStatus, resetDemo, refresh],
   );
 
   return <DispatchStoreContext.Provider value={value}>{children}</DispatchStoreContext.Provider>;

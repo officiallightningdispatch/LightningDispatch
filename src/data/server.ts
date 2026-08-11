@@ -140,6 +140,61 @@ export const advanceJob=createServerFn({method:"POST"}).validator(passthrough).h
 
 export const declineJob=createServerFn({method:"POST"}).validator(passthrough).handler(async({data})=>{const e=invalid(data,z.object({jobId:id,contractorId:id}).strict());if(e)return e;if(!configured())return unavailable("Database mode is not active — declining works in the live demo only.");const { currentUser } = await import("./auth-server"); const u=await currentUser();if(!u)return fail("unauthorized","Sign in required.");if(!can(u,["owner","admin","dispatcher"]) && !(u.role==="contractor" && u.contractorId===(data as {contractorId:string}).contractorId))return fail("unauthorized","You cannot decline this offer.");try{await prepare();const d=data as {jobId:string;contractorId:string};const rows=await sql().transaction([sql()`WITH changed AS (UPDATE dispatch_jobs SET status='new',assigned_contractor_id=NULL,assigned_driver_name=NULL,assigned_driver_towbook_id=NULL,assigned_at=NULL WHERE id=${d.jobId} AND org_id=${u.orgId} AND status='offered' AND assigned_contractor_id=${d.contractorId} RETURNING id,org_id,'offered'::text AS old_status,'new'::text AS new_status) INSERT INTO status_events(id,org_id,job_id,from_status,to_status,actor_user_id,actor_role) SELECT gen_random_uuid()::text,org_id,id,old_status,new_status,${u.id},${u.role} FROM changed RETURNING job_id`,sql()`INSERT INTO audit_log(id,org_id,actor_user_id,actor_role,action,entity_type,entity_id,detail) SELECT gen_random_uuid()::text,${u.orgId},${u.id},${u.role},'decline','job',${d.jobId},'{}'::jsonb WHERE EXISTS (SELECT 1 FROM status_events WHERE org_id=${u.orgId} AND job_id=${d.jobId} AND actor_user_id=${u.id} AND from_status='offered' AND to_status='new' ORDER BY occurred_at DESC LIMIT 1)`]);if(!rows[0]?.length)return fail("invalid_state","Only an offered job assigned to that contractor can be declined.");await pushJobStatus(u.orgId,d.jobId,{id:u.id,role:u.role});return result(u);}catch{return unavailable("Unable to decline job.");}});
 
+export type StatusPushOutcome = { attempted: boolean; verified: boolean; skipped: boolean; reason: string | null };
+/** Statuses the exact-status selector can set (owner/admin/dispatcher) — the
+ *  full forward lifecycle minus "new" (unassigned — the queue's Assign owns
+ *  that transition) and minus "cancelled" (import-only terminal; Towbook-side
+ *  252/255/declines are never pushed from the portal). */
+export const SETTABLE_JOB_STATUSES = ["offered", "accepted", "en_route", "arrived", "completed"] as const;
+const SETTABLE_ORDER = new Map<string, number>(["offered", "accepted", "en_route", "arrived", "completed"].map((s, i) => [s, i]));
+/** Pure transition guard for the exact-status selector (shared by the server fn,
+ *  the store's demo-mode validation, and the UI): a job can only move FORWARD in
+ *  the lifecycle, or stay put for a re-push/verify. Backward moves are refused
+ *  because Towbook's last-write-wins guard (status-push-core: newer-status-wins)
+ *  would silently skip the push and leave the sides diverged. "new" and
+ *  "cancelled" are immovable via this surface. Client-safe + pure. */
+export function canSetJobStatus(current: JobStatus, target: JobStatus): boolean {
+  if (current === "cancelled") return false;
+  if (current === "completed") return current === target;
+  const ci = SETTABLE_ORDER.get(current);
+  const ti = SETTABLE_ORDER.get(target);
+  if (ci == null || ti == null) return false;
+  return ti >= ci;
+}
+
+export const setJobStatus=createServerFn({method:"POST"}).validator(passthrough).handler(async({data})=>{
+  const e=invalid(data,z.object({jobId:id,status:z.enum(SETTABLE_JOB_STATUSES)}).strict());
+  if(e)return e;
+  if(!configured())return unavailable("Database mode is not active — status changes work in the live demo only.");
+  const { currentUser } = await import("./auth-server"); const u=await currentUser();
+  if(!u)return fail("unauthorized","Sign in required.");
+  if(!can(u,["owner","admin","dispatcher"]))return fail("unauthorized","You cannot change job status.");
+  try{
+    await prepare();
+    const q=sql();
+    const jobId=(data as {jobId:string}).jobId;
+    const target=(data as {status:JobStatus}).status;
+    const cur=await q`SELECT id,status FROM dispatch_jobs WHERE id=${jobId} AND org_id=${u.orgId} LIMIT 1`;
+    if(!cur.length)return fail("not_found","Job not found.");
+    const current=String(cur[0].status ?? "") as JobStatus;
+    if(!canSetJobStatus(current,target))return fail("invalid_state",`This job is ${current} — it can only move forward in the lifecycle (or stay put).`);
+    // EXACT status lands locally (dispatch_jobs + status_events + audit_log),
+    // then the existing verified push path mirrors that exact status to Towbook.
+    const rows=await q.transaction([q`WITH current AS (SELECT id,status FROM dispatch_jobs WHERE id=${jobId} AND org_id=${u.orgId}), changed AS (UPDATE dispatch_jobs j SET status=${target},arrived_at=CASE WHEN ${target}='arrived' AND j.arrived_at IS NULL THEN NOW() ELSE j.arrived_at END,completed_at=CASE WHEN ${target}='completed' AND j.completed_at IS NULL THEN NOW() ELSE j.completed_at END FROM current c WHERE j.id=c.id AND j.status=c.status RETURNING j.id,j.org_id,c.status AS old_status,j.status AS new_status) INSERT INTO status_events(id,org_id,job_id,from_status,to_status,actor_user_id,actor_role,note) SELECT gen_random_uuid()::text,org_id,id,old_status,new_status,${u.id},${u.role},${`exact status: ${current} → ${target} by ${u.role}`} FROM changed RETURNING job_id`,q`INSERT INTO audit_log(id,org_id,actor_user_id,actor_role,action,entity_type,entity_id,detail) SELECT gen_random_uuid()::text,${u.orgId},${u.id},${u.role},'set_status','job',${jobId},jsonb_build_object('from',${current},'to',${target}) WHERE EXISTS (SELECT 1 FROM status_events WHERE org_id=${u.orgId} AND job_id=${jobId} AND actor_user_id=${u.id} AND to_status=${target} ORDER BY occurred_at DESC LIMIT 1)`]);
+    if(!rows[0]?.length)return fail("invalid_state","The job changed status while saving — refresh and try again.");
+    // Push the EXACT chosen status to Towbook via the same verified pipeline the
+    // other commands use; the outcome is surfaced so the UI can confirm the sync.
+    let push:StatusPushOutcome={attempted:false,verified:false,skipped:false,reason:null};
+    try{
+      const { pushJobStatusToTowbook } = await import("./status-push-core");
+      const r=await pushJobStatusToTowbook({orgId:u.orgId,jobId,actor:{id:u.id,role:u.role}});
+      if(r.ok)push={attempted:true,verified:r.changed||r.skipped,skipped:r.skipped,reason:r.reason};
+      else push={attempted:true,verified:false,skipped:false,reason:r.message};
+    }catch{ /* push problems escalate internally — the local status already committed */ }
+    return {ok:true as const,data:await dataFor(u),push};
+  }catch{return unavailable("Unable to change job status.");}
+});
+
 export const setContractorStatus=createServerFn({method:"POST"}).validator(passthrough).handler(async({data})=>{const e=invalid(data,z.object({contractorId:id,status:z.enum(["online","offline"])}).strict());if(e)return e;if(!configured())return unavailable("Database mode is not active — status changes work in the live demo only.");const { currentUser } = await import("./auth-server"); const u=await currentUser();if(!u)return fail("unauthorized","Sign in required.");const d=data as {contractorId:string;status:ContractorStatus};if(u.role==="contractor"&&u.contractorId!==d.contractorId)return fail("unauthorized","You can only change your own status.");if(!can(u,["owner","admin","dispatcher","contractor"]))return fail("unauthorized","You cannot change contractor status.");try{await prepare();const q=sql();const c=await q`SELECT u.id FROM users u JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${u.orgId} AND m.role='contractor' WHERE u.id=${d.contractorId} AND u.deactivated_at IS NULL LIMIT 1`;if(!c.length)return fail("not_found","Contractor not found.");await q`INSERT INTO audit_log(id,org_id,actor_user_id,actor_role,action,entity_type,entity_id,detail) VALUES(gen_random_uuid()::text,${u.orgId},${u.id},${u.role},'set_contractor_status','contractor',${d.contractorId},jsonb_build_object('status',${d.status}::text,'derived',${true}::boolean))`;return result(u);}catch{return unavailable("Unable to change contractor status.");}});
 
 export type StatusEvent = { jobId: string; fromStatus: string | null; toStatus: string; actorRole: string | null; note: string | null; occurredAt: string };
@@ -670,15 +725,56 @@ type JsonCallResult = { ok: true; job: NormalizedJob } | { ok: false; reason: st
  *  "Pickup" position 1 with address + latitude/longitude), with `towSource` as
  *  a string fallback. The vehicle is `assets[0]` ({year, make, model,
  *  color:{name}}), NOT a top-level `vehicle` key. */
+/** Driver acceptance on a raw Towbook call (owner-reported 2026-08-11; live
+ *  proof job 279769283 / call #24592): a driver thumbs-up on an offer is
+ *  recorded on the ASSIGNMENT entry, NOT on call.status — call.status stays
+ *  {"id":1} ("offered") while assets[].drivers[].driver.responseStatusId flips
+ *  0 → 1 (with a responseTime). Recon-verified semantics (api-calls-full.json,
+ *  2026-08-10): every accepted/en-route/completed call carries
+ *  responseStatusId=1 on its drivers[] entry (the direct assets[].driver keeps
+ *  0); a call that was accepted and then re-dispatched has its response reset
+ *  to 0 (live job 279769283, re-dispatched by the AI at 2026-08-11T18:56). Only
+ *  EXACTLY 1 counts — anything else leaves the call-status derivation alone.
+ *  Pure + client-safe (no dynamic imports). */
+export function driverAcceptedOffer(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const assets = (raw as Record<string, unknown>).assets;
+  if (!Array.isArray(assets)) return false;
+  for (const a of assets) {
+    if (!a || typeof a !== "object" || Array.isArray(a)) continue;
+    const o = a as Record<string, unknown>;
+    const direct = o.driver as Record<string, unknown> | undefined;
+    if (direct && typeof direct === "object" && Number(direct.responseStatusId) === 1) return true;
+    const drivers = o.drivers;
+    if (Array.isArray(drivers)) {
+      for (const d of drivers) {
+        if (!d || typeof d !== "object" || Array.isArray(d)) continue;
+        const sub = ((d as Record<string, unknown>).driver ?? null) as Record<string, unknown> | null;
+        if (sub && typeof sub === "object" && Number(sub.responseStatusId) === 1) return true;
+      }
+    }
+  }
+  return false;
+}
+
 export function normalizeJsonCall(call: Record<string, unknown>, sourceUrl: string): JsonCallResult {
   const idRaw = call.id ?? call.callNumber;
   if (idRaw == null) return { ok: false, reason: "no id/status" };
   const towbookJobId = String(idRaw).trim();
   if (!towbookJobId) return { ok: false, reason: "no id/status" };
   const statusId = extractTowbookStatusId(call.status) ?? callLevelStatusId(call);
-  const status = statusId == null ? null : TOWBOOK_STATUS_ID_TO_LIFECYCLE[statusId] ?? null;
+  let status = statusId == null ? null : TOWBOOK_STATUS_ID_TO_LIFECYCLE[statusId] ?? null;
   if (statusId == null || !status) {
     return { ok: false, reason: `unmapped status ${stringifyStatus(call.status)} (statusId=${statusId ?? "none"})` };
+  }
+  // Driver-response override (owner-reported 2026-08-11): a call Towbook still
+  // reports as "offered" (statusId 1) whose assigned driver already thumbs-up'd
+  // (assets[].drivers[].driver.responseStatusId === 1) is lifecycle "accepted".
+  // The RAW call status id is preserved in towbookStatus so the pull's compare
+  // never churns; when Towbook's own call status advances to 2 the normal
+  // mapping takes over seamlessly. 252/255 and every other id are untouched.
+  if (statusId === 1 && status === "offered" && driverAcceptedOffer(call)) {
+    status = "accepted";
   }
   // Customer: the REAL member is the call's first contact (contacts[0].name,
   // e.g. "Morgan R R."), then member/customer/caller keys. `account.company` is

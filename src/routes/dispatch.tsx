@@ -14,7 +14,7 @@ import {
   StatusBadge,
   useToast,
 } from "~/components/ui";
-import type { Contractor, Job } from "~/data/seed";
+import type { Contractor, Job, JobStatus } from "~/data/seed";
 import {
   avgResponseMinutes,
   haversineMiles,
@@ -27,11 +27,11 @@ import {
   fmtDuration,
   JOB_STATUS_META,
   jobDriverName,
-  nextStatus,
   SERVICE_ICONS,
   SERVICE_LABELS,
   timeAgo,
 } from "~/lib/job-ui";
+import { canSetJobStatus, SETTABLE_JOB_STATUSES } from "~/data/server";
 import { mutationKey, useDispatchStore } from "~/lib/store";
 
 import { OpsGate } from "~/components/portal-gate";
@@ -443,25 +443,33 @@ function OverridePicker({
 /* -------------------------------- active job ------------------------------- */
 
 function ActiveJobCard({ job, contractors }: { job: Job; contractors: Contractor[] }) {
-  const { advanceJob, isPending, getError } = useDispatchStore();
+  const { setJobStatus, isPending, getError, getPushResult } = useDispatchStore();
   const toast = useToast();
   const contractor = contractorById(contractors, job.assignedContractorId);
   const driverName = jobDriverName(job, contractors);
   const rec = useMemo(() => recommendForJob(job, contractors), [job, contractors]);
   const overridden = contractor && rec.top && contractor.id !== rec.top.contractor.id;
-  const next = nextStatus(job.status);
-  const key = mutationKey.advance(job.id);
+  const key = mutationKey.setStatus(job.id);
   const pending = isPending(key);
   const error = getError(key);
 
-  const advance = async () => {
-    const ok = await advanceJob(job.id);
-    if (ok && next) {
-      toast(
-        next === "completed"
-          ? `${job.customerName} marked completed`
-          : `${job.customerName} → ${JOB_STATUS_META[next].label}`,
-      );
+  // Exact-status apply (owner/admin/dispatcher): the chosen status lands in the
+  // portal AND is pushed to Towbook — the push outcome is surfaced in the toast.
+  const apply = async (status: JobStatus) => {
+    const ok = await setJobStatus(job.id, status);
+    if (!ok) return;
+    const push = getPushResult(mutationKey.setStatus(job.id));
+    const label = JOB_STATUS_META[status].label;
+    if (push && push.attempted && !push.verified) {
+      toast(`${job.customerName} → ${label} saved — Towbook sync failed and was escalated to "Needs attention".`);
+    } else if (push && push.skipped && push.reason === "newer-status-wins") {
+      toast(`${job.customerName} — Towbook shows a newer status; portal stays at ${label}.`);
+    } else if (push && push.skipped && push.reason === "already-at-status") {
+      toast(`${job.customerName} already at ${label} on Towbook.`);
+    } else if (push && push.attempted && push.verified) {
+      toast(`${job.customerName} → ${label} · synced to Towbook.`);
+    } else {
+      toast(`${job.customerName} → ${label}`);
     }
   };
 
@@ -500,16 +508,44 @@ function ActiveJobCard({ job, contractors }: { job: Job; contractors: Contractor
         <JobStatusStepper status={job.status} />
       </div>
 
-      {next && (
-        <div className="mt-3 flex flex-col items-end gap-2 border-t border-ink-100 pt-3">
-          {error && <InlineError message={error} className="w-full" />}
-          <Button variant="ghost" size="md" onClick={() => void advance()} loading={pending}>
-            {pending
-              ? "Working…"
-              : `Simulate: mark ${next === "completed" ? "completed" : JOB_STATUS_META[next].label.toLowerCase()}`}
-          </Button>
+      <div className="mt-3 border-t border-ink-100 pt-3">
+        {error && <InlineError message={error} className="mb-2 w-full" />}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="mr-1 text-[11px] font-bold uppercase tracking-wider text-ink-400">Set status</span>
+          {SETTABLE_JOB_STATUSES.map((s) => {
+            const meta = JOB_STATUS_META[s];
+            const isCurrent = s === job.status;
+            const allowed = canSetJobStatus(job.status, s);
+            return (
+              <button
+                key={s}
+                type="button"
+                disabled={pending || !allowed}
+                title={
+                  isCurrent
+                    ? "Current status (tap to re-verify on Towbook)"
+                    : !allowed
+                      ? "Cannot move a job backward in the lifecycle"
+                      : `Set to ${meta.label} and sync to Towbook`
+                }
+                onClick={() => void apply(s)}
+                className={`rounded-full border px-2.5 py-1 text-xs font-semibold transition ${
+                  isCurrent
+                    ? "border-ink-300 bg-ink-100 text-ink-700"
+                    : allowed
+                      ? "border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100"
+                      : "cursor-not-allowed border-ink-100 bg-surface text-ink-300"
+                } ${pending ? "opacity-60" : ""}`}
+              >
+                {isCurrent && pending ? "…" : meta.label}
+              </button>
+            );
+          })}
         </div>
-      )}
+        <p className="mt-2 text-[11px] leading-4 text-ink-400">
+          Sets the exact status here and on Towbook — even the one the driver already set on their phone.
+        </p>
+      </div>
     </Card>
   );
 }

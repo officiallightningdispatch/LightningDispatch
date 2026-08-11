@@ -363,6 +363,91 @@ await setup();
   check("escalation label surfaced in ops banner", views.includes("escalated_status_push_failed") && views.includes("status sync to Towbook failed"));
 }
 
+/* ==================== 13) BUG 5: driver thumbs-up → accepted (responseStatusId) ==================== */
+{
+  const { normalizeJsonCall, driverAcceptedOffer } = await import("./src/data/server.ts");
+  const callOffered = (resp) => ({
+    id: 279769283,
+    status: { id: 1, next: { statusId: 2 } },
+    assets: [{
+      id: 1,
+      driver: { id: 603482, name: "Antone jerret", responseStatusId: 0 },
+      drivers: [{ id: 268868786, driver: { id: 603482, name: "Antone jerret", responseStatusId: resp, responseTime: resp === 1 ? "2026-08-11T16:56:00" : undefined } }],
+    }],
+  });
+  check("13a: responseStatusId=1 (thumbs-up) → accepted detected", driverAcceptedOffer(callOffered(1)) === true);
+  check("13a: responseStatusId=0 (pending) → not accepted", driverAcceptedOffer(callOffered(0)) === false);
+  check("13a: no assets → not accepted", driverAcceptedOffer({ id: 1 }) === false);
+  const acc = normalizeJsonCall(callOffered(1), "status-sync.test");
+  check("13b: status-1 call + driver response 1 → lifecycle accepted", acc.ok && acc.job.status === "accepted", JSON.stringify(acc));
+  check("13b: raw towbookStatus preserved (still 1 — no churn)", acc.ok && acc.job.towbookStatus === "1", JSON.stringify(acc));
+  const off = normalizeJsonCall(callOffered(0), "status-sync.test");
+  check("13b: status-1 call + response 0 → offered (unchanged path)", off.ok && off.job.status === "offered", JSON.stringify(off));
+  const s2 = normalizeJsonCall({ id: 1, status: { id: 2 }, assets: [{ drivers: [{ driver: { id: 1, responseStatusId: 1 } }] }] }, "status-sync.test");
+  check("13b: status-2 call stays accepted via NORMAL mapping (override only at 1)", s2.ok && s2.job.status === "accepted" && s2.job.towbookStatus === "2", JSON.stringify(s2));
+  const s252 = normalizeJsonCall({ id: 1, status: { id: 252 } }, "status-sync.test");
+  check("13b: 252 still maps to completed", s252.ok && s252.job.status === "completed", JSON.stringify(s252));
+  const s255 = normalizeJsonCall({ id: 1, status: { id: 255 } }, "status-sync.test");
+  check("13b: 255 still maps to cancelled", s255.ok && s255.job.status === "cancelled", JSON.stringify(s255));
+  const { canSetJobStatus, SETTABLE_JOB_STATUSES } = await import("./src/data/server.ts");
+  check("13c: offered→accepted allowed", canSetJobStatus("offered", "accepted") === true);
+  check("13c: accepted→offered refused (no backward moves)", canSetJobStatus("accepted", "offered") === false);
+  check("13c: arrived→completed allowed", canSetJobStatus("arrived", "completed") === true);
+  check("13c: completed→offered refused", canSetJobStatus("completed", "offered") === false);
+  check("13c: completed→completed re-push allowed", canSetJobStatus("completed", "completed") === true);
+  check("13c: cancelled immovable", canSetJobStatus("cancelled", "accepted") === false);
+  check("13c: new not directly settable (use Assign)", canSetJobStatus("new", "offered") === false);
+  check("13c: selector exposes exactly the five statuses", SETTABLE_JOB_STATUSES.join(",") === "offered,accepted,en_route,arrived,completed");
+}
+/* ==================== 14) BUG 5: the 3s pull derives + persists driver acceptance ==================== */
+{
+  const { upsertPulledJobs } = await import("./src/data/server.ts");
+  const mkJob = (resp) => ({
+    towbookJobId: "880777",
+    customer: "David",
+    phone: "",
+    vehicle: "",
+    pickup: "Main St",
+    dropoff: "",
+    status: resp === 1 ? "accepted" : "offered",
+    towbookStatus: "1",
+    serviceType: "flatbed_tow",
+    createdAt: new Date().toISOString(),
+    note: "",
+    raw: { sourceUrl: "status-sync.test", status: { id: 1 }, assets: [{ id: 1, driver: { id: 603482, name: "Antone jerret", responseStatusId: 0 }, drivers: [{ id: 1, driver: { id: 603482, name: "Antone jerret", responseStatusId: resp, responseTime: resp === 1 ? "2026-08-11T16:56:00" : undefined } }] }] },
+  });
+  const first = await upsertPulledJobs(ORG, ACTOR, [mkJob(0)], "sync:test");
+  check("14a: import with response 0 → offered (added 1)", first.added === 1, JSON.stringify(first));
+  const row0 = await q`SELECT status, towbook_status FROM dispatch_jobs WHERE org_id=${ORG} AND towbook_job_id='880777'`;
+  check("14a: portal row offered / towbook 1", String(row0[0].status) === "offered" && String(row0[0].towbook_status) === "1", JSON.stringify(row0));
+  const flip = await upsertPulledJobs(ORG, ACTOR, [mkJob(1)], "sync:test");
+  check("14b: driver thumbs-up flips the portal row in ONE sync tick (updated=1)", flip.updated === 1, JSON.stringify(flip));
+  const row1 = await q`SELECT status, towbook_status FROM dispatch_jobs WHERE org_id=${ORG} AND towbook_job_id='880777'`;
+  check("14b: portal row now accepted (towbook_status still 1)", String(row1[0].status) === "accepted" && String(row1[0].towbook_status) === "1", JSON.stringify(row1));
+  const ev = await q`SELECT from_status, to_status, note FROM status_events WHERE org_id=${ORG} AND job_id=(SELECT id FROM dispatch_jobs WHERE org_id=${ORG} AND towbook_job_id='880777') ORDER BY occurred_at DESC LIMIT 1`;
+  check("14b: status_events records offered→accepted from Towbook", String(ev[0].from_status) === "offered" && String(ev[0].to_status) === "accepted" && String(ev[0].note).includes("Towbook"), JSON.stringify(ev));
+  const stable = await upsertPulledJobs(ORG, ACTOR, [mkJob(1)], "sync:test");
+  check("14c: re-pull is unchanged (no churn)", stable.updated === 0 && stable.unchanged === 1, JSON.stringify(stable));
+  const revert = await upsertPulledJobs(ORG, ACTOR, [mkJob(0)], "sync:test");
+  check("14d: response cleared (re-dispatched offer) → back to offered", revert.updated === 1, JSON.stringify(revert));
+  const row2 = await q`SELECT status FROM dispatch_jobs WHERE org_id=${ORG} AND towbook_job_id='880777'`;
+  check("14d: portal row back to offered", String(row2[0].status) === "offered", JSON.stringify(row2));
+}
+/* ==================== 15) exact-status selector wiring ==================== */
+{
+  const read = (p) => readFileSync(new URL(p, import.meta.url), "utf8");
+  const server = read("./src/data/server.ts");
+  const fn = server.slice(server.indexOf("export const setJobStatus"), server.indexOf("export const setJobStatus") + 4500);
+  check("15a: setJobStatus server fn exists", fn.includes("export const setJobStatus=createServerFn"));
+  check("15a: role-guards owner/admin/dispatcher", fn.includes('["owner","admin","dispatcher"]'));
+  check("15a: refuses backward/illegal moves via canSetJobStatus", fn.includes("canSetJobStatus(current,target)"));
+  check("15a: pushes the EXACT chosen status to Towbook", fn.includes("pushJobStatusToTowbook"));
+  const views = read("./src/components/ops-views.tsx");
+  check("15b: owner/ops queue renders the exact-status selector", views.includes("SETTABLE_JOB_STATUSES") && views.includes("canSetJobStatus") && views.includes("Set status"));
+  const store = read("./src/lib/store.tsx");
+  check("15c: store wires setJobStatus server fn", store.includes("setJobStatusServer") && store.includes("mutationKey.setStatus"));
+}
+
 /* ================================ summary + cleanup ================================ */
 const failed = checks.filter(([, ok]) => !ok);
 console.log(`status-sync.test.mjs: ${checks.length - failed.length}/${checks.length} passed`);
