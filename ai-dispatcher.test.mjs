@@ -41,7 +41,7 @@ const {
   etaProviderStatus,
   osrmRoadSeconds,
   tomtomRoadSeconds,
-  queueInclusiveArrivalMinutes,
+  workloadAwareArrivalMinutes,
   gpsPingAgeMinutes,
   driverActiveCount,
   loadOrgDriverQueues,
@@ -291,7 +291,7 @@ try {
   const offline = driver(717660, "Levi C Martin", { checkedIn: false, etaSec: 10 });
   const pick2 = await chooseBestDriverByRoad([freeSlow, freeFast, busy, noGps, offline], 41.2, -73.2, R);
   check("chooseBestDriverByRoad picks min ROAD ETA (Antone 600s road beats Jayden 3600s road)", pick2?.driver.driverId === 603482 && pick2.baseMinutes === 10 && pick2.usedFallback === false && pick2.roadSeconds === 600, JSON.stringify(pick2));
-  check("chooseBestDriverByRoad excludes busy/no-GPS/offline", (await chooseBestDriverByRoad([freeFast, busy], 41.2, -73.2, R))?.driver.driverId === 703785 && (await chooseBestDriverByRoad([busy, noGps, offline], 41.2, -73.2, R)) === null);
+  check("chooseBestDriverByRoad excludes busy/no-GPS/offline", (await chooseBestDriverByRoad([freeFast, busy], 41.2, -73.2, R))?.driver.driverId === 703785 && (await chooseBestDriverByRoad([busy, noGps, offline], 41.2, -73.2, R))?.driver.driverId === 668209);
   check("chooseBestDriverByRoad([]) = null", (await chooseBestDriverByRoad([], 41.2, -73.2, R)) === null);
   const fb = await chooseBestDriverByRoad([driver(703785, "Jayden Fountain", { lat: 41.19, lng: -73.15, etaSec: 604 })], 41.2, -73.2, R);
   check("chooseBestDriverByRoad: router null → fallback factor model flagged", fb?.driver.driverId === 703785 && fb.usedFallback === true && fb.roadSeconds === null && fb.baseMinutes === fallbackRoadMinutes(haversineMiles(41.19, -73.15, 41.2, -73.2)), JSON.stringify(fb));
@@ -470,7 +470,12 @@ try {
     check("accept retry succeeded: auto_accept_with_driver, 2 POSTs total", r.decisions[0]?.decision === "auto_accept_with_driver" && posts(m.calls).length === 2, JSON.stringify(r.decisions));
   }
 
-  /* ============ 18) no acceptable driver → accept with driverId 0 + escalate ============ */
+  /* ============ 18) cap-full driver with unlocated jobs → workload ETA ============ */
+  // The ONLY eligible candidate (603482) is at the 3-job cap with payload
+  // calls carrying no coords. Old behavior: unmodelable queue → driverId 0 +
+  // escalate. Owner-directed 2026-08-11: a busy driver's workload still counts
+  // — 3 unlocated jobs ≈ 3×30 service + final leg → dispatched with the
+  // workload ETA, clamped to the org ceiling (45).
   {
     const m = makeFetch({
       offers: [offer(7012)],
@@ -478,15 +483,15 @@ try {
     });
     const { deps, syncCalls } = makeDeps(m.fetchImpl);
     const r = await runAutoDispatch(ORG, deps);
-    check("no driver: decision auto_accept_no_driver, escalated for the ops queue", r.decisions[0]?.decision === "auto_accept_no_driver" && r.decisions[0]?.escalated === true, JSON.stringify(r.decisions));
+    check("busy-at-cap: decision auto_accept_with_driver (workload model), escalated false", r.decisions[0]?.decision === "auto_accept_with_driver" && r.decisions[0]?.escalated === false, JSON.stringify(r.decisions));
     const p = posts(m.calls);
-    check("no driver: accepted with driverId 0 (offer must not expire)", p.length === 1 && p[0]?.body?.driverId === 0, JSON.stringify(p[0]?.body));
-    check("no driver: sync still triggered after accept", syncCalls.length === 1 && syncCalls[0].trigger === "sync:auto-accept", JSON.stringify(syncCalls));
+    check("busy-at-cap: dispatched to 603482 with workload ETA clamped to 45", p.length === 1 && p[0]?.body?.driverId === 603482 && p[0]?.body?.ETA === 45, JSON.stringify(p[0]?.body));
+    check("busy-at-cap: sync still triggered after accept", syncCalls.length === 1 && syncCalls[0].trigger === "sync:auto-accept", JSON.stringify(syncCalls));
     const rows = await decisions();
     const nd = rows.find((x) => String(x.call_request_id) === "7012");
-    check("no driver: reason explains the escalation (eligible-list wording)", nd && String(nd.reason).includes("no ELIGIBLE checked-in free driver with GPS"), String(nd?.reason));
-    check("no driver: accept body quotes the SLA ceiling ETA + awaiting-assignment notes", nd && p[0]?.body?.ETA === 45 && String(p[0]?.body?.notes).includes("awaiting driver assignment") && nd.eta_minutes === null, JSON.stringify({ eta: p[0]?.body?.ETA, notes: p[0]?.body?.notes, etaMinutes: nd?.eta_minutes }));
-    check("no driver: raw_response now captures the FULL offer + accept response", nd && nd.raw_response?.offer?.callRequestId === "7012" && nd.raw_response?.accept?.callNumber === 25000, JSON.stringify(nd?.raw_response));
+    check("busy-at-cap: no-GPS/offline drivers still excluded (eligible list honored)", nd && String(nd.driver_id) === "603482", String(nd?.driver_id));
+    check("busy-at-cap: reason names workload-aware chain + unlocated jobs, ETA recorded", nd && String(nd.reason).includes("workload-aware") && String(nd.reason).includes("unlocated") && Number(nd.eta_minutes) === 45, String(nd?.reason));
+    check("busy-at-cap: raw_response now captures the FULL offer + accept response", nd && nd.raw_response?.offer?.callRequestId === "7012" && nd.raw_response?.accept?.callNumber === 25000, JSON.stringify(nd?.raw_response));
   }
 
   /* ============ 19) non-pending offers (status != 0) are skipped silently ============ */
@@ -582,23 +587,23 @@ try {
     check("choice-by-road: decision names Antone + road breakdown", cb && String(cb.driver_name) === "Antone jerret" && String(cb.reason).includes("road 10 + buffer 5") && cb.raw_response?.eta?.roadSeconds === 600 && cb.raw_response?.eta?.straightLineMinutes === 30, String(cb?.reason));
   }
 
-  /* ============ 25) no-GPS drivers: never auto-dispatched, no ETA quoted ============ */
+  /* ============ 25) no-GPS excluded; cap-full driver gets workload ETA ============ */
   {
     const m = makeFetch({
       offers: [offer(7019)],
       drivers: [
-        driver(103665, "Brittani Simms", { lat: 0, lng: 0, etaSec: 5 }),          // no GPS
-        driver(703785, "Jayden Fountain", { lat: 41.2, lng: -73.2, etaSec: 10, calls: [{ callId: 1, status: 3 }, { callId: 2, status: 3 }, { callId: 3, status: 3 }] }), // at the 3-job cap
+        driver(103665, "Brittani Simms", { lat: 0, lng: 0, etaSec: 5 }),          // no GPS → never eligible
+        driver(703785, "Jayden Fountain", { lat: 41.2, lng: -73.2, etaSec: 10, calls: [{ callId: 1, status: 3 }, { callId: 2, status: 3 }, { callId: 3, status: 3 }] }), // at the 3-job cap → workload model
       ],
     });
     const { deps } = makeDeps(m.fetchImpl);
     const r = await runAutoDispatch(ORG, deps);
-    check("no-GPS: decision auto_accept_no_driver, escalated for the ops queue", r.decisions[0]?.decision === "auto_accept_no_driver" && r.decisions[0]?.escalated === true, JSON.stringify(r.decisions));
+    check("no-GPS: no-GPS driver excluded, cap-full Jayden dispatched (workload ETA)", r.decisions[0]?.decision === "auto_accept_with_driver" && r.decisions[0]?.escalated === false, JSON.stringify(r.decisions));
     const p = posts(m.calls);
-    check("no-GPS: accepted with driverId 0 (offer must not expire)", p.length === 1 && p[0]?.body?.driverId === 0, JSON.stringify(p[0]?.body));
+    check("no-GPS: dispatched to 703785 with workload ETA clamped to 45", p.length === 1 && p[0]?.body?.driverId === 703785 && p[0]?.body?.ETA === 45, JSON.stringify(p[0]?.body));
     const rows = await decisions();
     const ng = rows.find((x) => String(x.call_request_id) === "7019");
-    check("no-GPS: no ETA recorded in the ledger (nothing fabricated for the club)", ng && ng.eta_minutes === null && String(ng.reason).includes("accepted WITHOUT dispatch"), JSON.stringify(ng));
+    check("no-GPS: ETA recorded in the ledger (workload model, clamped 45)", ng && Number(ng.eta_minutes) === 45 && String(ng.reason).includes("workload-aware"), String(ng?.reason));
   }
 
   /* ============ 26a) post-accept dispatch verification (2026-08-10 incident fix) ============ */
@@ -807,9 +812,11 @@ try {
     ] }]]);
     const twoJob = driver(1001, "Two Job", { lat: 41.19, lng: -73.15, etaSec: 604 });
     const threeJob = driver(1002, "Three Job", { lat: 41.18, lng: -73.14, etaSec: 300 }); // road-nearer
-    const Rq = makeRouter({ "41.19,-73.15": 900, "41.18,-73.14": 300 }); // three-job road-closer
+    // Rq: GPS→J1 900s; J1→J2 300s (new key); J2→offer 600s (new key); threeJob GPS 300s
+    const Rq = makeRouter({ "41.19,-73.15": 900, "41.18,-73.14": 300, "41.16,-73.11": 300, "41.17,-73.12": 600 });
     const pickCap = await chooseBestDriverByRoad([twoJob, threeJob], 41.2, -73.2, Rq, new Map([...q2, ...q3]));
-    check("queue cap: 2-job driver eligible, 3-job driver excluded (road-nearer loses)", pickCap?.driver.driverId === 1001 && pickCap?.queueInclusive === false, JSON.stringify(pickCap));
+    check("queue cap: 2-job driver eligible, 3-job driver excluded — 2-job ETA is now workload-aware", pickCap?.driver.driverId === 1001 && pickCap?.queueInclusive === true, JSON.stringify(pickCap));
+    check("queue cap: workload chain math (travel 15 + service 30 + travel 5 + service 30 + final 10 = 90)", pickCap?.queueMinutes === 80 && pickCap?.queuedJobCount === 2 && pickCap?.finalLegMinutes === 10 && pickCap?.baseMinutes === 90 && pickCap?.startedOnScene === false, JSON.stringify(pickCap));
     // payload-calls cross-check: 2 active payload calls eligible, 3 not
     const pay2 = driver(2001, "Pay Two", { lat: 41.19, lng: -73.15, etaSec: 604, calls: [{ callId: 1, status: 3 }, { callId: 2, status: 4 }] });
     const pay3 = driver(2002, "Pay Three", { lat: 41.18, lng: -73.14, etaSec: 300, calls: [{ callId: 1, status: 3 }, { callId: 2, status: 3 }, { callId: 3, status: 3 }] });
@@ -823,7 +830,7 @@ try {
     const subFar = driver(2004, "Sub Far", { lat: 41.1, lng: -73.0, etaSec: 604, calls: [{ callId: 1, status: 3 }] });
     const subNear = driver(2005, "Sub Near", { lat: 41.19, lng: -73.15, etaSec: 604, calls: [{ callId: 1, status: 3 }] });
     const pickSub = await chooseBestDriverByRoad([subFar, subNear], 41.2, -73.2, makeRouter({ "41.10,-73.00": 3600, "41.19,-73.15": 600 }));
-    check("nearest wins among sub-3-job drivers (road ETA 10 min vs 60 min)", pickSub?.driver.driverId === 2005 && pickSub?.baseMinutes === 10, JSON.stringify(pickSub));
+    check("nearest wins among sub-3-job drivers (workload ETA 40 min = 30 service + 10 road, vs 90)", pickSub?.driver.driverId === 2005 && pickSub?.baseMinutes === 40, JSON.stringify(pickSub));
     // (c) ALL-LOADED: both at the cap → queue-inclusive arrival wins + math recorded
     // A: legs 600s(10m) + 300s(5m) + 300s(5m) + 3×30 service = 110 queue; final 600s=10 → 120
     // B: legs 900s(15m) + 300s(5m) + 300s(5m) + 3×30 service = 115 queue; final 900s=15 → 130
@@ -840,23 +847,44 @@ try {
     const dA = driver(3001, "Queue A", { lat: 41.15, lng: -73.10, etaSec: 604 });
     const dB = driver(3002, "Queue B", { lat: 41.25, lng: -73.25, etaSec: 604 });
     const Rq3 = makeRouter({
-      "41.15,-73.10": 600, // A GPS → J1 AND A GPS → offer (final leg)
+      "41.15,-73.10": 600, // A GPS → J1
       "41.16,-73.11": 300,
       "41.17,-73.12": 300,
-      "41.25,-73.25": 900, // B GPS → J1 AND B GPS → offer
+      "41.18,-73.13": 600, // A J3 → offer (final leg from the LAST job, not GPS)
+      "41.25,-73.25": 900, // B GPS → J1
       "41.26,-73.26": 300,
       "41.27,-73.27": 300,
+      "41.28,-73.28": 900, // B J3 → offer (final leg from the LAST job, not GPS)
     });
     const pickAll = await chooseBestDriverByRoad([dA, dB], 41.2, -73.2, Rq3, new Map([...qA3, ...qB3]));
-    check("all-loaded: queue-inclusive arrival picks A (120 min < 130 min)", pickAll?.driver.driverId === 3001 && pickAll?.queueInclusive === true, JSON.stringify(pickAll));
-    check("all-loaded: queue math recorded (3 jobs ≈ 110 min + final leg 10; arrival 120)", pickAll?.queueMinutes === 110 && pickAll?.queuedJobCount === 3 && pickAll?.finalLegMinutes === 10 && pickAll?.baseMinutes === 120, JSON.stringify(pickAll));
+    check("all-loaded: chain-aware arrival picks A (120 min < 130 min)", pickAll?.driver.driverId === 3001 && pickAll?.queueInclusive === true, JSON.stringify(pickAll));
+    check("all-loaded: chain math recorded (3 jobs ≈ 110 min + final leg 10; arrival 120)", pickAll?.queueMinutes === 110 && pickAll?.queuedJobCount === 3 && pickAll?.finalLegMinutes === 10 && pickAll?.baseMinutes === 120, JSON.stringify(pickAll));
     check("all-loaded: quoted ETA includes queue time (ceil(120)+5 = 125)", finalEtaMinutes(pickAll.baseMinutes, 5, 5, 180) === 125, String(finalEtaMinutes(pickAll.baseMinutes, 5, 5, 180)));
     check("all-loaded: clamps at the ceiling (45 default) — floor/ceiling rails kept", finalEtaMinutes(pickAll.baseMinutes, 5, 5, 45) === 45, String(finalEtaMinutes(pickAll.baseMinutes, 5, 5, 45)));
-    // queueInclusiveArrivalMinutes directly: fallback factor when routing fails
-    const dirQ = await queueInclusiveArrivalMinutes(dA, qA3.get("3001").queuedJobs, 41.2, -73.2, makeRouter({ "41.15,-73.10": null, "41.16,-73.11": null, "41.17,-73.12": null }));
+    // workloadAwareArrivalMinutes directly: fallback factor when routing fails
+    const dirQ = await workloadAwareArrivalMinutes(dA, qA3.get("3001").queuedJobs, 41.2, -73.2, makeRouter({ "41.15,-73.10": null, "41.16,-73.11": null, "41.17,-73.12": null }));
     check("queue model: router failure → factor fallback per leg (still > 90 min service)", dirQ && dirQ.arrivalMinutes > 90 && dirQ.queueMinutes > 90 && dirQ.finalLegMinutes > 0, JSON.stringify(dirQ));
-    // queue model: empty geometry → null (never fabricate a queue ETA)
-    check("queue model: no routable jobs → null (honest, no fabricated ETA)", (await queueInclusiveArrivalMinutes(dA, [], 41.2, -73.2, Rq3)) === null, "");
+    // queue model: no active jobs → null (free driver — current-position model applies)
+    check("queue model: no active jobs → null (free driver, not a workload case)", (await workloadAwareArrivalMinutes(dA, [], 41.2, -73.2, Rq3)) === null, "");
+    // on-scene first job (owner formula: arrived → remaining is service only; the
+    // final leg starts from the CURRENT job's location, never from the GPS ping)
+    const onScene = await workloadAwareArrivalMinutes(
+      dA, [{ pickupLat: 41.16, pickupLng: -73.11, status: "arrived", createdAt: "t1" }], 41.2, -73.2,
+      makeRouter({ "41.16,-73.11": 600 }), 1);
+    check("queue model: arrived at current job → service only + final leg from the JOB (no GPS→pickup leg)", onScene && onScene.startedOnScene === true && onScene.queueMinutes === 30 && onScene.finalLegMinutes === 10 && onScene.arrivalMinutes === 40, JSON.stringify(onScene));
+    // en-route first job: GPS→pickup travel + service (remaining drive, upper bound)
+    const enRoute = await workloadAwareArrivalMinutes(
+      dA, [{ pickupLat: 41.16, pickupLng: -73.11, status: "en_route", createdAt: "t1" }], 41.2, -73.2,
+      makeRouter({ "41.15,-73.10": 600, "41.16,-73.11": 600 }), 1);
+    check("queue model: en-route current job → GPS→pickup travel 10 + service 30 + final leg 10 = 50", enRoute && enRoute.startedOnScene === false && enRoute.queueMinutes === 40 && enRoute.finalLegMinutes === 10 && enRoute.arrivalMinutes === 50, JSON.stringify(enRoute));
+    // multi-job chain (owner formula): finish A → travel A→B → finish B → travel B→offer
+    const chain3 = await workloadAwareArrivalMinutes(
+      dA, [
+        { pickupLat: 41.16, pickupLng: -73.11, status: "en_route", createdAt: "t1" },
+        { pickupLat: 41.17, pickupLng: -73.12, status: "arrived", createdAt: "t2" },
+        { pickupLat: 41.18, pickupLng: -73.13, status: "accepted", createdAt: "t3" },
+      ], 41.2, -73.2, Rq3, 3);
+    check("queue model: 3-job chain 10+30 + 5+30 + 5+30 = 110 queue + final 10 = 120", chain3 && chain3.queueMinutes === 110 && chain3.finalLegMinutes === 10 && chain3.arrivalMinutes === 120, JSON.stringify(chain3));
     // gps ping age surface (best-effort — the live payload has no timestamp)
     const stale = { ...driver(2006, "Stale GPS", { lat: 41.19, lng: -73.15, etaSec: 604 }), gpsUpdatedAtUtc: new Date(Date.now() - 30 * 60000).toISOString() };
     check("gpsPingAgeMinutes: detects a 30-min-old ping", gpsPingAgeMinutes(stale) != null && gpsPingAgeMinutes(stale) >= 29 && gpsPingAgeMinutes(stale) <= 31, String(gpsPingAgeMinutes(stale)));
@@ -883,12 +911,14 @@ try {
     check("loadOrgDriverQueues: counts per driver from dispatch_jobs (3/3/2)", queues.get("3001")?.activeCount === 3 && queues.get("3002")?.activeCount === 3 && queues.get("3003")?.activeCount === 2 && queues.get("3001")?.queuedJobs.length === 3, JSON.stringify([...queues].map(([k, v]) => [k, v.activeCount])));
 
     const router = makeRouter({
-      "41.15,-73.10": 600, "41.16,-73.11": 300, "41.17,-73.12": 300,
-      "41.25,-73.25": 900, "41.26,-73.26": 300, "41.27,-73.27": 300,
-      "41.19,-73.15": 600,
+      "41.15,-73.10": 600, "41.16,-73.11": 300, "41.17,-73.12": 300, "41.18,-73.13": 600, // A J3 → offer
+      "41.25,-73.25": 900, "41.26,-73.26": 300, "41.27,-73.27": 300, "41.28,-73.28": 900, // B J3 → offer
+      "41.19,-73.15": 600, // 3003 GPS → J1
+      "41.10,-73.00": 600, // 3003 J1 → J2
+      "41.11,-73.01": 900, // 3003 J2 → offer (final leg from the LAST job)
     });
     // (d) accept still posts the chosen driverId + quoted ETA — all-loaded case:
-    // both candidates at the 3-job cap → queue-inclusive winner 3001, ETA 125.
+    // both candidates at the 3-job cap → workload-chain winner 3001, ETA 125.
     {
       const m = makeFetch({
         offers: [{ ...offer(8031), drivers: [3001, 3002] }],
@@ -898,14 +928,16 @@ try {
       const r = await runAutoDispatch(ORG4, deps);
       check("engine all-loaded: auto_accept_with_driver + winner 3001", r.decisions[0]?.decision === "auto_accept_with_driver" && r.decisions[0]?.escalated === false && r.decisions[0]?.reason.includes("VERIFIED"), JSON.stringify(r.decisions[0]));
       const p = posts(m.calls);
-      check("engine all-loaded: accept posts driverId 3001 + queue-inclusive ETA 125", p.length === 1 && p[0]?.body?.driverId === 3001 && p[0]?.body?.ETA === 125, JSON.stringify(p[0]?.body));
+      check("engine all-loaded: accept posts driverId 3001 + workload ETA 125", p.length === 1 && p[0]?.body?.driverId === 3001 && p[0]?.body?.ETA === 125, JSON.stringify(p[0]?.body));
       const rows = await q`SELECT call_request_id, decision, driver_id, eta_minutes, reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG4} AND call_request_id='8031'`;
       const row = rows[0];
-      check("engine all-loaded: reason names winner + queue math (queued 3 jobs ≈ 110 min; ETA 125 min)", row && String(row.driver_id) === "3001" && Number(row.eta_minutes) === 125 && String(row.reason).includes("queued 3 jobs ≈ 110 min") && String(row.reason).includes("final leg 10") && String(row.reason).includes("ETA 125 min"), String(row?.reason));
-      check("engine all-loaded: raw_response.eta queue facts recorded", row && row.raw_response?.eta?.queueInclusive === true && row.raw_response?.eta?.queueMinutes === 110 && row.raw_response?.eta?.queuedJobCount === 3 && row.raw_response?.eta?.finalLegMinutes === 10 && row.raw_response?.eta?.finalMinutes === 125, JSON.stringify(row?.raw_response?.eta));
+      check("engine all-loaded: reason names winner + chain math (3 active jobs ≈ 110 min; ETA 125 min)", row && String(row.driver_id) === "3001" && Number(row.eta_minutes) === 125 && String(row.reason).includes("3 active jobs ≈ 110 min") && String(row.reason).includes("final leg 10") && String(row.reason).includes("ETA 125 min"), String(row?.reason));
+      check("engine all-loaded: raw_response.eta chain facts recorded", row && row.raw_response?.eta?.queueInclusive === true && row.raw_response?.eta?.queueMinutes === 110 && row.raw_response?.eta?.queuedJobCount === 3 && row.raw_response?.eta?.finalLegMinutes === 10 && row.raw_response?.eta?.startedOnScene === false && row.raw_response?.eta?.unlocatedJobs === 0 && row.raw_response?.eta?.finalMinutes === 125, JSON.stringify(row?.raw_response?.eta));
     }
     // (a/b) engine: under-cap driver beats an over-cap driver, even when
-    // road-farther (3003 has 2 jobs → eligible; 3001 has 3 → excluded).
+    // road-farther (3003 has 2 jobs → eligible; 3001 has 3 → excluded) — and the
+    // 2-job driver's ETA is now WORKLOAD-AWARE (owner 2026-08-11), not the old
+    // naive GPS→offer road time.
     {
       const m = makeFetch({
         offers: [{ ...offer(8032), drivers: [3001, 3003] }],
@@ -914,9 +946,9 @@ try {
       const { deps } = makeDeps(m.fetchImpl, router);
       const r = await runAutoDispatch(ORG4, deps);
       const p = posts(m.calls);
-      check("engine under-cap: 2-job driver 3003 dispatched over 3-job 3001", r.decisions[0]?.decision === "auto_accept_with_driver" && p[0]?.body?.driverId === 3003 && p[0]?.body?.ETA === 15, JSON.stringify({ d: r.decisions[0], p: p[0]?.body }));
+      check("engine under-cap: 2-job driver 3003 dispatched over 3-job 3001, workload ETA 100", r.decisions[0]?.decision === "auto_accept_with_driver" && p[0]?.body?.driverId === 3003 && p[0]?.body?.ETA === 100, JSON.stringify({ d: r.decisions[0], p: p[0]?.body }));
       const rows = await q`SELECT reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG4} AND call_request_id='8032'`;
-      check("engine under-cap: reason is plain road (osrm), no queue math", rows[0] && String(rows[0].reason).includes("osrm road 10 + buffer 5") && !String(rows[0].reason).includes("queued") && rows[0].raw_response?.eta?.queueInclusive === false, String(rows[0]?.reason));
+      check("engine under-cap: reason names workload-aware chain (2 active jobs ≈ 80 min + final leg 15)", rows[0] && String(rows[0].reason).includes("workload-aware: 2 active jobs ≈ 80 min") && String(rows[0].reason).includes("final leg 15") && rows[0].raw_response?.eta?.queueInclusive === true && rows[0].raw_response?.eta?.queueMinutes === 80 && rows[0].raw_response?.eta?.finalLegMinutes === 15, String(rows[0]?.reason));
     }
     // (e) regression: single-driver happy path with dispatch_jobs EMPTY still
     // dispatches (no queue rows → 0 active → eligible, ETA normal).
@@ -1040,7 +1072,7 @@ try {
   {
     const rows = await decisions();
     const byDecision = rows.reduce((acc, x) => { acc[x.decision] = (acc[x.decision] || 0) + 1; return acc; }, {});
-    check("ledger: every auto_accept + escalation path present exactly once", byDecision["auto_accept_with_driver"] === 13 && byDecision["auto_accept_no_driver"] === 3 && byDecision["escalated_out_of_zone"] === 1 && byDecision["escalated_missing_coords"] === 1 && byDecision["escalated_expired"] === 1 && byDecision["escalated_unexpected_shape"] === 1 && byDecision["escalated_driver_lookup_failed"] === 1 && byDecision["escalated_accept_failed"] === 1 && byDecision["escalated_dispatch_failed"] === 1, JSON.stringify(byDecision));
+    check("ledger: every auto_accept + escalation path present exactly once", byDecision["auto_accept_with_driver"] === 15 && byDecision["auto_accept_no_driver"] === 1 && byDecision["escalated_out_of_zone"] === 1 && byDecision["escalated_missing_coords"] === 1 && byDecision["escalated_expired"] === 1 && byDecision["escalated_unexpected_shape"] === 1 && byDecision["escalated_driver_lookup_failed"] === 1 && byDecision["escalated_accept_failed"] === 1 && byDecision["escalated_dispatch_failed"] === 1, JSON.stringify(byDecision));
     const a = await audits();
     check("audit: 16 ai_dispatcher:accept rows (every accept incl. no-driver)", Number(a[0].n) === 16, String(a[0].n));
     const adAudit = await q`SELECT count(*)::int n FROM audit_log WHERE org_id=${ORG} AND action='ai_dispatcher:decision'`;

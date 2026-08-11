@@ -750,15 +750,23 @@ export type ChosenDriverEta = {
   trafficDelaySeconds: number | null;
   /** Router notes (TomTom travel/delay detail; osrm static; null on fallback). */
   routerNotes: string | null;
-  /** True when this choice came from the all-loaded queue-inclusive arrival
-   *  model (every candidate was at the MAX_DRIVER_QUEUE cap). */
+  /** True when this choice came from the workload-aware chain model (the
+   *  driver had active jobs; previously only the all-loaded queue-inclusive
+   *  path, now ANY busy driver — owner-directed 2026-08-11). */
   queueInclusive: boolean;
-  /** Queue travel + service minutes (queue-inclusive case only; null otherwise). */
+  /** Queue travel + service minutes (workload-aware case only; null otherwise). */
   queueMinutes: number | null;
-  /** Number of queued jobs modeled (queue-inclusive case only; null otherwise). */
+  /** Number of active jobs modeled (workload-aware case only; null otherwise). */
   queuedJobCount: number | null;
-  /** Final road leg minutes driver-GPS → offer (queue-inclusive only; null otherwise). */
+  /** Final road leg minutes last-job-location → offer (workload-aware only). */
   finalLegMinutes: number | null;
+  /** True when the driver was already ON SCENE at their current job (arrived)
+   *  — the chain starts at that job's service time, no GPS→pickup leg
+   *  (workload-aware only; null otherwise). */
+  startedOnScene: boolean | null;
+  /** Active jobs with no pickup coords, estimated as service time at the tail
+   *  (workload-aware only; 0/null otherwise). */
+  unlocatedJobs: number | null;
   /** Why TomTom live traffic was NOT used (chained fallback; null = TomTom OK
    *  or no TomTom key). ETA honesty: transient TomTom failures are recorded. */
   tomtomFailure: string | null;
@@ -767,23 +775,46 @@ export type ChosenDriverEta = {
   gpsPingAgeMinutes: number | null;
 };
 
-/** Queue-inclusive arrival model (owner spec 2026-08-11, all-loaded case):
- *  arrival = Σ over queued jobs of (road travel to that job's pickup +
- *  SERVICE_MINUTES_PER_JOB) + the road leg from the driver's current GPS to
- *  the offer. Travel legs reuse the road router (TomTom → OSRM chain); a leg
- *  that fails falls back to the straight-line factor model — never fabricated.
- *  The driver's current GPS is the literal start of the model (owner formula:
- *  "road drive from their current position to the offer"), which errs toward
- *  a longer — safer — ETA. Returns null when the queue has no routable job
- *  pickups (the model can't be honest without geometry). */
-export async function queueInclusiveArrivalMinutes(
+/** Workload-aware arrival model (owner-directed 2026-08-11): a driver with
+ *  active jobs can't start the offer until those jobs are done, so their REAL
+ *  earliest arrival is
+ *    (remaining time on the current/in-progress job)
+ *    + Σ over subsequent queued jobs of (road travel from the PREVIOUS job's
+ *      pickup to THIS job's pickup + SERVICE_MINUTES_PER_JOB on-scene time)
+ *    + the road leg from the LAST job's pickup to the incoming offer.
+ *  A driver already ARRIVED at the current job contributes only on-scene
+ *  service time for it — no GPS→pickup leg (owner formula: "remaining time on
+ *  any current/in-progress job" + "travel from the CURRENT job's location to
+ *  the NEXT pickup, not from the driver's last GPS ping"). A driver EN ROUTE
+ *  to the current job contributes GPS→pickup travel + service (no progress
+ *  data exists, so the remaining drive is at most that — errs toward a longer,
+ *  safer ETA). Active jobs that carry no pickup coords (unlocated) contribute
+ *  their service time at the tail — never dropped from the workload, never
+ *  routed blind. Every travel leg uses the road router (TomTom → OSRM chain)
+ *  with the straight-line factor model as per-leg fallback — never fabricated.
+ *  Returns null only when the driver has NO active jobs at all (free — the
+ *  caller uses current-position travel instead). `activeCount` is the driver's
+ *  TOTAL active-job count (may exceed queue.length when some jobs lack coords);
+ *  it defaults to queue.length so callers that only have geometry stay correct. */
+export async function workloadAwareArrivalMinutes(
   driver: NearestDriver,
   queue: QueuedJob[],
   pickupLat: number,
   pickupLng: number,
   roadRouter: RoadRouter | null,
-): Promise<{ arrivalMinutes: number; queueMinutes: number; finalLegMinutes: number; finalLegProvider: EtaProvider } | null> {
-  if (!queue.length) return null;
+  activeCount?: number,
+): Promise<{
+  arrivalMinutes: number;
+  queueMinutes: number;
+  finalLegMinutes: number;
+  finalLegProvider: EtaProvider;
+  startedOnScene: boolean;
+  unlocatedJobs: number;
+} | null> {
+  const total = activeCount != null && Number.isFinite(activeCount) && activeCount >= 0
+    ? Math.round(activeCount)
+    : queue.length;
+  if (total === 0) return null; // free driver — current-position travel is the caller's model
   const legMinutes = async (fromLat: number, fromLng: number, toLat: number, toLng: number): Promise<{ minutes: number; provider: EtaProvider }> => {
     let result: RoadResult | null = null;
     try {
@@ -796,21 +827,50 @@ export async function queueInclusiveArrivalMinutes(
   };
   const lat = Number(driver.latitude);
   const lng = Number(driver.longitude);
+  const unlocatedJobs = Math.max(0, total - queue.length);
   let queueMinutes = 0;
   let prevLat = lat;
   let prevLng = lng;
-  for (const job of queue) {
-    const leg = await legMinutes(prevLat, prevLng, job.pickupLat, job.pickupLng);
-    queueMinutes += leg.minutes + SERVICE_MINUTES_PER_JOB;
-    prevLat = job.pickupLat;
-    prevLng = job.pickupLng;
+  let startedOnScene = false;
+  if (queue.length) {
+    const first = queue[0];
+    if (first.status === "arrived") {
+      // Already ON the current job — remaining = on-scene service only; the
+      // chain to the NEXT job starts from THIS job's location (owner formula —
+      // never from the driver's last GPS ping).
+      startedOnScene = true;
+      queueMinutes += SERVICE_MINUTES_PER_JOB;
+      prevLat = first.pickupLat;
+      prevLng = first.pickupLng;
+      for (let i = 1; i < queue.length; i++) {
+        const leg = await legMinutes(prevLat, prevLng, queue[i].pickupLat, queue[i].pickupLng);
+        queueMinutes += leg.minutes + SERVICE_MINUTES_PER_JOB;
+        prevLat = queue[i].pickupLat;
+        prevLng = queue[i].pickupLng;
+      }
+    } else {
+      for (const job of queue) {
+        const leg = await legMinutes(prevLat, prevLng, job.pickupLat, job.pickupLng);
+        queueMinutes += leg.minutes + SERVICE_MINUTES_PER_JOB;
+        prevLat = job.pickupLat;
+        prevLng = job.pickupLng;
+      }
+    }
   }
-  const finalLeg = await legMinutes(lat, lng, pickupLat, pickupLng);
+  // Unlocated active jobs (no pickup coords): their on-scene service time is
+  // still real workload — estimate it at the tail (never dropped, never routed
+  // blind).
+  if (unlocatedJobs > 0) queueMinutes += SERVICE_MINUTES_PER_JOB * unlocatedJobs;
+  // Final leg: from the LAST job's location to the offer — NOT from the
+  // driver's GPS (they are at the last job when this leg begins).
+  const finalLeg = await legMinutes(prevLat, prevLng, pickupLat, pickupLng);
   return {
     arrivalMinutes: queueMinutes + finalLeg.minutes,
     queueMinutes,
     finalLegMinutes: finalLeg.minutes,
     finalLegProvider: finalLeg.provider,
+    startedOnScene,
+    unlocatedJobs,
   };
 }
 
@@ -854,9 +914,42 @@ export async function chooseBestDriverByRoad(
 
   const underCap = baseEligible.filter((d) => driverActiveCount(d, queues) < MAX_DRIVER_QUEUE);
   const pickCandidates = underCap.length ? underCap : baseEligible;
-  const routeOne = async (d: NearestDriver): Promise<ChosenDriverEta> => {
+  const routeOne = async (d: NearestDriver): Promise<ChosenDriverEta | null> => {
     const straightLineMinutes = Math.max(1, Math.ceil(Number(d.estimatedTimeSeconds) / 60));
     const pingAge = gpsPingAgeMinutes(d);
+    const activeCount = driverActiveCount(d, queues);
+    if (activeCount > 0) {
+      // Workload-aware (owner-directed 2026-08-11): a driver with active jobs
+      // must finish them before this offer — remaining on the in-progress job
+      // + travel between consecutive job pickups + the final leg from the LAST
+      // job's location to the offer. A busy driver is always modelable
+      // (unlocated jobs contribute their service time at the tail), so the
+      // chain never fails here.
+      const geometry = queueGeometryFor(d, queues);
+      const chain = await workloadAwareArrivalMinutes(d, geometry, pickupLat, pickupLng, roadRouter, activeCount);
+      if (chain) {
+        return {
+          driver: d,
+          roadSeconds: null,
+          baseMinutes: Math.max(1, chain.arrivalMinutes),
+          straightLineMinutes,
+          usedFallback: chain.finalLegProvider === "factor",
+          provider: chain.finalLegProvider,
+          liveTraffic: chain.finalLegProvider === "tomtom",
+          trafficDelaySeconds: null,
+          routerNotes: `workload-aware; ${activeCount} active jobs${chain.unlocatedJobs > 0 ? ` (+${chain.unlocatedJobs} unlocated ≈ service time)` : ""}`,
+          queueInclusive: true,
+          queueMinutes: chain.queueMinutes,
+          queuedJobCount: activeCount,
+          finalLegMinutes: chain.finalLegMinutes,
+          startedOnScene: chain.startedOnScene,
+          unlocatedJobs: chain.unlocatedJobs,
+          tomtomFailure: null,
+          gpsPingAgeMinutes: pingAge,
+        };
+      }
+      return null; // free-only guard; busy drivers are always modelable
+    }
     let result: RoadResult | null = null;
     try {
       result = roadRouter ? await roadRouter(
@@ -879,6 +972,8 @@ export async function chooseBestDriverByRoad(
         queueMinutes: null,
         queuedJobCount: null,
         finalLegMinutes: null,
+        startedOnScene: null,
+        unlocatedJobs: null,
         tomtomFailure: result.tomtomFailure ?? null,
         gpsPingAgeMinutes: pingAge,
       };
@@ -900,25 +995,28 @@ export async function chooseBestDriverByRoad(
       queueMinutes: null,
       queuedJobCount: null,
       finalLegMinutes: null,
+      startedOnScene: null,
+      unlocatedJobs: null,
       tomtomFailure: null,
       gpsPingAgeMinutes: pingAge,
     };
   };
 
   if (underCap.length) {
-    const routed = await Promise.all(pickCandidates.map(routeOne));
+    const routed = (await Promise.all(pickCandidates.map(routeOne))).filter((r): r is ChosenDriverEta => r != null);
     routed.sort((a, b) =>
       a.baseMinutes - b.baseMinutes ||
       String(a.driver.driverId ?? "").localeCompare(String(b.driver.driverId ?? "")));
-    return routed[0];
+    return routed[0] ?? null;
   }
 
-  // --- all-loaded: EVERY candidate is at the cap → queue-inclusive arrival ---
+  // --- all-loaded: EVERY candidate is at the cap → chain-aware arrival ---
   const modeled = await Promise.all(baseEligible.map(async (d): Promise<ChosenDriverEta | null> => {
     const geometry = queueGeometryFor(d, queues);
-    const arrival = await queueInclusiveArrivalMinutes(d, geometry, pickupLat, pickupLng, roadRouter);
-    if (!arrival) return null; // queue not modelable — cannot quote an honest ETA
+    const arrival = await workloadAwareArrivalMinutes(d, geometry, pickupLat, pickupLng, roadRouter, driverActiveCount(d, queues));
+    if (!arrival) return null; // free driver — cannot be in the all-loaded path
     const straightLineMinutes = Math.max(1, Math.ceil(Number(d.estimatedTimeSeconds) / 60));
+    const activeCount = driverActiveCount(d, queues);
     return {
       driver: d,
       roadSeconds: null,
@@ -928,11 +1026,13 @@ export async function chooseBestDriverByRoad(
       provider: arrival.finalLegProvider,
       liveTraffic: arrival.finalLegProvider === "tomtom",
       trafficDelaySeconds: null,
-      routerNotes: `queue-inclusive; ${geometry.length} queued jobs`,
+      routerNotes: `workload-aware; ${geometry.length} queued jobs`,
       queueInclusive: true,
       queueMinutes: arrival.queueMinutes,
-      queuedJobCount: geometry.length,
+      queuedJobCount: activeCount,
       finalLegMinutes: arrival.finalLegMinutes,
+      startedOnScene: arrival.startedOnScene,
+      unlocatedJobs: arrival.unlocatedJobs,
       tomtomFailure: null,
       gpsPingAgeMinutes: gpsPingAgeMinutes(d),
     };
@@ -963,14 +1063,17 @@ export function finalEtaMinutes(
  *  provider so the ledger is transparent about where each ETA came from:
  *  "ETA 14 min (tomtom-traffic road 9 + buffer 5; delay 2; floor 5, ceiling
  *  45; straight-line 11; GPS 41.18,-73.15)" vs "osrm road …" vs "road fallback
- *  … (factor model)". All-loaded queue case: "ETA 120 min (queued 3 jobs ≈ 105
- *  min + final leg 10 (osrm) + buffer 5; floor 5, ceiling 45; straight-line
- *  11; GPS 41.15,-73.10)". A transient TomTom failure is surfaced
- *  ("tomtom failed (HTTP 429) → osrm") and a stale GPS ping is flagged
- *  ("GPS ping age 30 min") — ETA honesty (2026-08-11). */
+ *  … (factor model)". Workload-aware chain case (any busy driver, owner
+ *  2026-08-11): "ETA 125 min (workload-aware: 3 active jobs ≈ 110 min (incl.
+ *  30-min service/job) + final leg 10 (osrm) + buffer 5; floor 5, ceiling 45;
+ *  straight-line 11; GPS 41.15,-73.10)" — with "; already on-scene at current
+ *  job" when the driver is arrived at job 1 and "; +1 unlocated ≈ service"
+ *  when an active job lacks pickup coords. A transient TomTom failure is
+ *  surfaced ("tomtom failed (HTTP 429) → osrm") and a stale GPS ping is
+ *  flagged ("GPS ping age 30 min") — ETA honesty (2026-08-11). */
 export function etaDetailLabel(c: ChosenDriverEta, buffer: number, floor: number, ceiling: number, finalMinutes: number): string {
   const base = c.queueInclusive
-    ? `queued ${c.queuedJobCount} jobs ≈ ${Math.round(c.queueMinutes ?? 0)} min + final leg ${Math.round(c.finalLegMinutes ?? 0)} (${c.provider === "tomtom" ? "tomtom-traffic" : c.provider === "osrm" ? "osrm" : "factor"})`
+    ? `workload-aware: ${c.queuedJobCount ?? 0} active jobs ≈ ${Math.round(c.queueMinutes ?? 0)} min (incl. ${SERVICE_MINUTES_PER_JOB}-min service/job) + final leg ${Math.round(c.finalLegMinutes ?? 0)} (${c.provider === "tomtom" ? "tomtom-traffic" : c.provider === "osrm" ? "osrm" : "factor"})${c.startedOnScene ? "; already on-scene at current job" : ""}${c.unlocatedJobs ? `; +${c.unlocatedJobs} unlocated ≈ service` : ""}`
     : c.usedFallback
       ? `road fallback ${c.baseMinutes} (factor model)`
       : c.provider === "tomtom"
@@ -1524,36 +1627,25 @@ async function runAutoDispatchInternal(
         ceilingMinutes: effectiveMaxEta,
         driverLatitude: Number(chosen.driver.latitude),
         driverLongitude: Number(chosen.driver.longitude),
-        // Queue-aware facts (owner-directed 2026-08-11): when every candidate
-        // was at the 3-job cap, the ETA is queue-inclusive — the ledger records
-        // the queue math (travel + service per queued job + final leg).
+        // Workload-aware facts (owner-directed 2026-08-11): when the chosen
+        // driver has active jobs, the ETA is the chain model (remaining on the
+        // in-progress job + travel between consecutive job pickups + final leg
+        // from the LAST job to the offer) — the ledger records the chain math.
         queueInclusive: chosen.queueInclusive,
         queueMinutes: chosen.queueMinutes,
         queuedJobCount: chosen.queuedJobCount,
         finalLegMinutes: chosen.finalLegMinutes,
+        startedOnScene: chosen.startedOnScene,
+        unlocatedJobs: chosen.unlocatedJobs,
         tomtomFailure: chosen.tomtomFailure,
         gpsPingAgeMinutes: chosen.gpsPingAgeMinutes,
       } : null;
-      const allLoadedNote = driver
-        ? null
-        : (() => {
-            // Only checked-in, GPS-carrying, routable candidates can be
-            // dispatched at all — the cap note applies to those.
-            const baseCands = (candidates as NearestDriver[]).filter((d) =>
-              d && typeof d === "object" && !Array.isArray(d) &&
-              d.isCheckedIn === true &&
-              Number.isFinite(Number(d.latitude)) && Number(d.latitude) !== 0 &&
-              Number.isFinite(Number(d.longitude)) && Number(d.longitude) !== 0 &&
-              Number.isFinite(Number(d.estimatedTimeSeconds)));
-            return baseCands.length > 0 && baseCands.every((d) => driverActiveCount(d, driverQueues) >= MAX_DRIVER_QUEUE)
-              ? `; every candidate is at the ${MAX_DRIVER_QUEUE}-job cap but the queue-inclusive arrival could not be modeled (no pickup coords on the queued jobs) — assign manually`
-              : null;
-          })();
+      const allLoadedNote: string | null = null;
       const noDriverReason = driver
         ? null
         : eligibleIds
-          ? `no ELIGIBLE checked-in free driver with GPS under the ${MAX_DRIVER_QUEUE}-job cap (offer eligible list [${offer.drivers!.join(", ")}]${allLoadedNote ?? ""}; accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually, ETA quoted at the ${effectiveMaxEta}-min ceiling — no ETA recorded)`
-          : `no checked-in free driver with GPS under the ${MAX_DRIVER_QUEUE}-job cap${allLoadedNote ?? ""} — accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually (ETA quoted at the SLA ceiling — no ETA recorded)`;
+          ? `no ELIGIBLE checked-in driver with real GPS to quote an honest workload ETA (offer eligible list [${offer.drivers!.join(", ")}]${allLoadedNote ?? ""}; accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually, ETA quoted at the ${effectiveMaxEta}-min ceiling — no ETA recorded)`
+          : `no checked-in driver with real GPS to quote an honest workload ETA${allLoadedNote ?? ""} — accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually (ETA quoted at the SLA ceiling — no ETA recorded)`;
       // --- accept (the ONE state-changing call) — with a self-healing retry:
       // an expired session mid-offer (401/403/login-page on the POST) triggers
       // recovery, and the accept is retried once with the recovered session.
