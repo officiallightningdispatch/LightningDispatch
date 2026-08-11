@@ -226,6 +226,50 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     // deactivated_at stays NULL for active users.
     await q`ALTER TABLE users ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ`;
   }],
+  [15, async (q) => {
+    // Tip attribution ledger (owner-directed 2026-08-11, "completion flow"):
+    // every customer tip attempt is recorded with the SPECIFIC driver so tips
+    // reconcile to the right contractor at payout. The customer's card is
+    // tokenized client-side (Square Web Payments SDK) and charged server-side
+    // via POST /v2/payments with an idempotency key per attempt
+    // (tip-<job>-<driver>-<attempt>) — a retry with the same attempt can never
+    // double-charge. One row per attempt: status ∈ 'paid' | 'failed' |
+    // 'declined' (declined rows are recorded for the paper trail and deleted on
+    // a later charge so a job settles with at most one paid tip). driver_id is
+    // the LD user id; driver_towbook_id the Towbook identity for payout.
+    await q`CREATE TABLE IF NOT EXISTS completion_tips (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      job_id TEXT NOT NULL,
+      driver_id TEXT NOT NULL,
+      driver_towbook_id TEXT,
+      amount_cents INTEGER NOT NULL,
+      currency TEXT NOT NULL DEFAULT 'USD',
+      square_payment_id TEXT,
+      status TEXT NOT NULL,
+      error TEXT,
+      attempt INTEGER,
+      idempotency_key TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    await q`CREATE INDEX IF NOT EXISTS completion_tips_org_job_idx ON completion_tips(org_id, job_id)`;
+    await q`CREATE INDEX IF NOT EXISTS completion_tips_org_driver_idx ON completion_tips(org_id, driver_id)`;
+    // One row per idempotency key: a retry that replays the same attempt (same
+    // key) UPSERTs the same row — a network blip after Square actually charged
+    // can never double-record the tip.
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS completion_tips_idempotency_uidx ON completion_tips(idempotency_key) WHERE idempotency_key IS NOT NULL`;
+  }],
+  [16, async (q) => {
+    // Follow-up to 15: INSERT ... ON CONFLICT (idempotency_key) cannot infer a
+    // PARTIAL unique index (WHERE idempotency_key IS NOT NULL) unless the
+    // conflict target repeats the predicate — so swap it for a plain unique
+    // index on idempotency_key. Postgres still allows multiple NULL rows in a
+    // unique index (declined rows carry no key), so semantics are unchanged;
+    // the charge upsert (ON CONFLICT (idempotency_key)) now works directly.
+    await q`DROP INDEX IF EXISTS completion_tips_idempotency_uidx`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS completion_tips_idempotency_uidx ON completion_tips(idempotency_key)`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

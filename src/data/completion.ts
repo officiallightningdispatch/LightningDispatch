@@ -28,6 +28,26 @@ export const createTipLink = createServerFn({ method: "POST" }).validator(passth
   return core.createTipLinkHandler(data);
 });
 
+/** Charge the customer's card (Web Payments token) for the optional tip —
+ *  attribution row recorded server-side (completion_tips). */
+export const chargeTip = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }) => {
+  const core = await import("./completion-core");
+  return core.chargeTipHandler(data);
+});
+
+/** Record that the customer declined the tip (completion proceeds regardless). */
+export const declineTip = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }) => {
+  const core = await import("./completion-core");
+  return core.declineTipHandler(data);
+});
+
+/** PUBLIC Square Web Payments config (application id + location id only — the
+ *  access token never leaves the server). */
+export const getSquareWebPaymentsConfig = createServerFn({ method: "GET" }).handler(async () => {
+  const core = await import("./completion-core");
+  return core.getSquareWebPaymentsConfigHandler();
+});
+
 /** One job's completion capture (driver: own jobs only; owner/admin/dispatcher: org). */
 export const getCompletionCapture = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }) => {
   const core = await import("./completion-core");

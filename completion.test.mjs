@@ -139,6 +139,7 @@ process.env.B2_APPLICATION_KEY = "testsecret";
 process.env.B2_BUCKET_NAME = "qa-bucket";
 process.env.SQUARE_ACCESS_TOKEN = "test-square-token";
 process.env.SQUARE_LOCATION_ID = "loc_test";
+process.env.SQUARE_APPLICATION_ID = "app_test";
 
 await setup();
 // ONE mock fetch for ORG across all sections — the in-memory B2 object store

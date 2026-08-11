@@ -31,7 +31,7 @@
  */
 import { z } from "zod";
 import { loadB2Config, authorizeAccount, putObject } from "./b2-client";
-import { loadSquareConfig, createPaymentLink } from "./square-client";
+import { loadSquareConfig, loadSquarePublicConfig, createPaymentLink, createCardPayment } from "./square-client";
 import { resolveJob, isAssignedDriver, decodeDataUrl } from "./driver-photos-core";
 import type { PhotoUser } from "./driver-photos-core";
 
@@ -74,6 +74,7 @@ export type CompletionTip = {
   currency: string;
   status: TipStatus;
   squarePaymentLinkId: string | null;
+  squarePaymentId: string | null;
   driverTowbookId: string | null;
 };
 
@@ -112,6 +113,7 @@ export async function completionCaptureForJob(orgId: string, jobId: string): Pro
         currency: typeof t.currency === "string" ? t.currency : "USD",
         status,
         squarePaymentLinkId: t.square_payment_link_id != null ? String(t.square_payment_link_id) : null,
+        squarePaymentId: t.square_payment_id != null ? String(t.square_payment_id) : null,
         driverTowbookId: t.driver_towbook_id != null ? String(t.driver_towbook_id) : null,
       };
     }
@@ -308,6 +310,181 @@ export async function createTipLinkCore(user: PhotoUser, data: unknown, opts: { 
   }
 }
 
+/* ------------------------- Web Payments (card, in-app) ------------------------- */
+
+export type TipChargeResult =
+  | { ok: true; paymentId: string; amountCents: number; currency: string; status: string }
+  | { ok: false; code: "square_not_configured" | "not_found" | "unauthorized" | "invalid_state" | "square_failed"; message: string; retryable?: boolean };
+
+/** Charge the customer's card (Web Payments token from the CLIENT-side SDK) for
+ *  the optional tip, recording the attribution row in completion_tips (org /
+ *  job / driver / amount / Square payment id / status) so tips reconcile to the
+ *  specific driver. The access token stays server-side; the client only held the
+ *  PUBLIC application id + location id. Idempotency key per attempt
+ *  (tip-<job>-<driver>-<attempt>): a retry with the same attempt can never
+ *  double-charge. A FAILED payment is recorded + surfaced with retryable=true —
+ *  the caller offers retry or decline; the tip NEVER blocks completion (the
+ *  completeJobCore gate only requires signature + survey). Injectable fetchImpl
+ *  + squareStableDir for hermetic tests. */
+export async function chargeTipCore(user: PhotoUser, data: unknown, opts: { fetchImpl?: typeof fetch; squareStableDir?: string } = {}): Promise<TipChargeResult> {
+  const v = z.object({
+    jobId: z.string().min(1).max(128),
+    token: z.string().min(8).max(4096), // Square Web Payments card token/nonce
+    amountCents: z.number().int().min(100).max(1_000_000),
+    attempt: z.number().int().min(1).max(50).default(1),
+  }).safeParse(data);
+  if (!v.success) return { ok: false, code: "invalid_state", message: "Pick a tip amount ($1-$10,000)." };
+  let config;
+  try {
+    config = await loadSquareConfig(process.env, { stableDir: opts.squareStableDir });
+  } catch (err) {
+    return { ok: false, code: "square_not_configured", message: err instanceof Error ? err.message : "Tips aren't connected yet." };
+  }
+  try {
+    await ensure();
+    const job = await resolveJob(user.orgId, v.data.jobId);
+    if (!job) return { ok: false, code: "not_found", message: "Job not found on your account — refresh the queue." };
+    if (job.status !== "arrived" && job.status !== "completed") return { ok: false, code: "invalid_state", message: "Tips are available once you've arrived." };
+    const q = await db();
+    const assigned = await isAssignedDriver(user.orgId, user.id, user.towbookDriverId, job);
+    if (!assigned) return { ok: false, code: "unauthorized", message: "This job is not assigned to you." };
+
+    const names = await q`SELECT name FROM users WHERE id=${user.id} LIMIT 1`;
+    const driverName = names.length && names[0].name ? String(names[0].name) : `Driver ${user.towbookDriverId}`;
+    const currency = "USD";
+    const idempotencyKey = `tip-${job.id}-${user.towbookDriverId || user.id}-${v.data.attempt}`;
+    let payment;
+    try {
+      payment = await createCardPayment({
+        config,
+        idempotencyKey,
+        sourceId: v.data.token,
+        amountCents: v.data.amountCents,
+        currency,
+        note: `Tip — ${driverName} — job ${job.towbookJobId ?? job.id}`,
+        fetchImpl: opts.fetchImpl,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Couldn't charge the tip — try again.";
+      await recordTipAttempt(user, job.id, {
+        status: "failed", amountCents: v.data.amountCents, currency, attempt: v.data.attempt, idempotencyKey,
+        error: message.slice(0, 400),
+      });
+      try {
+        await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
+          SELECT gen_random_uuid()::text, ${user.orgId}, ${user.id}, 'contractor', 'job_tip_failed', 'job', ${job.id},
+            ${JSON.stringify({ amountCents: v.data.amountCents, attempt: v.data.attempt, idempotencyKey, error: message.slice(0, 400) })}::jsonb, 'completion-flow'`;
+      } catch { /* best-effort audit */ }
+      return { ok: false, code: "square_failed", message, retryable: true };
+    }
+    const terminal = payment.status === "FAILED" || payment.status === "CANCELED";
+    if (terminal) {
+      const message = `Square declined the card (${payment.status}).`;
+      await recordTipAttempt(user, job.id, {
+        status: "failed", amountCents: v.data.amountCents, currency, attempt: v.data.attempt, idempotencyKey,
+        error: message, squarePaymentId: payment.paymentId,
+      });
+      try {
+        await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
+          SELECT gen_random_uuid()::text, ${user.orgId}, ${user.id}, 'contractor', 'job_tip_failed', 'job', ${job.id},
+            ${JSON.stringify({ amountCents: v.data.amountCents, attempt: v.data.attempt, idempotencyKey, squarePaymentId: payment.paymentId, error: message })}::jsonb, 'completion-flow'`;
+      } catch { /* best-effort audit */ }
+      return { ok: false, code: "square_failed", message, retryable: true };
+    }
+
+    // Success: the job settles with at most one paid tip — clear any declined
+    // rows first, then record the attribution row + the job_completions.tip
+    // jsonb. The idempotency-key unique index makes a replayed attempt (same
+    // key) UPSERT the SAME row: a network blip after Square charged can never
+    // double-record the tip.
+    await q`DELETE FROM completion_tips WHERE org_id=${user.orgId} AND job_id=${job.id} AND status='declined'`;
+    await q`INSERT INTO completion_tips(id, org_id, job_id, driver_id, driver_towbook_id, amount_cents, currency, square_payment_id, status, attempt, idempotency_key)
+      VALUES(gen_random_uuid()::text, ${user.orgId}, ${job.id}, ${user.id}, ${user.towbookDriverId || null}, ${v.data.amountCents}, ${currency}, ${payment.paymentId}, 'paid', ${v.data.attempt}, ${idempotencyKey})
+      ON CONFLICT (idempotency_key) DO UPDATE SET status='paid', square_payment_id=EXCLUDED.square_payment_id,
+        amount_cents=EXCLUDED.amount_cents, error=NULL, attempt=EXCLUDED.attempt, updated_at=NOW()`;
+    const tip = {
+      status: "paid",
+      amount_cents: v.data.amountCents,
+      currency,
+      square_payment_id: payment.paymentId,
+      driver_towbook_id: user.towbookDriverId || null,
+      attempt: v.data.attempt,
+    };
+    await q`INSERT INTO job_completions(org_id, job_id, signature_storage_key, survey, tip)
+      VALUES(${user.orgId}, ${job.id}, NULL, NULL, ${JSON.stringify(tip)}::jsonb)
+      ON CONFLICT (org_id, job_id) DO UPDATE SET tip=EXCLUDED.tip, updated_at=NOW()`;
+    try {
+      await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
+        SELECT gen_random_uuid()::text, ${user.orgId}, ${user.id}, 'contractor', 'job_tip_charged', 'job', ${job.id},
+          ${JSON.stringify({ amountCents: v.data.amountCents, paymentId: payment.paymentId, driverTowbookId: user.towbookDriverId, attempt: v.data.attempt })}::jsonb, 'completion-flow'`;
+    } catch { /* best-effort audit */ }
+    return { ok: true, paymentId: payment.paymentId, amountCents: v.data.amountCents, currency, status: payment.status };
+  } catch (err) {
+    return { ok: false, code: "square_failed", message: err instanceof Error ? err.message : "Couldn't charge the tip. Try again.", retryable: true };
+  }
+}
+
+export type TipDeclineResult =
+  | { ok: true; declined: true }
+  | { ok: false; code: "not_found" | "unauthorized" | "invalid_state"; message: string };
+
+/** The customer declines the tip — recorded in completion_tips (status
+ *  'declined') for the reconciliation paper trail; completion proceeds. Calling
+ *  this is idempotent per job (prior declined rows are replaced, never stacked). */
+export async function declineTipCore(user: PhotoUser, data: unknown): Promise<TipDeclineResult> {
+  const v = z.object({ jobId: z.string().min(1).max(128) }).safeParse(data);
+  if (!v.success) return { ok: false, code: "invalid_state", message: "Invalid request." };
+  try {
+    await ensure();
+    const job = await resolveJob(user.orgId, v.data.jobId);
+    if (!job) return { ok: false, code: "not_found", message: "Job not found on your account — refresh the queue." };
+    if (job.status !== "arrived" && job.status !== "completed") return { ok: false, code: "invalid_state", message: "Tips are available once you've arrived." };
+    const q = await db();
+    const assigned = await isAssignedDriver(user.orgId, user.id, user.towbookDriverId, job);
+    if (!assigned) return { ok: false, code: "unauthorized", message: "This job is not assigned to you." };
+    await q`DELETE FROM completion_tips WHERE org_id=${user.orgId} AND job_id=${job.id} AND status='declined'`;
+    await q`INSERT INTO completion_tips(id, org_id, job_id, driver_id, driver_towbook_id, amount_cents, currency, status, error)
+      VALUES(gen_random_uuid()::text, ${user.orgId}, ${job.id}, ${user.id}, ${user.towbookDriverId || null}, 0, 'USD', 'declined', 'customer declined the tip')`;
+    try {
+      await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
+        SELECT gen_random_uuid()::text, ${user.orgId}, ${user.id}, 'contractor', 'job_tip_declined', 'job', ${job.id},
+          ${JSON.stringify({ driverTowbookId: user.towbookDriverId })}::jsonb, 'completion-flow'`;
+    } catch { /* best-effort audit */ }
+    return { ok: true, declined: true };
+  } catch {
+    return { ok: false, code: "invalid_state", message: "Unable to record the tip decision. Try again." };
+  }
+}
+
+/** Append one tip attempt to the attribution ledger. */
+async function recordTipAttempt(
+  user: PhotoUser,
+  jobId: string,
+  row: { status: "failed"; amountCents: number; currency: string; attempt: number; idempotencyKey: string; error: string; squarePaymentId?: string },
+): Promise<void> {
+  try {
+    const q = await db();
+    await q`INSERT INTO completion_tips(id, org_id, job_id, driver_id, driver_towbook_id, amount_cents, currency, square_payment_id, status, error, attempt, idempotency_key)
+      VALUES(gen_random_uuid()::text, ${user.orgId}, ${jobId}, ${user.id}, ${user.towbookDriverId || null}, ${row.amountCents}, ${row.currency}, ${row.squarePaymentId ?? null}, ${row.status}, ${row.error}, ${row.attempt}, ${row.idempotencyKey})`;
+  } catch { /* never mask the outcome */ }
+}
+
+export type SquarePublicConfigResult =
+  | { ok: true; applicationId: string; locationId: string }
+  | { ok: false; code: "square_not_configured"; message: string };
+
+/** PUBLIC Web Payments config for the driver portal's card form — application id
+ *  + location id ONLY. The access token is never exposed to the client.
+ *  Injectable stableDir for hermetic tests (same pattern as the other cores). */
+export async function getSquareWebPaymentsConfigCore(opts: { stableDir?: string } = {}): Promise<SquarePublicConfigResult> {
+  try {
+    const config = await loadSquarePublicConfig(process.env, { stableDir: opts.stableDir });
+    return { ok: true, applicationId: config.applicationId, locationId: config.locationId };
+  } catch (err) {
+    return { ok: false, code: "square_not_configured", message: err instanceof Error ? err.message : "Tips aren't connected yet." };
+  }
+}
+
 /* ------------------------------ reads + handlers ------------------------------ */
 
 export type CompletionReadResult =
@@ -370,4 +547,26 @@ export async function allCompletionCapturesHandler(): Promise<CompletionCaptureS
 export async function isSquareConfiguredHandler(): Promise<{ configured: boolean }> {
   if (!configured()) return { configured: false };
   return { configured: await isSquareConfiguredCore() };
+}
+
+export async function chargeTipHandler(data: unknown, opts?: { fetchImpl?: typeof fetch; squareStableDir?: string }): Promise<TipChargeResult> {
+  if (!configured()) return { ok: false, code: "square_not_configured", message: "Tips require database mode." };
+  const u = await resolveCompletionUser();
+  if (!u) return { ok: false, code: "unauthorized", message: "Sign in as a driver first." };
+  return chargeTipCore(u, data, opts);
+}
+
+export async function declineTipHandler(data: unknown): Promise<TipDeclineResult> {
+  if (!configured()) return { ok: false, code: "invalid_state", message: "Requires database mode." };
+  const u = await resolveCompletionUser();
+  if (!u) return { ok: false, code: "unauthorized", message: "Sign in as a driver first." };
+  return declineTipCore(u, data);
+}
+
+export async function getSquareWebPaymentsConfigHandler(): Promise<SquarePublicConfigResult> {
+  if (!configured()) return { ok: false, code: "square_not_configured", message: "Requires database mode." };
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u) return { ok: false, code: "square_not_configured", message: "Sign in first." };
+  return getSquareWebPaymentsConfigCore();
 }

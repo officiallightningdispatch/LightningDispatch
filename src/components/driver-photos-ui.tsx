@@ -11,12 +11,12 @@
  * upload surfaces a clear error and the slot stays empty (photos are a hard
  * gate on completion).
  */
-import { Camera, Check, Loader2, PenLine, ShieldCheck, Star, TriangleAlert } from "lucide-react";
+import { Camera, Check, CreditCard, Loader2, PenLine, ShieldCheck, Star, TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button, useToast } from "~/components/ui";
 import { completeJobWithPhotos, getJobPhotoStatus, setVehicleMatch, softCompleteJob, finalCompleteJob, uploadJobPhoto } from "~/data/driver-photos";
 import type { JobPhotoStatus, PhotoPhase, PhotoSide } from "~/data/driver-photos";
-import { captureCompletion, createTipLink, getCompletionCapture, isSquareConfigured } from "~/data/completion";
+import { captureCompletion, chargeTip, declineTip, getCompletionCapture, getSquareWebPaymentsConfig, isSquareConfigured } from "~/data/completion";
 import type { CompletionCaptureStatus } from "~/data/completion";
 
 export const PHOTO_SIDES: PhotoSide[] = ["front", "driver_side", "passenger_side", "rear"];
@@ -341,27 +341,25 @@ export function JobPhotoFlow({ callId, jobStatus, onCompleted }: { callId: strin
       )}
       {canComplete && (
         <div className="rounded-2xl border border-brand-200 bg-brand-50/60 p-4">
+          <p className="flex items-center gap-1.5 text-sm font-bold text-ink-800">
+            <PenLine className="size-4 text-brand-600" /> Finish up
+          </p>
+          <p className="mt-0.5 text-xs leading-relaxed text-ink-500">
+            All 12 photos are captured. Get the customer&apos;s signature and rating, then complete the job — an optional tip is charged to their card.
+          </p>
           {capture && capture.signatureCaptured && capture.survey ? (
             <>
-              <p className="flex items-center gap-1.5 text-sm font-bold text-ink-800">
+              <p className="mt-3 flex items-center gap-1.5 text-sm font-bold text-ink-800">
                 <Check className="size-4 text-success-600" strokeWidth={3} /> Customer completion saved
               </p>
               <p className="mt-0.5 text-xs text-ink-500">
                 Signature on file · {capture.survey.rating}-star rating
-                {capture.tip ? ` · tip ${(capture.tip.amountCents / 100).toFixed(0)}` : ""}.
+                {capture.tip ? ` · tip ${(capture.tip.amountCents / 100).toFixed(2)} paid` : ""}.
               </p>
-              {squareConfigured && (
-                <TipOptionBlock callId={callId} squareConfigured={squareConfigured} linkSent={Boolean(capture.tip)} />
-              )}
-              <Button className="mt-3 w-full" loading={actionBusy === "complete"} onClick={() => void complete()}>
-                <ShieldCheck className="size-5" /> Complete job — push to Towbook
-              </Button>
-              {completionDetail && !completionError && <p className="mt-2 text-xs text-ink-500">{completionDetail}</p>}
             </>
           ) : (
             <CustomerCompletionPanel
               callId={callId}
-              squareConfigured={squareConfigured}
               onSaved={(completion) => {
                 setCapture(completion);
                 toast("Customer completion saved — signature and rating on file.");
@@ -369,6 +367,29 @@ export function JobPhotoFlow({ callId, jobStatus, onCompleted }: { callId: strin
               }}
             />
           )}
+          {squareConfigured && (
+            <SquareTipSection
+              callId={callId}
+              paidAmountCents={capture?.tip?.status === "paid" ? capture.tip.amountCents : null}
+              onPaid={() => {
+                toast("Tip charged — attributed to you.");
+                void refresh();
+              }}
+              onDeclined={() => toast("No tip — noted. The job can still be completed.")}
+            />
+          )}
+          <Button
+            className="mt-3 w-full"
+            loading={actionBusy === "complete"}
+            disabled={!(capture && capture.signatureCaptured && capture.survey)}
+            onClick={() => void complete()}
+          >
+            <ShieldCheck className="size-5" /> Complete job — push to Towbook
+          </Button>
+          {capture && capture.signatureCaptured && capture.survey ? null : (
+            <p className="mt-1.5 text-center text-[11px] text-ink-400">Needs the customer&apos;s signature and rating first.</p>
+          )}
+          {completionDetail && !completionError && <p className="mt-2 text-xs text-ink-500">{completionDetail}</p>}
         </div>
       )}
       {completionError && (
@@ -383,6 +404,34 @@ export function JobPhotoFlow({ callId, jobStatus, onCompleted }: { callId: strin
 /* ------------------------- customer completion capture ------------------------- */
 
 const TIP_PRESETS = [200, 500, 1000]; // $2 / $5 / $10
+
+/* ------- Square Web Payments SDK (client-side card tokenization) ------- */
+
+type SquareCard = {
+  attach: (containerId: string) => Promise<void>;
+  tokenize: () => Promise<{ status: string; token?: string; errors?: Array<{ code: string; detail: string }> }>;
+  destroy: () => Promise<void>;
+};
+type SquarePaymentsFactory = { card: () => Promise<SquareCard> };
+type SquareGlobal = { payments: (applicationId: string, locationId: string) => SquarePaymentsFactory };
+
+let squareScriptPromise: Promise<void> | null = null;
+/** Load Square's Web Payments SDK once (https://web.squareup.com/v1/square.js).
+ *  Client-only — the SDK tokenizes the card in an iframe Square hosts; the raw
+ *  PAN never touches this app, and the token is charged server-side. */
+function loadSquareScript(): Promise<void> {
+  if (typeof window === "undefined") return Promise.reject(new Error("Client only"));
+  if ((window as unknown as { Square?: unknown }).Square) return Promise.resolve();
+  squareScriptPromise ??= new Promise<void>((resolve, reject) => {
+    const el = document.createElement("script");
+    el.src = "https://web.squareup.com/v1/square.js";
+    el.async = true;
+    el.onload = () => resolve();
+    el.onerror = () => { squareScriptPromise = null; reject(new Error("Square payments couldn't load — check the connection.")); };
+    document.head.appendChild(el);
+  });
+  return squareScriptPromise;
+}
 
 /** Mobile-friendly signature pad (canvas + pointer events — works by touch and
  *  mouse). Produces a PNG data URL once there is ink; "Clear" resets it. */
@@ -481,20 +530,64 @@ function SignaturePad({ onChange }: { onChange: (dataUrl: string | null) => void
   );
 }
 
-/** Optional tip block — ONLY rendered when the owner's Square account is
- *  configured (square_not_configured never blocks completion). Calls
- *  createTipLink and opens the Square-hosted payment page in a new tab. */
-function TipOptionBlock({ callId, squareConfigured, linkSent }: { callId: string; squareConfigured: boolean; linkSent?: boolean }) {
+/** Optional tip block — Square Web Payments card form (owner-directed
+ *  2026-08-11): the customer's card is tokenized CLIENT-SIDE by Square's SDK
+ *  (public application id + location id only), then charged SERVER-SIDE with
+ *  the owner's access token. Presets + custom + "No tip". A failed charge
+ *  offers retry or decline — the tip NEVER blocks completion (the complete
+ *  button stays live; only signature + survey gate it). */
+function SquareTipSection({
+  callId,
+  paidAmountCents,
+  onPaid,
+  onDeclined,
+}: {
+  callId: string;
+  paidAmountCents: number | null;
+  onPaid: () => void;
+  onDeclined: () => void;
+}) {
   const [preset, setPreset] = useState<number | null>(500);
   const [custom, setCustom] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [sent, setSent] = useState(false);
-  if (!squareConfigured) return null;
+  const [chargedAmount, setChargedAmount] = useState<number | null>(null);
+  const [declined, setDeclined] = useState(false);
+  const [card, setCard] = useState<SquareCard | null>(null);
+  const [cardError, setCardError] = useState("");
+  const attemptRef = useRef(1);
+  const containerIdRef = useRef(`sq-card-${Math.random().toString(36).slice(2, 10)}`);
+
+  useEffect(() => {
+    let disposed = false;
+    let created: SquareCard | null = null;
+    void (async () => {
+      try {
+        const cfg = await getSquareWebPaymentsConfig();
+        if (!cfg.ok) throw new Error(cfg.message || "Tips aren't connected yet.");
+        await loadSquareScript();
+        if (disposed) return;
+        const sq = (window as unknown as { Square?: SquareGlobal }).Square;
+        const payments = sq?.payments(cfg.applicationId, cfg.locationId);
+        if (!payments) throw new Error("Square payments couldn't start — refresh the page.");
+        created = await payments.card();
+        await created.attach(`#${containerIdRef.current}`);
+        if (disposed) { await created.destroy().catch(() => {}); return; }
+        setCard(created);
+      } catch (err) {
+        if (!disposed) setCardError(err instanceof Error ? err.message : "Couldn't start the card form.");
+      }
+    })();
+    return () => {
+      disposed = true;
+      if (created) void created.destroy().catch(() => {});
+    };
+  }, []);
 
   const amountCents = custom.trim() !== "" ? Math.round(Number(custom) * 100) : preset ?? 0;
 
-  const send = async () => {
+  const charge = async () => {
+    if (!card) return;
     if (!Number.isFinite(amountCents) || amountCents < 100 || amountCents > 1_000_000) {
       setError("Enter a tip of $1 – $10,000.");
       return;
@@ -502,24 +595,63 @@ function TipOptionBlock({ callId, squareConfigured, linkSent }: { callId: string
     setBusy(true);
     setError("");
     try {
-      const r = await createTipLink({ data: { jobId: callId, amountCents } });
+      const tok = await card.tokenize();
+      if (tok.status !== "OK" || !tok.token) {
+        setError(tok.errors?.[0]?.detail ?? "The card couldn't be read — check the details and try again.");
+        return;
+      }
+      const r = await chargeTip({ data: { jobId: callId, token: tok.token, amountCents, attempt: attemptRef.current } });
       if (r.ok) {
-        setSent(true);
-        if (typeof window !== "undefined") window.open(r.paymentLinkUrl, "_blank", "noopener,noreferrer");
+        setChargedAmount(amountCents);
+        onPaid();
       } else {
         setError(r.message);
+        if (r.retryable) attemptRef.current += 1;
       }
     } catch {
-      setError("Couldn't create the tip link — try again.");
+      setError("Couldn't charge the tip — check your connection and try again.");
     }
     setBusy(false);
   };
 
+  const decline = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const r = await declineTip({ data: { jobId: callId } });
+      if (r.ok) { setDeclined(true); onDeclined(); }
+      else setError(r.message);
+    } catch {
+      setError("Couldn't record the tip decision. You can still complete the job.");
+    }
+    setBusy(false);
+  };
+
+  if (paidAmountCents != null || chargedAmount != null) {
+    const cents = paidAmountCents ?? chargedAmount ?? 0;
+    return (
+      <div className="mt-3 rounded-xl border border-success-200 bg-success-50 p-3">
+        <p className="flex items-center gap-1.5 text-xs font-bold text-success-700">
+          <Check className="size-3.5" strokeWidth={3} /> Tip paid — ${(cents / 100).toFixed(2)} attributed to you.
+        </p>
+      </div>
+    );
+  }
+  if (declined) {
+    return (
+      <div className="mt-3 rounded-xl border border-ink-200 bg-surface p-3">
+        <p className="text-xs font-semibold text-ink-600">No tip this time — noted. You can still complete the job.</p>
+      </div>
+    );
+  }
+
   return (
     <div className="mt-3 rounded-xl border border-ink-200 bg-surface p-3">
-      <p className="text-xs font-bold text-ink-800">Optional customer tip</p>
+      <p className="flex items-center gap-1.5 text-xs font-bold text-ink-800">
+        <CreditCard className="size-3.5 text-brand-600" /> Optional customer tip
+      </p>
       <p className="mt-0.5 text-[11px] leading-relaxed text-ink-500">
-        Opens a secure Square payment page the customer pays on — the tip is attributed to you.
+        Charged to the customer&apos;s card through the owner&apos;s Square account — the tip is attributed to you.
       </p>
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         {TIP_PRESETS.map((cents) => (
@@ -550,31 +682,39 @@ function TipOptionBlock({ callId, squareConfigured, linkSent }: { callId: string
           />
         </label>
       </div>
-      {(sent || linkSent) && (
-        <p className="mt-1.5 flex items-center gap-1 text-[11px] font-semibold text-success-600">
-          <Check className="size-3" strokeWidth={3} /> Tip link sent — the customer can pay on Square now.
-        </p>
+      <div id={containerIdRef.current} className="mt-2 rounded-lg border border-ink-200 bg-white px-2.5 py-1.5" />
+      {cardError && (
+        <p role="alert" className="mt-1.5 text-[11px] leading-snug text-danger-600">{cardError}</p>
       )}
       {error && (
         <p role="alert" className="mt-1.5 text-[11px] leading-snug text-danger-600">{error}</p>
       )}
-      <Button className="mt-2 w-full" size="sm" variant="secondary" loading={busy} onClick={() => void send()}>
-        {busy ? "Creating link…" : "Send tip link"}
-      </Button>
+      {error && (
+        <p className="mt-1 text-[11px] leading-snug text-ink-500">
+          Payment failed? Try the charge again or choose &quot;No tip&quot; — the job can still be completed.
+        </p>
+      )}
+      <div className="mt-2 flex gap-2">
+        <Button className="flex-1" size="sm" loading={busy} disabled={!card} onClick={() => void charge()}>
+          {busy ? "Charging…" : `Charge ${(amountCents / 100).toFixed(2)}`}
+        </Button>
+        <Button className="flex-1" size="sm" variant="secondary" disabled={busy} onClick={() => void decline()}>
+          No tip
+        </Button>
+      </div>
     </div>
   );
 }
 
 /** The "Customer completion" step (owner spec): signature pad + 5-star rating
- *  + optional one-line comment + optional tip. Submit is enabled once a
- *  signature AND a rating exist; the tip is never required. */
+ *  + optional one-line comment. Submit is enabled once a signature AND a rating
+ *  exist — the optional tip is handled by the separate SquareTipSection in the
+ *  "Finish up" panel and is never required. */
 function CustomerCompletionPanel({
   callId,
-  squareConfigured,
   onSaved,
 }: {
   callId: string;
-  squareConfigured: boolean;
   onSaved: (completion: CompletionCaptureStatus) => void;
 }) {
   const [signature, setSignature] = useState<string | null>(null);
@@ -645,8 +785,6 @@ function CustomerCompletionPanel({
           />
         </label>
       </div>
-
-      {squareConfigured && <TipOptionBlock callId={callId} squareConfigured={squareConfigured} />}
 
       <Button className="w-full" loading={saving} disabled={!signature || !rating} onClick={() => void save()}>
         <Check className="size-5" /> Save customer completion
