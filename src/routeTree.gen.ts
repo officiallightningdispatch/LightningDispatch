@@ -11,8 +11,8 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as OwnerRouteImport } from './routes/owner'
 import { Route as OpsRouteImport } from './routes/ops'
-import { Route as LoginRouteImport } from './routes/login'
 import { Route as LogoutRouteImport } from './routes/logout'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as DriverRouteImport } from './routes/driver'
 import { Route as DispatchRouteImport } from './routes/dispatch'
 import { Route as ContractorRouteImport } from './routes/contractor'
@@ -28,7 +28,6 @@ import { Route as OwnerMoneyRouteImport } from './routes/owner/money'
 import { Route as OwnerHistoryRouteImport } from './routes/owner/history'
 import { Route as OwnerDriversRouteImport } from './routes/owner/drivers'
 import { Route as OwnerContractorsRouteImport } from './routes/owner/contractors'
-import { Route as OwnerContractorsIdRouteImport } from './routes/owner/contractors.$id'
 import { Route as OwnerAiDispatcherRouteImport } from './routes/owner/ai-dispatcher'
 import { Route as OwnerActiveRouteImport } from './routes/owner/active'
 import { Route as OpsHistoryRouteImport } from './routes/ops/history'
@@ -39,6 +38,7 @@ import { Route as DriverOffersRouteImport } from './routes/driver/offers'
 import { Route as DriverHelpRouteImport } from './routes/driver/help'
 import { Route as DriverEarningsRouteImport } from './routes/driver/earnings'
 import { Route as DriverActiveRouteImport } from './routes/driver/active'
+import { Route as OwnerContractorsIdRouteImport } from './routes/owner/contractors.$id'
 
 const OwnerRoute = OwnerRouteImport.update({
   id: '/owner',
@@ -50,14 +50,14 @@ const OpsRoute = OpsRouteImport.update({
   path: '/ops',
   getParentRoute: () => rootRouteImport,
 } as any)
-const LoginRoute = LoginRouteImport.update({
-  id: '/login',
-  path: '/login',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const LogoutRoute = LogoutRouteImport.update({
   id: '/logout',
   path: '/logout',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DriverRoute = DriverRouteImport.update({
@@ -135,11 +135,6 @@ const OwnerContractorsRoute = OwnerContractorsRouteImport.update({
   path: '/contractors',
   getParentRoute: () => OwnerRoute,
 } as any)
-const OwnerContractorsIdRoute = OwnerContractorsIdRouteImport.update({
-  id: '/owner/contractors/$id',
-  path: '/$id',
-  getParentRoute: () => OwnerContractorsRoute,
-} as any)
 const OwnerAiDispatcherRoute = OwnerAiDispatcherRouteImport.update({
   id: '/ai-dispatcher',
   path: '/ai-dispatcher',
@@ -190,6 +185,11 @@ const DriverActiveRoute = DriverActiveRouteImport.update({
   path: '/active',
   getParentRoute: () => DriverRoute,
 } as any)
+const OwnerContractorsIdRoute = OwnerContractorsIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => OwnerContractorsRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -211,8 +211,7 @@ export interface FileRoutesByFullPath {
   '/ops/history': typeof OpsHistoryRoute
   '/owner/active': typeof OwnerActiveRoute
   '/owner/ai-dispatcher': typeof OwnerAiDispatcherRoute
-  '/owner/contractors': typeof OwnerContractorsRoute
-  '/owner/contractors/$id': typeof OwnerContractorsIdRoute
+  '/owner/contractors': typeof OwnerContractorsRouteWithChildren
   '/owner/drivers': typeof OwnerDriversRoute
   '/owner/history': typeof OwnerHistoryRoute
   '/owner/money': typeof OwnerMoneyRoute
@@ -222,6 +221,7 @@ export interface FileRoutesByFullPath {
   '/driver/': typeof DriverIndexRoute
   '/ops/': typeof OpsIndexRoute
   '/owner/': typeof OwnerIndexRoute
+  '/owner/contractors/$id': typeof OwnerContractorsIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -240,8 +240,7 @@ export interface FileRoutesByTo {
   '/ops/history': typeof OpsHistoryRoute
   '/owner/active': typeof OwnerActiveRoute
   '/owner/ai-dispatcher': typeof OwnerAiDispatcherRoute
-  '/owner/contractors': typeof OwnerContractorsRoute
-  '/owner/contractors/$id': typeof OwnerContractorsIdRoute
+  '/owner/contractors': typeof OwnerContractorsRouteWithChildren
   '/owner/drivers': typeof OwnerDriversRoute
   '/owner/history': typeof OwnerHistoryRoute
   '/owner/money': typeof OwnerMoneyRoute
@@ -251,6 +250,7 @@ export interface FileRoutesByTo {
   '/driver': typeof DriverIndexRoute
   '/ops': typeof OpsIndexRoute
   '/owner': typeof OwnerIndexRoute
+  '/owner/contractors/$id': typeof OwnerContractorsIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -273,8 +273,7 @@ export interface FileRoutesById {
   '/ops/history': typeof OpsHistoryRoute
   '/owner/active': typeof OwnerActiveRoute
   '/owner/ai-dispatcher': typeof OwnerAiDispatcherRoute
-  '/owner/contractors': typeof OwnerContractorsRoute
-  '/owner/contractors/$id': typeof OwnerContractorsIdRoute
+  '/owner/contractors': typeof OwnerContractorsRouteWithChildren
   '/owner/drivers': typeof OwnerDriversRoute
   '/owner/history': typeof OwnerHistoryRoute
   '/owner/money': typeof OwnerMoneyRoute
@@ -284,6 +283,7 @@ export interface FileRoutesById {
   '/driver/': typeof DriverIndexRoute
   '/ops/': typeof OpsIndexRoute
   '/owner/': typeof OwnerIndexRoute
+  '/owner/contractors/$id': typeof OwnerContractorsIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -308,7 +308,6 @@ export interface FileRouteTypes {
     | '/owner/active'
     | '/owner/ai-dispatcher'
     | '/owner/contractors'
-    | '/owner/contractors/$id'
     | '/owner/drivers'
     | '/owner/history'
     | '/owner/money'
@@ -318,6 +317,7 @@ export interface FileRouteTypes {
     | '/driver/'
     | '/ops/'
     | '/owner/'
+    | '/owner/contractors/$id'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -337,7 +337,6 @@ export interface FileRouteTypes {
     | '/owner/active'
     | '/owner/ai-dispatcher'
     | '/owner/contractors'
-    | '/owner/contractors/$id'
     | '/owner/drivers'
     | '/owner/history'
     | '/owner/money'
@@ -347,6 +346,7 @@ export interface FileRouteTypes {
     | '/driver'
     | '/ops'
     | '/owner'
+    | '/owner/contractors/$id'
   id:
     | '__root__'
     | '/'
@@ -369,7 +369,6 @@ export interface FileRouteTypes {
     | '/owner/active'
     | '/owner/ai-dispatcher'
     | '/owner/contractors'
-    | '/owner/contractors/$id'
     | '/owner/drivers'
     | '/owner/history'
     | '/owner/money'
@@ -379,6 +378,7 @@ export interface FileRouteTypes {
     | '/driver/'
     | '/ops/'
     | '/owner/'
+    | '/owner/contractors/$id'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -389,7 +389,6 @@ export interface RootRouteChildren {
   DriverRoute: typeof DriverRouteWithChildren
   LoginRoute: typeof LoginRoute
   LogoutRoute: typeof LogoutRoute
-  LogoutRoute: typeof LogoutRouteImport
   OpsRoute: typeof OpsRouteWithChildren
   OwnerRoute: typeof OwnerRouteWithChildren
 }
@@ -410,18 +409,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OpsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/login': {
-      id: '/login'
-      path: '/login'
-      fullPath: '/login'
-      preLoaderRoute: typeof LoginRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/logout': {
       id: '/logout'
       path: '/logout'
       fullPath: '/logout'
       preLoaderRoute: typeof LogoutRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/driver': {
@@ -529,13 +528,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OwnerContractorsRouteImport
       parentRoute: typeof OwnerRoute
     }
-    '/owner/contractors/$id': {
-      id: '/owner/contractors/$id'
-      path: '/$id'
-      fullPath: '/owner/contractors/$id'
-      preLoaderRoute: typeof OwnerContractorsIdRouteImport
-      parentRoute: typeof OwnerContractorsRoute
-    }
     '/owner/ai-dispatcher': {
       id: '/owner/ai-dispatcher'
       path: '/ai-dispatcher'
@@ -606,6 +598,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DriverActiveRouteImport
       parentRoute: typeof DriverRoute
     }
+    '/owner/contractors/$id': {
+      id: '/owner/contractors/$id'
+      path: '/$id'
+      fullPath: '/owner/contractors/$id'
+      preLoaderRoute: typeof OwnerContractorsIdRouteImport
+      parentRoute: typeof OwnerContractorsRoute
+    }
   }
 }
 
@@ -646,11 +645,21 @@ const OpsRouteChildren: OpsRouteChildren = {
 
 const OpsRouteWithChildren = OpsRoute._addFileChildren(OpsRouteChildren)
 
+interface OwnerContractorsRouteChildren {
+  OwnerContractorsIdRoute: typeof OwnerContractorsIdRoute
+}
+
+const OwnerContractorsRouteChildren: OwnerContractorsRouteChildren = {
+  OwnerContractorsIdRoute: OwnerContractorsIdRoute,
+}
+
+const OwnerContractorsRouteWithChildren =
+  OwnerContractorsRoute._addFileChildren(OwnerContractorsRouteChildren)
+
 interface OwnerRouteChildren {
   OwnerActiveRoute: typeof OwnerActiveRoute
   OwnerAiDispatcherRoute: typeof OwnerAiDispatcherRoute
-  OwnerContractorsIdRoute: typeof OwnerContractorsIdRoute
-  OwnerContractorsRoute: typeof OwnerContractorsRoute
+  OwnerContractorsRoute: typeof OwnerContractorsRouteWithChildren
   OwnerDriversRoute: typeof OwnerDriversRoute
   OwnerHistoryRoute: typeof OwnerHistoryRoute
   OwnerMoneyRoute: typeof OwnerMoneyRoute
@@ -663,8 +672,7 @@ interface OwnerRouteChildren {
 const OwnerRouteChildren: OwnerRouteChildren = {
   OwnerActiveRoute: OwnerActiveRoute,
   OwnerAiDispatcherRoute: OwnerAiDispatcherRoute,
-  OwnerContractorsIdRoute: OwnerContractorsIdRoute,
-  OwnerContractorsRoute: OwnerContractorsRoute,
+  OwnerContractorsRoute: OwnerContractorsRouteWithChildren,
   OwnerDriversRoute: OwnerDriversRoute,
   OwnerHistoryRoute: OwnerHistoryRoute,
   OwnerMoneyRoute: OwnerMoneyRoute,

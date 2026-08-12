@@ -65,8 +65,13 @@ export type JobPhotoStatus = {
   photos: Record<PhotoPhase, Partial<Record<PhotoSide, JobPhotoRow>>>;
 };
 /** The user context handlers resolve from the LD session; cores take it
- *  explicitly so hermetic tests run without a request/session. */
-export type PhotoUser = { orgId: string; id: string; role: string; towbookDriverId: string };
+ *  explicitly so hermetic tests run without a request/session. For an
+ *  owner/admin in driver view (owner↔contractor view toggle, 2026-08-12) id is
+ *  the EFFECTIVE driver's user row id and role stays 'contractor' (driver
+ *  semantics: only the assigned driver can act), while actorUserId/actorRole/
+ *  ownerInDriverView carry the real session user for status_events attribution
+ *  (owner-confirmed Q4). */
+export type PhotoUser = { orgId: string; id: string; role: string; towbookDriverId: string; actorUserId?: string; actorRole?: string; ownerInDriverView?: boolean };
 
 const configured = () => Boolean(process.env.DATABASE_URL);
 let schemaInit: Promise<void> | undefined;
@@ -82,19 +87,30 @@ function ensure() {
 }
 const db = () => import("~/db").then((m) => m.sql());
 
-/** Resolve the acting driver user + their Towbook driver id (handler helper). */
+/** Resolve the acting driver user + their Towbook driver id (handler helper).
+ *  Owner/admin sessions with a driver identity (own towbook_driver_id or a
+ *  linked driver) resolve to the EFFECTIVE driver — same contractor flow, zero
+ *  owner powers; the real actor rides along for status_events attribution. */
 async function resolvePhotoUser(): Promise<PhotoUser | null> {
-  const { currentUser } = await import("./auth-server");
+  const { currentUser, effectiveDriverIdentity } = await import("./auth-server");
   const u = await currentUser();
-  if (!u || u.role !== "contractor") return null;
+  if (!u) return null;
+  const identity = await effectiveDriverIdentity(u);
+  if (!identity || identity.deactivated) return null;
   const q = await db();
-  const rows = await q`SELECT towbook_driver_id FROM users WHERE id=${u.id}`;
-  return {
+  const rows = await q`SELECT towbook_driver_id FROM users WHERE id=${identity.userRowId}`;
+  const user: PhotoUser = {
     orgId: u.orgId,
-    id: u.id,
-    role: u.role,
+    id: identity.userRowId,
+    role: "contractor",
     towbookDriverId: rows.length ? String(rows[0].towbook_driver_id ?? "") : "",
   };
+  if (u.role !== "contractor") {
+    user.actorUserId = u.id;
+    user.actorRole = u.role;
+    user.ownerInDriverView = true;
+  }
+  return user;
 }
 
 /* --------------------------------- persistence --------------------------------- */
@@ -575,9 +591,14 @@ function extractStatusId(status: unknown): number | null {
 
 /** Platform write-through: dispatch_jobs → completed (guarded from 'arrived'
  *  only — a racing transition can never be overwritten) + status_events +
- *  audit. Mirrors the driver-portal writeThrough pattern. */
+ *  audit. Mirrors the driver-portal writeThrough pattern. status_events are
+ *  attributed to the REAL session actor (owner-confirmed Q4: owner-as-driver
+ *  actions carry the owner's user id with a "(owner in driver view)" note). */
 async function markPlatformCompleted(user: PhotoUser, job: { id: string; towbookJobId: string | null }, detail: Record<string, unknown>): Promise<void> {
   const q = await db();
+  const actorId = user.actorUserId ?? user.id;
+  const actorRole = user.actorRole ?? "contractor";
+  const note = `driver completed job (Lightning Dispatch)${user.ownerInDriverView ? " (owner in driver view)" : ""}`;
   await q.transaction([
     q`WITH changed AS (
         UPDATE dispatch_jobs SET status='completed', completed_at=NOW(), towbook_status='5'
@@ -585,13 +606,13 @@ async function markPlatformCompleted(user: PhotoUser, job: { id: string; towbook
         RETURNING id, org_id, 'arrived'::text AS old_status
       )
       INSERT INTO status_events(id, org_id, job_id, from_status, to_status, actor_user_id, actor_role, note)
-      SELECT gen_random_uuid()::text, org_id, id, old_status, 'completed', ${user.id}, 'contractor', 'driver completed job (Lightning Dispatch)'
+      SELECT gen_random_uuid()::text, org_id, id, old_status, 'completed', ${actorId}, ${actorRole}, ${note}
       FROM changed RETURNING job_id`,
     q`SELECT 1`,
   ]);
   try {
     await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
-      SELECT gen_random_uuid()::text, ${user.orgId}, ${user.id}, 'contractor', 'driver_job_complete', 'job', ${job.id}, ${JSON.stringify({ towbookJobId: job.towbookJobId, ...detail })}::jsonb, 'driver-photos'`;
+      SELECT gen_random_uuid()::text, ${user.orgId}, ${actorId}, ${actorRole}, 'driver_job_complete', 'job', ${job.id}, ${JSON.stringify({ towbookJobId: job.towbookJobId, ...detail, actorRole })}::jsonb, 'driver-photos'`;
   } catch { /* best-effort audit */ }
 }
 

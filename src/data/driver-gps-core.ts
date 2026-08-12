@@ -404,14 +404,16 @@ export async function pingHandler(data: unknown): Promise<PingResult> {
   }).safeParse(data);
   if (!v.success) return { ok: false, reason: "Invalid location ping." };
   if (!configured()) return { ok: false, reason: "GPS pings require database mode." };
-  const { currentUser } = await import("./auth-server");
+  const { currentUser, effectiveDriverIdentity } = await import("./auth-server");
   const u = await currentUser();
-  if (!u || u.role !== "contractor") return { ok: false, reason: "Sign in as a driver first." };
+  if (!u) return { ok: false, reason: "Sign in as a driver first." };
+  const identity = await effectiveDriverIdentity(u);
+  if (!identity || identity.deactivated) return { ok: false, reason: "Sign in as a driver first." };
   try {
     await ensure();
     const q = await db();
-    const rows = await q`SELECT towbook_driver_id, towbook_user_id FROM users WHERE id=${u.id}`;
-    const towbookDriverId = rows.length ? String(rows[0].towbook_driver_id ?? "") : "";
+    const rows = await q`SELECT towbook_user_id FROM users WHERE id=${identity.userRowId}`;
+    const towbookDriverId = identity.towbookDriverId;
     if (!towbookDriverId) return { ok: false, reason: "Your account is not linked to a Towbook driver yet — reconnect." };
     const d = v.data;
     const towbookUserId = rows.length ? String(rows[0].towbook_user_id ?? "") : "";
@@ -419,7 +421,7 @@ export async function pingHandler(data: unknown): Promise<PingResult> {
       ? await q`SELECT id FROM dispatch_jobs WHERE org_id=${u.orgId} AND towbook_job_id=${d.jobTowbookId} LIMIT 1`
       : [];
     const jobId = jobRow.length ? String(jobRow[0].id) : null;
-    await storePing({ orgId: u.orgId, userId: u.id, towbookDriverId, jobId, latitude: d.latitude, longitude: d.longitude, accuracy: d.accuracy ?? null });
+    await storePing({ orgId: u.orgId, userId: identity.userRowId, towbookDriverId, jobId, latitude: d.latitude, longitude: d.longitude, accuracy: d.accuracy ?? null });
     // Best-effort Towbook checkin so Towbook has live GPS. Failure must never
     // break the ping loop.
     let towbookCheckin: PingResult extends infer _ ? "ok" | "warning" | "failed" | "skipped" | "no-session" : never = "skipped";
@@ -434,7 +436,7 @@ export async function pingHandler(data: unknown): Promise<PingResult> {
     }
     let geofence: GeofenceOutcome = { action: "none", reason: "geofence check unavailable" };
     try {
-      geofence = await evaluateGeofence({ orgId: u.orgId, userId: u.id, towbookDriverId, lat: d.latitude, lng: d.longitude });
+      geofence = await evaluateGeofence({ orgId: u.orgId, userId: identity.userRowId, towbookDriverId, lat: d.latitude, lng: d.longitude });
     } catch { /* a geofence hiccup never fails the ping */ }
     return { ok: true, towbookCheckin, geofence };
   } catch {

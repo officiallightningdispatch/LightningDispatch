@@ -51,17 +51,25 @@ const db = () => import("~/db").then((m) => m.sql());
 
 /** Resolve the acting driver user + their Towbook driver id (handler helper). */
 async function resolveCompletionUser(): Promise<PhotoUser | null> {
-  const { currentUser } = await import("./auth-server");
+  const { currentUser, effectiveDriverIdentity } = await import("./auth-server");
   const u = await currentUser();
-  if (!u || u.role !== "contractor") return null;
+  if (!u) return null;
+  const identity = await effectiveDriverIdentity(u);
+  if (!identity || identity.deactivated) return null;
   const q = await db();
-  const rows = await q`SELECT towbook_driver_id FROM users WHERE id=${u.id}`;
-  return {
+  const rows = await q`SELECT towbook_driver_id FROM users WHERE id=${identity.userRowId}`;
+  const user: PhotoUser = {
     orgId: u.orgId,
-    id: u.id,
-    role: u.role,
+    id: identity.userRowId,
+    role: "contractor",
     towbookDriverId: rows.length ? String(rows[0].towbook_driver_id ?? "") : "",
   };
+  if (u.role !== "contractor") {
+    user.actorUserId = u.id;
+    user.actorRole = u.role;
+    user.ownerInDriverView = true;
+  }
+  return user;
 }
 
 /* --------------------------------- domain --------------------------------- */

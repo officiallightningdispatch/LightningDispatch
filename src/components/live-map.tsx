@@ -100,6 +100,12 @@ export type LiveMapProps = {
    *  the driver portal uses it to expand the bottom sheet. Additive; ignored
    *  by existing call sites. */
   onTap?: () => void;
+  /** Driver-portal pages pass true so the server scopes the feed to the
+   *  EFFECTIVE driver identity — an owner/admin in driver view (view toggle,
+   *  2026-08-12) sees exactly what a contractor sees (self pin, "mine" flags,
+   *  anonymized neighbors) instead of the ops-wide view. No-op for a
+   *  contractor session (already scoped by role). */
+  driverScope?: boolean;
 };
 
 const timeAgoLabel = (iso: string, now: number): string => {
@@ -118,6 +124,7 @@ export function LiveMap({
   variant = "panel",
   hideChrome = false,
   onTap,
+  driverScope = false,
 }: LiveMapProps) {
   const isHero = variant === "hero" || hideChrome;
   const [data, setData] = useState<LiveMapData | null>(null);
@@ -143,7 +150,7 @@ export function LiveMap({
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setError(false);
     try {
-      const r = await getLiveMapData();
+      const r = await getLiveMapData({ data: { driverScope } });
       if (r === null) {
         // The feed RESOLVED to null (transient auth/DB hiccup — not a fetch
         // failure, so no throw reached the catch): a signed-in user would

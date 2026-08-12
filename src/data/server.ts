@@ -1718,7 +1718,11 @@ export const getAiDispatcherDecisionDetail = createServerFn({ method: "GET" }).v
  *  lives in the server-only ./live-map-core.ts (dynamic-imported here so the
  *  client bundle never touches driver-gps-core/db/auth-server). */
 export type { LiveMapData, LiveMapDriverPin, LiveMapJobPin, LiveMapSelfPin } from "./live-map-core";
-export const getLiveMapData = createServerFn({ method: "GET" }).handler(async (): Promise<LiveMapData | null> => {
+export const getLiveMapData = createServerFn({ method: "GET" }).validator((x: unknown) => x).handler(async ({ data }): Promise<LiveMapData | null> => {
   const core = await import("./live-map-core");
-  return core.liveMapDataHandler();
+  // driverScope=true from the driver-portal pages: an owner/admin in driver
+  // view (view toggle) gets the contractor-scoped feed (self pin, "mine"
+  // flags, anonymized neighbors) keyed to their effective driver identity.
+  const driverScope = Boolean((data as Record<string, unknown> | undefined)?.driverScope);
+  return core.liveMapDataHandler(driverScope);
 });

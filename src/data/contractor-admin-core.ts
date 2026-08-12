@@ -801,10 +801,16 @@ async function resolveOwnerActor(): Promise<ContractorAdminActor | null> {
 
 async function resolveContractorActor(): Promise<ContractorAdminActor | null> {
   if (!configured()) return null;
-  const { currentUser } = await import("./auth-server");
+  const { currentUser, effectiveDriverIdentity } = await import("./auth-server");
   const u = await currentUser();
-  if (!u || u.role !== "contractor") return null;
-  return { orgId: u.orgId, id: u.id, role: u.role };
+  if (!u) return null;
+  const identity = await effectiveDriverIdentity(u);
+  if (!identity || identity.deactivated) return null;
+  // Owner↔contractor view toggle: an owner/admin in driver view resolves to
+  // their effective driver identity — docs live on the linked driver's row
+  // (spec §2: contractor_documents.contractor_id = linked driver user row id,
+  // or own row id for shape a), so the actor id IS the driver's row id here.
+  return { orgId: u.orgId, id: identity.userRowId, role: "contractor" };
 }
 
 const DB_MODE_ERR = (msg: string): ContractorAdminResult<never> => err("database_error", `${msg} requires database mode.`);

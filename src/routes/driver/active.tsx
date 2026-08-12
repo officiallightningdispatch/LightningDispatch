@@ -69,6 +69,7 @@ function ActiveView() {
           emptyTitle="Live map unavailable"
           emptyBody="Sign in as a contractor to see your position, your active job, and nearby jobs here."
           onTap={() => setSnap(1)}
+          driverScope
         />
         {sheetCall && (
           <div className="absolute left-3 top-3 z-10">

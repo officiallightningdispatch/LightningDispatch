@@ -74,10 +74,15 @@ function validLatLng(lat: number, lng: number): boolean {
 }
 
 /** The live-map feed for the current session (auth-gated; see header).
- *  Returns null when database mode is off or the user is not signed in. */
-export async function liveMapDataHandler(): Promise<LiveMapData | null> {
+ *  Returns null when database mode is off or the user is not signed in.
+ *  driverScope=true (driver-portal pages): treat the session as contractor-
+ *  scoped even when the role is staff — an owner/admin in driver view
+ *  (owner↔contractor view toggle) sees their OWN position (self pin), their
+ *  own active jobs with full customer detail, and anonymized nearby pins —
+ *  exactly what a contractor sees, keyed to the EFFECTIVE driver identity. */
+export async function liveMapDataHandler(driverScope = false): Promise<LiveMapData | null> {
   if (!configured()) return null;
-  const { currentUser } = await import("./auth-server");
+  const { currentUser, effectiveDriverIdentity } = await import("./auth-server");
   const u = await currentUser();
   if (!u) return null;
   const isStaff = u.role === "owner" || u.role === "admin" || u.role === "dispatcher";
@@ -85,12 +90,22 @@ export async function liveMapDataHandler(): Promise<LiveMapData | null> {
   const nowMs = Date.now();
 
   // Contractor identity for own-job matching (users carry towbook_driver_id;
-  // membership contractor_id is legacy and empty for real orgs).
+  // membership contractor_id is legacy and empty for real orgs). In driver
+  // scope the identity is the EFFECTIVE driver (own row or linked row).
+  let scoped = !isStaff;
+  let effectiveUserRowId = u.id;
   let towbookDriverId: string | null = null;
-  if (!isStaff) {
-    const me = await q`SELECT towbook_driver_id FROM users WHERE id=${u.id} LIMIT 1`;
-    towbookDriverId = me.length && me[0].towbook_driver_id != null ? String(me[0].towbook_driver_id) : null;
+  if (driverScope && isStaff) {
+    const identity = await effectiveDriverIdentity(u);
+    if (identity && !identity.deactivated) {
+      scoped = true;
+      effectiveUserRowId = identity.userRowId;
+      towbookDriverId = identity.towbookDriverId;
+    } else {
+      return null; // staff requested driver scope without a usable identity
+    }
   }
+  if (!scoped) towbookDriverId = null;
 
   // Driver positions — latest ping per driver (last 60 min). Staff see
   // everyone; a contractor sees only their own.
@@ -98,7 +113,7 @@ export async function liveMapDataHandler(): Promise<LiveMapData | null> {
   const drivers: LiveMapDriverPin[] = [];
   let self: LiveMapSelfPin | null = null;
   for (const r of locations) {
-    if (!isStaff && r.driverId !== u.id) continue;
+    if (scoped && r.driverId !== effectiveUserRowId) continue;
     drivers.push({
       driverId: r.driverId,
       driverName: r.driverName,
@@ -110,7 +125,7 @@ export async function liveMapDataHandler(): Promise<LiveMapData | null> {
       jobStatus: r.jobStatus != null ? r.jobStatus : null,
       jobCustomer: r.jobCustomer != null ? r.jobCustomer : null,
     });
-    if (!isStaff && r.driverId === u.id && !self) {
+    if (scoped && r.driverId === effectiveUserRowId && !self) {
       self = { lat: r.lat, lng: r.lng, capturedAt: r.capturedAt };
     }
   }
@@ -136,7 +151,7 @@ export async function liveMapDataHandler(): Promise<LiveMapData | null> {
     const lng = r.pickup_lng != null ? Number(r.pickup_lng) : Number(r.lng ?? 0);
     if (!validLatLng(lat, lng)) continue;
     let mine = false;
-    if (!isStaff) {
+    if (scoped) {
       mine =
         (r.assigned_contractor_id != null && u.contractorId != null && String(r.assigned_contractor_id) === u.contractorId) ||
         (towbookDriverId != null && r.assigned_driver_towbook_id != null && String(r.assigned_driver_towbook_id) === towbookDriverId);
@@ -144,14 +159,14 @@ export async function liveMapDataHandler(): Promise<LiveMapData | null> {
     jobs.push({
       jobId: String(r.id),
       towbookJobId: r.towbook_job_id != null ? String(r.towbook_job_id) : null,
-      customerName: isStaff || mine ? String(r.customer_name ?? "") : null,
+      customerName: scoped && !mine ? null : String(r.customer_name ?? ""),
       serviceType: r.service_type != null ? String(r.service_type) : null,
       status: String(r.status),
       lat,
       lng,
       area: r.area != null ? String(r.area) : null,
-      driverName: isStaff || mine ? (r.assigned_driver_name != null ? String(r.assigned_driver_name) : null) : null,
-      mine: isStaff ? false : mine,
+      driverName: scoped && !mine ? null : (r.assigned_driver_name != null ? String(r.assigned_driver_name) : null),
+      mine: scoped ? mine : false,
       etaMinutes: r.eta_minutes != null ? Number(r.eta_minutes) : null,
     });
   }

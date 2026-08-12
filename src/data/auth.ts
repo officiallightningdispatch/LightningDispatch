@@ -1,6 +1,11 @@
 import { createServerFn } from "@tanstack/react-start";
 export type Role = "owner" | "admin" | "dispatcher" | "contractor";
-export type AuthUser = { id:string; name:string; email:string; role:Role; contractorId?:string };
+/** Client mirror of auth-server's DriverIdentityInfo (seroval-safe, explicit
+ *  nulls). Present on every session user: null when the user has no driver
+ *  identity; otherwise the driver row behind the session (own row for
+ *  contractors and shape-a staff, the linked contractor's row for shape b). */
+export type DriverIdentityInfo = { userRowId: string; towbookDriverId: string; driverName: string; deactivated: boolean };
+export type AuthUser = { id: string; name: string; email: string; role: Role; contractorId?: string; driverIdentity: DriverIdentityInfo | null };
 // Resolve the Node-only implementation at request time. Keep the specifier literal
 // so Rollup rewrites it to the emitted hashed server chunk in production.
 const server=()=>import("./auth-server");
@@ -17,3 +22,11 @@ const ident=c.identifier;const rows=await (await import("~/db")).sql()`SELECT u.
 // the user back to /login (a loop). Refuse to start the session instead.
 if(!hit.role)return {ok:false,error:"Your account has no workspace assigned yet. Contact your administrator."};await s.startSession(String(hit.id));return {ok:true,role:s.normalizeRole(hit.role)};});
 export const logout=createServerFn({method:"POST"}).handler(async()=>{const s=await server();const tokens=await s.cookieValues(s.cookieName);if(process.env.DATABASE_URL&&tokens.length){const q=(await import("~/db")).sql();for(const t of tokens)await q`DELETE FROM sessions WHERE id=${t}`;}await s.writeCookie(s.cookieName,"",0);for(const legacy of s.legacyCookieNames)await s.writeCookie(legacy,"",0);return {ok:true};});
+/* ---------- owner↔contractor view toggle (owner-directed 2026-08-12) ---------- */
+/** Settings card payload + link picker (owner/admin only). See
+ *  auth-server.listLinkableDriversCore for the shape. */
+export type LinkableDriverRow = { id: string; name: string; towbookDriverId: string; signedIn: boolean; lastActivityAt: string | null };
+export type DriverLinkStatus = { ok: true; ownDriverId: string | null; linked: (LinkableDriverRow & { deactivated: boolean }) | null; candidates: LinkableDriverRow[] } | { ok: false; error: string };
+export const driverLinkStatus=createServerFn({method:"GET"}).handler(async():Promise<DriverLinkStatus>=>{const s=await server();if(!process.env.DATABASE_URL)return {ok:false as const,error:"Database mode is not active."};await s.ensureAuthSchema();return s.listLinkableDriversCore();});
+export const linkDriverAccount=createServerFn({method:"POST"}).validator((x:unknown)=>x).handler(async({data}):Promise<{ok:true;linked:LinkableDriverRow & {deactivated:boolean}}|{ok:false;error:string}>=>{const s=await server();if(!process.env.DATABASE_URL)return {ok:false as const,error:"Database mode is not active."};await s.ensureAuthSchema();return s.linkDriverAccountCore((data as Record<string,unknown>|undefined)?.driverUserId);});
+export const unlinkDriverAccount=createServerFn({method:"POST"}).handler(async():Promise<{ok:true}|{ok:false;error:string}>=>{const s=await server();if(!process.env.DATABASE_URL)return {ok:false as const,error:"Database mode is not active."};await s.ensureAuthSchema();return s.unlinkDriverAccountCore();});

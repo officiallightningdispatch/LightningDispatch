@@ -1,6 +1,7 @@
 import { Link, useLocation } from "@tanstack/react-router";
-import { Zap, Home, Inbox, Briefcase, DollarSign, User, List, Users, History, BarChart3, Settings, Wallet, Bot, Map, UserCog, LogOut } from "lucide-react";
-import type { ReactNode } from "react";
+import { CarFront, Home, Inbox, Briefcase, DollarSign, LayoutDashboard, List, LogOut, Settings, User, UserRound, Users, History, BarChart3, Wallet, Bot, Map, UserCog, Zap } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
+import { authStatus, type AuthUser } from "~/data/auth";
 
 export type Portal = "driver" | "ops" | "owner";
 
@@ -81,6 +82,37 @@ const PORTAL_META: Record<Portal, { appLabel: string; portalLabel: string; mobil
   owner: { appLabel: "Owner command center", portalLabel: "Owner portal", mobileBottomPad: false },
 };
 
+/** Session identity for the view-toggle chrome (owner↔contractor, 2026-08-12).
+ *  One shared helper: staffWithDriver = owner/admin with a non-deactivated
+ *  driver identity (own towbook_driver_id or a linked driver — Q1 admins
+ *  included). The header pill (owner portal) and the persistent driver-view
+ *  banner (driver portal) both key off it. */
+function useSessionIdentity(): { user: AuthUser | null; staffWithDriver: boolean; driverName: string | null } {
+  const [user, setUser] = useState<AuthUser | null>(null);
+  useEffect(() => {
+    let live = true;
+    void authStatus().then((s) => { if (live && s.user) setUser(s.user); }).catch(() => { /* chrome hides on failure */ });
+    return () => { live = false; };
+  }, []);
+  const staffWithDriver = Boolean(user && (user.role === "owner" || user.role === "admin") && user.driverIdentity && !user.driverIdentity.deactivated);
+  return { user, staffWithDriver, driverName: staffWithDriver && user?.driverIdentity ? user.driverIdentity.driverName : null };
+}
+
+/** §1a — the owner-header "Driver view" affordance (secondary pill; never in
+ *  the ops portal, never for contractors, never without a driver identity). */
+function DriverViewPill() {
+  return (
+    <Link
+      to="/driver"
+      aria-label="Switch to the driver app"
+      title="See the app the way your drivers do"
+      className="inline-flex h-11 items-center gap-2 rounded-full border border-ink-200 bg-surface px-3.5 text-sm font-semibold text-ink-700 transition-colors hover:bg-hover active:scale-[0.98] motion-reduce:transform-none focus:outline-2 focus:outline-brand-500/40 sm:h-9"
+    >
+      <CarFront className="size-4" aria-hidden="true" /> Driver view
+    </Link>
+  );
+}
+
 export function AppShell({
   portal,
   title,
@@ -106,6 +138,7 @@ export function AppShell({
   const location = useLocation();
   const { links, mobile } = NAV[portal];
   const meta = PORTAL_META[portal];
+  const identity = useSessionIdentity();
   /** A nav item is active on its exact path, or on any sub-route of it (so the
    *  Contractors tab stays highlighted on /owner/contractors/:id). The bare
    *  portal roots stay exact-only — Dashboard must not highlight on every
@@ -121,7 +154,26 @@ export function AppShell({
     </Link>
   ));
   return <div className={`min-h-dvh min-w-0 overflow-x-clip bg-canvas text-ink-900 ${meta.mobileBottomPad ? "pb-20" : ""}`}>
-    <header className="border-b border-ink-100 bg-surface"><div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-3 sm:px-6"><Link to={links[0].to as any} className="flex items-center gap-3"><span className="grid size-9 place-items-center rounded-xl bg-brand-500"><Zap className="size-5 text-white" fill="currentColor" strokeWidth={0} /></span><strong className="text-sm font-bold">Lightning Dispatch OS</strong></Link><span className="hidden text-xs text-ink-400 sm:block">{meta.appLabel}</span>{actions && <div className="ml-auto flex items-center gap-2">{actions}</div>}</div></header>
+    <header className="border-b border-ink-100 bg-surface"><div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-3 sm:px-6"><Link to={links[0].to as any} className="flex items-center gap-3"><span className="grid size-9 place-items-center rounded-xl bg-brand-500"><Zap className="size-5 text-white" fill="currentColor" strokeWidth={0} /></span><strong className="text-sm font-bold">Lightning Dispatch OS</strong></Link><span className="hidden text-xs text-ink-400 sm:block">{meta.appLabel}</span>{actions && <div className="ml-auto flex items-center gap-2">{identity.staffWithDriver && portal === "owner" ? <DriverViewPill /> : null}{actions}</div>}</div></header>
+    {identity.staffWithDriver && portal === "driver" && (
+      // §1b — persistent view-mode banner on every driver page for staff in
+      // driver view. Never dismissible: the owner must never forget which hat
+      // they're wearing. Brand-tinted attention state (NOT yellow — reserved).
+      <div className="border-b border-brand-200 bg-brand-50">
+        <div className="mx-auto flex h-11 max-w-7xl items-center justify-between gap-2 px-4 text-xs sm:px-6">
+          <p className="flex min-w-0 items-center gap-2 font-bold text-brand-800">
+            <UserRound className="size-4 shrink-0 text-brand-600" aria-hidden="true" />
+            <span className="truncate">Viewing as {identity.driverName ?? "driver"} · Owner</span>
+          </p>
+          <Link
+            to="/owner"
+            className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full border border-ink-200 bg-surface px-3 text-[13px] font-semibold text-ink-700 transition-colors hover:bg-hover"
+          >
+            <LayoutDashboard className="size-3.5" aria-hidden="true" /> Back to owner view
+          </Link>
+        </div>
+      </div>
+    )}
     <div className="mx-auto flex max-w-7xl"><aside className="hidden w-56 shrink-0 border-r border-ink-100 py-5 pr-4 md:block"><nav className="space-y-1" aria-label="Portal navigation">{links.map(l => <Link key={l.to} to={l.to as any} className={`flex h-11 items-center gap-3 rounded-xl px-3 text-sm font-semibold ${isActive(l.to) ? "bg-ink-950 text-white" : "text-ink-500 hover:bg-ink-50"}`}><l.icon className="size-4" />{l.label}</Link>)}</nav></aside>
     <main className={`min-w-0 flex-1 px-4 py-7 sm:px-6 ${portal === "driver" ? "mx-auto max-w-lg md:max-w-none" : ""} ${slim ? "max-w-none px-0 py-0" : ""}`}>{!slim && <div className="mb-7"><p className="mb-2 text-xs font-bold uppercase tracking-[.18em] text-brand-600">{meta.portalLabel}</p><h1 className="text-2xl font-bold tracking-tight sm:text-3xl">{title}</h1><p className="mt-1 text-sm text-ink-500">{description}</p></div>}{children}</main>
     </div>

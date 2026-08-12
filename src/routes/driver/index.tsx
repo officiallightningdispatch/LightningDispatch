@@ -35,6 +35,7 @@ function ContractorView() {
     void authStatus().then((s) => {
       if (s.mode === "demo") setMode("demo");
       else if (s.user?.role === "contractor") setMode("real");
+      else if ((s.user?.role === "owner" || s.user?.role === "admin") && s.user.driverIdentity && !s.user.driverIdentity.deactivated) setMode("real"); // owner↔contractor view toggle: staff with a driver identity drive from the same sign-in
       else setMode("error"); // signed-in non-contractor: their gate will route them
     }).catch(() => setMode("error"));
   }, [retry]);

@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { BadgeCheck, ChevronRight, LifeBuoy, LogOut, Truck, User } from "lucide-react";
+import { BadgeCheck, ChevronRight, Crown, LifeBuoy, LogOut, Truck, User } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AppShell } from "~/components/app-shell";
 import { DriverToolbar } from "~/components/driver-queue";
@@ -36,6 +36,9 @@ function ProfileView() {
   const rawEmail = profile?.ok ? profile.email : user?.user?.email ?? "";
   const email = rawEmail.toLowerCase().endsWith("@towbook.driver") ? "" : rawEmail;
   const driverId = profile?.ok ? profile.towbookDriverId : "";
+  // Owner↔contractor view toggle: an owner/admin in driver view sees their hat
+  // (spec §1b badge swap) + a one-tap way back to the owner dashboard.
+  const staffDriverView = Boolean(user?.user && (user.user.role === "owner" || user.user.role === "admin") && user.user.driverIdentity && !user.user.driverIdentity.deactivated);
   return (
     <AppShell portal="driver" title="Profile" description="Your account details and sign-out.">
       <DriverToolbar loading={loading} onRefresh={() => undefined} onSignOut={() => void signOut()} />
@@ -48,9 +51,15 @@ function ProfileView() {
             <div className="min-w-0">
               <p className="truncate text-lg font-bold text-ink-800">{name}</p>
               {email && <p className="truncate text-sm text-ink-500">{email}</p>}
-              <p className="mt-1 inline-flex items-center gap-1 rounded-full bg-brand-50 px-2 py-0.5 text-xs font-semibold text-brand-700">
-                <BadgeCheck className="size-3.5" /> Contractor
-              </p>
+              {staffDriverView ? (
+                <p className="mt-1 inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700">
+                  <Crown className="size-3.5" /> Owner (driver view)
+                </p>
+              ) : (
+                <p className="mt-1 inline-flex items-center gap-1 rounded-full bg-brand-50 px-2 py-0.5 text-xs font-semibold text-brand-700">
+                  <BadgeCheck className="size-3.5" /> Contractor
+                </p>
+              )}
             </div>
           </Card>
           <Link
@@ -66,6 +75,21 @@ function ProfileView() {
             </span>
             <ChevronRight className="size-4 shrink-0 text-ink-400" />
           </Link>
+          {staffDriverView && (
+            <Link
+              to="/owner"
+              className="flex items-center gap-3 rounded-2xl bg-surface p-4 ring-1 ring-ink-100 transition-colors duration-150 hover:bg-hover"
+            >
+              <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-brand-50 text-brand-600">
+                <Crown className="size-5" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-bold text-ink-800">Switch back to owner dashboard</span>
+                <span className="block text-xs text-ink-500">Management settings and the full dispatch board</span>
+              </span>
+              <ChevronRight className="size-4 shrink-0 text-ink-400" />
+            </Link>
+          )}
           <Card className="p-4">
             <dl className="space-y-3 text-sm">
               <div className="flex items-center justify-between gap-2">

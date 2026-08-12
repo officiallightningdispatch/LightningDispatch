@@ -23,15 +23,17 @@ const KIND_LABELS: Record<string, string> = {
 };
 
 async function contractorContext() {
-  const { currentUser } = await import("./auth-server");
+  const { currentUser, effectiveDriverIdentity } = await import("./auth-server");
   const u = await currentUser();
-  if (!u || u.role !== "contractor") return null;
+  if (!u) return null;
+  const identity = await effectiveDriverIdentity(u);
+  if (!identity || identity.deactivated) return null;
   const q = await db();
-  const rows = await q`SELECT name, towbook_driver_id FROM users WHERE id=${u.id}`;
+  const rows = await q`SELECT name, towbook_driver_id FROM users WHERE id=${identity.userRowId}`;
   if (!rows.length) return null;
   return {
     orgId: u.orgId,
-    userId: u.id,
+    userId: identity.userRowId,
     name: String(rows[0].name ?? ""),
     towbookDriverId: rows[0].towbook_driver_id != null ? String(rows[0].towbook_driver_id) : null,
   };

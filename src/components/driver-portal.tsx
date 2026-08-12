@@ -90,6 +90,7 @@ export function RealDriverPortal() {
           emptyTitle="Live map unavailable"
           emptyBody="Sign in as a contractor to see your position, your active job, and nearby jobs here."
           onTap={() => setSnap(1)}
+          driverScope
         />
         {flash && (
           <p className="absolute left-1/2 top-3 z-20 w-max max-w-[92vw] -translate-x-1/2 animate-[flash-in_0.25s_ease-out] rounded-full bg-accent-400 px-3.5 py-1.5 text-xs font-bold text-ink-950 shadow-card">

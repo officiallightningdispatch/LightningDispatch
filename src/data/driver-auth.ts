@@ -25,6 +25,7 @@
  */
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import type { DriverIdentityInfo } from "./auth-server";
 
 export type DriverIdentity = { userId: string; driverId: string; driverName: string };
 export type DriverSession = { cookies: string; baseUrl: string };
@@ -128,6 +129,23 @@ async function resolveOwnerOrgId(): Promise<string | null> {
   const q = await db();
   const rows = await q`SELECT org_id FROM organization_memberships WHERE role='owner' LIMIT 1`;
   return rows.length ? String(rows[0].org_id) : null;
+}
+
+/** The session's driver identity (owner↔contractor view toggle, 2026-08-12).
+ *  Resolves through auth-server's effectiveDriverIdentity so owner/admin
+ *  sessions with a driver identity (their own towbook_driver_id — shape a — or
+ *  a linked driver — shape b) can drive the full contractor flow. Returns null
+ *  for signed-out / no-driver-identity / deactivated-linked-driver sessions.
+ *  Handler-only private helper — safe to dynamic-import server-only modules
+ *  (client-graph rule); u.id/u.role remain the REAL session actor for audit
+ *  attribution, identity.userRowId/towbookDriverId the effective driver. */
+async function resolveEffectiveDriver(): Promise<{ u: { id: string; orgId: string; role: string }; identity: DriverIdentityInfo } | null> {
+  const { currentUser, effectiveDriverIdentity } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u) return null;
+  const identity = await effectiveDriverIdentity(u);
+  if (!identity || identity.deactivated) return null;
+  return { u: { id: u.id, orgId: u.orgId, role: u.role }, identity };
 }
 
 /* ----------------------------------- Towbook HTTP ----------------------------------- */
@@ -383,9 +401,13 @@ export type TransitionResult =
  *  write-through to LD dispatch_jobs (status_events + audit_log) so the owner
  *  and ops portals reflect it immediately. Idempotent: a re-tap on an
  *  already-applied transition is a no-op (never a double PUT). Only the
- *  assigned driver can act (assets[].driver.id check). */
+ *  assigned driver can act (assets[].driver.id check). user = the EFFECTIVE
+ *  driver identity; actor = the real session user for audit attribution
+ *  (owner-confirmed Q4: owner-as-driver actions write status_events under the
+ *  owner's user id with a "(owner in driver view)" note suffix). */
 async function applyDriverTransition(
   user: { orgId: string; userId: string; towbookDriverId: string },
+  actor: { userId: string; role: string; ownerInDriverView: boolean },
   callId: string,
   action: DriverJobAction,
   opts: { fetchImpl?: typeof fetch } = {},
@@ -420,7 +442,7 @@ async function applyDriverTransition(
   });
   if (isExpired(put)) return { ok: false, expired: true, code: "no_session", message: "Your session expired — reconnect to keep working." };
   if (!put.ok) return { ok: false, code: "towbook_failed", message: `The update was rejected (HTTP ${put.status ?? "error"}). Try again.` };
-  await writeThrough(user, callId, call, toStatus);
+  await writeThrough(user, actor, callId, call, toStatus);
   return { ok: true, changed: true, statusId: toStatus };
 }
 
@@ -429,13 +451,17 @@ const actionLabel = (toStatus: number) => (toStatus === 2 ? "accepted" : "en rou
 /** LD dispatch_jobs write-through: update (or import when the job has not been
  *  synced yet — the 30s sync re-confirms) + status_events + audit_log, matching
  *  the sync's transition policy. Never throws — the Towbook PUT already
- *  succeeded; the portal refresh catches up via the sync if this fails. */
-async function writeThrough(user: { orgId: string; userId: string; towbookDriverId: string }, callId: string, rawCall: Record<string, unknown>, toStatus: number): Promise<void> {
+ *  succeeded; the portal refresh catches up via the sync if this fails.
+ *  user = the EFFECTIVE driver identity (scopes the dispatch_jobs row + Towbook
+ *  attribution); actor = the real session user for status_events/audit
+ *  attribution (owner-confirmed Q4). */
+async function writeThrough(user: { orgId: string; towbookDriverId: string }, actor: { userId: string; role: string; ownerInDriverView: boolean }, callId: string, rawCall: Record<string, unknown>, toStatus: number): Promise<void> {
   try {
     await ensure();
     const mapped = STATUS_ID_TO_LIFECYCLE[toStatus];
     if (!mapped) return;
     const q = await db();
+    const note = `driver ${actionLabel(toStatus)} (Lightning Dispatch)${actor.ownerInDriverView ? " (owner in driver view)" : ""}`;
     const existing = await q`SELECT id, status FROM dispatch_jobs WHERE org_id=${user.orgId} AND towbook_job_id=${callId} LIMIT 1`;
     const jobRowId = existing.length ? String(existing[0].id) : null;
     if (jobRowId) {
@@ -443,9 +469,9 @@ async function writeThrough(user: { orgId: string; userId: string; towbookDriver
       if (from === mapped) return; // already current — nothing to record
       await q`UPDATE dispatch_jobs SET status=${mapped}, towbook_status=${String(toStatus)} WHERE id=${jobRowId} AND org_id=${user.orgId}`;
       await q`INSERT INTO status_events(id, org_id, job_id, from_status, to_status, actor_user_id, actor_role, note)
-        SELECT gen_random_uuid()::text, ${user.orgId}, ${jobRowId}, ${from}, ${mapped}, ${user.userId}, 'contractor', ${`driver ${actionLabel(toStatus)} (Lightning Dispatch)`}`;
+        SELECT gen_random_uuid()::text, ${user.orgId}, ${jobRowId}, ${from}, ${mapped}, ${actor.userId}, ${actor.role}, ${note}`;
       await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
-        SELECT gen_random_uuid()::text, ${user.orgId}, ${user.userId}, 'contractor', 'driver_status_change', 'job', ${jobRowId}, ${JSON.stringify({ towbookJobId: callId, from, to: mapped, statusId: toStatus })}::jsonb, 'driver-portal'`;
+        SELECT gen_random_uuid()::text, ${user.orgId}, ${actor.userId}, ${actor.role}, 'driver_status_change', 'job', ${jobRowId}, ${JSON.stringify({ towbookJobId: callId, from, to: mapped, statusId: toStatus, actorRole: actor.role })}::jsonb, 'driver-portal'`;
       return;
     }
     // First sighting: import like the sync would, then the transition.
@@ -470,9 +496,9 @@ async function writeThrough(user: { orgId: string; userId: string; towbookDriver
     await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, customer_phone, vehicle_desc, pickup, dropoff, towbook_status, raw_json, pickup_lat, pickup_lng, assigned_driver_towbook_id, assigned_driver_name)
       VALUES(${newJobRowId}, ${user.orgId}, ${customer || `Towbook job ${callId}`}, '', 0, 0, ${pickup || "Unknown"}, 'flatbed_tow', ${mapped}, NOW(), '', ${callId}, '', ${vehicle}, ${pickup}, ${dropoff}, ${String(toStatus)}, ${JSON.stringify({ sourceUrl: "driver-portal", ...rawCall })}::jsonb, ${pickupLat}, ${pickupLng}, ${assigned.towbookId ?? user.towbookDriverId}, ${assigned.name})`;
     await q`INSERT INTO status_events(id, org_id, job_id, from_status, to_status, actor_user_id, actor_role, note)
-      SELECT gen_random_uuid()::text, ${user.orgId}, ${newJobRowId}, ${currentMapped}, ${mapped}, ${user.userId}, 'contractor', ${`driver ${actionLabel(toStatus)} (Lightning Dispatch)`}`;
+      SELECT gen_random_uuid()::text, ${user.orgId}, ${newJobRowId}, ${currentMapped}, ${mapped}, ${actor.userId}, ${actor.role}, ${note}`;
     await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
-      SELECT gen_random_uuid()::text, ${user.orgId}, ${user.userId}, 'contractor', 'driver_status_change', 'job', ${newJobRowId}, ${JSON.stringify({ towbookJobId: callId, from: currentMapped, to: mapped, statusId: toStatus, imported: true })}::jsonb, 'driver-portal'`;
+      SELECT gen_random_uuid()::text, ${user.orgId}, ${actor.userId}, ${actor.role}, 'driver_status_change', 'job', ${newJobRowId}, ${JSON.stringify({ towbookJobId: callId, from: currentMapped, to: mapped, statusId: toStatus, imported: true, actorRole: actor.role })}::jsonb, 'driver-portal'`;
   } catch { /* best-effort — the Towbook PUT already succeeded; sync reconciles */ }
 }
 
@@ -528,19 +554,25 @@ export const driverLogin = createServerFn({ method: "POST" }).validator(passthro
 
 export const driverLogout = createServerFn({ method: "POST" }).handler(async () => {
   if (!configured()) return { ok: true as const };
-  const { currentUser } = await import("./auth-server");
+  const { currentUser, effectiveDriverIdentity } = await import("./auth-server");
   const u = await currentUser();
   try {
     // Best-effort Towbook checkout so a logout never leaves the driver online.
     // The checkin/checkout body id is the TOWBOOK user id (identity.userId),
-    // not the LD user id — the two differ for every driver.
-    if (u && u.role === "contractor") {
-      const q = await db();
-      const rows = await q`SELECT towbook_driver_id, towbook_user_id FROM users WHERE id=${u.id}`;
-      if (rows.length && rows[0].towbook_driver_id != null) {
-        const { loadDriverSession } = await import("./driver-gps-core");
-        const session = await loadDriverSession({ orgId: u.orgId, towbookDriverId: String(rows[0].towbook_driver_id) });
-        if (session) await driverCheckout(session, String(rows[0].towbook_user_id ?? ""));
+    // not the LD user id — the two differ for every driver. Resolves the
+    // EFFECTIVE driver (owner↔contractor view toggle): an owner who worked jobs
+    // in driver view checks out their linked/own driver; LD logout still clears
+    // the ONE sign-in session.
+    if (u) {
+      const identity = await effectiveDriverIdentity(u);
+      if (identity && !identity.deactivated) {
+        const q = await db();
+        const rows = await q`SELECT towbook_driver_id, towbook_user_id FROM users WHERE id=${identity.userRowId}`;
+        if (rows.length && rows[0].towbook_driver_id != null) {
+          const { loadDriverSession } = await import("./driver-gps-core");
+          const session = await loadDriverSession({ orgId: u.orgId, towbookDriverId: String(rows[0].towbook_driver_id) });
+          if (session) await driverCheckout(session, String(rows[0].towbook_user_id ?? ""));
+        }
       }
     }
   } catch { /* best-effort — LD logout must never fail because Towbook checkout failed */ }
@@ -554,16 +586,13 @@ export const driverLogout = createServerFn({ method: "POST" }).handler(async () 
 
 export const driverJobs = createServerFn({ method: "GET" }).handler(async () => {
   if (!configured()) return { ok: false as const, expired: false, message: "Driver queue requires database mode." };
-  const { currentUser } = await import("./auth-server");
-  const u = await currentUser();
-  if (!u || u.role !== "contractor") return { ok: false as const, expired: false, message: "Sign in as a driver first." };
+  const ctx = await resolveEffectiveDriver();
+  if (!ctx) return { ok: false as const, expired: false, message: "Sign in as a driver first." };
   try {
     await ensure();
-    const q = await db();
-    const rows = await q`SELECT towbook_driver_id FROM users WHERE id=${u.id}`;
-    const driverId = rows.length ? String(rows[0].towbook_driver_id ?? "") : "";
+    const driverId = ctx.identity.towbookDriverId;
     if (!driverId) return { ok: false as const, expired: true, message: "Your account isn't linked to a driver yet — reconnect." };
-    return await fetchDriverQueue({ orgId: u.orgId, towbookDriverId: driverId });
+    return await fetchDriverQueue({ orgId: ctx.u.orgId, towbookDriverId: driverId });
   } catch {
     return { ok: false as const, expired: false, message: "Unable to load your jobs. Try again." };
   }
@@ -573,16 +602,16 @@ export const driverJobAction = createServerFn({ method: "POST" }).validator(pass
   const v = z.object({ jobId: z.string().min(1).max(64), action: z.enum(["accept", "en_route"]) }).safeParse(data);
   if (!v.success) return { ok: false as const, code: "invalid_state", message: "Invalid job action." };
   if (!configured()) return { ok: false as const, code: "towbook_failed", message: "Driver actions require database mode." };
-  const { currentUser } = await import("./auth-server");
-  const u = await currentUser();
-  if (!u || u.role !== "contractor") return { ok: false as const, code: "unauthorized", message: "Sign in as a driver first." };
+  const ctx = await resolveEffectiveDriver();
+  if (!ctx) return { ok: false as const, code: "unauthorized", message: "Sign in as a driver first." };
   try {
     await ensure();
-    const q = await db();
-    const rows = await q`SELECT towbook_driver_id FROM users WHERE id=${u.id}`;
-    const driverId = rows.length ? String(rows[0].towbook_driver_id ?? "") : "";
-    if (!driverId) return { ok: false as const, code: "no_session", expired: true, message: "Your account isn't linked to a driver yet — reconnect." };
-    return await applyDriverTransition({ orgId: u.orgId, userId: u.id, towbookDriverId: driverId }, v.data.jobId, v.data.action);
+    return await applyDriverTransition(
+      { orgId: ctx.u.orgId, userId: ctx.identity.userRowId, towbookDriverId: ctx.identity.towbookDriverId },
+      { userId: ctx.u.id, role: ctx.u.role, ownerInDriverView: ctx.u.role !== "contractor" },
+      v.data.jobId,
+      v.data.action,
+    );
   } catch {
     return { ok: false as const, code: "towbook_failed", message: "Unable to update the job. Try again." };
   }
@@ -600,21 +629,20 @@ export const driverSetAvailability = createServerFn({ method: "POST" }).validato
   const v = z.object({ online: z.boolean() }).safeParse(data);
   if (!v.success) return { ok: false as const, message: "Invalid availability value." };
   if (!configured()) return { ok: false as const, message: "Availability requires database mode." };
-  const { currentUser } = await import("./auth-server");
-  const u = await currentUser();
-  if (!u || u.role !== "contractor") return { ok: false as const, message: "Sign in as a driver first." };
+  const ctx = await resolveEffectiveDriver();
+  if (!ctx) return { ok: false as const, message: "Sign in as a driver first." };
   try {
     await ensure();
     const q = await db();
-    const rows = await q`SELECT towbook_driver_id, towbook_user_id FROM users WHERE id=${u.id}`;
+    const rows = await q`SELECT towbook_driver_id, towbook_user_id FROM users WHERE id=${ctx.identity.userRowId}`;
     const driverId = rows.length ? String(rows[0].towbook_driver_id ?? "") : "";
     const towbookUserId = rows.length ? String(rows[0].towbook_user_id ?? "") : "";
     if (!driverId) return { ok: false as const, message: "Your account isn't linked to a driver yet — reconnect." };
     const { loadDriverSession } = await import("./driver-gps-core");
-    const session = await loadDriverSession({ orgId: u.orgId, towbookDriverId: driverId });
+    const session = await loadDriverSession({ orgId: ctx.u.orgId, towbookDriverId: driverId });
     if (!session) return { ok: false as const, message: "No active session — sign in again." };
     if (v.data.online) {
-      const loc = await q`SELECT latitude, longitude FROM driver_locations WHERE org_id=${u.orgId} AND driver_id=${u.id} ORDER BY captured_at DESC LIMIT 1`;
+      const loc = await q`SELECT latitude, longitude FROM driver_locations WHERE org_id=${ctx.u.orgId} AND driver_id=${ctx.identity.userRowId} ORDER BY captured_at DESC LIMIT 1`;
       const lat = loc.length && Number.isFinite(Number(loc[0].latitude)) ? Number(loc[0].latitude) : 0;
       const lng = loc.length && Number.isFinite(Number(loc[0].longitude)) ? Number(loc[0].longitude) : 0;
       const checkin = await driverCheckin(session, towbookUserId, lat, lng, { locationDenied: lat === 0 && lng === 0 });
@@ -656,22 +684,21 @@ function driverFacingEmail(email: unknown): string {
  *  spec, tips reconcile to the specific driver. */
 export const driverEarnings = createServerFn({ method: "GET" }).handler(async (): Promise<DriverEarningsResult> => {
   if (!configured()) return { ok: false as const, expired: false, message: "Driver earnings require database mode." };
-  const { currentUser } = await import("./auth-server");
-  const u = await currentUser();
-  if (!u || u.role !== "contractor") return { ok: false as const, expired: false, message: "Sign in as a driver first." };
+  const ctx = await resolveEffectiveDriver();
+  if (!ctx) return { ok: false as const, expired: false, message: "Sign in as a driver first." };
   try {
     await ensure();
     const q = await db();
-    const rows = await q`SELECT name, email, towbook_driver_id FROM users WHERE id=${u.id}`;
+    const rows = await q`SELECT name, email, towbook_driver_id FROM users WHERE id=${ctx.identity.userRowId}`;
     const driverId = rows.length ? String(rows[0].towbook_driver_id ?? "") : "";
     if (!driverId) return { ok: false as const, expired: true, message: "Your account isn't linked to a driver yet — reconnect." };
-    const queue = await fetchDriverQueue({ orgId: u.orgId, towbookDriverId: driverId });
+    const queue = await fetchDriverQueue({ orgId: ctx.u.orgId, towbookDriverId: driverId });
     if (!queue.ok) return queue;
     const completed = queue.calls.filter((c) => c.statusId === 5 || c.statusId === 6);
     const tipRows = await q`
       SELECT jc.job_id, jc.tip, jc.updated_at, d.towbook_job_id, d.customer_name
       FROM job_completions jc LEFT JOIN dispatch_jobs d ON d.id = jc.job_id AND d.org_id = jc.org_id
-      WHERE jc.org_id = ${u.orgId} AND jc.tip IS NOT NULL AND jc.tip->>'driver_towbook_id' = ${driverId}
+      WHERE jc.org_id = ${ctx.u.orgId} AND jc.tip IS NOT NULL AND jc.tip->>'driver_towbook_id' = ${driverId}
       ORDER BY jc.updated_at DESC`;
     const tips: DriverEarningsTip[] = [];
     for (const r of tipRows as Record<string, unknown>[]) {
@@ -707,13 +734,12 @@ export type DriverProfileResult =
  *  call — cheap for the profile tab). */
 export const driverProfile = createServerFn({ method: "GET" }).handler(async (): Promise<DriverProfileResult> => {
   if (!configured()) return { ok: false as const, message: "Driver profile requires database mode." };
-  const { currentUser } = await import("./auth-server");
-  const u = await currentUser();
-  if (!u || u.role !== "contractor") return { ok: false as const, message: "Sign in as a driver first." };
+  const ctx = await resolveEffectiveDriver();
+  if (!ctx) return { ok: false as const, message: "Sign in as a driver first." };
   try {
     await ensure();
     const q = await db();
-    const rows = await q`SELECT name, email, towbook_driver_id FROM users WHERE id=${u.id}`;
+    const rows = await q`SELECT name, email, towbook_driver_id FROM users WHERE id=${ctx.identity.userRowId}`;
     if (!rows.length) return { ok: false as const, message: "Driver account not found." };
     return {
       ok: true as const,
