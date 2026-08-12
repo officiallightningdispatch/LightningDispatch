@@ -159,6 +159,29 @@ export const rejectPayoutMethod = createServerFn({ method: "POST" }).validator(p
   return core.rejectPayoutMethodCore({ orgId: u.orgId, id: u.id, role: u.role }, data);
 });
 
+/** Contractor: confirm the micro-deposit amount the owner sent (bank rail
+ *  verification). Match → the bank method becomes verified. The amount is
+ *  compared server-side — it never crossed to the contractor client. */
+export const confirmBankDeposit = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<PayoutResult<MyPayoutMethod | null>> => {
+  const core = await import("./payouts-core");
+  const { currentUser, effectiveDriverIdentity } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u) return { ok: false as const, code: "unauthorized", message: "Sign in as a driver first." };
+  const identity = await effectiveDriverIdentity(u);
+  if (!identity || identity.deactivated) return { ok: false as const, code: "unauthorized", message: "Sign in as a driver first." };
+  return core.confirmBankDepositCore({ orgId: u.orgId, id: identity.userRowId, actorUserId: u.id, actorRole: u.role }, data);
+});
+
+/** Owner/admin: record the test deposit the owner sent from their own bank
+ *  app (bank rail micro-deposit verification). Only unverified bank methods. */
+export const setBankDeposit = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<PayoutResult<OwnerPayoutMethod | null>> => {
+  const core = await import("./payouts-core");
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u) return { ok: false as const, code: "unauthorized", message: "Sign in first." };
+  return core.setBankDepositCore({ orgId: u.orgId, id: u.id, role: u.role }, data);
+});
+
 /** Owner/admin: the three Money-tab cards (Revenue / Tips / Payouts). */
 export const getMoneyOverview = createServerFn({ method: "GET" }).handler(async (): Promise<PayoutResult<MoneyOverview>> => {
   const core = await import("./payouts-core");

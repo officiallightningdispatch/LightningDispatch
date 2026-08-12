@@ -72,6 +72,10 @@ export type MyPayoutMethod = {
   handleMasked: string;
   bankInstitutionName: string | null;
   bankLast4: string | null;
+  /** TRUE when the owner has recorded a test deposit for the bank rail and
+   *  the driver should confirm it. The deposit AMOUNT never crosses to the
+   *  contractor client. */
+  bankDepositSent: boolean;
   status: PayoutStatus;
   rejectNote: string | null;
   isDefault: boolean;
@@ -89,6 +93,10 @@ export type OwnerPayoutMethod = {
   handleMasked: string;
   bankInstitutionName: string | null;
   bankLast4: string | null;
+  bankRoutingNumberFull: string | null;
+  bankAccountNumberFull: string | null;
+  bankDepositCents: number | null;
+  bankDepositSentAt: string | null;
   status: PayoutStatus;
   rejectNote: string | null;
   isDefault: boolean;
@@ -129,6 +137,8 @@ const SET_SCHEMA = z.object({
   handle: z.string().max(120).nullable().optional(),
   bankInstitutionName: z.string().max(40).nullable().optional(),
   bankLast4: z.string().max(4).nullable().optional(),
+  bankRoutingNumber: z.string().max(10).nullable().optional(),
+  bankAccountNumber: z.string().max(20).nullable().optional(),
 });
 
 /** Rail-specific handle validation. Returns a {ok:true} result or a
@@ -138,28 +148,34 @@ export function validatePayoutInput(d: {
   handle: string | null;
   bankInstitutionName: string | null;
   bankLast4: string | null;
-}): PayoutResult<{ rail: PayoutRail; handle: string | null; bankInstitutionName: string | null; bankLast4: string | null }> {
+  bankRoutingNumber?: string | null;
+  bankAccountNumber?: string | null;
+}): PayoutResult<{ rail: PayoutRail; handle: string | null; bankInstitutionName: string | null; bankLast4: string | null; bankRoutingNumber: string | null; bankAccountNumber: string | null }> {
   if (!isRail(d.rail)) return err("invalid_input", "Choose a payout method.");
   if (d.rail === "bank") {
     const inst = (d.bankInstitutionName ?? "").trim();
     const last4 = (d.bankLast4 ?? "").trim();
+    const routing = (d.bankRoutingNumber ?? "").trim();
+    const account = (d.bankAccountNumber ?? "").trim();
     if (!inst || inst.length > 40) return err("invalid_input", "Enter the bank name (up to 40 characters).");
     if (!/^\d{4}$/.test(last4)) return err("invalid_input", "Enter the last 4 digits of the account number.");
-    return ok({ rail: d.rail, handle: null, bankInstitutionName: inst, bankLast4: last4 });
+    if (!/^\d{9}$/.test(routing)) return err("invalid_input", "Routing numbers are 9 digits — check the number on your checks or bank statement.");
+    if (!/^\d{4,17}$/.test(account)) return err("invalid_input", "Enter the full account number (4–17 digits). It's stored encrypted — only the owner can see it.");
+    return ok({ rail: d.rail, handle: null, bankInstitutionName: inst, bankLast4: last4, bankRoutingNumber: routing, bankAccountNumber: account });
   }
   const handle = (d.handle ?? "").trim();
   if (!handle) return err("invalid_input", "Enter your handle.");
   if (d.rail === "cash_app") {
     if (!CASHTAG.test(handle)) return err("invalid_input", "Cashtags start with $ and use letters/numbers — e.g. $joe.");
-    return ok({ rail: d.rail, handle, bankInstitutionName: null, bankLast4: null });
+    return ok({ rail: d.rail, handle, bankInstitutionName: null, bankLast4: null, bankRoutingNumber: null, bankAccountNumber: null });
   }
   if (d.rail === "venmo") {
-    if (VENMO_HANDLE.test(handle) || US_PHONE.test(handle)) return ok({ rail: d.rail, handle, bankInstitutionName: null, bankLast4: null });
+    if (VENMO_HANDLE.test(handle) || US_PHONE.test(handle)) return ok({ rail: d.rail, handle, bankInstitutionName: null, bankLast4: null, bankRoutingNumber: null, bankAccountNumber: null });
     return err("invalid_input", "Enter a Venmo handle (@name) or a US phone number.");
   }
   // zelle
   const lower = handle.toLowerCase();
-  if (EMAIL.test(lower) || US_PHONE.test(handle)) return ok({ rail: d.rail, handle: EMAIL.test(lower) ? lower : handle, bankInstitutionName: null, bankLast4: null });
+  if (EMAIL.test(lower) || US_PHONE.test(handle)) return ok({ rail: d.rail, handle: EMAIL.test(lower) ? lower : handle, bankInstitutionName: null, bankLast4: null, bankRoutingNumber: null, bankAccountNumber: null });
   return err("invalid_input", "Enter an email address or a US phone number.");
 }
 
@@ -170,7 +186,7 @@ export async function getMyPayoutMethodCore(user: { orgId: string; id: string })
   try {
     await ensure();
     const q = await db();
-    const rows = await q`SELECT id, rail, handle, bank_institution_name, bank_last4, status, reject_note, is_default, updated_at
+    const rows = await q`SELECT id, rail, handle, bank_institution_name, bank_last4, status, reject_note, is_default, updated_at, bank_deposit_sent_at
       FROM payout_methods WHERE org_id=${user.orgId} AND contractor_id=${user.id} LIMIT 1`;
     if (!rows.length) return ok(null);
     const r = rows[0] as Record<string, unknown>;
@@ -181,6 +197,7 @@ export async function getMyPayoutMethodCore(user: { orgId: string; id: string })
       handleMasked: maskHandle(rail, r.handle != null ? String(r.handle) : null, r.bank_institution_name != null ? String(r.bank_institution_name) : null, r.bank_last4 != null ? String(r.bank_last4) : null),
       bankInstitutionName: r.bank_institution_name != null ? String(r.bank_institution_name) : null,
       bankLast4: r.bank_last4 != null ? String(r.bank_last4) : null,
+      bankDepositSent: r.bank_deposit_sent_at != null,
       status: String(r.status ?? "connected_unverified") as PayoutStatus,
       rejectNote: r.reject_note != null ? String(r.reject_note) : null,
       isDefault: r.is_default != null ? Boolean(r.is_default) : true,
@@ -203,28 +220,49 @@ export async function setMyPayoutMethodCore(user: { orgId: string; id: string; a
     handle: v.data.handle ?? null,
     bankInstitutionName: v.data.bankInstitutionName ?? null,
     bankLast4: v.data.bankLast4 ?? null,
+    bankRoutingNumber: v.data.bankRoutingNumber ?? null,
+    bankAccountNumber: v.data.bankAccountNumber ?? null,
   });
   if (!validated.ok) return validated;
   const d = validated.data;
   try {
     await ensure();
     const q = await db();
-    const before = await q`SELECT id, rail, handle, status FROM payout_methods
+    const before = await q`SELECT id, rail, handle, status, bank_institution_name, bank_last4, bank_routing_encrypted, bank_account_encrypted, bank_deposit_cents FROM payout_methods
       WHERE org_id=${user.orgId} AND contractor_id=${user.id} LIMIT 1`;
     const existing = before.length ? before[0] as Record<string, unknown> : null;
+    // Encrypt bank routing/account numbers — full numbers are NEVER stored or
+    // logged in plaintext (dedicated bank.key, AES-256-GCM envelope).
+    let routingEnc: string | null = null;
+    let accountEnc: string | null = null;
+    if (d.rail === "bank") {
+      const { encryptBankValue } = await import("./bank-key");
+      routingEnc = await encryptBankValue(d.bankRoutingNumber!);
+      accountEnc = await encryptBankValue(d.bankAccountNumber!);
+    }
+    let prevRouting = "";
+    let prevAccount = "";
+    if (existing && d.rail === "bank") {
+      try {
+        const { decryptBankValue } = await import("./bank-key");
+        prevRouting = existing.bank_routing_encrypted != null ? await decryptBankValue(String(existing.bank_routing_encrypted)) : "";
+        prevAccount = existing.bank_account_encrypted != null ? await decryptBankValue(String(existing.bank_account_encrypted)) : "";
+      } catch { /* decrypt failure → treated as different values */ }
+    }
     const sameValues =
       existing &&
       String(existing.rail) === d.rail &&
       (d.rail === "bank"
-        ? String(existing.bank_institution_name ?? "") === d.bankInstitutionName && String(existing.bank_last4 ?? "") === d.bankLast4
+        ? String(existing.bank_institution_name ?? "") === d.bankInstitutionName && String(existing.bank_last4 ?? "") === d.bankLast4 && prevRouting === d.bankRoutingNumber && prevAccount === d.bankAccountNumber
         : String(existing.handle ?? "") === d.handle);
     const status: PayoutStatus = sameValues ? (String(existing!.status) as PayoutStatus) : "connected_unverified";
     const methodId = existing ? String(existing.id) : `pm-${Math.random().toString(36).slice(2, 12)}`;
-    await q`INSERT INTO payout_methods(id, org_id, contractor_id, rail, handle, bank_institution_name, bank_last4, status, reject_note, is_default, updated_at)
-      VALUES(${methodId}, ${user.orgId}, ${user.id}, ${d.rail}, ${d.handle}, ${d.bankInstitutionName}, ${d.bankLast4}, ${status}, NULL, TRUE, NOW())
+    await q`INSERT INTO payout_methods(id, org_id, contractor_id, rail, handle, bank_institution_name, bank_last4, bank_routing_encrypted, bank_account_encrypted, status, reject_note, is_default, updated_at)
+      VALUES(${methodId}, ${user.orgId}, ${user.id}, ${d.rail}, ${d.handle}, ${d.bankInstitutionName}, ${d.bankLast4}, ${routingEnc}, ${accountEnc}, ${status}, NULL, TRUE, NOW())
       ON CONFLICT (org_id, contractor_id) DO UPDATE SET
         rail=EXCLUDED.rail, handle=EXCLUDED.handle,
         bank_institution_name=EXCLUDED.bank_institution_name, bank_last4=EXCLUDED.bank_last4,
+        bank_routing_encrypted=EXCLUDED.bank_routing_encrypted, bank_account_encrypted=EXCLUDED.bank_account_encrypted,
         status=EXCLUDED.status, reject_note=NULL, is_default=TRUE, updated_at=NOW()`;
     if (!sameValues) {
       try {
@@ -240,6 +278,7 @@ export async function setMyPayoutMethodCore(user: { orgId: string; id: string; a
       handleMasked: maskHandle(d.rail, d.handle, d.bankInstitutionName, d.bankLast4),
       bankInstitutionName: d.bankInstitutionName,
       bankLast4: d.bankLast4,
+      bankDepositSent: false,
       status,
       rejectNote: null,
       isDefault: true,
@@ -282,32 +321,53 @@ export async function listPayoutMethodsCore(actor: PayoutActor): Promise<PayoutR
     const q = await db();
     const rows = await q`
       SELECT p.id, p.org_id, p.contractor_id, u.name AS contractor_name, p.rail, p.handle,
-             p.bank_institution_name, p.bank_last4, p.status, p.reject_note, p.is_default, p.updated_at
+             p.bank_institution_name, p.bank_last4, p.bank_routing_encrypted, p.bank_account_encrypted,
+             p.bank_deposit_cents, p.bank_deposit_sent_at, p.status, p.reject_note, p.is_default, p.updated_at
       FROM payout_methods p
       JOIN users u ON u.id = p.contractor_id
       WHERE p.org_id=${actor.orgId}
       ORDER BY u.name ASC`;
-    return ok((rows as Record<string, unknown>[]).map((r) => {
-      const rail = String(r.rail ?? "cash_app") as PayoutRail;
-      return {
-        id: String(r.id),
-        orgId: String(r.org_id),
-        contractorId: String(r.contractor_id),
-        contractorName: String(r.contractor_name ?? ""),
-        rail,
-        handleFull: r.handle != null ? String(r.handle) : null,
-        handleMasked: maskHandle(rail, r.handle != null ? String(r.handle) : null, r.bank_institution_name != null ? String(r.bank_institution_name) : null, r.bank_last4 != null ? String(r.bank_last4) : null),
-        bankInstitutionName: r.bank_institution_name != null ? String(r.bank_institution_name) : null,
-        bankLast4: r.bank_last4 != null ? String(r.bank_last4) : null,
-        status: String(r.status ?? "connected_unverified") as PayoutStatus,
-        rejectNote: r.reject_note != null ? String(r.reject_note) : null,
-        isDefault: r.is_default != null ? Boolean(r.is_default) : true,
-        updatedAt: r.updated_at != null ? new Date(String(r.updated_at)).toISOString() : new Date(0).toISOString(),
-      };
-    }));
+    const out: OwnerPayoutMethod[] = [];
+    for (const r of rows as Record<string, unknown>[]) out.push(await toOwnerPayoutMethod(r));
+    return ok(out);
   } catch (e) {
     return err("database_error", e instanceof Error ? e.message : "Unable to load payout methods.");
   }
+}
+
+/** Owner-side mapper — decrypts the FULL bank routing/account numbers ONLY
+ *  here (owner-only surface). The plaintext never touches audit/log text and
+ *  never crosses to any contractor-facing read. */
+async function toOwnerPayoutMethod(r: Record<string, unknown>): Promise<OwnerPayoutMethod> {
+  const rail = String(r.rail ?? "cash_app") as PayoutRail;
+  let routingFull: string | null = null;
+  let accountFull: string | null = null;
+  if (rail === "bank" && (r.bank_routing_encrypted != null || r.bank_account_encrypted != null)) {
+    try {
+      const { decryptBankValue } = await import("./bank-key");
+      routingFull = r.bank_routing_encrypted != null ? await decryptBankValue(String(r.bank_routing_encrypted)) : null;
+      accountFull = r.bank_account_encrypted != null ? await decryptBankValue(String(r.bank_account_encrypted)) : null;
+    } catch { /* undecryptable (rotated key) → owner sees nulls, not a crash */ }
+  }
+  return {
+    id: String(r.id),
+    orgId: String(r.org_id),
+    contractorId: String(r.contractor_id),
+    contractorName: String(r.contractor_name ?? ""),
+    rail,
+    handleFull: r.handle != null ? String(r.handle) : null,
+    handleMasked: maskHandle(rail, r.handle != null ? String(r.handle) : null, r.bank_institution_name != null ? String(r.bank_institution_name) : null, r.bank_last4 != null ? String(r.bank_last4) : null),
+    bankInstitutionName: r.bank_institution_name != null ? String(r.bank_institution_name) : null,
+    bankLast4: r.bank_last4 != null ? String(r.bank_last4) : null,
+    bankRoutingNumberFull: routingFull,
+    bankAccountNumberFull: accountFull,
+    bankDepositCents: r.bank_deposit_cents != null ? Number(r.bank_deposit_cents) : null,
+    bankDepositSentAt: r.bank_deposit_sent_at != null ? new Date(String(r.bank_deposit_sent_at)).toISOString() : null,
+    status: String(r.status ?? "connected_unverified") as PayoutStatus,
+    rejectNote: r.reject_note != null ? String(r.reject_note) : null,
+    isDefault: r.is_default != null ? Boolean(r.is_default) : true,
+    updatedAt: r.updated_at != null ? new Date(String(r.updated_at)).toISOString() : new Date(0).toISOString(),
+  };
 }
 
 /* ================================ PAYDAY ================================ */
@@ -596,12 +656,28 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
         AND dj.completed_at >= ${iso(startsAt)} AND dj.completed_at < ${iso(endsAt)}
         AND dj.assigned_driver_towbook_id IS NOT NULL
       GROUP BY dj.assigned_driver_towbook_id`;
-    const tipRows = await q`
-      SELECT driver_id, COALESCE(SUM(amount_cents), 0)::int AS tip_cents
-      FROM completion_tips
-      WHERE org_id=${actor.orgId} AND status='paid'
-        AND created_at >= ${iso(startsAt)} AND created_at < ${iso(endsAt)}
-      GROUP BY driver_id`;
+    // TIP CASH-OUT EXCLUSION (owner-directed 2026-08-12): any tip row covered
+    // by a PAID cash-out was already paid outside payday — it must NEVER appear
+    // in a manifest again (covered_tip_ids is recorded at request time, so
+    // every later compute/recompute excludes it, in every period).
+    const coveredPaid = await q`SELECT DISTINCT tid AS id
+      FROM tip_cashouts tc, jsonb_array_elements_text(tc.covered_tip_ids) tid
+      WHERE tc.org_id=${actor.orgId} AND tc.status='paid'`;
+    const coveredTipIds = (coveredPaid as Record<string, unknown>[]).map((r) => String(r.id));
+    const tipRows = coveredTipIds.length
+      ? await q`
+          SELECT driver_id, COALESCE(SUM(amount_cents), 0)::int AS tip_cents
+          FROM completion_tips
+          WHERE org_id=${actor.orgId} AND status='paid'
+            AND created_at >= ${iso(startsAt)} AND created_at < ${iso(endsAt)}
+            AND NOT (id = ANY(${coveredTipIds}))
+          GROUP BY driver_id`
+      : await q`
+          SELECT driver_id, COALESCE(SUM(amount_cents), 0)::int AS tip_cents
+          FROM completion_tips
+          WHERE org_id=${actor.orgId} AND status='paid'
+            AND created_at >= ${iso(startsAt)} AND created_at < ${iso(endsAt)}
+          GROUP BY driver_id`;
     const userRows = await q`
       SELECT u.id AS user_id, u.name, u.towbook_driver_id, cp.payrate_cents
       FROM users u
@@ -900,30 +976,81 @@ export async function getContractorPayoutMethodCore(actor: PayoutActor, contract
     const q = await db();
     const rows = await q`
       SELECT p.id, p.org_id, p.contractor_id, u.name AS contractor_name, p.rail, p.handle,
-             p.bank_institution_name, p.bank_last4, p.status, p.reject_note, p.is_default, p.updated_at
+             p.bank_institution_name, p.bank_last4, p.bank_routing_encrypted, p.bank_account_encrypted,
+             p.bank_deposit_cents, p.bank_deposit_sent_at, p.status, p.reject_note, p.is_default, p.updated_at
       FROM payout_methods p
       JOIN users u ON u.id = p.contractor_id
       WHERE p.org_id=${actor.orgId} AND p.contractor_id=${contractorId}
       LIMIT 1`;
     if (!rows.length) return ok(null);
-    const r = rows[0] as Record<string, unknown>;
-    const rail = String(r.rail ?? "cash_app") as PayoutRail;
-    return ok({
-      id: String(r.id),
-      orgId: String(r.org_id),
-      contractorId: String(r.contractor_id),
-      contractorName: String(r.contractor_name ?? ""),
-      rail,
-      handleFull: r.handle != null ? String(r.handle) : null,
-      handleMasked: maskHandle(rail, r.handle != null ? String(r.handle) : null, r.bank_institution_name != null ? String(r.bank_institution_name) : null, r.bank_last4 != null ? String(r.bank_last4) : null),
-      bankInstitutionName: r.bank_institution_name != null ? String(r.bank_institution_name) : null,
-      bankLast4: r.bank_last4 != null ? String(r.bank_last4) : null,
-      status: String(r.status ?? "connected_unverified") as PayoutStatus,
-      rejectNote: r.reject_note != null ? String(r.reject_note) : null,
-      isDefault: r.is_default != null ? Boolean(r.is_default) : true,
-      updatedAt: r.updated_at != null ? new Date(String(r.updated_at)).toISOString() : new Date(0).toISOString(),
-    });
+    return ok(await toOwnerPayoutMethod(rows[0] as Record<string, unknown>));
   } catch (e) {
     return err("database_error", e instanceof Error ? e.message : "Unable to load the payout method.");
+  }
+}
+
+/* ============================ BANK MICRO-DEPOSIT ============================ */
+
+/** Owner/admin: record the test deposit the owner sent from their own bank
+ *  app (the amount is the verification secret — it is stored on the method
+ *  row and NEVER returned to the contractor client; the contractor only sees
+ *  "confirm the deposit amount" when bank_deposit_sent_at is set). Only bank
+ *  rails in connected_unverified accept this. */
+export async function setBankDepositCore(actor: PayoutActor, data: unknown): Promise<PayoutResult<OwnerPayoutMethod | null>> {
+  if (!canManage(actor)) return err("unauthorized", "Owner access required.");
+  const v = z.object({ methodId: z.string().min(1), amountCents: z.number().int().min(1).max(10000) }).safeParse(data);
+  if (!v.success) return err("invalid_input", "Enter the test deposit amount in cents (1–10000).");
+  try {
+    await ensure();
+    const q = await db();
+    const rows = await q`SELECT contractor_id FROM payout_methods
+      WHERE org_id=${actor.orgId} AND id=${v.data.methodId} AND rail='bank' AND status='connected_unverified' LIMIT 1`;
+    if (!rows.length) return err("invalid_input", "Only an unverified bank payout method can receive a test deposit.");
+    await q`UPDATE payout_methods SET bank_deposit_cents=${v.data.amountCents}, bank_deposit_sent_at=NOW(), updated_at=NOW()
+      WHERE org_id=${actor.orgId} AND id=${v.data.methodId}`;
+    try {
+      await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
+        SELECT gen_random_uuid()::text, ${actor.orgId}, ${actor.id}, ${actor.role}, 'bank_deposit_sent', 'contractor', ${v.data.methodId},
+          jsonb_build_object('methodId', ${v.data.methodId}::text), 'owner-money'`;
+    } catch { /* best-effort audit — the AMOUNT is deliberately NOT in audit detail */ }
+    return getContractorPayoutMethodCore(actor, String((rows[0] as Record<string, unknown>).contractor_id ?? ""));
+  } catch (e) {
+    return err("database_error", e instanceof Error ? e.message : "Unable to record the test deposit.");
+  }
+}
+
+/** Contractor: confirm the micro-deposit amount the owner sent (the amount
+ *  the contractor enters must equal bank_deposit_cents — the owner's recorded
+ *  test deposit). Match → status 'verified' + audit. The amount is compared
+ *  server-side; it never crossed to the client. */
+export async function confirmBankDepositCore(user: { orgId: string; id: string; actorUserId: string; actorRole: string }, data: unknown): Promise<PayoutResult<MyPayoutMethod | null>> {
+  const v = z.object({ amountCents: z.number().int().min(1).max(10000) }).safeParse(data);
+  if (!v.success) return err("invalid_input", "Enter the deposit amount you received.");
+  try {
+    await ensure();
+    const q = await db();
+    const rows = await q`SELECT id, rail, handle, bank_institution_name, bank_last4, status, bank_deposit_cents
+      FROM payout_methods WHERE org_id=${user.orgId} AND contractor_id=${user.id} AND rail='bank' LIMIT 1`;
+    if (!rows.length) return err("invalid_input", "No bank payout method on file.");
+    const m = rows[0] as Record<string, unknown>;
+    if (String(m.status) === "verified") return err("invalid_input", "This bank account is already verified.");
+    if (m.bank_deposit_cents == null) {
+      return err("invalid_input", "The owner hasn't sent the test deposit yet — check back after they confirm.");
+    }
+    if (Number(m.bank_deposit_cents) !== v.data.amountCents) {
+      return err("invalid_input", "That doesn't match the test deposit — check the amount in your bank account and try again.");
+    }
+    await q`UPDATE payout_methods SET status='verified', reject_note=NULL, updated_at=NOW()
+      WHERE org_id=${user.orgId} AND contractor_id=${user.id}`;
+    try {
+      const rail = String(m.rail ?? "bank") as PayoutRail;
+      const masked = maskHandle(rail, m.handle != null ? String(m.handle) : null, m.bank_institution_name != null ? String(m.bank_institution_name) : null, m.bank_last4 != null ? String(m.bank_last4) : null);
+      await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
+        SELECT gen_random_uuid()::text, ${user.orgId}, ${user.actorUserId}, ${user.actorRole}, 'bank_micro_deposit_confirmed', 'contractor', ${String(m.id)},
+          jsonb_build_object('handleMasked', ${masked}::text), 'driver-portal'`;
+    } catch { /* best-effort audit */ }
+    return getMyPayoutMethodCore({ orgId: user.orgId, id: user.id });
+  } catch (e) {
+    return err("database_error", e instanceof Error ? e.message : "Unable to confirm the test deposit.");
   }
 }

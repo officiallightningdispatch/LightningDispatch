@@ -106,22 +106,31 @@ await setup();
   const mine = await getMyPayoutMethodCore({ orgId: ORG, id: DRIVER });
   check("payout: driver read-back is masked (full handle never crosses)", mine.ok && mine.data.rail === "cash_app" && mine.data.handleMasked !== "$qaDriver", JSON.stringify(mine));
 
-  const set2 = await setMyPayoutMethodCore({ orgId: ORG, id: DRIVER, actorUserId: DRIVER, actorRole: "contractor" }, { rail: "bank", bankInstitutionName: "Chase", bankLast4: "4321" });
+  // Bank rail now REQUIRES routing + account number (manual bank rail, owner-directed 2026-08-12 - full numbers stored encrypted under bank.key).
+  const set2 = await setMyPayoutMethodCore({ orgId: ORG, id: DRIVER, actorUserId: DRIVER, actorRole: "contractor" }, { rail: "bank", bankInstitutionName: "Chase", bankLast4: "4321", bankRoutingNumber: "021000021", bankAccountNumber: "12345678901" });
   check("payout: rail change → bank captured + re-triggers connected_unverified", set2.ok && set2.data.rail === "bank" && set2.data.bankLast4 === "4321" && set2.data.status === "connected_unverified", JSON.stringify(set2));
-  check("payout: bank masked form shows institution + ••last4", set2.ok && set2.data.handleMasked.includes("Chase") && set2.data.handleMasked.includes("4321") && set2.data.handleMasked.includes("••"), JSON.stringify(set2));
-
+  check("payout: bank masked form shows institution + last4", set2.ok && set2.data.handleMasked.includes("Chase") && set2.data.handleMasked.includes("4321"), JSON.stringify(set2));
+  check("payout: bank numbers stored ENCRYPTED (never plaintext)", set2.ok && (async () => {
+    const rows = await q`SELECT bank_routing_encrypted, bank_account_encrypted FROM payout_methods WHERE org_id=${ORG} AND contractor_id=${DRIVER}`;
+    const r = rows[0];
+    return r && String(r.bank_routing_encrypted).startsWith("v1.") && String(r.bank_account_encrypted).startsWith("v1.")
+      && !String(r.bank_routing_encrypted).includes("021000021") && !String(r.bank_account_encrypted).includes("12345678901");
+  })(), "");
   const rm = await removeMyPayoutMethodCore({ orgId: ORG, id: DRIVER, actorUserId: DRIVER, actorRole: "contractor" });
   check("payout: remove → row deleted", rm.ok && rm.data.removed === true, JSON.stringify(rm));
   const gone = await getMyPayoutMethodCore({ orgId: ORG, id: DRIVER });
   check("payout: after remove → null (NOT_SET again)", gone.ok && gone.data === null, JSON.stringify(gone));
-
   const denied = await listPayoutMethodsCore({ orgId: ORG, id: DRIVER, role: "contractor" });
   check("payout: a contractor cannot read the owner payout list", denied.ok === false && denied.code === "unauthorized", JSON.stringify(denied));
 
-  const v = validatePayoutInput({ rail: "bank", handle: null, bankInstitutionName: "Chase", bankLast4: "4321" });
-  check("payout: bank validation ok (normalized last4, null handle)", v.ok && v.data.bankLast4 === "4321" && v.data.handle === null && v.data.bankInstitutionName === "Chase", JSON.stringify(v));
-  const bad = validatePayoutInput({ rail: "bank", handle: null, bankInstitutionName: "Chase", bankLast4: "12" });
+  const v = validatePayoutInput({ rail: "bank", handle: null, bankInstitutionName: "Chase", bankLast4: "4321", bankRoutingNumber: "021000021", bankAccountNumber: "12345678901" });
+  check("payout: bank validation ok (normalized last4, null handle)", v.ok && v.data.bankLast4 === "4321" && v.data.handle === null && v.data.bankInstitutionName === "Chase" && v.data.bankRoutingNumber === "021000021" && v.data.bankAccountNumber === "12345678901", JSON.stringify(v));
+  const bad = validatePayoutInput({ rail: "bank", handle: null, bankInstitutionName: "Chase", bankLast4: "12", bankRoutingNumber: "021000021", bankAccountNumber: "12345678901" });
   check("payout: short last4 rejected", bad.ok === false && bad.code === "invalid_input", JSON.stringify(bad));
+  const badRouting = validatePayoutInput({ rail: "bank", handle: null, bankInstitutionName: "Chase", bankLast4: "4321", bankRoutingNumber: "123", bankAccountNumber: "12345678901" });
+  check("payout: 9-digit routing enforced", badRouting.ok === false && badRouting.code === "invalid_input", JSON.stringify(badRouting));
+  const missingAccount = validatePayoutInput({ rail: "bank", handle: null, bankInstitutionName: "Chase", bankLast4: "4321", bankRoutingNumber: "021000021" });
+  check("payout: account number required for bank rail", missingAccount.ok === false && missingAccount.code === "invalid_input", JSON.stringify(missingAccount));
 }
 
 /* ============ d) profile photo upload key persisted (B2 + DB) ============ */

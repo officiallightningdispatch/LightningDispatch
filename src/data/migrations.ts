@@ -795,6 +795,56 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     )`;
     await q`CREATE INDEX IF NOT EXISTS push_subscriptions_org_user_idx ON push_subscriptions(org_id, user_id)`;
   }],
+  [36, async (q) => {
+    // TWO coupled owner-directed features (2026-08-12, Plaid DROPPED):
+    //   1. IMMEDIATE TIP CASH-OUT — the driver taps once after a job
+    //      completes ("Get your tips") or on Earnings ("Cash out tips now"),
+    //      and the request lands on the owner Money tab. The request AMOUNT is
+    //      the driver's available tips at request time (paid completion_tips
+    //      NOT already covered by a previous cash-out); covered_tip_ids
+    //      snapshots EXACTLY which tip rows the request covers so the weekly
+    //      payday manifest can exclude paid cash-outs forever ("a cashed-out
+    //      tip must never appear in a later manifest again"). Status lifecycle
+    //      requested → paid (owner marks paid after sending from their own
+    //      app). ONE open request per contractor at a time — the partial
+    //      unique index is the double-submit backstop (a second submit for the
+    //      same tips hits 23505). rail + handle_masked are SNAPSHOTTED at
+    //      request time (masked only — full handles are PII and live in
+    //      payout_methods, owner-only).
+    //   2. MANUAL BANK PAYOUT RAIL — routing + account number entered by the
+    //      contractor are stored ENCRYPTED (AES-256-GCM under a dedicated
+    //      bank.key — see src/data/bank-key.ts; the full number is NEVER
+    //      plaintext, never in raw_json, never in audit text). Verification is
+    //      a micro-deposit: the OWNER sends a small test deposit from their
+    //      own bank app and records the amount (bank_deposit_cents — never
+    //      shown to the contractor); the contractor confirms the amount in the
+    //      driver app → status='verified'. The owner may also mark verified
+    //      directly (verifyPayoutMethodCore). An UNVERIFIED bank rail cannot
+    //      be used for a tip cash-out request.
+    await q`CREATE TABLE IF NOT EXISTS tip_cashouts (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      contractor_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+      rail TEXT NOT NULL CHECK (rail IN ('cash_app','venmo','zelle','bank')),
+      handle_masked TEXT NOT NULL DEFAULT '',
+      method_id TEXT,
+      covered_tip_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+      status TEXT NOT NULL DEFAULT 'requested' CHECK (status IN ('requested','paid')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      paid_at TIMESTAMPTZ,
+      paid_by_user_id TEXT REFERENCES users(id),
+      note TEXT
+    )`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS tip_cashouts_org_contractor_open_uidx
+      ON tip_cashouts(org_id, contractor_id) WHERE status='requested'`;
+    await q`CREATE INDEX IF NOT EXISTS tip_cashouts_org_status_idx ON tip_cashouts(org_id, status, created_at)`;
+    await q`CREATE INDEX IF NOT EXISTS tip_cashouts_org_contractor_idx ON tip_cashouts(org_id, contractor_id, created_at)`;
+    await q`ALTER TABLE payout_methods ADD COLUMN IF NOT EXISTS bank_routing_encrypted TEXT`;
+    await q`ALTER TABLE payout_methods ADD COLUMN IF NOT EXISTS bank_account_encrypted TEXT`;
+    await q`ALTER TABLE payout_methods ADD COLUMN IF NOT EXISTS bank_deposit_cents INTEGER`;
+    await q`ALTER TABLE payout_methods ADD COLUMN IF NOT EXISTS bank_deposit_sent_at TIMESTAMPTZ`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

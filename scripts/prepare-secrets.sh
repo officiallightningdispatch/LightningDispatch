@@ -9,6 +9,8 @@
 #     square-location-id                            → square-client.ts loadSquareConfig (payment engine + tips)
 #   towbook.key                                     → towbook-key.ts loadSessionKey (Towbook session encryption —
 #                                                     survives a clean dist wipe, no reconnect needed)
+#   bank.key                                        → bank-key.ts loadBankKey (bank routing/account numbers are
+#                                                     encrypted under this DEDICATED key — manual bank payout rail)
 #
 # Why: the hosted live deployment (…ctonew.app, a CloudFront snapshot of dist/)
 # cannot read the machine-local sibling dir (<site-parent>/.secrets) that
@@ -33,7 +35,7 @@ DEST_DIR="$SITE_ROOT/dist/.secrets"
 mkdir -p "$DEST_DIR" || { echo "prepare-secrets: cannot create $DEST_DIR — build continues without embedded creds" >&2; exit 0; }
 
 # name -> which runtime consumer needs it (for the log line only)
-names=(b2-key-id b2-application-key b2-bucket-name tomtom.key push-vapid-public.key push-vapid-private.key gmail-address gmail-app-password square-access-token square-application-id square-location-id towbook.key)
+names=(b2-key-id b2-application-key b2-bucket-name tomtom.key push-vapid-public.key push-vapid-private.key gmail-address gmail-app-password square-access-token square-application-id square-location-id towbook.key bank.key)
 copied=0
 missing=0
 for name in "${names[@]}"; do
