@@ -23,17 +23,42 @@ import { mutationKey, useDispatchStore } from "~/lib/store";
 
 import { authStatus } from "~/data/auth";
 export const Route = createFileRoute("/driver/")({ component: ContractorView });
-/** Real vs demo: a signed-in contractor gets the Towbook-backed driver portal;
- *  demo mode (no DATABASE_URL) keeps the seeded demo experience untouched. */
+/** Real vs demo: a signed-in contractor gets the real driver portal; demo mode
+ *  (no DATABASE_URL) keeps the seeded demo experience untouched. A FAILED auth
+ *  check must never drop a real user into the demo view — it gets an honest
+ *  error/retry state instead (2026-08-12: a transient authStatus() rejection
+ *  was showing seeded demo data to real contractors). */
 function ContractorView() {
-  const [mode, setMode] = useState<"checking" | "demo" | "real">("checking");
+  const [mode, setMode] = useState<"checking" | "demo" | "real" | "error">("checking");
+  const [retry, setRetry] = useState(0);
   useEffect(() => {
     void authStatus().then((s) => {
-      setMode(s.mode === "demo" ? "demo" : s.user?.role === "contractor" ? "real" : "demo");
-    }).catch(() => setMode("demo"));
-  }, []);
+      if (s.mode === "demo") setMode("demo");
+      else if (s.user?.role === "contractor") setMode("real");
+      else setMode("error"); // signed-in non-contractor: their gate will route them
+    }).catch(() => setMode("error"));
+  }, [retry]);
   if (mode === "checking") return <GateSkeleton />;
   if (mode === "real") return <RealDriverPortal />;
+  if (mode === "error") {
+    return (
+      <main className="grid min-h-dvh place-items-center bg-canvas px-4">
+        <div className="w-full max-w-sm rounded-2xl border border-ink-100 bg-surface p-6 text-center shadow-card" role="alert">
+          <p className="text-sm font-bold text-ink-700">Couldn&apos;t verify your session</p>
+          <p className="mt-1 text-xs leading-relaxed text-ink-500">
+            We couldn&apos;t confirm your contractor account. Check your connection and try again.
+          </p>
+          <button
+            type="button"
+            onClick={() => { setMode("checking"); setRetry((n) => n + 1); }}
+            className="mt-4 inline-flex h-10 items-center justify-center rounded-xl bg-brand-500 px-5 text-sm font-bold text-white transition-colors hover:bg-brand-600"
+          >
+            Retry
+          </button>
+        </div>
+      </main>
+    );
+  }
   return <DemoContractorView />;
 }
 

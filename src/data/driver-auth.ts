@@ -182,12 +182,12 @@ export type IdentityResult =
 export async function identifyDriver(session: DriverSession, opts: { fetchImpl?: typeof fetch } = {}): Promise<IdentityResult> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const me = await tbFetch(fetchImpl, `${session.baseUrl}/api/user`, session);
-  if (isExpired(me)) return { ok: false, expired: true, message: "The Towbook session was rejected — sign in again." };
-  if (!me.ok || !me.body || typeof me.body !== "object") return { ok: false, message: "Towbook did not return the current user." };
+  if (isExpired(me)) return { ok: false, expired: true, message: "Your session was rejected — sign in again." };
+  if (!me.ok || !me.body || typeof me.body !== "object") return { ok: false, message: "Sign-in didn't return your account — try again." };
   const userObj = me.body as Record<string, unknown>;
   const userId = userObj.id != null ? String(userObj.id) : "";
   const userName = typeof userObj.name === "string" ? userObj.name.trim() : "";
-  if (!userId) return { ok: false, message: "Towbook did not return a user id." };
+  if (!userId) return { ok: false, message: "Sign-in didn't return your account id — try again." };
   const roster = await tbFetch(fetchImpl, `${session.baseUrl}/api/drivers`, session);
   const drivers = Array.isArray(roster.body) ? (roster.body as Record<string, unknown>[]) : [];
   const byLinked = drivers.find((d) => d.linkedUserId != null && String(d.linkedUserId) === userId);
@@ -195,7 +195,7 @@ export async function identifyDriver(session: DriverSession, opts: { fetchImpl?:
   const byName = !byLinked && userName ? drivers.find((d) => d.name != null && norm(String(d.name)) === norm(userName)) : undefined;
   const hit = byLinked ?? byName;
   if (!hit || hit.id == null) {
-    return { ok: false, message: "Your Towbook login is not linked to a driver record on this account — contact the owner." };
+    return { ok: false, message: "Your login isn't linked to a driver record on this account — contact dispatch." };
   }
   return {
     ok: true,
@@ -267,7 +267,7 @@ export async function driverCheckin(session: DriverSession, userId: string, lati
     method: "POST",
     body: JSON.stringify({ id: userId, latitude, longitude }),
   });
-  if (!res.ok || isExpired(res)) return { ok: false, warning: "We couldn't check you in to Towbook — you may not be dispatchable. Sign in again or check your connection." };
+  if (!res.ok || isExpired(res)) return { ok: false, warning: "We couldn't check you in — you may not be dispatchable. Sign in again or check your connection." };
   if (opts.locationDenied || (latitude === 0 && longitude === 0)) return { ok: true, warning: "Location is off — you may not be dispatchable. Allow location access, then sign out and back in." };
   return { ok: true, warning: null };
 }
@@ -357,11 +357,11 @@ export type QueueResult =
 async function fetchDriverQueue(user: { orgId: string; towbookDriverId: string }, opts: { fetchImpl?: typeof fetch } = {}): Promise<QueueResult> {
   const { callHasDriver, loadDriverSession } = await import("./driver-gps-core");
   const session = await loadDriverSession(user);
-  if (!session) return { ok: false, expired: true, message: "No Towbook session — sign in again." };
+  if (!session) return { ok: false, expired: true, message: "No active session — sign in again." };
   const fetchImpl = opts.fetchImpl ?? fetch;
   const res = await tbFetch(fetchImpl, `${session.baseUrl}/api/calls`, session);
-  if (isExpired(res)) return { ok: false, expired: true, message: "Your Towbook session expired — reconnect to keep working." };
-  if (!res.ok) return { ok: false, expired: false, message: `Towbook job list failed (HTTP ${res.status ?? "error"}). Try again.` };
+  if (isExpired(res)) return { ok: false, expired: true, message: "Your session expired — reconnect to keep working." };
+  if (!res.ok) return { ok: false, expired: false, message: `Couldn't load your jobs (HTTP ${res.status ?? "error"}). Try again.` };
   const raw = Array.isArray(res.body) ? (res.body as unknown[]) : [];
   const driverIdNum = Number(user.towbookDriverId);
   const scoped = raw.filter((c) => c && typeof c === "object" && callHasDriver(c, driverIdNum));
@@ -393,19 +393,19 @@ async function applyDriverTransition(
   const toStatus = STATUS_ID_FOR_ACTION[action];
   const { callHasDriver, loadDriverSession } = await import("./driver-gps-core");
   const session = await loadDriverSession(user);
-  if (!session) return { ok: false, expired: true, code: "no_session", message: "No Towbook session — reconnect to keep working." };
+  if (!session) return { ok: false, expired: true, code: "no_session", message: "No active session — reconnect to keep working." };
   const fetchImpl = opts.fetchImpl ?? fetch;
   const numericId = Number(callId);
   const idForBody = Number.isInteger(numericId) && numericId > 0 ? numericId : callId;
   const callRes = await tbFetch(fetchImpl, `${session.baseUrl}/api/calls/${callId}`, session);
-  if (isExpired(callRes)) return { ok: false, expired: true, code: "no_session", message: "Your Towbook session expired — reconnect to keep working." };
+  if (isExpired(callRes)) return { ok: false, expired: true, code: "no_session", message: "Your session expired — reconnect to keep working." };
   if (!callRes.ok || !callRes.body || typeof callRes.body !== "object") {
     return { ok: false, code: "not_found", message: `Job ${callId} was not found on your account.` };
   }
   const call = callRes.body as Record<string, unknown>;
   const currentId = extractTowbookStatusId(call.status);
   if (currentId === toStatus) return { ok: true, changed: false, statusId: toStatus }; // re-tap → no-op
-  if (currentId == null) return { ok: false, code: "invalid_state", message: "Towbook did not report a job status — refresh and try again." };
+  if (currentId == null) return { ok: false, code: "invalid_state", message: "The job didn't report a status — refresh and try again." };
   if (!callHasDriver(call, Number(user.towbookDriverId))) {
     return { ok: false, code: "unauthorized", message: "This job is not assigned to you." };
   }
@@ -418,8 +418,8 @@ async function applyDriverTransition(
     method: "PUT",
     body: JSON.stringify({ id: idForBody, status: { id: toStatus } }),
   });
-  if (isExpired(put)) return { ok: false, expired: true, code: "no_session", message: "Your Towbook session expired — reconnect to keep working." };
-  if (!put.ok) return { ok: false, code: "towbook_failed", message: `Towbook rejected the update (HTTP ${put.status ?? "error"}). Try again.` };
+  if (isExpired(put)) return { ok: false, expired: true, code: "no_session", message: "Your session expired — reconnect to keep working." };
+  if (!put.ok) return { ok: false, code: "towbook_failed", message: `The update was rejected (HTTP ${put.status ?? "error"}). Try again.` };
   await writeThrough(user, callId, call, toStatus);
   return { ok: true, changed: true, statusId: toStatus };
 }
@@ -488,7 +488,7 @@ export const driverLogin = createServerFn({ method: "POST" }).validator(passthro
     longitude: z.number().nullable().optional(),
     locationDenied: z.boolean().optional(),
   }).safeParse(data);
-  if (!v.success) return { ok: false as const, error: "Enter your Towbook username and password." };
+  if (!v.success) return { ok: false as const, error: "Enter your dispatch username and password." };
   if (!configured()) return { ok: false as const, error: "Driver sign-in requires database mode." };
   const d = v.data;
   try {
@@ -562,7 +562,7 @@ export const driverJobs = createServerFn({ method: "GET" }).handler(async () => 
     const q = await db();
     const rows = await q`SELECT towbook_driver_id FROM users WHERE id=${u.id}`;
     const driverId = rows.length ? String(rows[0].towbook_driver_id ?? "") : "";
-    if (!driverId) return { ok: false as const, expired: true, message: "Your account is not linked to a Towbook driver yet — reconnect." };
+    if (!driverId) return { ok: false as const, expired: true, message: "Your account isn't linked to a driver yet — reconnect." };
     return await fetchDriverQueue({ orgId: u.orgId, towbookDriverId: driverId });
   } catch {
     return { ok: false as const, expired: false, message: "Unable to load your jobs. Try again." };
@@ -581,7 +581,7 @@ export const driverJobAction = createServerFn({ method: "POST" }).validator(pass
     const q = await db();
     const rows = await q`SELECT towbook_driver_id FROM users WHERE id=${u.id}`;
     const driverId = rows.length ? String(rows[0].towbook_driver_id ?? "") : "";
-    if (!driverId) return { ok: false as const, code: "no_session", expired: true, message: "Your account is not linked to a Towbook driver yet — reconnect." };
+    if (!driverId) return { ok: false as const, code: "no_session", expired: true, message: "Your account isn't linked to a driver yet — reconnect." };
     return await applyDriverTransition({ orgId: u.orgId, userId: u.id, towbookDriverId: driverId }, v.data.jobId, v.data.action);
   } catch {
     return { ok: false as const, code: "towbook_failed", message: "Unable to update the job. Try again." };
@@ -609,10 +609,10 @@ export const driverSetAvailability = createServerFn({ method: "POST" }).validato
     const rows = await q`SELECT towbook_driver_id, towbook_user_id FROM users WHERE id=${u.id}`;
     const driverId = rows.length ? String(rows[0].towbook_driver_id ?? "") : "";
     const towbookUserId = rows.length ? String(rows[0].towbook_user_id ?? "") : "";
-    if (!driverId) return { ok: false as const, message: "Your account is not linked to a Towbook driver yet — reconnect." };
+    if (!driverId) return { ok: false as const, message: "Your account isn't linked to a driver yet — reconnect." };
     const { loadDriverSession } = await import("./driver-gps-core");
     const session = await loadDriverSession({ orgId: u.orgId, towbookDriverId: driverId });
-    if (!session) return { ok: false as const, message: "No Towbook session — sign in again." };
+    if (!session) return { ok: false as const, message: "No active session — sign in again." };
     if (v.data.online) {
       const loc = await q`SELECT latitude, longitude FROM driver_locations WHERE org_id=${u.orgId} AND driver_id=${u.id} ORDER BY captured_at DESC LIMIT 1`;
       const lat = loc.length && Number.isFinite(Number(loc[0].latitude)) ? Number(loc[0].latitude) : 0;
@@ -642,6 +642,14 @@ export type DriverEarningsTip = {
 export type DriverEarningsResult =
   | { ok: true; profile: { name: string; email: string; towbookDriverId: string }; completed: DriverCall[]; tips: DriverEarningsTip[]; totals: { completedJobs: number; tipsTotalCents: number; tipCount: number } }
   | { ok: false; expired: boolean; message: string };
+/** The driver-facing email: real addresses are shown; derived @towbook.driver
+ *  placeholders are internal-only and must never reach a driver's screen
+ *  (white-label, 2026-08-12 — drivers never see the backend brand or its
+ *  internal addressing scheme). */
+function driverFacingEmail(email: unknown): string {
+  const s = email != null ? String(email) : "";
+  return s.toLowerCase().endsWith("@towbook.driver") ? "" : s;
+}
 /** Driver earnings: completed calls (from the Towbook queue) + tips attributed
  *  to this driver (job_completions.tip->>'driver_towbook_id'). Contractor-only.
  *  Tips are accounted separately from card payments — per the owner's payments
@@ -656,7 +664,7 @@ export const driverEarnings = createServerFn({ method: "GET" }).handler(async ()
     const q = await db();
     const rows = await q`SELECT name, email, towbook_driver_id FROM users WHERE id=${u.id}`;
     const driverId = rows.length ? String(rows[0].towbook_driver_id ?? "") : "";
-    if (!driverId) return { ok: false as const, expired: true, message: "Your account is not linked to a Towbook driver yet — reconnect." };
+    if (!driverId) return { ok: false as const, expired: true, message: "Your account isn't linked to a driver yet — reconnect." };
     const queue = await fetchDriverQueue({ orgId: u.orgId, towbookDriverId: driverId });
     if (!queue.ok) return queue;
     const completed = queue.calls.filter((c) => c.statusId === 5 || c.statusId === 6);
@@ -683,7 +691,7 @@ export const driverEarnings = createServerFn({ method: "GET" }).handler(async ()
     const tipsTotalCents = tips.reduce((s, t) => s + t.amountCents, 0);
     return {
       ok: true as const,
-      profile: { name: String(rows[0].name ?? ""), email: String(rows[0].email ?? ""), towbookDriverId: driverId },
+      profile: { name: String(rows[0].name ?? ""), email: driverFacingEmail(rows[0].email), towbookDriverId: driverId },
       completed,
       tips,
       totals: { completedJobs: completed.length, tipsTotalCents, tipCount: tips.length },
@@ -710,7 +718,7 @@ export const driverProfile = createServerFn({ method: "GET" }).handler(async ():
     return {
       ok: true as const,
       name: String(rows[0].name ?? ""),
-      email: String(rows[0].email ?? ""),
+      email: driverFacingEmail(rows[0].email),
       towbookDriverId: String(rows[0].towbook_driver_id ?? ""),
     };
   } catch {

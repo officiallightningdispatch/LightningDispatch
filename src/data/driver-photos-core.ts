@@ -473,7 +473,7 @@ export async function completeJobCore(user: PhotoUser, data: unknown, opts: { fe
     }
 
     const session = await loadDriverSession({ orgId: user.orgId, towbookDriverId: user.towbookDriverId });
-    if (!session) return { ok: false, code: "no_session", message: "No Towbook session — reconnect to keep working." };
+    if (!session) return { ok: false, code: "no_session", message: "No active session — reconnect to keep working." };
 
     // (1) Push all 12 photos to the Towbook PO, one by one, verified.
     const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
@@ -490,7 +490,7 @@ export async function completeJobCore(user: PhotoUser, data: unknown, opts: { fe
       // The photos themselves live in B2 — without it nothing can be forwarded
       // to the PO. Fail loud + escalate; the job stays arrived.
       await recordUploadFailure(user, job, [], attempts, { storage: "b2_not_configured" });
-      return { ok: false, code: "photo_upload_failed", message: "Photo storage isn't connected, so the photos can't reach the Towbook PO — ops has been notified." };
+      return { ok: false, code: "photo_upload_failed", message: "Photo storage isn't connected, so the photos can't be attached — ops has been notified." };
     }
     for (const phase of PHOTO_PHASES) {
       for (const side of PHOTO_SIDES) {
@@ -522,7 +522,7 @@ export async function completeJobCore(user: PhotoUser, data: unknown, opts: { fe
         await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
           SELECT gen_random_uuid()::text, ${user.orgId}, ${user.id}, 'contractor', 'job_photo_upload_failed', 'job', ${job.id}, ${JSON.stringify({ towbookJobId: job.towbookJobId, uploaded, failed: failures, attempts })}::jsonb, 'driver-photos'`;
       } catch { /* best-effort */ }
-      return { ok: false, code: "photo_upload_failed", message: `${failures.length} photo${failures.length === 1 ? "" : "s"} didn't reach Towbook — ops has been notified.`, failures };
+      return { ok: false, code: "photo_upload_failed", message: `${failures.length} photo${failures.length === 1 ? "" : "s"} couldn't be attached — ops has been notified.`, failures };
     }
 
     // (3) All photos on the PO → complete on Towbook (PUT status 5, verified).
@@ -548,7 +548,7 @@ export async function completeJobCore(user: PhotoUser, data: unknown, opts: { fe
         await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
           SELECT gen_random_uuid()::text, ${user.orgId}, ${user.id}, 'contractor', 'job_completion_failed', 'job', ${job.id}, ${JSON.stringify({ towbookJobId: job.towbookJobId, photosUploaded: uploaded, attempts })}::jsonb, 'driver-photos'`;
       } catch { /* best-effort */ }
-      return { ok: false, code: "towbook_failed", message: "Photos are on the PO but Towbook didn't confirm completion — ops has been notified.", failures };
+      return { ok: false, code: "towbook_failed", message: "Photos are attached but completion wasn't confirmed — ops has been notified.", failures };
     }
 
     await markPlatformCompleted(user, job, { towbook: "verified status 5", photosUploaded: uploaded, attempts });

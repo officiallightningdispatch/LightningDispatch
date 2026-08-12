@@ -157,7 +157,7 @@ function HelpView() {
               {error && <p role="alert" className="text-xs font-semibold text-danger-600">{error}</p>}
               {expired && (
                 <p className="rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                  Your Towbook session expired — reports still reach dispatch, but reconnect to keep getting jobs.{" "}
+                  Your session expired — reports still reach dispatch, but reconnect to keep getting jobs.{" "}
                   <button type="button" onClick={() => void signOut()} className="font-bold underline">Reconnect</button>
                 </p>
               )}

@@ -16,10 +16,12 @@ export type { ContractorRow, ContractorStatus, ContractorEditResult, ContractorR
 const passthrough = (x: unknown) => x;
 
 /** All contractor accounts (role 'contractor') in the owner's org with
- *  sign-in status derived from the driver-session rows. Owner/admin only. */
-export const listContractors = createServerFn({ method: "GET" }).handler(async (): Promise<ContractorManagementResult<ContractorRow[]>> => {
+ *  sign-in status derived from the driver-session rows. Owner/admin only.
+ *  Pass { includeRemoved: true } to also list removed (deactivated) records —
+ *  default is active only (records-on-demand, owner batch 2026-08-12). */
+export const listContractors = createServerFn({ method: "GET" }).validator(passthrough).handler(async ({ data }): Promise<ContractorManagementResult<ContractorRow[]>> => {
   const core = await import("./contractor-management-core");
-  return core.listContractorsHandler();
+  return core.listContractorsHandler(data as { includeRemoved?: boolean } | undefined);
 });
 
 /** Add one contractor manually (name + Towbook driver ID + optional email).

@@ -43,6 +43,9 @@ function OwnerContractors() {
   /* ---- roster ---- */
   const [rows, setRows] = useState<ContractorRow[] | null>(null);
   const [listError, setListError] = useState("");
+  // Records-on-demand (owner batch 2026-08-12): removed/inactive contractors
+  // stay hidden by default; the owner can explicitly include them.
+  const [includeRemoved, setIncludeRemoved] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<ImportSummary | null>(null);
@@ -64,10 +67,10 @@ function OwnerContractors() {
   const [typeBusy, setTypeBusy] = useState(false);
 
   const refresh = async () => {
-    const r = await listContractors();
+    const r = await listContractors({ data: { includeRemoved } });
     if (r.ok) { setRows(r.data); setListError(""); } else setListError(r.message);
   };
-  useEffect(() => { void refresh(); }, []);
+  useEffect(() => { void refresh(); }, [includeRemoved]);
 
   const loadDocTypes = async () => {
     const r = await listRequiredDocTypes();
@@ -242,15 +245,33 @@ function OwnerContractors() {
             <section>
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <h3 className="text-sm font-bold uppercase tracking-wider text-ink-500">Roster</h3>
-                <div className="flex gap-2">
-                  <Button size="sm" variant="secondary" onClick={() => { setShowImport((v) => !v); setShowAdd(false); }}>
-                    <CloudDownload className="size-3.5" aria-hidden="true" /> Import
-                  </Button>
-                  <Button size="sm" variant="secondary" onClick={() => { setShowAdd((v) => !v); setShowImport(false); }}>
-                    <Plus className="size-3.5" aria-hidden="true" /> Add
-                  </Button>
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* Records-on-demand: removed/inactive contractors are hidden
+                      unless the owner explicitly asks to include them. */}
+                  <label className="flex cursor-pointer select-none items-center gap-1.5 text-xs font-semibold text-ink-500">
+                    <input
+                      type="checkbox"
+                      checked={includeRemoved}
+                      onChange={(e) => setIncludeRemoved(e.target.checked)}
+                      className="size-4 accent-brand-500"
+                    />
+                    Include removed/inactive
+                  </label>
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="secondary" onClick={() => { setShowImport((v) => !v); setShowAdd(false); }}>
+                      <CloudDownload className="size-3.5" aria-hidden="true" /> Import
+                    </Button>
+                    <Button size="sm" variant="secondary" onClick={() => { setShowAdd((v) => !v); setShowImport(false); }}>
+                      <Plus className="size-3.5" aria-hidden="true" /> Add
+                    </Button>
+                  </div>
                 </div>
               </div>
+              {includeRemoved && rows && rows.some((c) => c.removedAt) && (
+                <p className="mb-3 rounded-xl border border-ink-100 bg-ink-50/60 px-3 py-2 text-xs text-ink-500">
+                  Showing {rows.filter((c) => c.removedAt).length} removed/inactive record{rows.filter((c) => c.removedAt).length === 1 ? "" : "s"} — removed contractors can&apos;t sign in or be dispatched.
+                </p>
+              )}
 
               {showImport && (
                 <Card className="mb-4 p-5">

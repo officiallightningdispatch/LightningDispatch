@@ -144,6 +144,15 @@ export function LiveMap({
     if (!quiet) setError(false);
     try {
       const r = await getLiveMapData();
+      if (r === null) {
+        // The feed RESOLVED to null (transient auth/DB hiccup — not a fetch
+        // failure, so no throw reached the catch): a signed-in user would
+        // otherwise sit on the loading skeleton forever. Treat it as an error
+        // and let the explicit error state (with Retry) take over.
+        setData(null);
+        setError(true);
+        return;
+      }
       setData(r);
       setLastUpdated(new Date());
     } catch {
@@ -385,11 +394,33 @@ export function LiveMap({
       <div className={`${heightClass} animate-pulse bg-ink-100/70 ${isHero ? "" : "rounded-xl"}`} aria-busy="true" />
     );
   }
+  // Feed error (fetch failure OR a null resolve — see load()): an explicit,
+  // retryable error state. Never an eternal skeleton, never a silent blank.
+  if (data === null && error) {
+    return (
+      <div className={`${heightClass} grid place-items-center ${isHero ? "" : "rounded-xl border border-ink-100 bg-surface"}`} role="alert">
+        <div className="flex max-w-xs flex-col items-center gap-2 p-6 text-center">
+          <Radar className="size-6 text-amber-600" aria-hidden="true" />
+          <p className="text-sm font-bold text-ink-700">{emptyTitle}</p>
+          <p className="text-xs leading-relaxed text-ink-500">
+            We couldn&apos;t load live positions. Check your connection and try again.
+          </p>
+          <button
+            type="button"
+            onClick={() => void load(false)}
+            className="mt-1 inline-flex h-9 items-center gap-1.5 rounded-full bg-brand-500 px-4 text-xs font-bold text-white transition-colors hover:bg-brand-600"
+          >
+            <RefreshCw className="size-3.5" aria-hidden="true" /> Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
   // NOTE: no early return for pins.length === 0 — the street map always renders
   // (owner 2026-08-11); an honest overlay note covers the zero-data case below.
 
   return (
-    <Card className={`overflow-hidden p-0 ${isHero ? "border-0 shadow-none" : ""}`}>
+    <Card className={`overflow-hidden p-0 ${isHero ? "h-full border-0 shadow-none" : ""}`}>
       {/* header: live counts + waiting-for-GPS note (hero: chrome omitted) */}
       {!isHero && (
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-ink-100 px-4 py-2.5">

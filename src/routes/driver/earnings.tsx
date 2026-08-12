@@ -81,7 +81,7 @@ function EarningsView() {
   }, [state]);
 
   return (
-    <AppShell portal="driver" title="Earnings" description="Completed jobs and tips on your account — updated live from Towbook.">
+    <AppShell portal="driver" title="Earnings" description="Completed jobs and tips on your account — updated live.">
       <DriverToolbar loading={loading} onRefresh={() => void load()} onSignOut={() => void signOut()} />
       {loading && state === null ? (
         <QueueSkeleton />

@@ -8,7 +8,7 @@ import { authStatus } from "~/data/auth";
 import { driverLogout, driverProfile, type DriverProfileResult } from "~/data/driver-auth";
 
 /**
- * /driver/profile — the driver's account card: Towbook identity, login, and
+ * /driver/profile — the driver's account card: dispatch identity, login, and
  * sign out. Real data from the LD user row behind the contractor session.
  */
 export const Route = createFileRoute("/driver/profile")({ component: ProfileView });
@@ -27,11 +27,14 @@ function ProfileView() {
     })();
   }, []);
   const signOut = async () => {
-    await driverLogout(); // best-effort Towbook checkout so we're not left "online"
+    await driverLogout(); // best-effort checkout so we're not left "online"
     void nav({ to: "/login", replace: true });
   };
   const name = profile?.ok ? profile.name : user?.user?.name ?? "Driver";
-  const email = profile?.ok ? profile.email : user?.user?.email ?? "";
+  // Internal @towbook.driver placeholder addresses are never shown to drivers
+  // (white-label 2026-08-12) — defensive mask on the authStatus fallback too.
+  const rawEmail = profile?.ok ? profile.email : user?.user?.email ?? "";
+  const email = rawEmail.toLowerCase().endsWith("@towbook.driver") ? "" : rawEmail;
   const driverId = profile?.ok ? profile.towbookDriverId : "";
   return (
     <AppShell portal="driver" title="Profile" description="Your account details and sign-out.">
@@ -66,18 +69,18 @@ function ProfileView() {
           <Card className="p-4">
             <dl className="space-y-3 text-sm">
               <div className="flex items-center justify-between gap-2">
-                <dt className="flex items-center gap-2 text-ink-500"><Truck className="size-4" /> Towbook driver ID</dt>
+                <dt className="flex items-center gap-2 text-ink-500"><Truck className="size-4" /> Driver ID</dt>
                 <dd className="font-mono font-semibold text-ink-800">{driverId || "—"}</dd>
               </div>
               <div className="flex items-center justify-between gap-2">
                 <dt className="flex items-center gap-2 text-ink-500"><User className="size-4" /> Sign-in</dt>
-                <dd className="font-semibold text-ink-800">Towbook credentials</dd>
+                <dd className="font-semibold text-ink-800">Lightning Dispatch login</dd>
               </div>
             </dl>
           </Card>
           <Card className="p-4">
             <p className="text-sm leading-relaxed text-ink-500">
-              Your Towbook login is your Lightning Dispatch login — one account, one password. Jobs you accept stay in sync
+              Your Lightning Dispatch login is your driver account — one account, one password. Jobs you accept stay in sync
               with the dispatch board automatically.
             </p>
           </Card>

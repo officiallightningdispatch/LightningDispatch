@@ -67,7 +67,7 @@ export function RealDriverPortal() {
   const flash = useRequoteFlash(primary);
 
   const chips: { kind: "error" | "expired"; text: string; onAction?: () => void }[] = [];
-  if (expired) chips.push({ kind: "expired", text: "Your Towbook session expired — tap to reconnect.", onAction: () => void signOut() });
+  if (expired) chips.push({ kind: "expired", text: "Your session expired — tap to reconnect.", onAction: () => void signOut() });
   else if (error) chips.push({ kind: "error", text: error });
 
   return (

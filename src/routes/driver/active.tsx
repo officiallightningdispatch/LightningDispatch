@@ -46,7 +46,7 @@ function ActiveView() {
   const flash = useRequoteFlash(sheetCall);
 
   const chips: { kind: "error" | "expired"; text: string; onAction?: () => void }[] = [];
-  if (expired) chips.push({ kind: "expired", text: "Your Towbook session expired — tap to reconnect.", onAction: () => void signOut() });
+  if (expired) chips.push({ kind: "expired", text: "Your session expired — tap to reconnect.", onAction: () => void signOut() });
   else if (error) chips.push({ kind: "error", text: error });
 
   const headerActions = (
@@ -102,7 +102,7 @@ function ActiveView() {
           </p>
           <p className="mt-1 text-sm text-ink-400">
             {loading && calls === null
-              ? "Checking Towbook for offers and trips."
+              ? "Checking for offers and trips."
               : "Accept an offer and it will show up here — en route, arrival photos, and completion."}
           </p>
           <button

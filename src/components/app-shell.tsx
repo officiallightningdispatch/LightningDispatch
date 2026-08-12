@@ -1,5 +1,5 @@
 import { Link, useLocation } from "@tanstack/react-router";
-import { Zap, Home, Inbox, Briefcase, DollarSign, User, List, Users, History, BarChart3, Settings, Wallet, Bot, Map, UserCog } from "lucide-react";
+import { Zap, Home, Inbox, Briefcase, DollarSign, User, List, Users, History, BarChart3, Settings, Wallet, Bot, Map, UserCog, LogOut } from "lucide-react";
 import type { ReactNode } from "react";
 
 export type Portal = "driver" | "ops" | "owner";
@@ -111,8 +111,17 @@ export function AppShell({
    *  portal roots stay exact-only — Dashboard must not highlight on every
    *  /owner/* page. */
   const isActive = (to: string) => location.pathname === to || (to !== "/owner" && to !== "/ops" && to !== "/driver" && location.pathname.startsWith(to + "/"));
+  // Default header action: a real Sign out link on the owner/ops portals (the
+  // driver portal passes its own GO/Offline + Help actions). /logout destroys
+  // the session server-side and lands the user on /login — owner batch
+  // 2026-08-12 (previously there was no sign-out route at all).
+  const actions = headerActions ?? (portal === "driver" ? null : (
+    <Link to="/logout" className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-ink-200 px-3 text-xs font-bold text-ink-600 transition-colors hover:bg-ink-50 hover:text-ink-800" aria-label="Sign out">
+      <LogOut className="size-3.5" aria-hidden="true" /> Sign out
+    </Link>
+  ));
   return <div className={`min-h-dvh min-w-0 overflow-x-clip bg-canvas text-ink-900 ${meta.mobileBottomPad ? "pb-20" : ""}`}>
-    <header className="border-b border-ink-100 bg-surface"><div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-3 sm:px-6"><Link to={links[0].to as any} className="flex items-center gap-3"><span className="grid size-9 place-items-center rounded-xl bg-brand-500"><Zap className="size-5 text-white" fill="currentColor" strokeWidth={0} /></span><strong className="text-sm font-bold">Lightning Dispatch OS</strong></Link><span className="hidden text-xs text-ink-400 sm:block">{meta.appLabel}</span>{headerActions && <div className="ml-auto flex items-center gap-2">{headerActions}</div>}</div></header>
+    <header className="border-b border-ink-100 bg-surface"><div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-3 sm:px-6"><Link to={links[0].to as any} className="flex items-center gap-3"><span className="grid size-9 place-items-center rounded-xl bg-brand-500"><Zap className="size-5 text-white" fill="currentColor" strokeWidth={0} /></span><strong className="text-sm font-bold">Lightning Dispatch OS</strong></Link><span className="hidden text-xs text-ink-400 sm:block">{meta.appLabel}</span>{actions && <div className="ml-auto flex items-center gap-2">{actions}</div>}</div></header>
     <div className="mx-auto flex max-w-7xl"><aside className="hidden w-56 shrink-0 border-r border-ink-100 py-5 pr-4 md:block"><nav className="space-y-1" aria-label="Portal navigation">{links.map(l => <Link key={l.to} to={l.to as any} className={`flex h-11 items-center gap-3 rounded-xl px-3 text-sm font-semibold ${isActive(l.to) ? "bg-ink-950 text-white" : "text-ink-500 hover:bg-ink-50"}`}><l.icon className="size-4" />{l.label}</Link>)}</nav></aside>
     <main className={`min-w-0 flex-1 px-4 py-7 sm:px-6 ${portal === "driver" ? "mx-auto max-w-lg md:max-w-none" : ""} ${slim ? "max-w-none px-0 py-0" : ""}`}>{!slim && <div className="mb-7"><p className="mb-2 text-xs font-bold uppercase tracking-[.18em] text-brand-600">{meta.portalLabel}</p><h1 className="text-2xl font-bold tracking-tight sm:text-3xl">{title}</h1><p className="mt-1 text-sm text-ink-500">{description}</p></div>}{children}</main>
     </div>

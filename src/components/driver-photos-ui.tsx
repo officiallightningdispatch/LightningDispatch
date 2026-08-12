@@ -251,7 +251,7 @@ export function JobPhotoFlow({ callId, jobStatus, onCompleted }: { callId: strin
   const complete = async () => {
     setActionBusy("complete");
     setCompletionError("");
-    setCompletionDetail("Pushing all 12 photos to the Towbook PO…");
+    setCompletionDetail("Pushing all 12 photos to the job…");
     try {
       const r = await completeJobWithPhotos({ data: { jobId: callId } });
       if (r.ok) {
@@ -384,7 +384,7 @@ export function JobPhotoFlow({ callId, jobStatus, onCompleted }: { callId: strin
             disabled={!(capture && capture.signatureCaptured && capture.survey)}
             onClick={() => void complete()}
           >
-            <ShieldCheck className="size-5" /> Complete job — push to Towbook
+            <ShieldCheck className="size-5" /> Complete job — finish it
           </Button>
           {capture && capture.signatureCaptured && capture.survey ? null : (
             <p className="mt-1.5 text-center text-[11px] text-ink-400">Needs the customer&apos;s signature and rating first.</p>

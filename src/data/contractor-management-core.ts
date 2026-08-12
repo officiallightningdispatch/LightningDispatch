@@ -140,13 +140,18 @@ const toIso = (v: unknown): string | null => {
  *  fix 2026-08-11), or a live LD portal session (sessions row for their user).
  *  Last activity = newest of the session refresh and the last GPS ping.
  *  Deactivated rows (deactivated_at set — the soft-delete the remove flow uses)
- *  are EXCLUDED from the roster: a removed contractor must never appear in the
- *  Contractors tab (BUG 1 fix 2026-08-11). One query; real data only. */
-export async function listContractorsCore(actor: ContractorMgmtActor): Promise<ContractorManagementResult<ContractorRow[]>> {
+ *  are EXCLUDED from the roster by default: a removed contractor must never
+ *  appear in the Contractors tab (BUG 1 fix 2026-08-11). Records-on-demand
+ *  (owner batch 2026-08-12): pass { includeRemoved: true } to list deactivated
+ *  contractors too — the owner explicitly asks for the removed records, and
+ *  each row then carries removedAt so the UI can label it. One query; real
+ *  data only. */
+export async function listContractorsCore(actor: ContractorMgmtActor, opts: { includeRemoved?: boolean } = {}): Promise<ContractorManagementResult<ContractorRow[]>> {
   if (!canManage(actor)) return { ok: false, code: "unauthorized", message: "Owner access required." };
   try {
     await ensure();
     const q = await db();
+    const where = opts.includeRemoved ? q`TRUE` : q`u.deactivated_at IS NULL`;
     const rows = await q`SELECT u.id, u.name, u.email, u.login_handle, u.towbook_driver_id, u.towbook_user_id, u.created_at, u.deactivated_at,
         ts.session_updated_at,
         ls.last_login,
@@ -176,7 +181,7 @@ export async function listContractorsCore(actor: ContractorMgmtActor): Promise<C
         FROM driver_locations WHERE org_id = ${actor.orgId}
         GROUP BY driver_id
       ) dl ON dl.driver_id = u.id
-      WHERE u.deactivated_at IS NULL
+      WHERE ${where}
       ORDER BY LOWER(u.name), u.created_at`;
     const contractors: ContractorRow[] = (rows as Record<string, unknown>[]).map((r) => {
       const lastPing = r.last_ping != null ? new Date(String(r.last_ping)) : null;
@@ -196,7 +201,7 @@ export async function listContractorsCore(actor: ContractorMgmtActor): Promise<C
         status: signedIn ? "signed_in" : "not_signed_in",
         lastActivityAt: lastActivity ? lastActivity.toISOString() : null,
         createdAt: toIso(r.created_at),
-        removedAt: null, // deactivated rows are excluded above — never returned
+        removedAt: toIso(r.deactivated_at), // null unless includeRemoved (rows are excluded otherwise)
         payrateCents: r.payrate_cents != null ? Number(r.payrate_cents) : null,
         requiredDocCount: r.required_doc_count != null ? Number(r.required_doc_count) : 0,
         onFileDocCount: r.on_file_doc_count != null ? Number(r.on_file_doc_count) : 0,
@@ -820,11 +825,11 @@ async function resolveActor(): Promise<ContractorMgmtActor | null> {
   return { orgId: u.orgId, id: u.id, role: u.role };
 }
 
-export async function listContractorsHandler(): Promise<ContractorManagementResult<ContractorRow[]>> {
+export async function listContractorsHandler(data?: { includeRemoved?: boolean }): Promise<ContractorManagementResult<ContractorRow[]>> {
   if (!configured()) return { ok: false, code: "database_error", message: "Contractor management requires database mode." };
   const actor = await resolveActor();
   if (!actor) return { ok: false, code: "unauthorized", message: "Owner access required." };
-  return listContractorsCore(actor);
+  return listContractorsCore(actor, { includeRemoved: Boolean(data?.includeRemoved) });
 }
 
 export async function addContractorHandler(data: unknown): Promise<ContractorManagementResult<ContractorRow>> {

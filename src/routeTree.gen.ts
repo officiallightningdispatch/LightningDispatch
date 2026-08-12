@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as OwnerRouteImport } from './routes/owner'
 import { Route as OpsRouteImport } from './routes/ops'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as LogoutRouteImport } from './routes/logout'
 import { Route as DriverRouteImport } from './routes/driver'
 import { Route as DispatchRouteImport } from './routes/dispatch'
 import { Route as ContractorRouteImport } from './routes/contractor'
@@ -52,6 +53,11 @@ const OpsRoute = OpsRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LogoutRoute = LogoutRouteImport.update({
+  id: '/logout',
+  path: '/logout',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DriverRoute = DriverRouteImport.update({
@@ -192,6 +198,7 @@ export interface FileRoutesByFullPath {
   '/dispatch': typeof DispatchRoute
   '/driver': typeof DriverRouteWithChildren
   '/login': typeof LoginRoute
+  '/logout': typeof LogoutRoute
   '/ops': typeof OpsRouteWithChildren
   '/owner': typeof OwnerRouteWithChildren
   '/driver/active': typeof DriverActiveRoute
@@ -222,6 +229,7 @@ export interface FileRoutesByTo {
   '/contractor': typeof ContractorRoute
   '/dispatch': typeof DispatchRoute
   '/login': typeof LoginRoute
+  '/logout': typeof LogoutRoute
   '/driver/active': typeof DriverActiveRoute
   '/driver/earnings': typeof DriverEarningsRoute
   '/driver/help': typeof DriverHelpRoute
@@ -252,6 +260,7 @@ export interface FileRoutesById {
   '/dispatch': typeof DispatchRoute
   '/driver': typeof DriverRouteWithChildren
   '/login': typeof LoginRoute
+  '/logout': typeof LogoutRoute
   '/ops': typeof OpsRouteWithChildren
   '/owner': typeof OwnerRouteWithChildren
   '/driver/active': typeof DriverActiveRoute
@@ -285,6 +294,7 @@ export interface FileRouteTypes {
     | '/dispatch'
     | '/driver'
     | '/login'
+    | '/logout'
     | '/ops'
     | '/owner'
     | '/driver/active'
@@ -315,6 +325,7 @@ export interface FileRouteTypes {
     | '/contractor'
     | '/dispatch'
     | '/login'
+    | '/logout'
     | '/driver/active'
     | '/driver/earnings'
     | '/driver/help'
@@ -344,6 +355,7 @@ export interface FileRouteTypes {
     | '/dispatch'
     | '/driver'
     | '/login'
+    | '/logout'
     | '/ops'
     | '/owner'
     | '/driver/active'
@@ -376,6 +388,8 @@ export interface RootRouteChildren {
   DispatchRoute: typeof DispatchRoute
   DriverRoute: typeof DriverRouteWithChildren
   LoginRoute: typeof LoginRoute
+  LogoutRoute: typeof LogoutRoute
+  LogoutRoute: typeof LogoutRouteImport
   OpsRoute: typeof OpsRouteWithChildren
   OwnerRoute: typeof OwnerRouteWithChildren
 }
@@ -401,6 +415,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/logout': {
+      id: '/logout'
+      path: '/logout'
+      fullPath: '/logout'
+      preLoaderRoute: typeof LogoutRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/driver': {
@@ -662,6 +683,7 @@ const rootRouteChildren: RootRouteChildren = {
   DispatchRoute: DispatchRoute,
   DriverRoute: DriverRouteWithChildren,
   LoginRoute: LoginRoute,
+  LogoutRoute: LogoutRoute,
   OpsRoute: OpsRouteWithChildren,
   OwnerRoute: OwnerRouteWithChildren,
 }

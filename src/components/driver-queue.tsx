@@ -130,7 +130,7 @@ export function useDriverQueue() {
     try {
       const r = await driverJobAction({ data: { jobId: callId, action } });
       if (r.ok) {
-        toast(r.changed ? "Towbook updated — job is live." : "Already applied — nothing to do.");
+        toast(r.changed ? "Job updated — it's live." : "Already applied — nothing to do.");
         await load(true);
       } else {
         if (r.expired) setExpired(true);
@@ -170,7 +170,7 @@ export function DriverToolbar({ loading, onRefresh, onSignOut }: { loading: bool
 export function ExpiredBanner({ onReconnect }: { onReconnect: () => void }) {
   return (
     <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
-      <p className="text-sm font-semibold text-amber-800">Your Towbook session expired.</p>
+      <p className="text-sm font-semibold text-amber-800">Your session expired.</p>
       <p className="mt-1 text-xs text-amber-700">Sign in again to keep receiving and updating jobs.</p>
       <Button className="mt-3" size="sm" onClick={onReconnect}>Reconnect — sign in again</Button>
     </div>

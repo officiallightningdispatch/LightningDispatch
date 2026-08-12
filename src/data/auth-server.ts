@@ -2,6 +2,11 @@ import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { sql } from "~/db";
 export type Role = "owner" | "admin" | "dispatcher" | "contractor";
 export type AuthUser = { id: string; name: string; email: string; role: Role; orgId: string; contractorId?: string };
+/** Legacy role normalization (owner batch 2026-08-12): very old memberships may
+ *  carry role 'manager' (pre-dating the current role enum). All managers get
+ *  owner access per owner direction — normalize at every read so a legacy row
+ *  behaves as 'owner' even before the one-time migration UPDATE lands. */
+export const normalizeRole = (r: unknown): Role => (r === "manager" ? "owner" : (r as Role));
 // v2 session cookie. Old `lightning_session` cookies accumulated in browsers
 // across earlier builds (same name, different path/domain attributes) can shadow
 // a fresh session: browsers send same-name cookies oldest-first, and h3's cookie
@@ -31,6 +36,10 @@ export async function ensureAuthSchema() {
   await q`ALTER TABLE users ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ`;
   await q`CREATE TABLE IF NOT EXISTS organization_memberships (org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK (role IN ('owner','admin','dispatcher','contractor')), contractor_id TEXT, PRIMARY KEY(org_id,user_id))`;
   await q`CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
+  // One-time idempotent migration (owner batch 2026-08-12): legacy 'manager'
+  // memberships become 'owner' — every manager gets owner access. Safe to run
+  // repeatedly (idempotent); no-op when no 'manager' rows exist.
+  await q`UPDATE organization_memberships SET role='owner' WHERE role='manager'`;
 }
 
 const id = () => randomBytes(18).toString("hex");
@@ -68,7 +77,7 @@ export async function currentUser(): Promise<AuthUser | null> {
     // Seroval rejects object properties whose value is undefined. Owner/admin
     // memberships have no contractor_id, so only include this optional field
     // when the database actually returned one.
-    const user: AuthUser = { id: String(r.id), name: String(r.name), email: String(r.email), role: r.role as Role, orgId: String(r.org_id) };
+    const user: AuthUser = { id: String(r.id), name: String(r.name), email: String(r.email), role: normalizeRole(r.role), orgId: String(r.org_id) };
     if (r.contractor_id != null && r.contractor_id !== "") user.contractorId = String(r.contractor_id);
     return user;
   }

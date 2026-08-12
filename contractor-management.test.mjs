@@ -322,6 +322,17 @@ await setup();
   check("BUG1: re-import skips the deactivated driver", s && s.imported === 0 && s.skipped.some((x) => String(x.towbookDriverId) === driverId && x.reason === "deactivated_in_lightning_dispatch"), JSON.stringify(s));
   const still = await q`SELECT COUNT(*)::int AS n, MAX(deactivated_at) AS d FROM users WHERE towbook_driver_id=${driverId}`;
   check("BUG1: re-import never re-adds / never re-activates", Number(still[0].n) === 1 && still[0].d != null, JSON.stringify(still));
+  // Records-on-demand (owner batch 2026-08-12): removed contractors stay hidden
+  // by default; includeRemoved lists them with removedAt so the UI can label.
+  const plainList = await listContractorsCore(ACTOR);
+  const allList = await listContractorsCore(ACTOR, { includeRemoved: true });
+  check("includeRemoved: removed hidden by default", plainList.ok === true && !plainList.data.some((c) => String(c.towbookDriverId) === driverId), JSON.stringify(plainList.ok ? plainList.data.map((c) => c.towbookDriverId) : plainList));
+  const incRow = allList.ok ? allList.data.find((c) => String(c.towbookDriverId) === driverId) : null;
+  check("includeRemoved: removed listed on demand with removedAt set", incRow != null && incRow.removedAt != null, JSON.stringify(incRow));
+  // Legacy role normalization (owner batch 2026-08-12): every 'manager'
+  // membership reads as 'owner' — all managers get owner access.
+  const { normalizeRole } = await import("./src/data/auth-server.ts");
+  check("normalizeRole: manager normalizes to owner", normalizeRole("manager") === "owner" && normalizeRole("owner") === "owner" && normalizeRole("contractor") === "contractor" && normalizeRole("dispatcher") === "dispatcher" && normalizeRole("admin") === "admin", JSON.stringify(normalizeRole("manager")));
   // BUG 3 data source: the Performance tab count = active roster length.
   check("BUG3: performance roster count = listContractorsCore length (active only)", list.ok === true && !list.data.some((c) => c.removedAt), JSON.stringify(list.ok ? list.data.map((c) => c.towbookDriverId) : list));
 }
