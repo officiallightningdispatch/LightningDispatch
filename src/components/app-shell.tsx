@@ -28,11 +28,15 @@ const NAV: Record<Portal, { links: NavItem[]; mobile: NavItem[] }> = {
       { to: "/owner/settings", label: "Settings", icon: Settings },
     ],
     // Bottom bar on phones — a subset so labels fit; all still /owner/*.
+    // Contractors MUST be reachable on a phone (owner-directed 2026-08-11:
+    // the Contractors tab is where payrate + compliance live). Live Map drops
+    // off the rail — the map is already a Dashboard section — but stays in the
+    // desktop sidebar.
     mobile: [
       { to: "/owner", label: "Dashboard", icon: Home },
       { to: "/owner/queue", label: "Queue", icon: List },
       { to: "/owner/active", label: "Active", icon: Briefcase },
-      { to: "/owner/drivers", label: "Live Map", icon: Map },
+      { to: "/owner/contractors", label: "Contractors", icon: UserCog },
       { to: "/owner/performance", label: "Performance", icon: BarChart3 },
       { to: "/owner/money", label: "Money", icon: Wallet },
       { to: "/owner/ai-dispatcher", label: "AI", icon: Bot },

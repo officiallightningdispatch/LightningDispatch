@@ -1,0 +1,318 @@
+/**
+ * Contractor administration shared components (owner-directed 2026-08-11,
+ * plan rev 17) — used by the owner Contractors tab and (parts 2/3) the owner
+ * contractor detail + contractor Documents screen. Mobile-first, token-true:
+ * brand orange #F27801 for money, ink for structure, success/danger/accent per
+ * the doc-status color map, rounded-2xl cards / rounded-xl controls /
+ * rounded-full badges, touch targets ≥44px (h-11), tabular-nums for numbers.
+ */
+import { Check, Pencil, Trash2, X } from "lucide-react";
+import { useState } from "react";
+import { Button } from "./ui";
+import type { DocTypeRow } from "~/data/contractor-admin";
+
+/* ------------------------------ ComplianceBadge ------------------------------ */
+/** "{onFile}/{required}" pill — green ✓ when complete, danger tint when not;
+ *  hidden entirely when the org requires no document types. */
+export function ComplianceBadge({ onFile, required, size = "sm" }: { onFile: number; required: number; size?: "sm" | "lg" }) {
+  if (required <= 0) return null;
+  const complete = onFile >= required;
+  const cls = size === "lg" ? "text-xs px-3 py-1.5" : "text-[11px] px-2.5 py-1";
+  return (
+    <span
+      className={`inline-flex min-h-[22px] items-center gap-1.5 rounded-full font-bold uppercase tracking-wide tabular-nums ${cls} ${
+        complete ? "bg-success-50 text-success-700" : "bg-danger-50 text-danger-700"
+      }`}
+      title={complete ? "All required documents on file" : `${required - onFile} required document${required - onFile === 1 ? "" : "s"} missing`}
+    >
+      <span aria-hidden="true" className={`size-1.5 rounded-full bg-current opacity-80 ${complete ? "bg-success-500" : "bg-danger-500"}`} />
+      {onFile}/{required}
+      {complete ? " ✓" : ""}
+    </span>
+  );
+}
+
+/* ------------------------------- PayRateField ------------------------------- */
+/** Inline per-job payrate edit: display "$75 / job" (brand-orange, tabular) +
+ *  pencil; edit = $ prefix + decimal input + check/X (busy disables both);
+ *  clearing an existing rate asks "Remove the rate?" first; unset renders "—".
+ *  The parent owns the optimistic row update + toast + revert: onSave returns
+ *  a promise that rejects on failure so the field can restore its display. */
+export function PayRateField({
+  valueCents,
+  size = "sm",
+  onSave,
+  busy = false,
+}: {
+  valueCents: number | null;
+  size?: "sm" | "lg";
+  onSave: (cents: number | null) => Promise<void>;
+  /** Parent-side in-flight guard (e.g. another row saving). */
+  busy?: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [confirmingClear, setConfirmingClear] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const display = valueCents == null ? null : formatCents(valueCents);
+  const inFlight = saving || busy;
+
+  const startEdit = () => {
+    setDraft(valueCents == null ? "" : String(valueCents / 100));
+    setError("");
+    setConfirmingClear(false);
+    setEditing(true);
+  };
+
+  const parseDraft = (): number | null => {
+    const raw = draft.replace(/[$,\s]/g, "");
+    if (raw === "") return null;
+    if (!/^\d+(\.\d{0,2})?$/.test(raw)) return null;
+    const cents = Math.round(parseFloat(raw) * 100);
+    if (cents < 0 || cents > 9_999_999) return null;
+    return cents;
+  };
+
+  const save = async () => {
+    const cents = parseDraft();
+    if (cents == null) { setError("Enter an amount like 75"); return; }
+    setError("");
+    setSaving(true);
+    try {
+      await onSave(cents);
+      setEditing(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't save the rate.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const clear = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      await onSave(null);
+      setConfirmingClear(false);
+      setEditing(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't clear the rate.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Display mode
+  if (!editing) {
+    return (
+      <span className="inline-flex min-h-9 items-center gap-1">
+        {display != null ? (
+          <span className={`font-bold tabular-nums text-brand-700 ${size === "lg" ? "text-lg" : "text-sm"}`}>
+            {display} <span className="font-semibold text-ink-400">/ job</span>
+          </span>
+        ) : (
+          <span className={`font-bold tabular-nums text-ink-300 ${size === "lg" ? "text-lg" : "text-sm"}`}>—</span>
+        )}
+        <button
+          type="button"
+          onClick={startEdit}
+          disabled={inFlight}
+          aria-label="Edit payrate"
+          className="grid size-9 place-items-center rounded-lg text-ink-400 transition-colors hover:bg-ink-50 hover:text-ink-600 disabled:opacity-50"
+        >
+          <Pencil className="size-3.5" aria-hidden="true" />
+        </button>
+      </span>
+    );
+  }
+
+  // Confirm-clear (only offered when a rate already exists)
+  if (confirmingClear) {
+    return (
+      <span className="inline-flex min-h-9 items-center gap-1.5">
+        <span className="text-xs font-medium text-ink-500">Remove the rate?</span>
+        <Button size="sm" variant="danger" loading={saving} onClick={() => void clear()}>Remove</Button>
+        <Button size="sm" variant="secondary" disabled={saving} onClick={() => setConfirmingClear(false)}>Keep</Button>
+      </span>
+    );
+  }
+
+  // Edit mode
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span className="flex h-9 items-center rounded-lg border border-ink-200 bg-surface px-2 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-100">
+        <span className="text-sm font-semibold text-ink-400">$</span>
+        <input
+          value={draft}
+          onChange={(e) => { setDraft(e.target.value); setError(""); }}
+          onKeyDown={(e) => { if (e.key === "Enter") void save(); if (e.key === "Escape") setEditing(false); }}
+          inputMode="decimal"
+          autoFocus
+          maxLength={8}
+          placeholder="75"
+          aria-label="Payrate per job"
+          disabled={saving}
+          className="w-16 bg-transparent px-1 text-sm font-bold tabular-nums text-brand-700 outline-none placeholder:text-ink-300"
+        />
+      </span>
+      <Button size="sm" loading={saving} className="!px-2.5" title="Save rate" onClick={() => void save()}>
+        <Check className="size-3.5" aria-hidden="true" />
+      </Button>
+      <Button size="sm" variant="secondary" className="!px-2.5" disabled={saving} title={valueCents != null ? "Clear rate" : "Cancel"}
+        onClick={() => (valueCents != null ? setConfirmingClear(true) : setEditing(false))}>
+        <X className="size-3.5" aria-hidden="true" />
+      </Button>
+      {error && <span role="alert" className="text-xs font-medium text-danger-600">{error}</span>}
+    </span>
+  );
+}
+
+/** 12345 → "$123.45" (2 decimals max, tabular-safe string). */
+export function formatCents(cents: number): string {
+  const v = (cents / 100).toLocaleString("en-US", { maximumFractionDigits: 2 });
+  return `$${v}`;
+}
+
+/* --------------------------- DocumentTypeEditorRow --------------------------- */
+/** Owner Required-documents editor row: up/down chevrons (sort_order swap),
+ *  name + pencil (inline rename), AiToggle-style active switch, danger-ghost
+ *  delete with confirm. Hides the controls that don't apply to a paused row. */
+export function DocumentTypeEditorRow({
+  type,
+  isFirst,
+  isLast,
+  busy,
+  onRename,
+  onToggle,
+  onRemove,
+  onMove,
+}: {
+  type: DocTypeRow;
+  isFirst: boolean;
+  isLast: boolean;
+  busy: boolean;
+  onRename: (name: string) => Promise<void>;
+  onToggle: (active: boolean) => Promise<void>;
+  onRemove: () => Promise<void>;
+  onMove: (direction: "up" | "down") => Promise<void>;
+}) {
+  const [renaming, setRenaming] = useState(false);
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
+  const [draft, setDraft] = useState(type.name);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const submitRename = async () => {
+    const name = draft.trim();
+    if (!name) { setError("Enter a name."); return; }
+    if (name === type.name) { setRenaming(false); return; }
+    setError("");
+    setSaving(true);
+    try {
+      await onRename(name);
+      setRenaming(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't rename.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const confirmRemove = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      await onRemove();
+      setConfirmingRemove(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't remove.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className={`px-4 py-3.5 ${type.active ? "" : "bg-ink-50/40"} ${isLast ? "" : "border-b border-ink-100"}`}>
+      <div className="flex items-center gap-2">
+        {type.active && (
+          <span className="flex flex-col">
+            <button type="button" disabled={busy || isFirst} aria-label="Move up" onClick={() => void onMove("up")}
+              className="grid size-6 place-items-center rounded text-ink-400 hover:bg-ink-100 hover:text-ink-700 disabled:opacity-30">
+              <svg viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m18 15-6-6-6 6" /></svg>
+            </button>
+            <button type="button" disabled={busy || isLast} aria-label="Move down" onClick={() => void onMove("down")}
+              className="grid size-6 place-items-center rounded text-ink-400 hover:bg-ink-100 hover:text-ink-700 disabled:opacity-30">
+              <svg viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+            </button>
+          </span>
+        )}
+        <div className="min-w-0 flex-1">
+          {renaming ? (
+            <span className="flex items-center gap-1.5">
+              <input
+                value={draft}
+                onChange={(e) => { setDraft(e.target.value); setError(""); }}
+                onKeyDown={(e) => { if (e.key === "Enter") void submitRename(); if (e.key === "Escape") setRenaming(false); }}
+                maxLength={40}
+                autoFocus
+                disabled={saving}
+                aria-label="Document type name"
+                className="h-9 w-full max-w-56 rounded-lg border border-ink-200 bg-surface px-2.5 text-sm font-medium outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+              />
+              <Button size="sm" loading={saving} className="!px-2.5" title="Save name" onClick={() => void submitRename()}>
+                <Check className="size-3.5" aria-hidden="true" />
+              </Button>
+              <Button size="sm" variant="secondary" className="!px-2.5" disabled={saving} onClick={() => setRenaming(false)}>
+                <X className="size-3.5" aria-hidden="true" />
+              </Button>
+            </span>
+          ) : (
+            <p className={`truncate text-sm font-semibold ${type.active ? "" : "text-ink-400"}`}>
+              {type.name}
+              {type.requiresExpiry && <span className="ml-2 rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-ink-500">expires</span>}
+              {!type.active && <span className="ml-2 text-[11px] font-bold uppercase tracking-wide text-ink-400">paused</span>}
+            </p>
+          )}
+          {error && <p role="alert" className="mt-1 text-xs font-medium text-danger-600">{error}</p>}
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={type.active}
+          aria-label={`${type.name} required`}
+          disabled={busy}
+          onClick={() => void onToggle(!type.active)}
+          className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500 disabled:opacity-50 ${
+            type.active ? "bg-brand-500" : "bg-ink-200"
+          }`}
+        >
+          <span aria-hidden="true" className={`inline-block size-5 transform rounded-full bg-white shadow transition-transform duration-150 ${type.active ? "translate-x-6" : "translate-x-1"}`} />
+        </button>
+        {type.active && !renaming && (
+          <button type="button" disabled={busy} aria-label={`Rename ${type.name}`} onClick={() => { setDraft(type.name); setError(""); setRenaming(true); }}
+            className="grid size-9 place-items-center rounded-lg text-ink-400 transition-colors hover:bg-ink-50 hover:text-ink-600 disabled:opacity-50">
+            <Pencil className="size-4" aria-hidden="true" />
+          </button>
+        )}
+        <button type="button" disabled={busy} aria-label={`Remove ${type.name}`} onClick={() => { setError(""); setConfirmingRemove(true); }}
+          className="grid size-9 place-items-center rounded-lg text-danger-600 transition-colors hover:bg-danger-50 disabled:opacity-50">
+          <Trash2 className="size-4" aria-hidden="true" />
+        </button>
+      </div>
+      {confirmingRemove && (
+        <div className="mt-3 rounded-xl border border-danger-200 bg-danger-50/60 p-4">
+          <p className="text-sm font-bold text-danger-800">Remove “{type.name}”?</p>
+          <p className="mt-1 text-xs leading-relaxed text-ink-600">
+            Removing a type doesn&apos;t delete contractors&apos; files — it just stops being required.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button variant="danger" size="sm" loading={saving} onClick={() => void confirmRemove()}>Remove type</Button>
+            <Button variant="secondary" size="sm" disabled={saving} onClick={() => setConfirmingRemove(false)}>Keep it</Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

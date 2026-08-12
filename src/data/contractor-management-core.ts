@@ -62,7 +62,11 @@ const canManage = (a: ContractorMgmtActor) => ALLOWED_ROLES.includes(a.role);
 export type ContractorStatus = "signed_in" | "not_signed_in";
 /** Seroval-safe row: every property defined (null, never undefined).
  *  removedAt set ⇒ the contractor was removed (soft-deactivated): excluded from
- *  dispatch, cannot sign in, historical records kept. */
+ *  dispatch, cannot sign in, historical records kept. payrateCents = per-job
+ *  payrate (contractor_profiles; null = unset). requiredDocCount/onFileDocCount
+ *  = compliance aggregate over ACTIVE required doc types (contractor admin):
+ *  required = types the org requires; onFile = types with a file whose derived
+ *  status is UPLOADED or VERIFIED (present AND not expired/rejected). */
 export type ContractorRow = {
   id: string;
   name: string;
@@ -74,6 +78,9 @@ export type ContractorRow = {
   lastActivityAt: string | null;
   createdAt: string | null;
   removedAt: string | null;
+  payrateCents: number | null;
+  requiredDocCount: number;
+  onFileDocCount: number;
 };
 
 export type ImportSkip = { towbookDriverId: string; name: string | null; reason: string };
@@ -143,9 +150,17 @@ export async function listContractorsCore(actor: ContractorMgmtActor): Promise<C
     const rows = await q`SELECT u.id, u.name, u.email, u.login_handle, u.towbook_driver_id, u.towbook_user_id, u.created_at, u.deactivated_at,
         ts.session_updated_at,
         ls.last_login,
-        dl.last_ping
+        dl.last_ping,
+        cp.payrate_cents,
+        (SELECT COUNT(*)::int FROM contractor_doc_types t WHERE t.org_id = ${actor.orgId} AND t.active) AS required_doc_count,
+        (SELECT COUNT(*)::int FROM contractor_documents d
+           JOIN contractor_doc_types t ON t.id = d.doc_type_id AND t.active
+           WHERE d.org_id = ${actor.orgId} AND d.contractor_id = u.id
+             AND d.status IN ('uploaded','verified')
+             AND (d.expires_on IS NULL OR d.expires_on >= CURRENT_DATE)) AS on_file_doc_count
       FROM users u
       JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND m.role = 'contractor'
+      LEFT JOIN contractor_profiles cp ON cp.org_id = ${actor.orgId} AND cp.user_id = u.id
       LEFT JOIN LATERAL (
         SELECT MAX(updated_at) AS session_updated_at
         FROM towbook_sessions ts
@@ -182,6 +197,9 @@ export async function listContractorsCore(actor: ContractorMgmtActor): Promise<C
         lastActivityAt: lastActivity ? lastActivity.toISOString() : null,
         createdAt: toIso(r.created_at),
         removedAt: null, // deactivated rows are excluded above — never returned
+        payrateCents: r.payrate_cents != null ? Number(r.payrate_cents) : null,
+        requiredDocCount: r.required_doc_count != null ? Number(r.required_doc_count) : 0,
+        onFileDocCount: r.on_file_doc_count != null ? Number(r.on_file_doc_count) : 0,
       };
     });
     return { ok: true, data: contractors };
@@ -246,6 +264,7 @@ export async function addContractorCore(actor: ContractorMgmtActor, data: unknow
     const contractor: ContractorRow = {
       id: userId, name, email, loginHandle: handle, towbookDriverId: driverId, towbookUserId: null,
       status: "not_signed_in", lastActivityAt: null, createdAt: new Date().toISOString(), removedAt: null,
+      payrateCents: null, requiredDocCount: 0, onFileDocCount: 0,
     };
     return { ok: true, data: contractor };
   } catch (err) {
@@ -695,6 +714,7 @@ export async function editContractorCore(actor: ContractorMgmtActor, data: unkno
       towbookDriverId: row.towbook_driver_id != null ? String(row.towbook_driver_id) : null,
       towbookUserId: row.towbook_user_id != null ? String(row.towbook_user_id) : null,
       status: "not_signed_in", lastActivityAt: null, createdAt: toIso(row.created_at), removedAt: null,
+      payrateCents: null, requiredDocCount: 0, onFileDocCount: 0,
     };
     return { ok: true, data: { contractor, towbook } };
   } catch (err) {
@@ -780,6 +800,7 @@ export async function removeContractorCore(actor: ContractorMgmtActor, data: unk
       towbookUserId: row.towbook_user_id != null ? String(row.towbook_user_id) : null,
       status: "not_signed_in", lastActivityAt: null, createdAt: toIso(row.created_at),
       removedAt: new Date().toISOString(),
+      payrateCents: null, requiredDocCount: 0, onFileDocCount: 0,
     };
     return { ok: true, data: { contractor, towbook, sessionsInvalidated: sessions.length } };
   } catch (err) {

@@ -386,6 +386,70 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     )`;
     await q`CREATE INDEX IF NOT EXISTS job_feedback_org_job_idx ON job_feedback(org_id, job_id)`;
   }],
+  [21, async (q) => {
+    // Contractor administration (owner-directed 2026-08-11, plan rev 17): the
+    // owner defines which legal documents every contractor must keep on file
+    // (W-9, license, insurance cert, medical examiner card, towing license…).
+    // Org-level REQUIRED TYPES — soft-hide via active (never hard-delete:
+    // contractor_documents rows reference these ids and files exist in B2).
+    // sort_order drives the editor's up/down reorder + the per-contractor
+    // Documents list. Unique (org, LOWER(name)) makes a case-insensitive
+    // duplicate an explicit DB-level backstop on top of the zod pre-check.
+    await q`CREATE TABLE IF NOT EXISTS contractor_doc_types (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      requires_expiry BOOLEAN NOT NULL DEFAULT FALSE,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS contractor_doc_types_org_name_uidx
+      ON contractor_doc_types(org_id, LOWER(name))`;
+  }],
+  [22, async (q) => {
+    // Per-contractor document files — ONE current file per (contractor, type);
+    // a re-upload UPSERTs the same row (and overwrites the same B2 object,
+    // photos precedent: no versioning in v1; re-upload history = audit rows).
+    // status is the OWNER-reviewed state; the READ-TIME derived status adds
+    // EXPIRED whenever expires_on < today regardless of the stored status
+    // (date wins — the reader promotes; contractor-admin-core derives it).
+    await q`CREATE TABLE IF NOT EXISTS contractor_documents (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      contractor_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      doc_type_id TEXT NOT NULL REFERENCES contractor_doc_types(id) ON DELETE CASCADE,
+      storage_key TEXT NOT NULL,
+      file_name TEXT,
+      mime TEXT,
+      size_bytes INTEGER,
+      status TEXT NOT NULL DEFAULT 'uploaded'
+        CHECK (status IN ('uploaded','verified','expired','rejected')),
+      expires_on DATE,
+      review_note TEXT,
+      uploaded_by_user_id TEXT NOT NULL REFERENCES users(id),
+      uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS contractor_documents_org_ctr_type_uidx
+      ON contractor_documents(org_id, contractor_id, doc_type_id)`;
+  }],
+  [23, async (q) => {
+    // Org-scoped contractor operational profile — payrate + LD-only contact
+    // fields. payrate_cents = per completed job (NULL = unset, drives future
+    // payday math: payrate × completed jobs + tips). phone/vehicle_desc are
+    // Lightning-Dispatch-only (no Towbook push in v1 — Towbook's driver editor
+    // phone/vehicle surface is unverified territory).
+    await q`CREATE TABLE IF NOT EXISTS contractor_profiles (
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      payrate_cents INTEGER,
+      phone TEXT,
+      vehicle_desc TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (org_id, user_id)
+    )`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

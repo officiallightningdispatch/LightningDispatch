@@ -1,0 +1,111 @@
+/**
+ * Contractor administration (owner-directed 2026-08-11, plan rev 17) —
+ * CLIENT-SAFE FACADE.
+ *
+ * This module is the ONLY piece of the contractor-admin feature imported by
+ * client code (owner portal / contractor app). It defines the createServerFn
+ * server functions; their handlers dynamic-import the SERVER-ONLY core
+ * (./contractor-admin-core.ts) so the client bundle never pulls in b2-client /
+ * auth-server / db code. No other exports — the core owns all logic (see the
+ * client-graph rule that has broken the build before).
+ */
+import { createServerFn } from "@tanstack/react-start";
+import type {
+  ContractorAdminResult,
+  ContractorComplianceRow,
+  ContractorDocumentRow,
+  DocFilePayload,
+  DocTypeRow,
+  UploadDocumentResult,
+} from "./contractor-admin-core";
+export type {
+  ContractorAdminResult,
+  ContractorComplianceRow,
+  ContractorDocumentRow,
+  DocFilePayload,
+  DocStatus,
+  DocTypeRow,
+  UploadDocumentResult,
+} from "./contractor-admin-core";
+
+const passthrough = (x: unknown) => x;
+
+/* ------------------------------ doc types (owner) ------------------------------ */
+
+export const listRequiredDocTypes = createServerFn({ method: "GET" }).handler(async (): Promise<ContractorAdminResult<DocTypeRow[]>> => {
+  const core = await import("./contractor-admin-core");
+  return core.listRequiredDocTypesHandler();
+});
+
+export const addDocType = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<ContractorAdminResult<DocTypeRow>> => {
+  const core = await import("./contractor-admin-core");
+  return core.addDocTypeHandler(data);
+});
+
+export const renameDocType = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<ContractorAdminResult<DocTypeRow>> => {
+  const core = await import("./contractor-admin-core");
+  return core.renameDocTypeHandler(data);
+});
+
+export const removeDocType = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<ContractorAdminResult<{ id: string }>> => {
+  const core = await import("./contractor-admin-core");
+  return core.removeDocTypeHandler(data);
+});
+
+export const setDocTypeActive = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<ContractorAdminResult<{ id: string; active: boolean }>> => {
+  const core = await import("./contractor-admin-core");
+  return core.setDocTypeActiveHandler(data);
+});
+
+export const reorderDocTypes = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<ContractorAdminResult<{ reordered: number }>> => {
+  const core = await import("./contractor-admin-core");
+  return core.reorderDocTypesHandler(data);
+});
+
+/* ------------------------------ documents (owner) ------------------------------ */
+
+export const listContractorDocuments = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<ContractorAdminResult<ContractorDocumentRow[]>> => {
+  const core = await import("./contractor-admin-core");
+  return core.listContractorDocumentsHandler(data);
+});
+
+export const setDocumentStatus = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<ContractorAdminResult<{ docId: string; status: ContractorDocumentRow["status"] }>> => {
+  const core = await import("./contractor-admin-core");
+  return core.setDocumentStatusHandler(data);
+});
+
+export const setDocumentExpiry = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<ContractorAdminResult<{ docId: string; expiresOn: string | null }>> => {
+  const core = await import("./contractor-admin-core");
+  return core.setDocumentExpiryHandler(data);
+});
+
+export const getDocumentFile = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<ContractorAdminResult<DocFilePayload>> => {
+  const core = await import("./contractor-admin-core");
+  return core.getDocumentFileHandler(data);
+});
+
+/* ---------------------------------- payrate ---------------------------------- */
+
+export const setContractorPayrate = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<ContractorAdminResult<{ contractorId: string; payrateCents: number | null }>> => {
+  const core = await import("./contractor-admin-core");
+  return core.setContractorPayrateHandler(data);
+});
+
+/* --------------------------------- compliance --------------------------------- */
+
+export const listContractorCompliance = createServerFn({ method: "GET" }).handler(async (): Promise<ContractorAdminResult<ContractorComplianceRow[]>> => {
+  const core = await import("./contractor-admin-core");
+  return core.listContractorComplianceHandler();
+});
+
+/* ---------------------------- contractor-own documents ---------------------------- */
+
+export const getMyDocuments = createServerFn({ method: "GET" }).handler(async (): Promise<ContractorAdminResult<ContractorDocumentRow[]>> => {
+  const core = await import("./contractor-admin-core");
+  return core.getMyDocumentsHandler();
+});
+
+export const uploadMyDocument = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<UploadDocumentResult> => {
+  const core = await import("./contractor-admin-core");
+  return core.uploadMyDocumentHandler(data);
+});
