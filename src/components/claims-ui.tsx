@@ -86,9 +86,9 @@ export function ClaimStatementCard({ claim, title = "Prepared response" }: { cla
       </div>
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
         {rows.map(([k, v]) => (
-          <div key={k} className="rounded-xl border border-ink-100 bg-white px-3 py-2">
+          <div key={k} className={`rounded-xl border border-ink-100 bg-white px-3 py-2 ${k === "Damage reported" ? "sm:col-span-2" : ""}`}>
             <p className="text-[10px] font-bold uppercase tracking-wide text-ink-400">{k}</p>
-            <p className="truncate text-[13px] font-medium text-ink-700" title={v}>{v}</p>
+            <p className="whitespace-pre-wrap break-words text-[13px] leading-snug font-medium text-ink-700">{v}</p>
           </div>
         ))}
       </div>
