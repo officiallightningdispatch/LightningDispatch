@@ -221,7 +221,10 @@ export async function listLinkableDriversCore(): Promise<DriverLinkStatusResult>
     FROM users u
     JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${u.orgId} AND m.role='contractor'
     WHERE u.deactivated_at IS NULL AND u.towbook_driver_id IS NOT NULL
-      AND u.linked_driver_user_id IS NULL
+      -- drivers already linked to ANY account are not linkable (one owner per
+      -- driver, partial unique index) — the link column lives on the SOURCE
+      -- row, so exclude via NOT EXISTS on users.linked_driver_user_id
+      AND NOT EXISTS (SELECT 1 FROM users src WHERE src.linked_driver_user_id = u.id)
     ORDER BY LOWER(u.name)`;
   const candidates: LinkableDriverRow[] = (rows as Record<string, unknown>[]).map((r) => {
     const stamps = [r.last_session, r.last_ping].filter((v) => v != null).map((v) => new Date(String(v)).getTime());
