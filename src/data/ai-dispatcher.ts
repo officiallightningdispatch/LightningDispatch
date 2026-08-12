@@ -1173,7 +1173,7 @@ async function towbookFetch(
   try {
     const res = await fetchImpl(url, {
       method: init?.method ?? "GET",
-      headers: init?.method === "POST"
+      headers: init?.body
         ? { ...towbookHeaders(cookie), "content-type": "application/json" }
         : towbookHeaders(cookie),
       redirect: "manual",
