@@ -46,6 +46,9 @@
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { loadB2Config, authorizeAccount, putObject, getObject } from "./b2-client";
+import { encryptBankValue, decryptBankValue } from "./bank-key";
+import { buildW9Pdf, buildI9Pdf } from "./form-pdf";
+import type { W9PdfValues, I9PdfValues } from "./form-pdf";
 
 /* --------------------------------- helpers --------------------------------- */
 
@@ -79,6 +82,8 @@ const ok = <T>(data: T): ContractorAdminResult<T> => ({ ok: true, data });
 
 /* ----------------------------------- types ----------------------------------- */
 
+export type { FormKind } from "./form-docs-core";
+
 export type DocTypeRow = {
   id: string;
   name: string;
@@ -87,6 +92,9 @@ export type DocTypeRow = {
    *  live selfie are both required; the owner approves the pair with one verify
    *  tap (no facial-matching service — approval is the owner's review). */
   requiresFacialVerification: boolean;
+  /** Form-bearing type (owner-directed 2026-08-12): the W-9 / I-9 required
+   *  docs are FILLABLE OFFICIAL FORMS, not uploads. 'i9' | 'w9' | null. */
+  formKind: FormKind | null;
   sortOrder: number;
   active: boolean;
   createdAt: string;
@@ -104,6 +112,13 @@ export type ContractorDocumentRow = {
   /** Pair-bearing type — a live selfie is required alongside the primary file
    *  (part 3, owner-directed 2026-08-12); the pair is approved together. */
   requiresFacialVerification: boolean;
+  /** Form-bearing type — the driver fills the official form instead of
+   *  uploading a file ('i9' | 'w9' | null). */
+  formKind: FormKind | null;
+  /** The stored file may NOT be read back by the driver: completed official
+   *  forms carry the tax id (SSN/EIN) — owner-only visibility after submission
+   *  (owner-directed 2026-08-12). False for i9/w9 form docs. */
+  formViewableByDriver: boolean;
   status: DocStatus;
   docId: string | null;
   fileName: string | null;
@@ -181,7 +196,7 @@ const TYPE_ID_SCHEMA = z.object({ id: z.string().trim().min(1).max(128) });
 
 async function loadDocType(actor: ContractorAdminActor, id: string): Promise<Record<string, unknown> | null> {
   const q = await db();
-  const rows = await q`SELECT id, org_id, name, requires_expiry, requires_facial_verification, sort_order, active, created_at FROM contractor_doc_types WHERE id=${id} AND org_id=${actor.orgId} LIMIT 1`;
+  const rows = await q`SELECT id, org_id, name, requires_expiry, requires_facial_verification, form_kind, sort_order, active, created_at FROM contractor_doc_types WHERE id=${id} AND org_id=${actor.orgId} LIMIT 1`;
   return rows.length ? (rows[0] as Record<string, unknown>) : null;
 }
 
@@ -192,7 +207,7 @@ export async function listRequiredDocTypesCore(actor: ContractorAdminActor): Pro
   try {
     await ensure();
     const q = await db();
-    const rows = await q`SELECT id, name, requires_expiry, requires_facial_verification, sort_order, active, created_at
+    const rows = await q`SELECT id, name, requires_expiry, requires_facial_verification, form_kind, sort_order, active, created_at
       FROM contractor_doc_types WHERE org_id=${actor.orgId}
       ORDER BY active DESC, sort_order ASC, created_at ASC`;
     const out: DocTypeRow[] = (rows as Record<string, unknown>[]).map((r) => ({
@@ -200,6 +215,7 @@ export async function listRequiredDocTypesCore(actor: ContractorAdminActor): Pro
       name: String(r.name),
       requiresExpiry: r.requires_expiry === true,
       requiresFacialVerification: r.requires_facial_verification === true,
+      formKind: r.form_kind === "i9" || r.form_kind === "w9" ? (r.form_kind as FormKind) : null,
       sortOrder: r.sort_order != null ? Number(r.sort_order) : 0,
       active: r.active === true,
       createdAt: new Date(String(r.created_at)).toISOString(),
@@ -425,11 +441,19 @@ export async function getDocumentFileCore(actor: ContractorAdminActor, data: unk
   try {
     await ensure();
     const q = await db();
-    const rows = await q`SELECT id, contractor_id, storage_key, file_name, mime, size_bytes FROM contractor_documents WHERE id=${v.data.docId} AND org_id=${actor.orgId} LIMIT 1`;
+    const rows = await q`SELECT d.id, d.contractor_id, d.storage_key, d.file_name, d.mime, d.size_bytes, t.form_kind
+      FROM contractor_documents d JOIN contractor_doc_types t ON t.id = d.doc_type_id
+      WHERE d.id=${v.data.docId} AND d.org_id=${actor.orgId} LIMIT 1`;
     if (!rows.length) return err("not_found", "That document isn't on this account.");
     const row = rows[0] as Record<string, unknown>;
     if (actor.role === "contractor" && String(row.contractor_id) !== actor.id) {
       return err("unauthorized", "This document belongs to another contractor.");
+    }
+    // Completed official forms carry the tax id (SSN/EIN) — after submission
+    // the FILE is owner-only, even for the contractor who filled it.
+    // (owner-directed 2026-08-12: SSN/EIN never render to the contractor.)
+    if (actor.role === "contractor" && (row.form_kind === "i9" || row.form_kind === "w9")) {
+      return err("unauthorized", "This completed form is viewable by the owner only.");
     }
     const key = String(row.storage_key);
     let b2;
@@ -1011,7 +1035,7 @@ async function listContractorDocumentsUnchecked(actor: ContractorAdminActor, con
     const q = await db();
     const member = await q`SELECT 1 FROM organization_memberships m WHERE m.org_id=${actor.orgId} AND m.user_id=${contractorId} AND m.role='contractor' LIMIT 1`;
     if (!member.length) return err("not_found", "That contractor isn't on this account.");
-    const rows = await q`SELECT t.id AS doc_type_id, t.name AS doc_type_name, t.requires_expiry, t.requires_facial_verification, t.sort_order,
+    const rows = await q`SELECT t.id AS doc_type_id, t.name AS doc_type_name, t.requires_expiry, t.requires_facial_verification, t.form_kind, t.sort_order,
         d.id AS doc_id, d.file_name, d.mime, d.size_bytes, d.expires_on, d.review_note, d.uploaded_at, d.uploaded_by_user_id, d.status AS stored_status,
         s.file_name AS selfie_file_name, s.uploaded_at AS selfie_uploaded_at
       FROM contractor_doc_types t
@@ -1023,11 +1047,14 @@ async function listContractorDocumentsUnchecked(actor: ContractorAdminActor, con
       const storedStatus = r.stored_status != null ? String(r.stored_status) : null;
       const expiresOn = formatYmd(r.expires_on);
       const status = storedStatus ? deriveDocStatus(storedStatus, expiresOn) : "missing";
+      const formKind = r.form_kind === "i9" || r.form_kind === "w9" ? (r.form_kind as FormKind) : null;
       return {
         docTypeId: String(r.doc_type_id),
         docTypeName: String(r.doc_type_name),
         requiresExpiry: r.requires_expiry === true,
         requiresFacialVerification: r.requires_facial_verification === true,
+        formKind,
+        formViewableByDriver: formKind === null,
         status,
         docId: r.doc_id != null ? String(r.doc_id) : null,
         fileName: r.file_name != null ? String(r.file_name) : null,
@@ -1093,7 +1120,7 @@ export async function uploadMyDocumentCore(actor: ContractorAdminActor, data: un
   try {
     await ensure();
     const q = await db();
-    const type = await q`SELECT id, name, requires_expiry, active FROM contractor_doc_types WHERE id=${v.data.docTypeId} AND org_id=${actor.orgId} LIMIT 1`;
+    const type = await q`SELECT id, name, requires_expiry, form_kind, active FROM contractor_doc_types WHERE id=${v.data.docTypeId} AND org_id=${actor.orgId} LIMIT 1`;
     if (!type.length || type[0].active !== true) return { ok: false, code: "not_found", message: "That document type isn't required on your account." };
     const ext = DOC_EXT[decoded.mime];
     const key = `ld-docs/${actor.orgId}/${actor.id}/${v.data.docTypeId}.${ext}`;
@@ -1324,12 +1351,14 @@ export async function getComplianceGateCore(actor: ContractorAdminActor): Promis
  *  server boot (serve.ts) so the owner's real drivers see the mandated types on
  *  day one, and owner/admin can seed any org on demand from the Required-
  *  documents editor ("Add standard set"). Idempotent — existing types
- *  (case-insensitive) are left untouched; missing ones are appended. */
-export const MANDATED_DOC_TYPES: Array<{ name: string; requiresExpiry: boolean; requiresFacialVerification: boolean }> = [
-  { name: "W-9", requiresExpiry: false, requiresFacialVerification: false },
-  { name: "I-9", requiresExpiry: false, requiresFacialVerification: false },
-  { name: "Driver's License", requiresExpiry: true, requiresFacialVerification: true },
-  { name: "Insurance information", requiresExpiry: true, requiresFacialVerification: false },
+ *  (case-insensitive) are left untouched; missing ones are appended.
+ *  formKind (owner-directed 2026-08-12): W-9 and I-9 are FILLABLE OFFICIAL
+ *  FORMS — the driver fills the form instead of uploading a photo. */
+export const MANDATED_DOC_TYPES: Array<{ name: string; requiresExpiry: boolean; requiresFacialVerification: boolean; formKind: FormKind | null }> = [
+  { name: "W-9", requiresExpiry: false, requiresFacialVerification: false, formKind: "w9" },
+  { name: "I-9", requiresExpiry: false, requiresFacialVerification: false, formKind: "i9" },
+  { name: "Driver's License", requiresExpiry: true, requiresFacialVerification: true, formKind: null },
+  { name: "Insurance information", requiresExpiry: true, requiresFacialVerification: false, formKind: null },
 ];
 
 /** Core seeding logic — throws on failure so callers decide how to surface it.
@@ -1347,16 +1376,16 @@ async function seedMandatedDocTypesUnsafe(orgId: string, auditActor?: Contractor
   for (const m of MANDATED_DOC_TYPES) {
     if (have.has(m.name.toLowerCase())) continue;
     const id = `dt-${cryptoRandomId()}`;
-    await q`INSERT INTO contractor_doc_types(id, org_id, name, requires_expiry, requires_facial_verification, sort_order)
-      VALUES(${id}, ${orgId}, ${m.name}, ${m.requiresExpiry}, ${m.requiresFacialVerification}, ${sortOrder})`;
-    added.push({ id, name: m.name, requiresExpiry: m.requiresExpiry, requiresFacialVerification: m.requiresFacialVerification, sortOrder, active: true, createdAt: new Date().toISOString() });
+    await q`INSERT INTO contractor_doc_types(id, org_id, name, requires_expiry, requires_facial_verification, form_kind, sort_order)
+      VALUES(${id}, ${orgId}, ${m.name}, ${m.requiresExpiry}, ${m.requiresFacialVerification}, ${m.formKind}, ${sortOrder})`;
+    added.push({ id, name: m.name, requiresExpiry: m.requiresExpiry, requiresFacialVerification: m.requiresFacialVerification, formKind: m.formKind, sortOrder, active: true, createdAt: new Date().toISOString() });
     sortOrder += 1;
   }
   if (added.length) {
     const actor = auditActor ?? (await firstManagerActor(orgId));
     if (actor) {
       for (const r of added) {
-        await recordAudit(actor, "contractor_doc_type_added", r.id, { name: r.name, requiresExpiry: r.requiresExpiry, requiresFacialVerification: r.requiresFacialVerification, sortOrder: r.sortOrder });
+        await recordAudit(actor, "contractor_doc_type_added", r.id, { name: r.name, requiresExpiry: r.requiresExpiry, requiresFacialVerification: r.requiresFacialVerification, formKind: r.formKind, sortOrder: r.sortOrder });
       }
     }
   }
@@ -1600,4 +1629,43 @@ async function resolveOwnerOrContractorActor(): Promise<ContractorAdminActor | n
   const u = await currentUser();
   if (!u) return null;
   return { orgId: u.orgId, id: u.id, role: u.role };
+}
+
+/* ---------------- official fillable forms — serverFn entry points (2026-08-12) ---------------- */
+
+export { submitW9FormCore, submitI9FormCore, getFormSubmissionCore, getFormDocFileCore, reviewI9Section2Core } from "./form-docs-core";
+export type { FormSubmissionView, SubmitFormResult, I9IdentityDocRow } from "./form-docs-core";
+
+export async function submitW9FormHandler(data: unknown): Promise<SubmitFormResult> {
+  const actor = await resolveContractorActor();
+  if (!actor) return { ok: false, code: "unauthorized", message: "Driver access required." };
+  return submitW9FormCore(actor, data);
+}
+
+export async function submitI9FormHandler(data: unknown): Promise<SubmitFormResult> {
+  const actor = await resolveContractorActor();
+  if (!actor) return { ok: false, code: "unauthorized", message: "Driver access required." };
+  return submitI9FormCore(actor, data);
+}
+
+export async function getFormSubmissionHandler(data: unknown): Promise<ContractorAdminResult<FormSubmissionView>> {
+  const owner = await resolveOwnerActor();
+  if (owner) return getFormSubmissionCore(owner, data);
+  const contractor = await resolveContractorActor();
+  if (!contractor) return err("unauthorized", "Sign in to continue.");
+  return getFormSubmissionCore(contractor, data);
+}
+
+export async function getFormDocFileHandler(data: unknown): Promise<ContractorAdminResult<DocFilePayload>> {
+  const owner = await resolveOwnerActor();
+  if (owner) return getFormDocFileCore(owner, data);
+  const contractor = await resolveContractorActor();
+  if (!contractor) return err("unauthorized", "Sign in to continue.");
+  return getFormDocFileCore(contractor, data);
+}
+
+export async function reviewI9Section2Handler(data: unknown): Promise<ContractorAdminResult<{ docId: string; status: "verified" | "rejected" }>> {
+  const actor = await resolveOwnerActor();
+  if (!actor) return err("unauthorized", "Owner access required.");
+  return reviewI9Section2Core(actor, data);
 }

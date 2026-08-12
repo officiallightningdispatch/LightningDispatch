@@ -20,7 +20,9 @@ import type {
   ContractorVehicleResult,
   DocFilePayload,
   DocTypeRow,
+  FormSubmissionView,
   MyCompliance,
+  SubmitFormResult,
   UploadDocumentResult,
   UploadSelfieResult,
 } from "./contractor-admin-core";
@@ -36,6 +38,7 @@ export type {
   DocFilePayload,
   DocStatus,
   DocTypeRow,
+  FormSubmissionView,
   MyCompliance,
   UploadDocumentResult,
   UploadSelfieResult,
@@ -209,3 +212,28 @@ export const setMySchedule = createServerFn({ method: "POST" }).validator(passth
   const core = await import("./contractor-admin-core");
   return core.setMyScheduleHandler(data);
 });
+
+/* ------- official fillable forms (W-9 + I-9; owner-directed 2026-08-12) ------- */
+// Driver fills the OFFICIAL W-9 / I-9 in-app (form docs); the completed
+// official-form PDF is stored to private B2. W-9 SSN/EIN + I-9 SSN are
+// encrypted at rest and NEVER render back to the driver (owner-only).
+
+export const submitW9Form = createServerFn({ method: "POST" })
+  .validator(passthrough)
+  .handler(async ({ data }): Promise<SubmitFormResult> => core.submitW9FormHandler(data));
+
+export const submitI9Form = createServerFn({ method: "POST" })
+  .validator(passthrough)
+  .handler(async ({ data }): Promise<SubmitFormResult> => core.submitI9FormHandler(data));
+
+export const getFormSubmission = createServerFn({ method: "GET" })
+  .validator(passthrough)
+  .handler(async ({ data }): Promise<ContractorAdminResult<FormSubmissionView>> => core.getFormSubmissionHandler(data));
+
+export const getFormDocFile = createServerFn({ method: "GET" })
+  .validator(passthrough)
+  .handler(async ({ data }): Promise<ContractorAdminResult<DocFilePayload>> => core.getFormDocFileHandler(data));
+
+export const reviewI9Section2 = createServerFn({ method: "POST" })
+  .validator(passthrough)
+  .handler(async ({ data }): Promise<ContractorAdminResult<{ docId: string; status: "verified" | "rejected" }>> => core.reviewI9Section2Handler(data));

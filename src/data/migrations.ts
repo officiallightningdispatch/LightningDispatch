@@ -867,6 +867,77 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS card_billing_zip TEXT`;
     await q`ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS charge_path TEXT CHECK (charge_path IS NULL OR charge_path IN ('square','outside'))`;
   }],
+  [38, async (q) => {
+    // OFFICIAL FILLABLE FORMS (owner-directed 2026-08-12): the W-9 and I-9
+    // required docs switch from photo uploads to fillable OFFICIAL forms
+    // (USCIS Form I-9 + IRS Form W-9) whose completed PDF is stored to private
+    // B2 for record keeping. The compliance gate is UNCHANGED — the form
+    // submission still upserts the (contractor, doc_type) contractor_documents
+    // row with status 'uploaded' → owner verify/reject as before.
+    //
+    // form_kind marks a required doc type as FORM-BEARING ('i9' | 'w9'): the
+    // driver fills the form instead of uploading a file (uploadMyDocumentCore
+    // refuses form types). At most ONE I-9 and ONE W-9 per org (partial unique
+    // index). The one-time backfill below tags the mandated set rows that the
+    // pre-form seed created (name 'W-9' / 'I-9', case-insensitive) so existing
+    // orgs pick up the fillable flow without re-seeding.
+    //
+    // contractor_form_submissions: ONE current submission per (org, contractor,
+    // form doc type). payload = the form fields EXCLUDING the tax id (SSN/EIN
+    // never plaintext — tax_id_encrypted is AES-256-GCM under the dedicated
+    // bank.key, same envelope as bank rails; decrypted ONLY for the owner
+    // review surface and only server-side). pdf_storage_key = the completed
+    // official-form PDF in private B2 (the owner's record). section2 is the
+    // OWNER-entered I-9 Section 2 review record (documents examined +
+    // certifying representative); approval flips contractor_documents to
+    // 'verified' and REGENERATES the I-9 PDF with Section 2 stamped in.
+    //
+    // contractor_form_docs: the I-9 identity documents (List A, or B+C) the
+    // driver attaches to their Section 1 — file rows so the owner review UI
+    // can pull each image. Numbers/titles are driver-entered metadata; files
+    // live in private B2.
+    await q`ALTER TABLE contractor_doc_types ADD COLUMN IF NOT EXISTS form_kind TEXT CHECK (form_kind IS NULL OR form_kind IN ('i9','w9'))`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS contractor_doc_types_org_form_uidx
+      ON contractor_doc_types(org_id) WHERE form_kind IS NOT NULL`;
+    await q`UPDATE contractor_doc_types SET form_kind='w9' WHERE form_kind IS NULL AND LOWER(name)='w-9'`;
+    await q`UPDATE contractor_doc_types SET form_kind='i9' WHERE form_kind IS NULL AND LOWER(name)='i-9'`;
+    await q`CREATE TABLE IF NOT EXISTS contractor_form_submissions (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      contractor_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      doc_type_id TEXT NOT NULL REFERENCES contractor_doc_types(id) ON DELETE CASCADE,
+      form_kind TEXT NOT NULL CHECK (form_kind IN ('i9','w9')),
+      pdf_storage_key TEXT NOT NULL,
+      payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+      tax_id_encrypted TEXT,
+      section2 JSONB,
+      section2_approved_by TEXT REFERENCES users(id),
+      section2_approved_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS contractor_form_submissions_org_ctr_type_uidx
+      ON contractor_form_submissions(org_id, contractor_id, doc_type_id)`;
+    await q`CREATE INDEX IF NOT EXISTS contractor_form_submissions_org_ctr_idx
+      ON contractor_form_submissions(org_id, contractor_id)`;
+    await q`CREATE TABLE IF NOT EXISTS contractor_form_docs (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      contractor_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      submission_id TEXT NOT NULL REFERENCES contractor_form_submissions(id) ON DELETE CASCADE,
+      list TEXT NOT NULL CHECK (list IN ('A','B','C')),
+      storage_key TEXT NOT NULL,
+      file_name TEXT,
+      mime TEXT,
+      size_bytes INTEGER,
+      title TEXT,
+      issuing_authority TEXT,
+      number TEXT,
+      expiration DATE,
+      uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    await q`CREATE INDEX IF NOT EXISTS contractor_form_docs_submission_idx ON contractor_form_docs(submission_id)`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();
