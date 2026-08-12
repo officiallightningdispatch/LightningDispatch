@@ -620,6 +620,23 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
       PRIMARY KEY (org_id, user_id)
     )`;
   }],
+  [29, async (q) => {
+    // job_feedback (2026-08-12, owner bug: "contractor feedback won't submit"):
+    // the table was originally added to version 20 AFTER v20 had already been
+    // applied to the database, so it never ran (driver_issues in the same
+    // migration exists; job_feedback does not). Append-only fix — never edit an
+    // applied migration. CREATE TABLE IF NOT EXISTS makes this safe to re-run.
+    await q`CREATE TABLE IF NOT EXISTS job_feedback (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      job_id TEXT NOT NULL,
+      driver_id TEXT NOT NULL,
+      rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+      comment TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    await q`CREATE INDEX IF NOT EXISTS job_feedback_org_job_idx ON job_feedback(org_id, job_id)`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();
