@@ -1,17 +1,22 @@
 /**
- * Payment engine (owner spec 2026-08-11, backlog #1 first slice) — CLIENT-SAFE
- * FACADE.
+ * Payment engine (owner spec 2026-08-11, PER-PO CARD rework 2026-08-12) —
+ * CLIENT-SAFE FACADE.
  *
  * This module is the ONLY piece of the payment engine imported by client code
- * (the payment tab UI lands in a later delegation). It defines the
- * createServerFn server functions; their handlers dynamic-import the
- * SERVER-ONLY core (./payment-engine-core.ts) so the client bundle never pulls
- * in square-client / club-mail / imapflow / db / auth-server code. No other
- * exports — the core owns all logic (client-graph rule).
+ * (the payment tab UI). It defines the createServerFn server functions; their
+ * handlers dynamic-import the SERVER-ONLY core (./payment-engine-core.ts) so
+ * the client bundle never pulls in square-client / club-mail / imapflow / db /
+ * auth-server code. No other exports — the core owns all logic (client-graph
+ * rule).
+ *
+ * PER-PO CARD MODEL: each staged row carries ITS OWN card metadata from its PO
+ * email; the owner charges a row by entering that PO's card into Square's
+ * secure Web Payments form (nonce → POST /v2/payments) or by charging in their
+ * own Square dashboard and marking it paid. There is no per-club card on file.
  */
 import { createServerFn } from "@tanstack/react-start";
-import type { ScanClubMailResult, StageClubChargeResult, ListStagedChargesResult, ChargeStagedResult, MirrorTipResult, CreateClubCardResult, ListClubCardsResult, DeleteClubCardResult, ListTipsResult, SquarePublicConfigResult } from "./payment-engine-core";
-export type { PaymentTxnRow, ScanClubMailResult, StageClubChargeResult, ListStagedChargesResult, ChargeStagedResult, MirrorTipResult, ClubCardRow, CreateClubCardResult, ListClubCardsResult, DeleteClubCardResult, TipLedgerRow, ListTipsResult, SquarePublicConfigResult, ScanItem } from "./payment-engine-core";
+import type { ScanClubMailResult, StageClubChargeResult, ListStagedChargesResult, ChargeStagedResult, MarkChargedOutsideResult, MirrorTipResult, ListTipsResult, SquarePublicConfigResult } from "./payment-engine-core";
+export type { PaymentTxnRow, ScanClubMailResult, StageClubChargeResult, ListStagedChargesResult, ChargeStagedResult, MarkChargedOutsideResult, MirrorTipResult, TipLedgerRow, ListTipsResult, SquarePublicConfigResult, ScanItem } from "./payment-engine-core";
 
 const passthrough = (x: unknown) => x;
 
@@ -28,10 +33,21 @@ export const listStagedCharges = createServerFn({ method: "GET" }).handler(async
   return core.listStagedChargesHandler();
 });
 
-/** Charge ONE staged club charge via the owner's Square account (owner/admin). */
+/** Charge ONE staged club charge via the owner's Square account (owner/admin).
+ *  Requires the Web Payments NONCE collected from the owner entering the card
+ *  shown in the PO email (per-PO card model — there is no per-club card on
+ *  file). Exactly one idempotent POST /v2/payments. */
 export const chargeStaged = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<ChargeStagedResult> => {
   const core = await import("./payment-engine-core");
   return core.chargeStagedHandler(data);
+});
+
+/** Record that the owner already charged this row in their own Square
+ *  dashboard (owner/admin) — "Mark charged (paid outside)". Sets
+ *  status='charged', charge_path='outside'. */
+export const markChargedOutside = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<MarkChargedOutsideResult> => {
+  const core = await import("./payment-engine-core");
+  return core.markChargedOutsideHandler(data);
 });
 
 /** Scan the owner's Gmail for motor-club card-charge notifications and stage
@@ -47,27 +63,6 @@ export const scanClubMail = createServerFn({ method: "POST" }).validator(passthr
 export const mirrorTip = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<MirrorTipResult> => {
   const core = await import("./payment-engine-core");
   return core.mirrorTipHandler(data);
-});
-
-/** Store ONE motor-club card on file (owner/admin). The card is tokenized
- *  CLIENT-SIDE by Square's Web Payments SDK (public app/location ids only —
- *  never the access token); the nonce becomes a ccof card on the OWNER's
- *  Square account via the Cards API. Re-adding a club's card replaces it. */
-export const createClubCard = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<CreateClubCardResult> => {
-  const core = await import("./payment-engine-core");
-  return core.createClubCardHandler(data);
-});
-
-/** Every stored club card for this org (owner/admin). */
-export const listClubCards = createServerFn({ method: "GET" }).handler(async (): Promise<ListClubCardsResult> => {
-  const core = await import("./payment-engine-core");
-  return core.listClubCardsHandler();
-});
-
-/** Remove a stored club card from Square + this org (owner/admin). */
-export const deleteClubCard = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<DeleteClubCardResult> => {
-  const core = await import("./payment-engine-core");
-  return core.deleteClubCardHandler(data);
 });
 
 /** Tips ledger read with driver attribution (owner/admin). */

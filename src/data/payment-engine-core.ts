@@ -1,5 +1,5 @@
 /**
- * Payment engine core (owner spec 2026-08-11, backlog #1 first slice) —
+ * Payment engine core (owner spec 2026-08-11, PER-PO CARD rework 2026-08-12) —
  * SERVER-ONLY.
  *
  * The payment LEDGER data layer: motor-club card charges are STAGED (from the
@@ -7,20 +7,29 @@
  * via listStagedChargesCore, and executed per row by chargeStagedCore through
  * the OWNER's Square account (POST /v2/payments — funds never leave the
  * owner's Square balance). Nothing is ever auto-charged here: staging is the
- * safety rail. The payment tab UI, payday button, payrates and bulk auto-charge
- * are later delegations that build on this core.
+ * safety rail.
+ *
+ * PER-PO CARD MODEL (owner correction 2026-08-12): clubs provide ONE CARD PER
+ * PO (per job), not one card per club/account. Each staged row carries ITS OWN
+ * card metadata parsed from that PO's email (brand/last4/expiry/billing zip —
+ * display hints only, NO PAN anywhere). At charge time the OWNER enters the
+ * card (visible in the PO email) into Square's secure Web Payments form → a
+ * single-use nonce → POST /v2/payments (exactly one, idempotent). There is NO
+ * per-club card on file: the motor_club_cards table (migration 34) is
+ * DEPRECATED — this module no longer reads or writes it. A row with no
+ * tokenized source surfaces square_source_missing; the owner also has a
+ * "Mark charged (paid outside)" path (markChargedOutsideCore) to record a
+ * charge they executed in their own Square dashboard — consistent with the
+ * payday/tip pattern of the owner executing sends from their own apps.
  *
  * Square capability note (verified against developer.squareup.com 2026-08-11):
  * POST /v2/payments accepts `source_id` = a card NONCE (Web Payments SDK /
- * payment form), a card TOKEN, or a card-on-file id (`ccof:...` created via
- * the Cards API) — there are NO raw card fields (no exp_month/exp_year/
- * card_number) in the Create Payment request body. Card details parsed out of
- * an email therefore CANNOT be charged directly: the card must be tokenized
- * once (Web Payments SDK nonce in the payment tab, or stored as a card on file
- * via the Cards API) and that source recorded in payment_transactions.
- * card_source_id — the charge core reads it; a row without one returns
- * square_source_missing so the UI knows to collect a tokenized source. The PAN
- * is NEVER stored or logged (only last4 + brand).
+ * payment form), a card TOKEN, or a card-on-file id (`ccof:...`) — there are
+ * NO raw card fields (no exp_month/exp_year/card_number) in the Create Payment
+ * request body. Card details parsed out of an email therefore CANNOT be
+ * charged directly: the card must be tokenized once (Web Payments SDK nonce in
+ * the payment tab) and that source passed with the charge request. The PAN is
+ * NEVER stored or logged (only last4 + brand + expiry + zip).
  *
  * Idempotency: the charge idempotency key is `club-<txnId>-<attempt>`, attempt
  * increments ONLY on a CONFIRMED Square failure (4xx/decline/terminal status).
@@ -29,6 +38,11 @@
  * for a replayed key and a double charge is impossible (same philosophy as
  * completion_tips). Staging is idempotent by (org, source_email_message_id):
  * re-scanning never double-stages (unique partial index backstop + guard).
+ *
+ * charge_path records HOW a row was paid: 'square' (via POST /v2/payments with
+ * a Web Payments nonce) or 'outside' (owner charged in their own dashboard and
+ * marked it). square_payment_id stays NULL for 'outside' rows; the audit trail
+ * carries the rest.
  *
  * Tips keep living in completion_tips (driver attribution); mirrorTipCore
  * mirrors a paid tip into this ledger (kind='tip', idempotency key
@@ -46,7 +60,7 @@
  * gate is enforced at the core, not just the handler.
  */
 import { z } from "zod";
-import { loadSquareConfig, loadSquarePublicConfig, createCardPayment, createCardOnFile, deleteCardOnFile } from "./square-client";
+import { loadSquareConfig, loadSquarePublicConfig, createCardPayment } from "./square-client";
 import { scanGmail, type ClubChargeCandidate } from "./club-mail";
 import { randomUUID } from "node:crypto";
 
@@ -82,6 +96,13 @@ export type PaymentTxnRow = {
   clubName: string | null;
   cardLast4: string | null;
   cardBrand: string | null;
+  /** Card expiry from the PO email (MM/YY) — display hint, never used to charge. */
+  cardExpiry: string | null;
+  /** Card billing zip from the PO email — display hint, never used to charge. */
+  cardBillingZip: string | null;
+  /** 'square' (POST /v2/payments with a Web Payments nonce) | 'outside'
+   *  (owner charged in their own dashboard and marked it) | null (never charged). */
+  chargePath: "square" | "outside" | null;
   cardSourceId: string | null;
   poRef: string | null;
   sourceEmailMessageId: string | null;
@@ -100,6 +121,9 @@ export type ScanItem = {
   subject: string;
   amountCents: number | null;
   cardLast4: string | null;
+  cardBrand: string | null;
+  cardExpiry: string | null;
+  cardBillingZip: string | null;
   clubName: string | null;
   poRef: string | null;
   outcome: "staged" | "already_staged" | "skipped" | "dry_run";
@@ -130,46 +154,21 @@ export type ChargeStagedResult =
   | { ok: true; data: PaymentTxnRow }
   | { ok: false; code: "unauthorized" | "not_found" | "invalid_state" | "square_not_configured" | "square_source_missing" | "square_failed" | "database_error"; message: string; retryable?: boolean };
 
-export type MirrorTipResult =
+export type MarkChargedOutsideResult =
   | { ok: true; data: PaymentTxnRow }
   | { ok: false; code: "unauthorized" | "not_found" | "invalid_state" | "database_error"; message: string };
 
-/* --------------------------- card on file (club) --------------------------- */
-
-/** One stored motor-club card (motor_club_cards row) — the ccof payment source
- *  for auto-charging that club's staged charges. brand + last4 only, never the
- *  PAN. */
-export type ClubCardRow = {
-  id: string;
-  orgId: string;
-  clubName: string;
-  squareCardId: string; // "ccof:…"
-  brand: string | null;
-  last4: string | null;
-  createdAt: string;
-};
-
-export type ListClubCardsResult =
-  | { ok: true; data: ClubCardRow[] }
-  | { ok: false; code: "unauthorized" | "database_error"; message: string };
-
-export type CreateClubCardResult =
-  | { ok: true; data: ClubCardRow }
-  | { ok: false; code: "unauthorized" | "invalid_input" | "square_not_configured" | "square_failed" | "database_error"; message: string };
-
-export type DeleteClubCardResult =
-  | { ok: true; data: { id: string; removedFromSquare: boolean } }
-  | { ok: false; code: "unauthorized" | "not_found" | "square_failed" | "database_error"; message: string };
+export type MirrorTipResult =
+  | { ok: true; data: PaymentTxnRow }
+  | { ok: false; code: "unauthorized" | "not_found" | "invalid_state" | "database_error"; message: string };
 
 /** A tip ledger row with the paying driver's name (LEFT JOIN completion_tips →
  *  users) — the payment tab's tips view shows driver attribution without
  *  duplicating tip data. */
 export type TipLedgerRow = PaymentTxnRow & { driverName: string | null; driverTowbookId: string | null };
-
 export type ListTipsResult =
   | { ok: true; data: TipLedgerRow[] }
   | { ok: false; code: "unauthorized" | "database_error"; message: string };
-
 export type SquarePublicConfigResult =
   | { ok: true; data: { applicationId: string; locationId: string } }
   | { ok: false; code: "unauthorized" | "square_not_configured"; message: string };
@@ -197,6 +196,9 @@ function toTxnRow(r: Record<string, unknown>): PaymentTxnRow {
     clubName: str(r.club_name),
     cardLast4: str(r.card_last4),
     cardBrand: str(r.card_brand),
+    cardExpiry: str(r.card_expiry),
+    cardBillingZip: str(r.card_billing_zip),
+    chargePath: r.charge_path === "square" || r.charge_path === "outside" ? r.charge_path : null,
     cardSourceId: str(r.card_source_id),
     poRef: str(r.po_ref),
     sourceEmailMessageId: str(r.source_email_message_id),
@@ -209,20 +211,6 @@ function toTxnRow(r: Record<string, unknown>): PaymentTxnRow {
   };
 }
 
-/** DB row → Seroval-safe club card row (brand/last4 null, never undefined). */
-function toClubCardRow(r: Record<string, unknown>): ClubCardRow {
-  const str = (v: unknown): string | null => (v == null || v === "" ? null : String(v));
-  return {
-    id: String(r.id),
-    orgId: String(r.org_id),
-    clubName: String(r.club_name),
-    squareCardId: String(r.square_card_id),
-    brand: str(r.brand),
-    last4: str(r.last4),
-    createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : new Date(String(r.created_at)).toISOString(),
-  };
-}
-
 /** Normalize a parsed club-charge candidate into insertable columns. */
 function candidateColumns(orgId: string, c: ClubChargeCandidate) {
   const receivedAt = c.receivedAt instanceof Date && !Number.isNaN(c.receivedAt.getTime()) ? c.receivedAt : null;
@@ -230,6 +218,9 @@ function candidateColumns(orgId: string, c: ClubChargeCandidate) {
     orgId,
     amountCents: c.amountCents,
     cardLast4: c.cardLast4 ?? null,
+    cardBrand: c.cardBrand ?? null,
+    cardExpiry: c.cardExpiry ?? null,
+    cardBillingZip: c.cardBillingZip ?? null,
     clubName: c.clubName ?? null,
     poRef: c.poRef ?? null,
     messageId: c.messageId,
@@ -249,6 +240,9 @@ export async function stageClubChargeCore(actor: PaymentEngineActor, data: unkno
   const v = z.object({
     amountCents: z.number().int().min(1).max(100_000_000),
     cardLast4: z.string().regex(/^\d{4}$/).optional(),
+    cardBrand: z.string().max(30).optional(),
+    cardExpiry: z.string().max(10).optional(),
+    cardBillingZip: z.string().max(10).optional(),
     clubName: z.string().max(120).optional(),
     poRef: z.string().max(80).optional(),
     messageId: z.string().max(255).optional(),
@@ -272,12 +266,12 @@ export async function stageClubChargeCore(actor: PaymentEngineActor, data: unkno
       const d = new Date(v.data.receivedAt);
       if (!Number.isNaN(d.getTime())) receivedAt = d;
     }
-    await q`INSERT INTO payment_transactions(id, org_id, job_id, kind, amount_cents, currency, status, club_name, card_last4, po_ref, source_email_message_id, source_email_received_at, idempotency_key, attempt)
-      VALUES(${id}, ${actor.orgId}, ${v.data.jobId ?? null}, 'club_charge', ${v.data.amountCents}, 'USD', 'staged', ${v.data.clubName ?? null}, ${v.data.cardLast4 ?? null}, ${v.data.poRef ?? null}, ${messageId}, ${receivedAt}, NULL, 0)`;
+    await q`INSERT INTO payment_transactions(id, org_id, job_id, kind, amount_cents, currency, status, club_name, card_last4, card_brand, card_expiry, card_billing_zip, po_ref, source_email_message_id, source_email_received_at, idempotency_key, attempt)
+      VALUES(${id}, ${actor.orgId}, ${v.data.jobId ?? null}, 'club_charge', ${v.data.amountCents}, 'USD', 'staged', ${v.data.clubName ?? null}, ${v.data.cardLast4 ?? null}, ${v.data.cardBrand ?? null}, ${v.data.cardExpiry ?? null}, ${v.data.cardBillingZip ?? null}, ${v.data.poRef ?? null}, ${messageId}, ${receivedAt}, NULL, 0)`;
     try {
       await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
         SELECT gen_random_uuid()::text, ${actor.orgId}, ${actor.id}, ${actor.role}, 'payment_charge_staged', 'payment_transaction', ${id},
-          ${JSON.stringify({ amountCents: v.data.amountCents, clubName: v.data.clubName ?? null, messageId })}::jsonb, 'payment-engine'`;
+          ${JSON.stringify({ amountCents: v.data.amountCents, clubName: v.data.clubName ?? null, cardLast4: v.data.cardLast4 ?? null, messageId })}::jsonb, 'payment-engine'`;
     } catch { /* best-effort audit */ }
     const row = await q`SELECT * FROM payment_transactions WHERE id=${id} LIMIT 1`;
     return { ok: true, data: toTxnRow(row[0] as Record<string, unknown>) };
@@ -306,26 +300,34 @@ export async function listStagedChargesCore(actor: PaymentEngineActor): Promise<
 
 const CHARGE_SCHEMA = z.object({
   txnId: z.string().min(1).max(128),
-  /** Optional Square source override (nonce / card-on-file id) collected by
-   *  the UI — falls back to the staged row's card_source_id. */
-  sourceId: z.string().min(1).max(255).optional(),
+  /** The Square Web Payments NONCE the owner collected by entering the card
+   *  from THIS PO's email into the secure card form (single-use — a fresh
+   *  nonce is required for every charge/retry). Required: per-PO card model,
+   *  there is no per-club stored card to fall back to. */
+  sourceId: z.string().min(8).max(255),
 });
 
 /** Execute ONE staged club charge via the owner's Square account
  *  (POST /v2/payments, Bearer token server-side, idempotency key
- *  `club-<txnId>-<attempt>`). Success → status 'charged' + square_payment_id +
- *  attempt/idempotency_key recorded. Confirmed Square failure (4xx / terminal
- *  payment status) → status 'failed' with the error + attempt (a retry uses a
- *  fresh attempt → fresh key). A network/transport error → the row STAYS
- *  'staged' with the same attempt so a retry replays the SAME key — Square
- *  returns the same payment for a replayed key, so a double charge is
- *  impossible. Requires a tokenized source (nonce/card-on-file id) on the row
- *  or in the request — raw card details parsed from email are NOT accepted by
- *  Square (see module header) and surface as square_source_missing. */
+ *  `club-<txnId>-<attempt>`). Success → status 'charged' + charge_path
+ *  'square' + square_payment_id + attempt/idempotency_key recorded.
+ *  Confirmed Square failure (4xx / terminal payment status) → status 'failed'
+ *  with the error + attempt (a retry uses a fresh attempt → fresh key). A
+ *  network/transport error → the row STAYS 'staged' with the same attempt so a
+ *  retry replays the SAME key — Square returns the same payment for a replayed
+ *  key, so a double charge is impossible.
+ *
+ * PER-PO CARD MODEL (owner correction 2026-08-12): the charge REQUIRES a
+ *  tokenized sourceId (the Web Payments nonce from the owner entering the
+ *  card visible in the PO email). The raw card metadata staged from the email
+ *  (brand/last4/expiry/zip) is display-only — Square does not accept raw card
+ *  fields (see module header). There is no per-club card on file anymore:
+ *  motor_club_cards is never read. A request without a sourceId surfaces
+ *  square_source_missing. */
 export async function chargeStagedCore(actor: PaymentEngineActor, data: unknown, opts: { fetchImpl?: typeof fetch; squareStableDir?: string } = {}): Promise<ChargeStagedResult> {
   if (!canManage(actor)) return { ok: false, code: "unauthorized", message: "Only the owner or an admin can charge." };
   const v = CHARGE_SCHEMA.safeParse(data);
-  if (!v.success) return { ok: false, code: "invalid_state", message: "Invalid request." };
+  if (!v.success) return { ok: false, code: "square_source_missing", retryable: true, message: "This charge needs a tokenized card source. Open the charge form, enter the card shown in the PO email (Square tokenizes it securely — the full number never touches Lightning Dispatch), then charge." };
   let config;
   try {
     config = await loadSquareConfig(process.env, { stableDir: opts.squareStableDir });
@@ -344,26 +346,7 @@ export async function chargeStagedCore(actor: PaymentEngineActor, data: unknown,
     const rowStatus = String(row.status);
     if (rowStatus !== "staged" && rowStatus !== "failed") return { ok: false, code: "invalid_state", message: `This charge is already ${rowStatus} — refresh the list.` };
 
-    let sourceId = (v.data.sourceId && v.data.sourceId.trim()) || (row.card_source_id != null && String(row.card_source_id) !== "" ? String(row.card_source_id) : null);
-    // Auto-resolve the club's stored card-on-file (payment tab slice): when the
-    // staged row carries no tokenized source, charge through the club's ccof
-    // card if one is on file — the owner-approved flow "charge club cards via
-    // Square without re-entering card details". The resolved id is persisted on
-    // the row so the ledger shows exactly which source was charged.
-    if (!sourceId && row.club_name != null && String(row.club_name) !== "") {
-      const clubCards = await q`SELECT square_card_id FROM motor_club_cards WHERE org_id=${actor.orgId} AND lower(club_name)=lower(${String(row.club_name)}) LIMIT 1`;
-      if (clubCards.length) {
-        sourceId = String(clubCards[0].square_card_id);
-        await q`UPDATE payment_transactions SET card_source_id=${sourceId}, updated_at=NOW() WHERE id=${String(row.id)}`;
-      }
-    }
-    if (!sourceId) {
-      return {
-        ok: false, code: "square_source_missing", retryable: true,
-        message: "This charge has no tokenized card source. Square cannot charge raw card details parsed from an email — add this club's card on the Payments tab (card on file), then retry.",
-      };
-    }
-
+    const sourceId = v.data.sourceId.trim();
     const amountCents = Number.isFinite(Number(row.amount_cents)) ? Number(row.amount_cents) : 0;
     const currency = String(row.currency ?? "USD");
     const clubName = row.club_name != null ? String(row.club_name) : "";
@@ -415,7 +398,7 @@ export async function chargeStagedCore(actor: PaymentEngineActor, data: unknown,
       return { ok: false, code: "square_failed", message, retryable: true };
     }
 
-    await q`UPDATE payment_transactions SET status='charged', square_payment_id=${payment.paymentId}, attempt=${attempt}, idempotency_key=${idempotencyKey}, error=NULL, updated_at=NOW() WHERE id=${String(row.id)}`;
+    await q`UPDATE payment_transactions SET status='charged', charge_path='square', square_payment_id=${payment.paymentId}, card_source_id=${sourceId}, attempt=${attempt}, idempotency_key=${idempotencyKey}, error=NULL, updated_at=NOW() WHERE id=${String(row.id)}`;
     try {
       await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
         SELECT gen_random_uuid()::text, ${actor.orgId}, ${actor.id}, ${actor.role}, 'payment_charge_charged', 'payment_transaction', ${String(row.id)},
@@ -425,6 +408,50 @@ export async function chargeStagedCore(actor: PaymentEngineActor, data: unknown,
     return { ok: true, data: toTxnRow(finalRow[0] as Record<string, unknown>) };
   } catch (err) {
     return { ok: false, code: "database_error", message: err instanceof Error ? err.message : "Unable to charge." };
+  }
+}
+
+/* -------------------------- mark charged (outside) -------------------------- */
+
+const MARK_OUTSIDE_SCHEMA = z.object({
+  txnId: z.string().min(1).max(128),
+  /** Optional note — e.g. which dashboard/date the owner charged it in. */
+  note: z.string().max(500).optional(),
+});
+
+/** Record that the OWNER already charged this staged row in their own Square
+ *  dashboard ("Mark charged (paid outside)" — consistent with the payday/tip
+ *  pattern of the owner executing sends from their own apps). Sets
+ *  status='charged', charge_path='outside' (square_payment_id stays NULL — the
+ *  payment id lives in the owner's dashboard, not this ledger) and writes an
+ *  audit row. Only staged/failed rows can be marked; a charged/voided row is
+ *  invalid_state. Idempotent by row state: the second mark on the same row is
+ *  refused, never double-recorded. */
+export async function markChargedOutsideCore(actor: PaymentEngineActor, data: unknown): Promise<MarkChargedOutsideResult> {
+  if (!canManage(actor)) return { ok: false, code: "unauthorized", message: "Only the owner or an admin can mark charges paid." };
+  const v = MARK_OUTSIDE_SCHEMA.safeParse(data);
+  if (!v.success) return { ok: false, code: "invalid_state", message: "Invalid request." };
+  try {
+    await ensure();
+    const q = await db();
+    const rows = await q`SELECT * FROM payment_transactions WHERE id=${v.data.txnId} AND org_id=${actor.orgId} LIMIT 1`;
+    if (!rows.length) return { ok: false, code: "not_found", message: "Charge not found." };
+    const row = rows[0] as Record<string, unknown>;
+    if (String(row.kind) !== "club_charge") return { ok: false, code: "invalid_state", message: "Only staged club charges can be marked here." };
+    const rowStatus = String(row.status);
+    if (rowStatus !== "staged" && rowStatus !== "failed") return { ok: false, code: "invalid_state", message: `This charge is already ${rowStatus} — refresh the list.` };
+    await q`UPDATE payment_transactions SET status='charged', charge_path='outside', error=NULL, updated_at=NOW() WHERE id=${String(row.id)}`;
+    const amountCents = Number.isFinite(Number(row.amount_cents)) ? Number(row.amount_cents) : 0;
+    const note = (v.data.note ?? "").trim();
+    try {
+      await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
+        SELECT gen_random_uuid()::text, ${actor.orgId}, ${actor.id}, ${actor.role}, 'payment_charge_marked_outside', 'payment_transaction', ${String(row.id)},
+          ${JSON.stringify({ amountCents, clubName: row.club_name != null ? String(row.club_name) : null, poRef: row.po_ref != null ? String(row.po_ref) : null, note: note || null })}::jsonb, 'payment-engine'`;
+    } catch { /* best-effort audit */ }
+    const finalRow = await q`SELECT * FROM payment_transactions WHERE id=${String(row.id)} LIMIT 1`;
+    return { ok: true, data: toTxnRow(finalRow[0] as Record<string, unknown>) };
+  } catch (err) {
+    return { ok: false, code: "database_error", message: err instanceof Error ? err.message : "Unable to mark the charge paid." };
   }
 }
 
@@ -466,7 +493,7 @@ export async function scanClubMailCore(actor: PaymentEngineActor, data: unknown,
     let alreadyStaged = 0;
     let skipped = 0;
     for (const c of mail.candidates) {
-      const { orgId, amountCents, cardLast4, clubName, poRef, messageId, receivedAt } = candidateColumns(actor.orgId, c);
+      const { orgId, amountCents, cardLast4, cardBrand, cardExpiry, cardBillingZip, clubName, poRef, messageId, receivedAt } = candidateColumns(actor.orgId, c);
       const base: ScanItem = {
         messageId,
         receivedAt: receivedAt ? receivedAt.toISOString() : "",
@@ -474,6 +501,9 @@ export async function scanClubMailCore(actor: PaymentEngineActor, data: unknown,
         subject: c.subject ?? "",
         amountCents,
         cardLast4,
+        cardBrand,
+        cardExpiry,
+        cardBillingZip,
         clubName,
         poRef,
         outcome: "dry_run",
@@ -491,8 +521,8 @@ export async function scanClubMailCore(actor: PaymentEngineActor, data: unknown,
       }
       const id = `ptx-${orgId.slice(0, 8)}-${randomUUID()}`;
       try {
-        await q`INSERT INTO payment_transactions(id, org_id, kind, amount_cents, currency, status, club_name, card_last4, po_ref, source_email_message_id, source_email_received_at, attempt)
-          VALUES(${id}, ${orgId}, 'club_charge', ${amountCents}, 'USD', 'staged', ${clubName}, ${cardLast4}, ${poRef}, ${messageId}, ${receivedAt}, 0)`;
+        await q`INSERT INTO payment_transactions(id, org_id, kind, amount_cents, currency, status, club_name, card_last4, card_brand, card_expiry, card_billing_zip, po_ref, source_email_message_id, source_email_received_at, attempt)
+          VALUES(${id}, ${orgId}, 'club_charge', ${amountCents}, 'USD', 'staged', ${clubName}, ${cardLast4}, ${cardBrand}, ${cardExpiry}, ${cardBillingZip}, ${poRef}, ${messageId}, ${receivedAt}, 0)`;
       } catch (err) {
         // Unique (org, messageId) violation from a concurrent scan — count as already staged.
         if (err instanceof Error && /duplicate key value violates unique constraint/.test(err.message)) {
@@ -507,7 +537,7 @@ export async function scanClubMailCore(actor: PaymentEngineActor, data: unknown,
     }
     for (const s of mail.skipped) {
       skipped += 1;
-      items.push({ messageId: s.messageId, receivedAt: "", from: s.from, subject: s.subject, amountCents: null, cardLast4: null, clubName: null, poRef: null, outcome: "skipped", reason: s.reason });
+      items.push({ messageId: s.messageId, receivedAt: "", from: s.from, subject: s.subject, amountCents: null, cardLast4: null, cardBrand: null, cardExpiry: null, cardBillingZip: null, clubName: null, poRef: null, outcome: "skipped", reason: s.reason });
     }
     // Dry-run promises zero writes — even the audit row is skipped.
     if (!dryRun) {
@@ -571,133 +601,6 @@ export async function mirrorTipCore(actor: PaymentEngineActor, data: unknown): P
     return { ok: true, data: toTxnRow(row[0] as Record<string, unknown>) };
   } catch (err) {
     return { ok: false, code: "database_error", message: err instanceof Error ? err.message : "Unable to mirror the tip." };
-  }
-}
-
-/* --------------------------- card on file (club) --------------------------- */
-
-const CLUB_CARD_SCHEMA = z.object({
-  clubName: z.string().min(1).max(120),
-  /** The Web Payments SDK card nonce (cnon:…) collected CLIENT-SIDE — never a
-   *  raw PAN (Square rejects raw card fields on /v2/cards). */
-  sourceId: z.string().min(8).max(255),
-});
-
-/** Store one motor-club card on the OWNER's Square account (Cards API
- *  POST /v2/cards — the nonce becomes a `ccof:…` card id) and record it in
- *  motor_club_cards. UPSERT semantics per club: re-adding a card for a club
- *  that already has one REPLACES the local row and best-effort deletes the
- *  replaced Square card (never fails the call if that cleanup hiccups). The
- *  PAN never touches this code — Square returns only card id/brand/last4.
- *  Injectable fetchImpl/squareStableDir for hermetic tests. */
-export async function createClubCardCore(actor: PaymentEngineActor, data: unknown, opts: { fetchImpl?: typeof fetch; squareStableDir?: string } = {}): Promise<CreateClubCardResult> {
-  if (!canManage(actor)) return { ok: false, code: "unauthorized", message: "Only the owner or an admin can store club cards." };
-  const v = CLUB_CARD_SCHEMA.safeParse(data);
-  if (!v.success) return { ok: false, code: "invalid_input", message: "A club name and a tokenized card (from the card form) are required." };
-  let config;
-  try {
-    config = await loadSquareConfig(process.env, { stableDir: opts.squareStableDir });
-  } catch (err) {
-    return { ok: false, code: "square_not_configured", message: err instanceof Error ? err.message : "Square isn't connected." };
-  }
-  const id = `clubcard-${actor.orgId.slice(0, 8)}-${randomUUID()}`;
-  // Max 45 chars per the Cards API docs; the uuid suffix keeps keys unique.
-  const idempotencyKey = `clubcard-${actor.orgId.slice(0, 8)}-${randomUUID()}`.slice(0, 45);
-  let card;
-  try {
-    card = await createCardOnFile({
-      config,
-      idempotencyKey,
-      sourceId: v.data.sourceId,
-      referenceId: actor.orgId.slice(0, 64),
-      fetchImpl: opts.fetchImpl,
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Square could not store the card.";
-    return { ok: false, code: "square_failed", message, retryable: true };
-  }
-  try {
-    await ensure();
-    const q = await db();
-    // UPSERT per (org, club): one stored card per club. The replaced Square
-    // card is deleted best-effort AFTER the local row points at the new one.
-    const existing = await q`SELECT square_card_id FROM motor_club_cards WHERE org_id=${actor.orgId} AND lower(club_name)=lower(${v.data.clubName}) LIMIT 1`;
-    const replacedCardId = existing.length ? String(existing[0].square_card_id) : null;
-    await q`INSERT INTO motor_club_cards(id, org_id, club_name, square_card_id, brand, last4)
-      VALUES(${id}, ${actor.orgId}, ${v.data.clubName}, ${card.cardId}, ${card.brand}, ${card.last4})
-      ON CONFLICT (org_id, lower(club_name)) DO UPDATE SET square_card_id=${card.cardId}, brand=${card.brand}, last4=${card.last4}, created_at=NOW()`;
-    if (replacedCardId && replacedCardId !== card.cardId) {
-      try { await deleteCardOnFile({ config, cardId: replacedCardId, fetchImpl: opts.fetchImpl }); } catch { /* the new card is stored — cleanup is best-effort */ }
-    }
-    try {
-      await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
-        SELECT gen_random_uuid()::text, ${actor.orgId}, ${actor.id}, ${actor.role}, 'payment_club_card_saved', 'motor_club_card', ${id},
-          ${JSON.stringify({ clubName: v.data.clubName, squareCardId: card.cardId, brand: card.brand ?? null, last4: card.last4 ?? null, replaced: replacedCardId != null })}::jsonb, 'payment-engine'`;
-    } catch { /* best-effort audit */ }
-    const row = await q`SELECT * FROM motor_club_cards WHERE id=${id} LIMIT 1`;
-    if (!row.length) {
-      // ON CONFLICT kept the original id — re-read by (org, club).
-      const rows = await q`SELECT * FROM motor_club_cards WHERE org_id=${actor.orgId} AND lower(club_name)=lower(${v.data.clubName}) LIMIT 1`;
-      return { ok: true, data: toClubCardRow(rows[0] as Record<string, unknown>) };
-    }
-    return { ok: true, data: toClubCardRow(row[0] as Record<string, unknown>) };
-  } catch (err) {
-    return { ok: false, code: "database_error", message: err instanceof Error ? err.message : "Unable to store the club card." };
-  }
-}
-
-/** Owner/admin read: every stored club card for the org, club name A→Z. */
-export async function listClubCardsCore(actor: PaymentEngineActor): Promise<ListClubCardsResult> {
-  if (!canManage(actor)) return { ok: false, code: "unauthorized", message: "Only the owner or an admin can view club cards." };
-  try {
-    await ensure();
-    const q = await db();
-    const rows = await q`SELECT * FROM motor_club_cards WHERE org_id=${actor.orgId} ORDER BY lower(club_name) ASC, created_at DESC`;
-    return { ok: true, data: rows.map((r: Record<string, unknown>) => toClubCardRow(r)) };
-  } catch (err) {
-    return { ok: false, code: "database_error", message: err instanceof Error ? err.message : "Unable to list club cards." };
-  }
-}
-
-const DELETE_CARD_SCHEMA = z.object({ clubCardId: z.string().min(1).max(128) });
-
-/** Remove a stored club card: DELETE /v2/cards/{id} on Square (a 404 there is
- *  treated as already-gone) and delete the local row. A Square failure that is
- *  NOT a 404 keeps the local row and surfaces as square_failed (retryable). */
-export async function deleteClubCardCore(actor: PaymentEngineActor, data: unknown, opts: { fetchImpl?: typeof fetch; squareStableDir?: string } = {}): Promise<DeleteClubCardResult> {
-  if (!canManage(actor)) return { ok: false, code: "unauthorized", message: "Only the owner or an admin can remove club cards." };
-  const v = DELETE_CARD_SCHEMA.safeParse(data);
-  if (!v.success) return { ok: false, code: "not_found", message: "Invalid card reference." };
-  let config;
-  try {
-    config = await loadSquareConfig(process.env, { stableDir: opts.squareStableDir });
-  } catch (err) {
-    return { ok: false, code: "square_failed", message: err instanceof Error ? err.message : "Square isn't connected." };
-  }
-  try {
-    await ensure();
-    const q = await db();
-    const rows = await q`SELECT * FROM motor_club_cards WHERE id=${v.data.clubCardId} AND org_id=${actor.orgId} LIMIT 1`;
-    if (!rows.length) return { ok: false, code: "not_found", message: "Club card not found." };
-    const row = rows[0] as Record<string, unknown>;
-    const squareCardId = String(row.square_card_id);
-    let removedFromSquare = true;
-    try {
-      const res = await deleteCardOnFile({ config, cardId: squareCardId, fetchImpl: opts.fetchImpl });
-      removedFromSquare = res.deleted;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Square could not remove the card.";
-      return { ok: false, code: "square_failed", message, retryable: true };
-    }
-    await q`DELETE FROM motor_club_cards WHERE id=${v.data.clubCardId} AND org_id=${actor.orgId}`;
-    try {
-      await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
-        SELECT gen_random_uuid()::text, ${actor.orgId}, ${actor.id}, ${actor.role}, 'payment_club_card_removed', 'motor_club_card', ${v.data.clubCardId},
-          ${JSON.stringify({ clubName: String(row.club_name), squareCardId, removedFromSquare })}::jsonb, 'payment-engine'`;
-    } catch { /* best-effort audit */ }
-    return { ok: true, data: { id: v.data.clubCardId, removedFromSquare } };
-  } catch (err) {
-    return { ok: false, code: "database_error", message: err instanceof Error ? err.message : "Unable to remove the club card." };
   }
 }
 
@@ -790,25 +693,11 @@ export async function mirrorTipHandler(data: unknown): Promise<MirrorTipResult> 
   return mirrorTipCore(actor, data);
 }
 
-export async function createClubCardHandler(data: unknown): Promise<CreateClubCardResult> {
-  if (!configured()) return { ok: false, code: "square_not_configured", message: "Requires database mode." };
-  const actor = await resolveManageActor();
-  if (!actor) return { ok: false, code: "unauthorized", message: "Sign in as the owner or an admin first." };
-  return createClubCardCore(actor, data);
-}
-
-export async function listClubCardsHandler(): Promise<ListClubCardsResult> {
+export async function markChargedOutsideHandler(data: unknown): Promise<MarkChargedOutsideResult> {
   if (!configured()) return { ok: false, code: "database_error", message: "Requires database mode." };
   const actor = await resolveManageActor();
   if (!actor) return { ok: false, code: "unauthorized", message: "Sign in as the owner or an admin first." };
-  return listClubCardsCore(actor);
-}
-
-export async function deleteClubCardHandler(data: unknown): Promise<DeleteClubCardResult> {
-  if (!configured()) return { ok: false, code: "square_failed", message: "Requires database mode." };
-  const actor = await resolveManageActor();
-  if (!actor) return { ok: false, code: "unauthorized", message: "Sign in as the owner or an admin first." };
-  return deleteClubCardCore(actor, data);
+  return markChargedOutsideCore(actor, data);
 }
 
 export async function listTipsHandler(): Promise<ListTipsResult> {

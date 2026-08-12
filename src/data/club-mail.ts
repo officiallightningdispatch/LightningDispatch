@@ -126,6 +126,14 @@ export function detectClub(from: string, subject: string, bodyText: string): str
 export type ParsedClubCharge = {
   amountCents: number | null;
   cardLast4: string | null;
+  /** Card brand best-effort from the email text ("Visa"/"Mastercard"/"Amex"/
+   *  "Discover") — a display hint so the owner knows which card to enter. */
+  cardBrand: string | null;
+  /** Card expiry best-effort from the email text, normalized to MM/YY (e.g.
+   *  "12/27") — display hint only, never used to charge. */
+  cardExpiry: string | null;
+  /** Card billing zip best-effort from the email text (e.g. "06606"). */
+  cardBillingZip: string | null;
   clubName: string | null;
   poRef: string | null;
   /** Set when the message was recognized as club mail but is not a parseable
@@ -145,6 +153,29 @@ const NOT_A_CHARGE = /\b(no charge|not charged|free|complimentary|no payment due
 /** Card last-4: "ending in 4242", "xxxx 4242", "****4242", "card ending 4242",
  *  "last 4 digits 4242", or a bare 4-digit run that follows a card/ending hint. */
 const LAST4 = /(?:ending(?: in| with)?|xxxx|last 4(?: digits)?|\*\*\*\*)\s*:?\s*(\d{4})/i;
+/** Full-PAN fallback for last-4: PO emails often carry the complete card
+ *  number ("Card Number: 4242 4242 4242 4242" or "4111-1111-1111-1111").
+ *  Grouped-4 format first (unambiguous), then a plain 15-16 digit run. Only
+ *  the LAST 4 digits are ever extracted/stored — never the PAN. */
+const PAN_GROUPED = /\b(\d{4})[\s-](\d{4})[\s-](\d{4})[\s-](\d{4})\b/;
+const PAN_FLAT = /\b\d{15,16}\b/;
+/** Card brand words in the email ("Visa", "Mastercard", "American Express",
+ *  "Amex", "Discover"). Normalized display names via CARD_BRAND_NAMES. */
+const CARD_BRAND = /\b(visa|master\s?card|amex|american\s?express|discover)\b/i;
+const CARD_BRAND_NAMES: Record<string, string> = {
+  visa: "Visa",
+  mastercard: "Mastercard",
+  "master card": "Mastercard",
+  amex: "Amex",
+  "american express": "Amex",
+  discover: "Discover",
+};
+/** Card expiry: "exp 12/27", "expires 01/2028", "valid thru 12/27",
+ *  "good through 12/27". Normalized to MM/YY. */
+const CARD_EXPIRY = /(?:exp(?:iry|ires|iration)?|valid\s*(?:thru|through)|good\s*(?:thru|through))\s*:?\s*(\d{1,2})\s*[/\-.]\s*(\d{2,4})/i;
+/** Billing zip: "billing zip 06606", "zip code: 06606", "postal code 06606",
+ *  "billing postal code 06606-1234" → first 5 digits. */
+const CARD_BILLING_ZIP = /(?:billing\s*)?(?:zip(?:\s*code)?|postal(?:\s*code)?)\s*:?\s*(\d{5}(?:-\d{4})?)/i;
 /** Purchase-order / job reference: "PO #12345", "PO#12345", "purchase order
  *  12345", "job #12345", "reference #12345" (also "order #12345"). */
 const PO_REF = /(?:p\.?\s?o\.?|purchase order|po number|job|reference|order)\s*#?\s*:?\s*(\d{4,12})/i;
@@ -156,16 +187,36 @@ function toCents(n: string | undefined): number | null {
   return Math.round(v * 100);
 }
 
+/** Normalize a raw card-brand match to the display name, or null. */
+function normalizeBrand(raw: string | null): string | null {
+  if (!raw) return null;
+  const key = raw.trim().toLowerCase().replace(/\s+/g, " ");
+  return CARD_BRAND_NAMES[key] ?? null;
+}
+
+/** Normalize a raw expiry match ("12/27", "1/2028", "12-27") to MM/YY. */
+function normalizeExpiry(month: string, year: string): string | null {
+  const mm = Number(month);
+  const yyRaw = Number(year);
+  if (!Number.isInteger(mm) || mm < 1 || mm > 12 || !Number.isInteger(yyRaw)) return null;
+  let yy = yyRaw;
+  if (yyRaw >= 100) yy = yyRaw % 100; // 2028 → 28
+  if (yy < 0 || yy > 99) return null;
+  return `${String(mm).padStart(2, "0")}/${String(yy).padStart(2, "0")}`;
+}
+
 /** Parse a message's visible text into a club-charge candidate. PURE — no I/O,
  *  no side effects. Returns a skipReason when the message isn't a usable charge
  *  notification. Amount is REQUIRED (a club message without a dollar figure is
- *  not a charge to stage); cardLast4/clubName/poRef are best-effort. */
+ *  not a charge to stage); cardLast4/clubName/poRef are best-effort. The card
+ *  metadata (brand/expiry/zip) is parsed from the PO email for DISPLAY only —
+ *  the full PAN never leaves this function. */
 export function parseClubChargeEmail(input: { from: string; subject: string; bodyText: string }): ParsedClubCharge {
   const { from, subject, bodyText } = input;
   const clubName = detectClub(from, subject, bodyText);
   const text = `${subject}\n${bodyText}`;
   if (NOT_A_CHARGE.test(text)) {
-    return { amountCents: null, cardLast4: null, clubName, poRef: null, skipReason: "message says no charge/free/refund — not a charge notification" };
+    return { amountCents: null, cardLast4: null, cardBrand: null, cardExpiry: null, cardBillingZip: null, clubName, poRef: null, skipReason: "message says no charge/free/refund — not a charge notification" };
   }
   let amountCents: number | null = null;
   const cur = text.match(CURRENCY_AMOUNT);
@@ -176,13 +227,30 @@ export function parseClubChargeEmail(input: { from: string; subject: string; bod
     if (plain) amountCents = toCents(plain[1]);
   }
   if (amountCents == null) {
-    return { amountCents: null, cardLast4: null, clubName, poRef: null, skipReason: "no charge amount found (not a charge notification)" };
+    return { amountCents: null, cardLast4: null, cardBrand: null, cardExpiry: null, cardBillingZip: null, clubName, poRef: null, skipReason: "no charge amount found (not a charge notification)" };
   }
   const last4 = text.match(LAST4);
+  let cardLast4: string | null = last4 ? last4[1] : null;
+  if (!cardLast4) {
+    // Full-PAN fallback (grouped format preferred, then a flat 15-16 digit
+    // run) — only the LAST 4 digits are kept.
+    const grouped = text.match(PAN_GROUPED);
+    if (grouped) cardLast4 = grouped[4];
+    else {
+      const flat = text.match(PAN_FLAT);
+      if (flat) cardLast4 = flat[0].slice(-4);
+    }
+  }
+  const brandRaw = text.match(CARD_BRAND);
+  const exp = text.match(CARD_EXPIRY);
+  const zip = text.match(CARD_BILLING_ZIP);
   const po = text.match(PO_REF);
   return {
     amountCents,
-    cardLast4: last4 ? last4[1] : null,
+    cardLast4,
+    cardBrand: normalizeBrand(brandRaw ? brandRaw[0] : null),
+    cardExpiry: exp ? normalizeExpiry(exp[1], exp[2]) : null,
+    cardBillingZip: zip ? zip[1].split("-")[0] : null,
     clubName,
     poRef: po ? po[1] : null,
   };

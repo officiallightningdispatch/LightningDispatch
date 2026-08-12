@@ -8,25 +8,30 @@
  *    RAIL with the FULL verified handle (owner-only PII), per-row Mark paid
  *    with confirmation, and a danger-tinted Blocked card for contractors
  *    without a verified payout method. Tips are a separate line everywhere.
- * 2) PAYMENT ENGINE (backlog #1, owner spec 2026-08-11): scan lightroad29@
- *    gmail.com for motor-club (Allied Dispatch / Honk / Allstate) card-charge
- *    notifications → stage rows → owner reviews and charges EACH row through
- *    the OWNER's Square account (POST /v2/payments via the club's stored card
- *    on file; funds never leave the owner's Square balance). One stored card
- *    per club (Cards API, tokenized client-side by Square's Web Payments SDK
- *    — the PAN never touches this app), plus a driver-tips ledger read
- *    (kind='tip', attribution via completion_tips).
+ * 2) PAYMENT ENGINE (backlog #1, owner spec 2026-08-11, PER-PO CARD rework
+ *    2026-08-12): scan lightroad29@gmail.com for motor-club (Allied Dispatch /
+ *    Honk / Allstate) card-charge notifications → stage rows → owner reviews
+ *    and charges EACH row through the OWNER's Square account. PER-PO CARD
+ *    MODEL: clubs provide ONE CARD PER PO — each staged row carries ITS OWN
+ *    card metadata parsed from that PO's email (brand/last4/expiry/billing
+ *    zip; NO PAN anywhere), and the owner charges by entering that PO's card
+ *    into Square's secure Web Payments form (nonce → POST /v2/payments,
+ *    exactly one, idempotent; funds never leave the owner's Square balance).
+ *    There is no per-club card on file. The owner may also charge in their own
+ *    Square dashboard and tap "Mark charged (paid outside)". Plus a driver-tips
+ *    ledger read (kind='tip', attribution via completion_tips).
  *
  * Safety rails: nothing is ever auto-charged — staging + per-row Charge (the
  * owner's explicit approval per charge, enforced server-side by
- * chargeStagedCore) is the gate; a stored club card is only used AFTER the
- * owner taps Charge on a staged row. DemoChip until real money moves.
+ * chargeStagedCore) is the gate; the card entered into Square's secure form is
+ * tokenized and charged only AFTER the owner taps Charge on a staged row.
+ * DemoChip until real money moves.
  * Seroval rule: every client-visible field null, never undefined.
  */
 import { createFileRoute } from "@tanstack/react-router";
 import {
-  AlertTriangle, Banknote, CalendarDays, CircleDollarSign, CreditCard, Landmark, Loader2,
-  Plus, RefreshCcw, RefreshCw, Send, Trash2, Wallet, Zap,
+  AlertTriangle, Banknote, CalendarDays, CircleDollarSign, Landmark, Loader2,
+  RefreshCcw, RefreshCw, Send, Wallet, Zap,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "~/components/app-shell";
@@ -43,14 +48,11 @@ import {
 } from "~/data/tip-cashout";
 import {
   chargeStaged,
-  createClubCard,
-  deleteClubCard,
   getPaymentSquareConfig,
-  listClubCards,
   listStagedCharges,
   listTips,
+  markChargedOutside,
   scanClubMail,
-  type ClubCardRow,
   type PaymentTxnRow,
   type TipLedgerRow,
 } from "~/data/payment-engine";
@@ -622,12 +624,6 @@ function MoneyView() {
 
 /* ============================ payment engine ============================ */
 
-/** Known motor clubs the owner does business with — mirrors MOTOR_CLUBS in
- *  src/data/club-mail.ts (the server stays the scanning source of truth; this
- *  drives the "add a card" affordances). Any club with a staged charge or a
- *  stored card is added to the list at render time, so nothing is unreachable. */
-const KNOWN_CLUBS = ["Allied Dispatch", "Honk", "Allstate"];
-
 const fmtMoney = (cents: number) =>
   `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -639,6 +635,18 @@ const STATUS_BADGE: Record<string, { cls: string; label: string; dot: boolean }>
   charged: { cls: "bg-success-100 text-success-700", label: "Charged", dot: false },
   failed: { cls: "bg-danger-100 text-danger-700", label: "Failed", dot: false },
   voided: { cls: "bg-ink-100 text-ink-500", label: "Voided", dot: false },
+};
+
+/** The PO's own card, as parsed from its email: "Visa ••4242 · exp 12/27 ·
+ *  zip 06606" (brand/last4/expiry/zip are display hints only — the full PAN
+ *  never touches Lightning Dispatch). */
+const cardLabel = (t: PaymentTxnRow): string | null => {
+  const parts: string[] = [];
+  if (t.cardBrand) parts.push(t.cardBrand);
+  if (t.cardLast4) parts.push(`••${t.cardLast4}`);
+  if (t.cardExpiry) parts.push(`exp ${t.cardExpiry}`);
+  if (t.cardBillingZip) parts.push(`zip ${t.cardBillingZip}`);
+  return parts.length ? parts.join(" · ") : null;
 };
 
 /* ---------- Square Web Payments SDK (client-side card tokenization) ---------- */
@@ -655,7 +663,7 @@ function loadSquareScript(): Promise<void> {
   if ((window as unknown as { Square?: unknown }).Square) return Promise.resolve();
   squareScriptPromise ??= new Promise<void>((resolve, reject) => {
     const el = document.createElement("script");
-    el.src = "https://web.squareup.com/v1/square.js";
+    el.src = "https://web.squarecdn.com/v1/square.js";
     el.async = true;
     el.onload = () => resolve();
     el.onerror = () => { squareScriptPromise = null; reject(new Error("Square payments couldn't load — check the connection.")); };
@@ -664,13 +672,14 @@ function loadSquareScript(): Promise<void> {
   return squareScriptPromise;
 }
 
-/** Inline Web Payments card form for ONE club — tokenizes client-side (the
- *  card details live in Square's iframe; the PAN never touches this app) and
- *  sends the nonce to createClubCard, which stores it as a ccof card on the
- *  owner's Square account. */
-function ClubCardForm({ clubName, onDone, onCancel, publicConfig }: {
-  clubName: string;
-  onDone: (card: ClubCardRow) => void;
+/** Inline Square Web Payments card form for ONE staged row — the owner enters
+ *  the card shown in THIS PO's email (the full number stays inside Square's
+ *  secure iframe; Lightning Dispatch only ever sees the nonce). On submit the
+ *  nonce is sent to chargeStaged → exactly one idempotent POST /v2/payments
+ *  on the owner's Square account. */
+function ChargeCardForm({ txn, onCharged, onCancel, publicConfig }: {
+  txn: PaymentTxnRow;
+  onCharged: (row: PaymentTxnRow) => void;
   onCancel: () => void;
   publicConfig: { applicationId: string; locationId: string } | null;
 }) {
@@ -678,7 +687,7 @@ function ClubCardForm({ clubName, onDone, onCancel, publicConfig }: {
   const [cardError, setCardError] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const containerIdRef = useRef(`sq-clubcard-${Math.random().toString(36).slice(2, 10)}`);
+  const containerIdRef = useRef(`sq-charge-${Math.random().toString(36).slice(2, 10)}`);
   useEffect(() => {
     let disposed = false;
     let created: SquareCard | null = null;
@@ -713,74 +722,73 @@ function ClubCardForm({ clubName, onDone, onCancel, publicConfig }: {
         setError(tok.errors?.[0]?.detail ?? "The card couldn't be read — check the details and try again.");
         return;
       }
-      const r = await createClubCard({ data: { clubName, sourceId: tok.token } });
+      const r = await chargeStaged({ data: { txnId: txn.id, sourceId: tok.token } });
       if (r.ok) {
-        onDone(r.data);
+        onCharged(r.data);
       } else {
-        setError(r.message || "Couldn't store the card — try again.");
+        setError(r.message || "The charge failed — try again.");
       }
     } catch {
-      setError("Couldn't store the card — check your connection and try again.");
+      setError("The charge failed — check your connection and try again.");
     }
     setSaving(false);
   };
   return (
     <div className="mt-3 rounded-xl border border-ink-200 bg-canvas/60 p-3">
-      <p className="mb-2 text-xs font-semibold text-ink-700">Card on file for {clubName}</p>
+      <p className="mb-2 text-xs font-semibold text-ink-700">
+        Enter the card from this PO's email — {cardLabel(txn) ?? "card details are in the email"}
+      </p>
       <div id={containerIdRef.current} className="min-h-[64px]" />
       {cardError && <p role="alert" className="mt-1.5 text-[11px] leading-snug text-danger-600">{cardError}</p>}
       {error && <p role="alert" className="mt-1.5 text-[11px] leading-snug text-danger-600">{error}</p>}
       <div className="mt-2.5 flex gap-2">
         <Button size="sm" className="flex-1" loading={saving} disabled={!card} onClick={() => void save()}>
-          {card ? "Save card" : "Loading card form…"}
+          {card ? `Charge ${fmtMoney(txn.amountCents)}` : "Loading card form…"}
         </Button>
         <Button size="sm" variant="secondary" disabled={saving} onClick={onCancel}>Cancel</Button>
       </div>
       <p className="mt-2 text-[10px] leading-relaxed text-ink-400">
-        The card is tokenized by Square in a secure iframe and stored on your Square account as a card on file — it can be charged for this club's payments without re-entering details. The full card number never touches Lightning Dispatch.
+        The card is tokenized by Square in a secure iframe — the full number never touches Lightning Dispatch. The charge settles into your Square account; nothing is transferred out.
       </p>
     </div>
   );
 }
 
-/** The payment engine slice: scan inbox → staged club charges → owner taps
- *  Charge (the explicit per-charge approval) → Square charges the club's
- *  stored card; stored club cards (Cards API) and the driver-tips ledger. */
+/** The payment engine slice: scan inbox → staged club charges (each row shows
+ *  ITS OWN card from the PO email) → owner charges per row either through
+ *  Square's secure card form or by marking a charge they already made in their
+ *  own Square dashboard. No per-club card on file. */
 function PaymentsSection() {
   const [txns, setTxns] = useState<PaymentTxnRow[] | null>(null);
-  const [cards, setCards] = useState<ClubCardRow[] | null>(null);
   const [tips, setTips] = useState<TipLedgerRow[] | null>(null);
   const [publicConfig, setPublicConfig] = useState<{ applicationId: string; locationId: string } | null>(null);
   const [configError, setConfigError] = useState("");
   const [scanning, setScanning] = useState<"scan" | "preview" | null>(null);
   const [scanMsg, setScanMsg] = useState<{ kind: "success" | "danger"; text: string } | null>(null);
-  const [chargingId, setChargingId] = useState<string | null>(null);
+  const [chargingId] = useState<string | null>(null);
   const [chargeErrors, setChargeErrors] = useState<Record<string, string>>({});
-  const [removingId, setRemovingId] = useState<string | null>(null);
-  /** clubName → open card form */
-  const [openCardForm, setOpenCardForm] = useState<string | null>(null);
+  /** txnId → open Square card form for that row */
+  const [openChargeForm, setOpenChargeForm] = useState<string | null>(null);
+  /** txnId → open "mark charged (outside)" confirmation */
+  const [markOutsideConfirmId, setMarkOutsideConfirmId] = useState<string | null>(null);
+  const [markingOutsideId, setMarkingOutsideId] = useState<string | null>(null);
+  const [markOutsideNote, setMarkOutsideNote] = useState("");
 
   const refresh = async () => {
-    const [t, c, ti, cfg] = await Promise.all([
+    const [t, ti, cfg] = await Promise.all([
       listStagedCharges(),
-      listClubCards(),
       listTips(),
       getPaymentSquareConfig(),
     ]);
     if (t.ok) setTxns(t.data);
-    if (c.ok) setCards(c.data);
     if (ti.ok) setTips(ti.data);
     if (cfg.ok) setPublicConfig(cfg.data);
     else setConfigError(cfg.message);
   };
   useEffect(() => { void refresh(); }, []);
 
-  const cardsByClub = new Map<string, ClubCardRow>((cards ?? []).map((c) => [c.clubName.toLowerCase(), c]));
   const clubRows = (txns ?? []).filter((t) => t.kind === "club_charge");
   const chargeable = (t: PaymentTxnRow) => t.status === "staged" || t.status === "failed";
-  const hasCard = (clubName: string | null) => !!clubName && cardsByClub.has(clubName.toLowerCase());
-  const clubsWithCards = Array.from(cardsByClub.values()).map((c) => c.clubName);
-  const allClubs = Array.from(new Set([...KNOWN_CLUBS, ...clubRows.map((r) => r.clubName).filter((n): n is string => !!n), ...clubsWithCards]));
 
   const runScan = async (dryRun: boolean) => {
     setScanning(dryRun ? "preview" : "scan");
@@ -799,34 +807,24 @@ function PaymentsSection() {
     }
   };
 
-  const charge = async (t: PaymentTxnRow) => {
-    setChargingId(t.id);
-    setChargeErrors((e) => ({ ...e, [t.id]: "" }));
-    const r = await chargeStaged({ data: { txnId: t.id } });
-    setChargingId(null);
+  const onCharged = (row: PaymentTxnRow) => {
+    setOpenChargeForm(null);
+    setScanMsg({ kind: "success", text: `${row.clubName ?? "Club charge"} — ${fmtMoney(row.amountCents)} charged to your Square account${row.squarePaymentId ? " ✓" : ""}.` });
+    void refresh();
+  };
+
+  const confirmMarkOutside = async (t: PaymentTxnRow) => {
+    setMarkingOutsideId(t.id);
+    const r = await markChargedOutside({ data: { txnId: t.id, note: markOutsideNote.trim() || null } });
+    setMarkingOutsideId(null);
+    setMarkOutsideConfirmId(null);
+    setMarkOutsideNote("");
     if (r.ok) {
+      setScanMsg({ kind: "success", text: `${t.clubName ?? "Club charge"} — ${fmtMoney(t.amountCents)} marked charged (paid outside Square).` });
       void refresh();
     } else {
-      const msg = r.code === "square_source_missing"
-        ? `No card on file for ${t.clubName ?? "this club"} yet — add the club's card below, then charge again.`
-        : r.message || "The charge failed.";
-      setChargeErrors((e) => ({ ...e, [t.id]: msg }));
+      setChargeErrors((e) => ({ ...e, [t.id]: r.message || "Couldn't mark the charge paid." }));
     }
-  };
-
-  const removeCard = async (card: ClubCardRow) => {
-    if (!window.confirm(`Remove the ${card.brand ?? "card"} •••• ${card.last4 ?? "····"} for ${card.clubName}? Charges for this club will need a card again before they can run.`)) return;
-    setRemovingId(card.id);
-    const r = await deleteClubCard({ data: { clubCardId: card.id } });
-    setRemovingId(null);
-    if (r.ok) void refresh();
-    else setScanMsg({ kind: "danger", text: r.message || "Couldn't remove the card." });
-  };
-
-  const onCardSaved = (card: ClubCardRow) => {
-    setOpenCardForm(null);
-    setScanMsg({ kind: "success", text: `${card.brand ?? "Card"} •••• ${card.last4 ?? ""} saved for ${card.clubName} — its charges can now run when you approve them.` });
-    void refresh();
   };
 
   return (
@@ -835,7 +833,7 @@ function PaymentsSection() {
         <div>
           <p className="font-semibold">How club charges work</p>
           <p className="mt-0.5 text-xs leading-relaxed opacity-90">
-            The scanner pulls motor-club charge notifications from <strong>lightroad29@gmail.com</strong> and stages them below — nothing is ever auto-charged. You review each row and tap <strong>Charge</strong> to run it through your Square account (funds stay in your Square balance). Cards are stored once per club via the secure Square card form, so future charges run without re-entering card details.
+            The scanner pulls motor-club charge notifications from <strong>lightroad29@gmail.com</strong> and stages them below with <strong>each PO's own card</strong> (brand, last 4, expiry, zip — read from that PO's email; the full card number never touches Lightning Dispatch). Nothing is ever auto-charged. To charge a row, open the card form and enter the card shown in the PO email — Square tokenizes it securely and charges your Square account (funds stay there, nothing is transferred out). Or charge it in your own Square dashboard and tap <strong>Mark charged</strong>.
           </p>
         </div>
       </Alert>
@@ -864,6 +862,7 @@ function PaymentsSection() {
             {scanMsg.text}
           </p>
         )}
+        {configError && <Alert variant="warning"><span>Square payments aren't configured — the owner's Square credentials (access token, location id, application id) are needed before staged rows can be charged. Existing charges stay listed.</span></Alert>}
       </Card>
 
       {/* --------------------------- club charges --------------------------- */}
@@ -880,8 +879,8 @@ function PaymentsSection() {
           <div className="space-y-2.5">
             {clubRows.map((t) => {
               const badge = STATUS_BADGE[t.status] ?? STATUS_BADGE.staged;
-              const needsCard = chargeable(t) && !hasCard(t.clubName);
               const err = chargeErrors[t.id];
+              const card = cardLabel(t);
               return (
                 <Card key={t.id} className="p-3.5 sm:p-4">
                   <div className="flex items-start justify-between gap-3">
@@ -891,9 +890,14 @@ function PaymentsSection() {
                         <StatusBadge className={badge.cls} dot={badge.dot}>{badge.label}</StatusBadge>
                       </div>
                       <p className="mt-0.5 text-xs text-ink-400">
-                        {t.cardLast4 ? <>Card •••• {t.cardLast4} · </> : null}
-                        {t.poRef ? <>PO {t.poRef} · </> : null}
-                        received {fmtDate(t.sourceEmailReceivedAt ?? t.createdAt)}
+                        {card ? <span className="font-medium text-ink-600">{card}</span> : <span className="text-ink-300">No card details in the email</span>}
+                        {t.poRef ? <> · PO {t.poRef}</> : null}
+                        {t.status === "charged" && (
+                          <span className={t.chargePath === "outside" ? "text-ink-500" : "text-success-600"}>
+                            {" "}· {t.chargePath === "outside" ? "charged in your Square dashboard — marked paid" : "charged via Square ✓"}
+                          </span>
+                        )}
+                        <span className="text-ink-300"> · received {fmtDate(t.sourceEmailReceivedAt ?? t.createdAt)}</span>
                       </p>
                       {err && <p role="alert" className="mt-1.5 text-[11px] leading-snug text-danger-600">{err}</p>}
                     </div>
@@ -901,75 +905,49 @@ function PaymentsSection() {
                   </div>
                   {chargeable(t) && (
                     <div className="mt-2.5 border-t border-ink-100 pt-2.5">
-                      {needsCard ? (
-                        <div className="flex flex-wrap items-center gap-2">
-                          <Button size="sm" variant="secondary" onClick={() => setOpenCardForm(t.clubName ?? "")}>
-                            <Plus className="size-3.5" /> Add card for {t.clubName ?? "this club"}
-                          </Button>
-                          <span className="text-[11px] text-ink-400">This charge needs the club's card on file before it can run.</span>
-                        </div>
-                      ) : (
-                        <Button size="sm" variant={t.status === "failed" ? "danger" : "primary"} loading={chargingId === t.id} disabled={chargingId !== null} onClick={() => void charge(t)}>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant={t.status === "failed" ? "danger" : "primary"}
+                          loading={chargingId === t.id}
+                          disabled={chargingId !== null || markingOutsideId !== null}
+                          onClick={() => setOpenChargeForm(openChargeForm === t.id ? null : t.id)}
+                        >
                           <Zap className="size-3.5" /> {t.status === "failed" ? "Retry charge" : "Charge"}
                         </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          disabled={chargingId !== null || markingOutsideId !== null}
+                          onClick={() => setMarkOutsideConfirmId(markOutsideConfirmId === t.id ? null : t.id)}
+                        >
+                          Mark charged (outside)
+                        </Button>
+                        {t.status === "failed" && <span className="text-[11px] text-ink-400">Declined — retry with a fresh card entry.</span>}
+                      </div>
+                      {openChargeForm === t.id && (
+                        <ChargeCardForm txn={t} publicConfig={publicConfig} onCharged={onCharged} onCancel={() => setOpenChargeForm(null)} />
                       )}
-                      {openCardForm === (t.clubName ?? "") && (
-                        <ClubCardForm clubName={t.clubName ?? ""} publicConfig={publicConfig} onDone={onCardSaved} onCancel={() => setOpenCardForm(null)} />
+                      {markOutsideConfirmId === t.id && (
+                        <div className="mt-3 rounded-xl border border-ink-200 bg-ink-50/50 p-3">
+                          <p className="text-xs leading-relaxed text-ink-700">
+                            Did you already charge <span className="font-bold tabular-nums">{fmtMoney(t.amountCents)}</span> for {t.clubName ?? "this club"}
+                            {t.poRef ? <> (PO {t.poRef})</> : null} in your own Square dashboard? Marking it here records it as paid — no Square call is made.
+                          </p>
+                          <input
+                            value={markOutsideNote}
+                            onChange={(e) => setMarkOutsideNote(e.target.value)}
+                            placeholder="Optional note (e.g. dashboard, date)"
+                            className="mt-2 h-10 w-full rounded-lg border border-ink-200 bg-surface px-3 text-sm outline-none focus:border-brand-500"
+                          />
+                          <div className="mt-2 flex gap-2">
+                            <Button size="sm" loading={markingOutsideId === t.id} onClick={() => void confirmMarkOutside(t)}>Yes — marked paid</Button>
+                            <Button size="sm" variant="ghost" disabled={markingOutsideId !== null} onClick={() => { setMarkOutsideConfirmId(null); setMarkOutsideNote(""); }}>Cancel</Button>
+                          </div>
+                        </div>
                       )}
                     </div>
                   )}
-                </Card>
-              );
-            })}
-          </div>
-        )}
-      </section>
-
-      {/* --------------------------- club cards --------------------------- */}
-      <section>
-        <div className="mb-2 flex items-center justify-between">
-          <h2 className="text-sm font-bold uppercase tracking-wide text-ink-500">Club cards on file</h2>
-          <span className="text-xs text-ink-400">{cards?.length ?? 0} stored</span>
-        </div>
-        {configError && <Alert variant="warning"><span>Square payments aren't configured — the owner's Square credentials (access token, location id, application id) are needed before cards can be stored. Existing charges stay listed; they'll need a card to run.</span></Alert>}
-        {cards !== null && cards.length === 0 && allClubs.length === 0 ? (
-          <EmptyState icon={CreditCard} title="No club cards stored" body="When a club's charge notification arrives, add its card here once — it's stored securely on your Square account and reused for every future charge." />
-        ) : (
-          <div className="space-y-2.5">
-            {allClubs.map((club) => {
-              const card = cardsByClub.get(club.toLowerCase());
-              return (
-                <Card key={club} className="p-3.5 sm:p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex min-w-0 items-center gap-3">
-                      <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-ink-100 text-ink-500"><CreditCard className="size-5" /></span>
-                      <div className="min-w-0">
-                        <p className="text-sm font-bold text-ink-900">{club}</p>
-                        {card ? (
-                          <p className="text-xs text-ink-400">{card.brand ?? "Card"} •••• {card.last4 ?? "····"} <span className="text-ink-300">· saved {fmtDate(card.createdAt)}</span></p>
-                        ) : (
-                          <p className="text-xs text-ink-400">No card on file — add one to enable charges for this club.</p>
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex shrink-0 gap-2">
-                      {card ? (
-                        <>
-                          <Button size="sm" variant="secondary" onClick={() => setOpenCardForm(openCardForm === club ? null : club)}>
-                            {openCardForm === club ? "Close" : "Replace"}
-                          </Button>
-                          <Button size="sm" variant="danger-ghost" loading={removingId === card.id} disabled={removingId !== null} onClick={() => void removeCard(card)}>
-                            <Trash2 className="size-3.5" /> Remove
-                          </Button>
-                        </>
-                      ) : (
-                        <Button size="sm" onClick={() => setOpenCardForm(openCardForm === club ? null : club)}>
-                          <Plus className="size-3.5" /> Add card
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                  {openCardForm === club && <ClubCardForm clubName={club} publicConfig={publicConfig} onDone={onCardSaved} onCancel={() => setOpenCardForm(null)} />}
                 </Card>
               );
             })}
@@ -1011,7 +989,7 @@ function PaymentsSection() {
 
       <p className="flex items-start gap-1.5 pb-4 text-[11px] leading-relaxed text-ink-400">
         <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
-        Funds never leave your Square account — club charges settle into your Square balance like any other payment. Every charge runs only after you tap Charge on the staged row. Weekly payday payouts are in the manifest above.
+        Funds never leave your Square account — club charges settle into your Square balance like any other payment. Every charge runs only after you tap Charge on the staged row (or mark it after charging in your own dashboard). Weekly payday payouts are in the manifest above.
       </p>
     </div>
   );

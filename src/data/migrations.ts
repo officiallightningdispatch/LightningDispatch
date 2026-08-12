@@ -845,6 +845,28 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`ALTER TABLE payout_methods ADD COLUMN IF NOT EXISTS bank_deposit_cents INTEGER`;
     await q`ALTER TABLE payout_methods ADD COLUMN IF NOT EXISTS bank_deposit_sent_at TIMESTAMPTZ`;
   }],
+  [37, async (q) => {
+    // PER-PO CARD MODEL (owner correction 2026-08-12): motor clubs provide ONE
+    // CARD PER PO (per job), not one card per club/account. The per-club
+    // card-on-file model (motor_club_cards, migration 34) is DEPRECATED — the
+    // code stops reading/writing it (the table is kept so an already-applied
+    // schema never shrinks; nothing references it anymore).
+    //
+    // Each staged payment_transactions row now carries ITS OWN card metadata
+    // parsed from that PO's email: brand/last4 (columns already present since
+    // migration 19) + expiry + billing zip (added here). NO PAN is ever stored —
+    // these are display/verification hints only, so the owner knows which card
+    // (visible in the PO email) to enter into Square's secure Web Payments
+    // form at charge time.
+    // charge_path records HOW a row was paid: 'square' (charged through the
+    // owner's Square account via POST /v2/payments with a Web Payments nonce)
+    // or 'outside' (the owner charged it in their own Square dashboard and
+    // marked it paid). NULL = never charged. square_payment_id stays NULL for
+    // 'outside' rows; the audit trail carries the rest.
+    await q`ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS card_expiry TEXT`;
+    await q`ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS card_billing_zip TEXT`;
+    await q`ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS charge_path TEXT CHECK (charge_path IS NULL OR charge_path IN ('square','outside'))`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();
