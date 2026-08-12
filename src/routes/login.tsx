@@ -52,7 +52,7 @@ function Login(){ const nav=useNavigate(); const search=useSearch({from:"/login"
    // 3) Driver: their username+password ARE their dispatch credentials (unknown
    //    identifier or contractor account) — one form, server decides.
    const d=await driverLogin({data:{username:identifier,password,latitude:geo.latitude,longitude:geo.longitude,locationDenied:geo.denied}});
-   if(d.ok){ if(d.checkinWarning) setDriverNotice(d.checkinWarning); void nav({to:"/driver",replace:true}); return; }
+   if(d.ok){ if(d.checkinWarning) setDriverNotice(d.checkinWarning); void nav({to:portal(d.role),replace:true}); return; }
    setError(d.error || r.error);
  } catch (err) { setError(err instanceof Error ? err.message : "Unable to sign in. Please try again."); } finally { setBusy(false); }}
  if(checking) return <main className="grid min-h-dvh place-items-center bg-canvas px-4"><div className="flex flex-col items-center gap-3" role="status" aria-live="polite"><div className="size-8 animate-spin rounded-full border-2 border-brand-500 border-t-transparent motion-reduce:animate-none" aria-hidden="true" /><p className="text-sm font-medium text-ink-400">Loading…</p></div></main>;

@@ -199,13 +199,49 @@ const isExpired = (r: TbRes): boolean =>
 /* --------------------------------- identity resolution --------------------------------- */
 
 export type IdentityResult =
-  | { ok: true; identity: DriverIdentity }
+  | { ok: true; kind: "driver"; identity: DriverIdentity; rosterFallback: boolean }
+  | { ok: true; kind: "owner"; user: { userId: string; name: string } }
   | { ok: false; expired?: boolean; message: string };
 
-/** After a successful Towbook login: GET /api/user (the current user) and
- *  GET /api/drivers (the roster) with the fresh session, then find the driver
- *  record that belongs to that user (linkedUserId match, name-match fallback).
- *  Returns the Towbook USER id (checkin id) AND DRIVER id (assignment key). */
+/** The Towbook account TYPE (owner-directed 2026-08-12 role mapping): 1 =
+ *  driver, 2 = manager/dispatcher, 3 = disabled (recon evidence
+ *  /home/team/shared/towbook-recon-evidence/users.json + api-user.json —
+ *  /api/user carries `type`; the /api/users list carries it too). Null when the
+ *  field is absent or non-numeric. */
+function accountTypeOf(o: Record<string, unknown>): number | null {
+  const t = o.type;
+  if (t == null) return null;
+  const n = typeof t === "number" ? t : Number(t);
+  return Number.isFinite(n) ? n : null;
+}
+/** Fallback when /api/user did not carry `type` (GET-only): look the user id up
+ *  in GET /api/users (the list) and read its `type`. Returns null when the
+ *  list call fails or the user is absent — callers then default to the legacy
+ *  driver flow (never a new dead-end). */
+async function lookupAccountType(session: DriverSession, userId: string, fetchImpl: typeof fetch): Promise<number | null> {
+  const res = await tbFetch(fetchImpl, `${session.baseUrl}/api/users`, session);
+  if (!Array.isArray(res.body)) return null;
+  for (const u of res.body as Record<string, unknown>[]) {
+    if (u && typeof u === "object" && u.id != null && String(u.id) === userId) return accountTypeOf(u);
+  }
+  return null;
+}
+
+/** After a successful Towbook login: GET /api/user (the current user) and read
+ *  the account TYPE — the Towbook account type is authoritative for the portal
+ *  role (owner-directed 2026-08-12):
+ *    type 1 (driver) → contractor portal: resolve the roster driver record
+ *      (linkedUserId match, name-match fallback) to obtain the driver id. A
+ *      type-1 account is NEVER rejected for missing a roster record — the
+ *      driver id falls back to the Towbook USER id (rosterFallback: true).
+ *    type 2 (manager/dispatcher) → owner portal: no roster resolution, no
+ *      checkin — the caller upserts an owner user and returns role "owner".
+ *    type 3 (disabled) → refused ("contact the owner").
+ *    unknown type → refused ("contact dispatch").
+ *  When the type cannot be determined at all (no `type` on /api/user AND the
+ *  /api/users fallback fails), default to the driver flow — the pre-mapping
+ *  behavior, so nothing that worked before regresses. Returns the Towbook USER
+ *  id (checkin id) AND DRIVER id (assignment key) on the driver path. */
 export async function identifyDriver(session: DriverSession, opts: { fetchImpl?: typeof fetch } = {}): Promise<IdentityResult> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const me = await tbFetch(fetchImpl, `${session.baseUrl}/api/user`, session);
@@ -215,22 +251,48 @@ export async function identifyDriver(session: DriverSession, opts: { fetchImpl?:
   const userId = userObj.id != null ? String(userObj.id) : "";
   const userName = typeof userObj.name === "string" ? userObj.name.trim() : "";
   if (!userId) return { ok: false, message: "Sign-in didn't return your account id — try again." };
+  const type = accountTypeOf(userObj) ?? (await lookupAccountType(session, userId, fetchImpl));
+  if (type === 3) return { ok: false, message: "This account is disabled — contact the owner." };
+  if (type === 2) {
+    return { ok: true, kind: "owner", user: { userId, name: userName || "Lightning Dispatch" } };
+  }
+  // A non-null type that is not 1/2/3 is an unrecognized account type → refuse.
+  // Null (type undeterminable: no `type` on /api/user AND the /api/users
+  // fallback failed) defaults to the driver flow — the pre-mapping behavior.
+  if (type != null && type !== 1) return { ok: false, message: "Account type not recognized — contact dispatch." };
+  // Type 1 (driver) — or type undeterminable (legacy default). Roster resolution.
   const roster = await tbFetch(fetchImpl, `${session.baseUrl}/api/drivers`, session);
   const drivers = Array.isArray(roster.body) ? (roster.body as Record<string, unknown>[]) : [];
   const byLinked = drivers.find((d) => d.linkedUserId != null && String(d.linkedUserId) === userId);
   const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
   const byName = !byLinked && userName ? drivers.find((d) => d.name != null && norm(String(d.name)) === norm(userName)) : undefined;
   const hit = byLinked ?? byName;
-  if (!hit || hit.id == null) {
-    return { ok: false, message: "Your login isn't linked to a driver record on this account — contact dispatch." };
+  if (hit && hit.id != null) {
+    return {
+      ok: true,
+      kind: "driver",
+      rosterFallback: false,
+      identity: {
+        userId,
+        driverId: String(hit.id),
+        driverName: typeof hit.name === "string" && hit.name.trim() ? hit.name.trim() : userName || `Driver ${hit.id}`,
+      },
+    };
   }
+  // No roster match — a type-1 driver must NEVER get the old "not linked to a
+  // driver record" dead-end (owner mandate 2026-08-12). Resolve the driver id
+  // pragmatically to the Towbook USER id (flagged rosterFallback). This cannot
+  // break job assignment: the AI dispatcher picks drivers from the Towbook
+  // roster (/api/drivers) so a fabricated id never enters that pool; the job
+  // queue scoped by this id matches no calls (empty queue, never wrong jobs);
+  // checkin/checkout use the Towbook USER id either way. Verified 2026-08-12:
+  // user ids (116012–822857) and roster driver ids (103335–717660) do not
+  // overlap, so the fallback id cannot collide with a real driver.
   return {
     ok: true,
-    identity: {
-      userId,
-      driverId: String(hit.id),
-      driverName: typeof hit.name === "string" && hit.name.trim() ? hit.name.trim() : userName || `Driver ${hit.id}`,
-    },
+    kind: "driver",
+    rosterFallback: true,
+    identity: { userId, driverId: userId, driverName: userName || `Driver ${userId}` },
   };
 }
 
@@ -546,6 +608,16 @@ export const driverLogin = createServerFn({ method: "POST" }).validator(passthro
     const session: DriverSession = { cookies: login.cookies, baseUrl: login.baseUrl };
     const identity = await identifyDriver(session);
     if (!identity.ok) return { ok: false as const, error: identity.message };
+    if (identity.kind === "owner") {
+      // Towbook manager/dispatcher account (type 2) → OWNER portal
+      // (owner-directed 2026-08-12: account type is authoritative). NO driver
+      // checkin, NO driver session row, NO GPS — owner-portal users
+      // authenticate through Towbook on every sign-in.
+      const { upsertTowbookOwnerUser, startSession } = await import("./auth-server");
+      const { userId } = await upsertTowbookOwnerUser(orgId, d.username, identity.user);
+      await startSession(userId);
+      return { ok: true as const, name: identity.user.name, role: "owner" as const };
+    }
     const { userId } = await upsertDriverUser(orgId, d.username, identity.identity);
     // Owner-directed guard (contractor edit/remove): a removed contractor must
     // not be able to sign in even with valid Towbook credentials — check BEFORE

@@ -258,8 +258,11 @@ export const connectTowbook=createServerFn({method:"POST"}).validator(passthroug
   try {
     const { identifyDriver } = await import("./driver-auth");
     const identity = await identifyDriver({ cookies: result.cookies, baseUrl: TOWBOOK_ORIGIN });
-    if (identity.ok && identity.identity.driverId) {
-      await sql()`UPDATE towbook_sessions SET towbook_driver_id=${identity.identity.driverId} WHERE org_id=${u.orgId} AND session_kind='owner'`;
+    // Type mapping (2026-08-12): only a type-1 (driver) Towbook account carries
+    // a roster driver id; a type-2 (manager) account has none to link.
+    const driverId = identity.ok && identity.kind === "driver" ? identity.identity.driverId : null;
+    if (driverId) {
+      await sql()`UPDATE towbook_sessions SET towbook_driver_id=${driverId} WHERE org_id=${u.orgId} AND session_kind='owner'`;
     }
   } catch { /* best-effort — the session is stored; the link can be retried on next connect */ }
   return {ok:true as const};

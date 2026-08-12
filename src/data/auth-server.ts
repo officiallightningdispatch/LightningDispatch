@@ -66,9 +66,11 @@ export async function ensureAuthSchema() {
  *  fallback may run:
  *   - invalid_password    → identifier matched an LD STAFF user (owner/admin/
  *                           dispatcher) but the password is wrong — STOP.
- *   - contractor_account  → identifier matched an LD contractor row whose hash
- *                           is the synthetic random kind (upsertDriverUser) —
- *                           drivers authenticate via Towbook, fallback allowed.
+ *   - contractor_account  → identifier matched an LD row whose hash is the
+ *                           synthetic random kind (upsertDriverUser / 
+ *                           upsertTowbookOwnerUser — derived @towbook.driver /
+ *                           @towbook.manager emails) — their real credentials
+ *                           live in Towbook, fallback allowed.
  *   - unknown_identifier  → no LD user matched — likely a Towbook driver,
  *                           fallback allowed.
  *   - no_workspace        → real password but no workspace row — STOP.
@@ -85,14 +87,21 @@ export type LoginCoreResult =
 export async function loginCore(identifier: string, password: string): Promise<LoginCoreResult> {
   await ensureAuthSchema();
   const ident = identifier.trim().toLowerCase();
-  const rows = await sql()`SELECT u.id,u.password_hash,m.role FROM users u LEFT JOIN organization_memberships m ON m.user_id=u.id WHERE LOWER(u.login_handle)=${ident} OR LOWER(u.email)=${ident}`;
+  const rows = await sql()`SELECT u.id,u.password_hash,u.email,m.role FROM users u LEFT JOIN organization_memberships m ON m.user_id=u.id WHERE LOWER(u.login_handle)=${ident} OR LOWER(u.email)=${ident}`;
   const hit = rows[0] as Record<string, unknown> | undefined;
   if (!hit) return { ok: false, error: "Invalid username or password.", reason: "unknown_identifier" };
   const role = normalizeRole(hit.role);
-  // Contractor LD accounts never hold a usable password (upsertDriverUser writes
-  // a random, never-usable hash) — drivers authenticate through Towbook, so the
-  // login form must fall through to the driver sign-in instead of blocking.
-  if (role === "contractor") return { ok: false, error: "Invalid username or password.", reason: "contractor_account" };
+  const email = String(hit.email ?? "");
+  // Towbook-authenticated LD accounts never hold a usable password
+  // (upsertDriverUser / upsertTowbookOwnerUser write a random, never-usable
+  // hash) — their real credentials live in Towbook, so the login form must fall
+  // through to the Towbook driver sign-in on EVERY sign-in, never block with
+  // "invalid_password". Marked by the derived @towbook.driver / @towbook.manager
+  // email domains (only ever written by those two upserts); a manager's row is
+  // role 'owner', so the role check alone would wrongly STOP here.
+  if (role === "contractor" || /@towbook\.(driver|manager)$/i.test(email)) {
+    return { ok: false, error: "Invalid username or password.", reason: "contractor_account" };
+  }
   if (!verify(password, String(hit.password_hash))) return { ok: false, error: "Invalid username or password.", reason: "invalid_password" };
   // A session without a workspace row would resolve currentUser to null and bounce
   // the user back to /login (a loop). Refuse to start the session instead.
@@ -181,6 +190,47 @@ export async function requireRole(roles: Role[]) { const user = await currentUse
 
 export { configured, hash, verify, writeCookie };
 export const makeId = id;
+/** Towbook account-type role mapping (owner-directed 2026-08-12): a Towbook
+ *  manager/dispatcher account (type 2) signs into Lightning Dispatch as an
+ *  OWNER. Upserts their LD user mirroring the contractor upsert — login_handle
+ *  = the Towbook username lowercased, derived `<handle>@towbook.manager` email,
+ *  random never-usable password hash (they authenticate through Towbook), name
+ *  from Towbook, membership role 'owner'. Reuses an existing LD user matched by
+ *  towbook_user_id or login_handle (and promotes a stale membership to owner).
+ *  NEVER writes a driver session row or runs a GPS checkin — manager sign-ins
+ *  are owner-portal users. Server-only (auth-server is never client-reachable);
+ *  the driver-auth handler dynamic-imports this from inside the server fn. */
+export async function upsertTowbookOwnerUser(
+  orgId: string,
+  username: string,
+  tbUser: { userId: string; name: string },
+): Promise<{ userId: string; created: boolean }> {
+  await ensureAuthSchema();
+  const q = sql();
+  const handle = username.trim().toLowerCase();
+  const emailLike = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(handle);
+  const email = emailLike ? handle : `${handle.replace(/[^a-z0-9._-]/g, "") || "manager"}@towbook.manager`;
+  const existing = await q`SELECT id FROM users WHERE towbook_user_id=${tbUser.userId} OR LOWER(login_handle)=${handle} LIMIT 1`;
+  if (existing.length) {
+    const userId = String(existing[0].id);
+    await q`UPDATE users SET name=${tbUser.name}, towbook_user_id=${tbUser.userId} WHERE id=${userId}`;
+    const memberships = await q`SELECT role FROM organization_memberships WHERE org_id=${orgId} AND user_id=${userId}`;
+    if (memberships.length) {
+      if (String(memberships[0].role) !== "owner") {
+        await q`UPDATE organization_memberships SET role='owner' WHERE org_id=${orgId} AND user_id=${userId}`;
+      }
+    } else {
+      await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${orgId}, ${userId}, 'owner')`;
+    }
+    return { userId, created: false };
+  }
+  const userId = makeId();
+  const randomPassword = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  await q`INSERT INTO users(id, name, email, password_hash, login_handle, towbook_user_id)
+    VALUES(${userId}, ${tbUser.name}, ${email}, ${hash(randomPassword)}, ${handle}, ${tbUser.userId})`;
+  await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${orgId}, ${userId}, 'owner')`;
+  return { userId, created: true };
+}
 
 /** Clear the legacy cookie name both host-only (path=/) and domain-scoped
  *  (`.parent`), covering cookies older builds left on either scope. */

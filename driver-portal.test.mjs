@@ -41,12 +41,14 @@ const jsonFetch = (routes) => async (url, init) => {
   check("name-match fallback", r.ok && r.identity.driverId === "7", JSON.stringify(r));
 }
 {
-  // Driver not on the roster → clean error, never a crash.
+  // Type-1 account NOT on the roster → NO dead-end (owner mandate 2026-08-12):
+  // "Your login isn't linked to a driver record" must never appear again. The
+  // driver id resolves pragmatically to the Towbook USER id (rosterFallback).
   const r = await identifyDriver(SESSION, { fetchImpl: jsonFetch({
-    "GET https://app.towbook.com/api/user": { body: { id: 42, name: "Jane Cooper" } },
+    "GET https://app.towbook.com/api/user": { body: { id: 42, name: "Jane Cooper", type: 1 } },
     "GET https://app.towbook.com/api/drivers": { body: [{ id: 8, name: "Bob" }] },
   }) });
-  check("not-in-roster error", !r.ok && r.message.includes("driver record"), JSON.stringify(r));
+  check("type-1 not-in-roster → signs in, driverId=userId, rosterFallback flagged", r.ok && r.kind === "driver" && r.identity.userId === "42" && r.identity.driverId === "42" && r.identity.driverName === "Jane Cooper" && r.rosterFallback === true, JSON.stringify(r));
 }
 {
   // 401 on /api/user → expired session signal.

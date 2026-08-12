@@ -17,7 +17,7 @@ const { neon } = await import("@neondatabase/serverless");
 const q = neon(process.env.DATABASE_URL);
 const { ensureSchema } = await import("./src/data/migrations.ts");
 const { assertQaOrg } = await import("./src/data/db-guard.ts");
-const { hash, loginCore } = await import("./src/data/auth-server.ts");
+const { hash, loginCore, upsertTowbookOwnerUser } = await import("./src/data/auth-server.ts");
 const checks = [];
 const check = (name, cond, extra = "") => {
   checks.push([name, Boolean(cond), extra]);
@@ -105,6 +105,39 @@ await q`INSERT INTO users(id, name, email, password_hash) VALUES(${WORKSPACELESS
   const r = await loginCore((await q`SELECT email FROM users WHERE id=${WORKSPACELESS}`)[0].email, "qa-no-workspace-password");
   check("real password but no workspace → no_workspace error (no fallback)", r.ok === false && r.reason === "no_workspace" && r.error.includes("no workspace"), JSON.stringify(r));
 }
+/* ============ Towbook manager/dispatcher upsert (owner-directed 2026-08-12) ============ */
+// A Towbook account type 2 (manager/dispatcher) signs in as an OWNER: the LD
+// user is upserted mirroring the contractor upsert — login_handle = the Towbook
+// username lowercased, derived <handle>@towbook.manager email, random
+// never-usable password hash, name from Towbook, membership role 'owner'.
+{
+  const handle = `qa-mgr-${randomUUID().slice(0, 10)}`;
+  const tbUser = { userId: `822856-${randomUUID().slice(0, 6)}`, name: "Lightning Dispatch" };
+  const a = await upsertTowbookOwnerUser(ORG, handle, tbUser);
+  check("manager upsert creates an LD user", a.created === true && Boolean(a.userId));
+  const rows = await q`SELECT u.name, u.email, u.login_handle, u.towbook_user_id, m.role, u.towbook_driver_id
+    FROM users u JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${ORG}
+    WHERE u.id = ${a.userId}`;
+  check("owner user row: derived @towbook.manager email + lowercased handle + towbook_user_id + role owner",
+    rows.length === 1 && String(rows[0].name) === "Lightning Dispatch"
+      && String(rows[0].email) === `${handle}@towbook.manager`
+      && String(rows[0].login_handle) === handle
+      && String(rows[0].towbook_user_id) === tbUser.userId
+      && String(rows[0].role) === "owner"
+      && rows[0].towbook_driver_id == null, JSON.stringify(rows));
+  // Idempotent: same handle (case-insensitive) + same Towbook user → reuse.
+  const b = await upsertTowbookOwnerUser(ORG, handle.toUpperCase(), tbUser);
+  check("manager upsert reuses the same LD user (no dupes)", b.created === false && b.userId === a.userId, JSON.stringify(b));
+  const dupes = await q`SELECT COUNT(*)::int AS n FROM users WHERE login_handle = ${handle}`;
+  check("no duplicate login_handle on re-upsert", Number(dupes[0].n) === 1);
+  // RE-LOGIN path (critical): the manager's LD row is role 'owner' with a
+  // random never-usable hash — their real password lives in Towbook. loginCore
+  // must classify as contractor_account (Towbook fallback fires), NEVER
+  // invalid_password (which would lock the manager out on the second sign-in).
+  const again = await loginCore(handle, "their-real-towbook-password-123");
+  check("manager re-login (owner row, @towbook.manager email) → contractor_account, fallback allowed",
+    again.ok === false && again.reason === "contractor_account", JSON.stringify(again));
+}
 /* ==================== summary + cleanup ==================== */
 const failed = checks.filter(([, ok]) => !ok);
 console.log(`login-core.test.mjs: ${checks.length - failed.length}/${checks.length} passed`);
@@ -116,9 +149,10 @@ for (const org of await q`SELECT id, name FROM organizations WHERE name LIKE 'qa
 }
 for (const m of memberIds) await q`DELETE FROM users WHERE id=${m.user_id}`.catch(() => {});
 await q`DELETE FROM users WHERE email LIKE 'qa-login-core-%@lightning.test'`.catch(() => {});
+await q`DELETE FROM users WHERE email LIKE 'qa-mgr-%@towbook.manager'`.catch(() => {});
 const leftover = await q`SELECT
   (SELECT COUNT(*)::int FROM organizations WHERE name LIKE 'qa login-core%') AS orgs,
-  (SELECT COUNT(*)::int FROM users WHERE email LIKE 'qa-login-core-%@lightning.test') AS users,
+  (SELECT COUNT(*)::int FROM users WHERE email LIKE 'qa-login-core-%@lightning.test' OR email LIKE 'qa-mgr-%@towbook.manager') AS users,
   (SELECT COUNT(*)::int FROM organization_memberships m JOIN organizations o ON o.id=m.org_id WHERE o.name LIKE 'qa login-core%') AS members`;
 const z = Object.values(leftover[0]).every((n) => Number(n) === 0);
 console.log(`cleanup: ${JSON.stringify(leftover[0])}`);
