@@ -194,7 +194,7 @@ export function OwnerClaimsView() {
         </div>
       ) : claims.length === 0 ? (
         <EmptyState
-          icon={<Inbox className="size-8" aria-hidden="true" />}
+          icon={Inbox}
           title="No damage claims yet"
           body="Tap “Scan inbox” to check the owner's email for damage notifications from Agero, Sixt, and other companies."
         />
@@ -470,7 +470,7 @@ export function DriverClaimReviewCard() {
   return (
     <button
       type="button"
-      onClick={() => void nav({ to: "/driver/claims/$claimId", params: { claimId: first.id } })}
+      onClick={() => void nav({ to: "/driver/claims/$id", params: { id: first.id } })}
       className="absolute left-1/2 top-28 z-20 flex w-max max-w-[92vw] -translate-x-1/2 items-center gap-2.5 rounded-2xl border border-danger-200 bg-surface px-3.5 py-2.5 text-left shadow-card transition-transform active:scale-95"
     >
       <span className="grid size-8 shrink-0 place-items-center rounded-full bg-danger-600 text-white">
