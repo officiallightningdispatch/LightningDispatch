@@ -31,10 +31,11 @@ import { SERVICE_LABELS } from "~/lib/job-ui";
 import { diffCancelledJobIds, diffEscalatedDecisionIds, diffNewJobIds, mergeSeen, type NotifyCall } from "~/lib/notify";
 import { getSeenIds, seenKey, setSeenIds } from "~/lib/notify-seen";
 import { playLightning, primeAudio, soundMuted, toggleSoundMuted, type SoundRole } from "~/lib/sound";
+import { etaMinutesLabel } from "~/components/driver-eta";
 import { useDispatchStore } from "~/lib/store";
 import { listAiDispatcherDecisions } from "~/data/server";
 
-export type BannerKind = "job" | "escalation" | "cancelled";
+export type BannerKind = "job" | "escalation" | "cancelled" | "assignment";
 
 /** Routes banners can navigate to (typed so navigate() typechecks). */
 export type BannerTarget = "/owner/queue" | "/owner/ai-dispatcher" | "/driver";
@@ -47,6 +48,8 @@ export type BannerItem = {
   body: string;
   /** Route to navigate to when the banner is tapped. */
   to: BannerTarget;
+  /** Assignment banners carry the ETA pill label (etaMinutesLabel). */
+  etaLabel?: string | null;
 };
 
 const AUTO_DISMISS_MS = 7000;
@@ -146,7 +149,7 @@ function BannerStack({
             >
               <span
                 className={`mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg ${
-                  b.kind === "escalation" ? "bg-danger-100 text-danger-600" : b.kind === "cancelled" ? "bg-accent-100 text-accent-700" : "bg-brand-50 text-brand-600"
+                  b.kind === "escalation" ? "bg-danger-100 text-danger-600" : b.kind === "cancelled" ? "bg-accent-100 text-accent-700" : b.kind === "assignment" ? "bg-brand-500 text-white" : "bg-brand-50 text-brand-600"
                 }`}
               >
                 {b.kind === "escalation" ? (
@@ -157,13 +160,20 @@ function BannerStack({
                   <Zap className="size-4" fill="currentColor" strokeWidth={0} aria-hidden="true" />
                 )}
               </span>
-              <span className="min-w-0 flex-1">
-                <span className={`block text-sm font-bold ${b.kind === "escalation" ? "text-danger-700" : b.kind === "cancelled" ? "text-accent-800" : "text-ink-900"}`}>
-                  {b.title}
+              <span className="flex min-w-0 flex-1 items-center gap-3">
+                <span className="min-w-0 flex-1">
+                  <span className={`block text-sm font-bold ${b.kind === "escalation" ? "text-danger-700" : b.kind === "cancelled" ? "text-accent-800" : "text-ink-900"}`}>
+                    {b.title}
+                  </span>
+                  <span className={`mt-0.5 block text-xs leading-snug ${b.kind === "escalation" ? "text-danger-700/90" : b.kind === "cancelled" ? "text-accent-800/90" : "text-ink-500"}`}>
+                    {b.body}
+                  </span>
                 </span>
-                <span className={`mt-0.5 block text-xs leading-snug ${b.kind === "escalation" ? "text-danger-700/90" : b.kind === "cancelled" ? "text-accent-800/90" : "text-ink-500"}`}>
-                  {b.body}
-                </span>
+                {b.etaLabel && b.kind === "assignment" && (
+                  <span className="inline-flex shrink-0 items-center rounded-full bg-brand-50 px-2.5 py-1 text-xs font-bold tabular-nums text-brand-700">
+                    {b.etaLabel}
+                  </span>
+                )}
               </span>
             </button>
             <button
@@ -287,7 +297,7 @@ export function OwnerNotificationLayer() {
  * seen-set and raise a "New job assigned" banner for each arrival. The first
  * successful load seeds the set (no burst on sign-in).
  */
-export function DriverNotificationBanners({ calls }: { calls: readonly { id: string }[] | null }) {
+export function DriverNotificationBanners({ calls, showSoundToggle = false }: { calls: readonly NotifyCall[] | null; showSoundToggle?: boolean }) {
   const { banners, push, dismiss } = useBannerStack("driver");
   const booted = useRef(false);
   // Previous queue snapshot — used to spot live→cancelled transitions.
@@ -316,18 +326,17 @@ export function DriverNotificationBanners({ calls }: { calls: readonly { id: str
       const byId = new Map(calls.map((c) => [c.id, c]));
       push(
         added.map((j) => {
-          const call = byId.get(j.id) as
-            | { serviceName?: string; pickupAddress?: string; zip?: string }
-            | undefined;
+          const call = byId.get(j.id) as NotifyCall | undefined;
           const body = [call?.serviceName, [call?.pickupAddress, call?.zip].filter(Boolean).join(", ")]
             .filter(Boolean)
             .join(" · ");
           return {
             id: `driverjob:${j.id}`,
-            kind: "job",
-            title: "New job assigned",
+            kind: "assignment",
+            title: "New job — Lightning Dispatch",
             body: body || "A new job landed in your queue.",
             to: "/driver",
+            etaLabel: call?.arrivalETA ? etaMinutesLabel({ arrivalETA: call.arrivalETA }) : null,
           };
         }),
       );
@@ -362,5 +371,5 @@ export function DriverNotificationBanners({ calls }: { calls: readonly { id: str
     }
   }, [calls, key, cancelledKey, push]);
 
-  return <BannerStack role="driver" banners={banners} onDismiss={dismiss} />;
+  return <BannerStack role="driver" banners={banners} onDismiss={dismiss} showSoundToggle={showSoundToggle} />;
 }

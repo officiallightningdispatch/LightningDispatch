@@ -20,6 +20,7 @@ import { HomeSheet, MapChips, type HomeEarnings } from "~/components/driver-shee
 import { useDriverQueue } from "~/components/driver-queue";
 import { LiveMap } from "~/components/live-map";
 import { DriverNotificationBanners } from "~/components/notify-banners";
+import { PushNotificationSetup, PushPermissionCard } from "~/components/push-setup";
 import { getMyCompliance } from "~/data/contractor-admin";
 import { driverEarnings } from "~/data/driver-auth";
 
@@ -162,8 +163,10 @@ export function RealDriverPortal() {
         onSnapChange={setSnap}
         earnings={earnings}
         onOpenEarnings={() => void nav({ to: "/driver/earnings" })}
+        topSlot={<PushPermissionCard />}
       />
-      <DriverNotificationBanners calls={calls} />
+      <DriverNotificationBanners calls={calls} showSoundToggle />
+      <PushNotificationSetup />
     </AppShell>
   );
 }

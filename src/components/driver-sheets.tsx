@@ -5,7 +5,7 @@
  * disclosure) so the dominant-action logic has ONE source of truth.
  */
 import { ChevronDown, MapPin, Navigation, Phone, RefreshCw, Truck } from "lucide-react";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { DriverBottomSheet } from "~/components/driver-bottom-sheet";
 import { ProgressRail } from "~/components/driver-progress";
 import { etaLabel, JobCardActions, STATUS_META, type GpsState } from "~/components/driver-queue";
@@ -87,7 +87,11 @@ export function HomeSheet({
   onSnapChange,
   earnings,
   onOpenEarnings,
+  topSlot,
 }: {
+  /** Optional content rendered at the TOP of the sheet content — the push
+   *  permission card (spec A4: first contractor sign-in, above the job). */
+  topSlot?: ReactNode;
   /** The single job shown front-and-center: active[0] ?? offers[0], else null. */
   primary: DriverCall | null;
   /** Remaining offers for the expanded "More offers" list (excludes primary
@@ -132,6 +136,7 @@ export function HomeSheet({
         </div>
       )}
 
+      {topSlot}
       {primary ? (
         <>
           <PrimaryJobPeek call={primary} acting={acting === primary.id} onAct={onAct} onQueueChanged={onQueueChanged} />

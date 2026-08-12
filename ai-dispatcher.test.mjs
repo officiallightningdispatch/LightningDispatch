@@ -779,7 +779,12 @@ try {
     const rows8 = await decisions();
     const v8 = rows8.find((x) => String(x.call_request_id) === "8018");
     check("stale-guard: verification source=none, no callId claimed", v8 && v8.raw_response?.verification?.source === "none" && v8.raw_response?.verification?.callId === null && v8.call_id === null, JSON.stringify(v8?.raw_response?.verification));
-    check("stale-guard: both attempts searched status 0,2,1 and NEVER matched", v8 && v8.raw_response?.verification?.attempts?.length === 6 && v8.raw_response?.verification?.attempts?.every((t) => t.matched === false), JSON.stringify(v8?.raw_response?.verification?.attempts?.length));
+    // The engine searches the status lists twice (initial + the "accept is
+    // async" race retry — 6 list GETs live); the ledger records the FINAL
+    // round's fetches (the race-retry observability contract, same as 26d).
+    // Assert the recorded round: status 0 first, then 2, then 1 — every list
+    // searched, never matched, never claimed.
+    check("stale-guard: recorded round searched status 0,2,1 in order and NEVER matched", v8 && v8.raw_response?.verification?.attempts?.length === 3 && v8.raw_response?.verification?.attempts?.every((t) => t.matched === false) && v8.raw_response?.verification?.attempts?.[0]?.url?.includes("status=0") && v8.raw_response?.verification?.attempts?.[1]?.url?.includes("status=2") && v8.raw_response?.verification?.attempts?.[2]?.url?.includes("status=1"), JSON.stringify(v8?.raw_response?.verification?.attempts));
   }
   {
     // eligibility rail: offer.drivers[] EXCLUDES the only free driver → engine must

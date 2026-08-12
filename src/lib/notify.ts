@@ -48,6 +48,8 @@ export type NotifyCall = NotifyJob & {
   pickupAddress?: string | null;
   zip?: string | null;
   vehicle?: string | null;
+  /** DriverCall.arrivalETA — feeds the assignment banner's ETA pill. */
+  arrivalETA?: string | null;
 };
 
 /** Towbook statuses that mean "the driver was actively working this job":

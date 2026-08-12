@@ -774,6 +774,27 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     )`;
     await q`CREATE UNIQUE INDEX IF NOT EXISTS motor_club_cards_org_club_uidx ON motor_club_cards(org_id, lower(club_name))`;
   }],
+  [35, async (q) => {
+    // Assigned-offer web push (owner top priority 2026-08-12): one row per
+    // browser push subscription (the browser's push-service endpoint + the
+    // RFC 8291 p256dh/auth keys). endpoint is UNIQUE — a re-subscribe
+    // (PushSubscriptionChange → new endpoint) REPLACES the old row via upsert,
+    // and the same endpoint re-saved refreshes last_seen_at. Scoped to
+    // (org, user); ONLY the contractor who owns the row may read/write it
+    // (enforced in push-core). A 404/410 from the push service deletes the row.
+    await q`CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      endpoint TEXT NOT NULL UNIQUE,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      user_agent TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_seen_at TIMESTAMPTZ
+    )`;
+    await q`CREATE INDEX IF NOT EXISTS push_subscriptions_org_user_idx ON push_subscriptions(org_id, user_id)`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

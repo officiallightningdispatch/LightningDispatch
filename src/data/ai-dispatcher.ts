@@ -155,6 +155,13 @@ export type AiDispatcherDeps = {
    *  recoverTowbookSession (self-healing re-login with the stored owner
    *  credentials — the owner-directed "set up Towbook and forget" behavior). */
   recoverSession?: (orgId: string) => Promise<RecoveryResult>;
+  /** Assigned-offer push (owner top priority 2026-08-12): called AFTER a
+   *  verified dispatch with (orgId, towbookDriverId, payload). Injected for
+   *  hermetic tests; production defaults to a dynamic import of push-core
+   *  (sendAssignmentPushByTowbookDriver). NEVER awaited by the engine flow —
+   *  fire-and-forget with its own catch, so push problems can never fail or
+   *  slow the dispatch. */
+  sendAssignmentPush?: (orgId: string, towbookDriverId: string | number, payload: import("./push-core").AssignmentPushPayload) => Promise<unknown>;
 };
 
 export type OrgAiSettings = {
@@ -1543,6 +1550,41 @@ function firstDriverIdOnCall(call: Record<string, unknown>): string | null {
   return null;
 }
 
+
+/* ------------------------------ assignment push ------------------------------ */
+/** Fire the assigned-offer push after a VERIFIED dispatch (owner top priority
+ *  2026-08-12). Best-effort and never awaited by the engine flow: push failures
+ *  must never fail or slow the dispatch. The deps.sendAssignmentPush seam lets
+ *  hermetic tests mock the sender; production resolves the LD contractor by
+ *  Towbook driver id and sends through push-core (RFC 8291 web push). */
+async function fireDispatchAssignmentPush(
+  orgId: string,
+  driver: { driverId: number | string; driverName?: string | null },
+  verification: DispatchVerification,
+  offer: OfferShape,
+  etaMinutes: number | null,
+  deps: AiDispatcherDeps,
+): Promise<void> {
+  try {
+    const payload: import("./push-core").AssignmentPushPayload = {
+      callId: verification.callId,
+      callRequestId: offer.callRequestId,
+      jobType: "Tow job",
+      location: `${offer.startLocationLatitude},${offer.startLocationLongitude}`,
+      etaMinutes,
+      jobUrl: "/driver",
+    };
+    if (deps.sendAssignmentPush) {
+      await deps.sendAssignmentPush(orgId, driver.driverId, payload);
+    } else {
+      const { sendAssignmentPushByTowbookDriver } = await import("./push-core");
+      await sendAssignmentPushByTowbookDriver(orgId, driver.driverId, payload);
+    }
+  } catch {
+    /* push never fails the dispatch */
+  }
+}
+
 /* ----------------------------------- the engine ----------------------------------- */
 
 /** Poll the org's incoming Towbook offers and auto-accept the in-zone ones per
@@ -1908,6 +1950,9 @@ async function runAutoDispatchInternal(
             etaMinutes, zoneDistanceMiles: zoneDistance, reason,
             rawResponse: { offer, eta: etaFacts, accept: accept.raw, verification },
           });
+          // Assigned-offer push: notify the contractor's phone (single-strike
+          // sound) — fire-and-forget, never fails the dispatch.
+          await fireDispatchAssignmentPush(orgId, driver, verification, offer, etaMinutes, deps);
           result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "auto_accept_with_driver", escalated: false, reason });
         } else {
           const reason = `accepted (call ${verification.callId ?? "unknown"}) but dispatch NOT verified for ${String(driver.driverName ?? driver.driverId)} (driver ${driver.driverId}) — ${verification.error}${verificationRecoveryNote ? `; ${verificationRecoveryNote}` : ""}; needs a human to assign on Towbook (ETA ${etaMinutes} min quoted)`;

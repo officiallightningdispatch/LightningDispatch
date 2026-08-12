@@ -1,0 +1,17 @@
+{
+  "name": "Lightning Dispatch",
+  "short_name": "Lightning",
+  "description": "Lightning Roadside Assistants — driver portal for assigned jobs.",
+  "start_url": "/driver",
+  "display": "standalone",
+  "background_color": "#FFFFFF",
+  "theme_color": "#F27801",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

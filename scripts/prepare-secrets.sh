@@ -26,7 +26,7 @@ mkdir -p "$DEST_DIR" || { echo "prepare-secrets: cannot create $DEST_DIR — bui
 # name -> which runtime consumer needs it (for the log line only)
 copied=0
 missing=0
-for name in b2-key-id b2-application-key b2-bucket-name tomtom.key; do
+for name in b2-key-id b2-application-key b2-bucket-name tomtom.key push-vapid-public.key push-vapid-private.key; do
   if [ -f "$SRC_DIR/$name" ]; then
     if cp "$SRC_DIR/$name" "$DEST_DIR/$name" 2>/dev/null; then
       copied=$((copied + 1))
@@ -38,5 +38,5 @@ for name in b2-key-id b2-application-key b2-bucket-name tomtom.key; do
     echo "prepare-secrets: $SRC_DIR/$name missing — skipped (consumer degrades at runtime until configured)" >&2
   fi
 done
-echo "prepare-secrets: copied $copied/4 credential files into dist/.secrets ($missing absent — non-fatal)" >&2
+echo "prepare-secrets: copied $copied/6 credential files into dist/.secrets ($missing absent — non-fatal)" >&2
 exit 0
