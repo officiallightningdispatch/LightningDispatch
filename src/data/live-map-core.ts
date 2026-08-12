@@ -144,7 +144,7 @@ export async function liveMapDataHandler(driverScope = false): Promise<LiveMapDa
       WHERE a.org_id = j.org_id AND a.call_id = j.towbook_job_id AND a.eta_minutes IS NOT NULL
       ORDER BY a.created_at DESC LIMIT 1
     ) d ON TRUE
-    WHERE j.org_id = ${u.orgId} AND j.status IN (${ACTIVE_STATUSES.join(",")})`;
+    WHERE j.org_id = ${u.orgId} AND j.status = ANY(${ACTIVE_STATUSES})`;
   const jobs: LiveMapJobPin[] = [];
   for (const r of rows as Record<string, unknown>[]) {
     const lat = r.pickup_lat != null ? Number(r.pickup_lat) : Number(r.lat ?? 0);
