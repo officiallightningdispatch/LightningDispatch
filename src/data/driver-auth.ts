@@ -619,6 +619,43 @@ export const driverJobAction = createServerFn({ method: "POST" }).validator(pass
 
 /* ------------------------------- availability toggle ------------------------------- */
 export type AvailabilityResult = { ok: boolean; message?: string };
+/** Daily availability ledger (owner-directed 2026-08-12, metrics Q2): the
+ *  driver_availability_log row per (org, user, day) is the source for the
+ *  hours-online metric + the "GO/Offline planning" Academy lesson. GO starts
+ *  (or reopens) the day's online stretch; Offline closes it and banks the
+ *  elapsed minutes. session_started_at is the open-stretch bookkeeping column
+ *  (null when offline). ping_count counts online-session starts that day (one
+ *  per GO that actually flipped the stretch open). Both helpers are
+ *  best-effort: the Towbook checkin/checkout outcome is the source of truth —
+ *  a failed log write must never fail or mask the availability toggle. */
+export async function recordAvailabilityStart(q: Awaited<ReturnType<typeof db>>, orgId: string, userId: string): Promise<void> {
+  try {
+    await q`INSERT INTO driver_availability_log(org_id, user_id, day, online_minutes, ping_count, session_started_at, updated_at)
+      VALUES(${orgId}, ${userId}, CURRENT_DATE, 0, 1, NOW(), NOW())
+      ON CONFLICT (org_id, user_id, day) DO UPDATE SET
+        session_started_at = COALESCE(driver_availability_log.session_started_at, EXCLUDED.session_started_at),
+        ping_count = driver_availability_log.ping_count + CASE WHEN driver_availability_log.session_started_at IS NULL THEN 1 ELSE 0 END,
+        updated_at = NOW()`;
+  } catch { /* best-effort — never mask the checkin outcome */ }
+}
+export async function recordAvailabilityStop(q: Awaited<ReturnType<typeof db>>, orgId: string, userId: string): Promise<void> {
+  try {
+    const open = await q`SELECT day, session_started_at FROM driver_availability_log
+      WHERE org_id=${orgId} AND user_id=${userId} AND session_started_at IS NOT NULL
+      ORDER BY day DESC, session_started_at DESC LIMIT 1`;
+    if (!open.length) return;
+    const started = new Date(String(open[0].session_started_at));
+    const elapsed = Math.max(1, Math.floor((Date.now() - started.getTime()) / 60000));
+    const day = open[0].day instanceof Date ? open[0].day.toISOString().slice(0, 10) : String(open[0].day).slice(0, 10);
+    await q`INSERT INTO driver_availability_log(org_id, user_id, day, online_minutes, ping_count, updated_at)
+      VALUES(${orgId}, ${userId}, ${day}, ${elapsed}, 0, NOW())
+      ON CONFLICT (org_id, user_id, day) DO UPDATE SET
+        online_minutes = driver_availability_log.online_minutes + EXCLUDED.online_minutes,
+        updated_at = NOW()`;
+    await q`UPDATE driver_availability_log SET session_started_at=NULL, updated_at=NOW()
+      WHERE org_id=${orgId} AND user_id=${userId} AND session_started_at IS NOT NULL`;
+  } catch { /* best-effort */ }
+}
 /** GO/Offline pill (driver portal R2, lead interim 2026-08-11): a visible
  *  availability control that performs a real Towbook checkin/checkout with the
  *  driver's last known position. It NEVER blocks assignment — per the owner's
@@ -660,9 +697,11 @@ export const driverSetAvailability = createServerFn({ method: "POST" }).validato
       const lat = loc.length && Number.isFinite(Number(loc[0].latitude)) ? Number(loc[0].latitude) : 0;
       const lng = loc.length && Number.isFinite(Number(loc[0].longitude)) ? Number(loc[0].longitude) : 0;
       const checkin = await driverCheckin(session, towbookUserId, lat, lng, { locationDenied: lat === 0 && lng === 0 });
+      if (checkin.ok) await recordAvailabilityStart(q, ctx.u.orgId, ctx.identity.userRowId);
       return { ok: checkin.ok, ...(checkin.warning ? { message: checkin.warning } : {}) };
     }
     await driverCheckout(session, towbookUserId);
+    await recordAvailabilityStop(q, ctx.u.orgId, ctx.identity.userRowId);
     return { ok: true as const };
   } catch {
     return { ok: false as const, message: "Unable to update availability. Try again." };

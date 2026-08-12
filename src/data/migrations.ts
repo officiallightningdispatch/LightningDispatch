@@ -489,6 +489,69 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE UNIQUE INDEX IF NOT EXISTS contractor_doc_selfies_org_ctr_type_uidx
       ON contractor_doc_selfies(org_id, contractor_id, doc_type_id)`;
   }],
+  [26, async (q) => {
+    // Metrics tab + Lightning Dispatch Academy (owner-directed 2026-08-12,
+    // metrics-academy-spec.md). THREE new tables:
+    //   - academy_lessons: shipped product content (the 10 lesson cards) —
+    //     seeded here because it is product copy, NOT business demo data (the
+    //     "real data only" rule covers fake business rows; lesson text is
+    //     shipped content the product ships with, like the app's copy).
+    //   - academy_progress: per (org, user, lesson) manual completion — the
+    //     owner decided 2026-08-12 that lesson completion is a manual "Mark
+    //     complete" button only, never auto-complete.
+    //   - driver_availability_log: the daily GO/Offline ledger (owner decision
+    //     Q2) — written as an upsert on the GO/Offline toggle in
+    //     driverSetAvailability so hours-online is a REAL tracked metric.
+    //     online_minutes accumulates closed online stretches; ping_count counts
+    //     online-session starts that day; session_started_at is internal
+    //     bookkeeping for the currently-open stretch (null when offline).
+    await q`CREATE TABLE IF NOT EXISTS academy_lessons (
+      id TEXT PRIMARY KEY,
+      slug TEXT NOT NULL UNIQUE,
+      title TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      metric_key TEXT NOT NULL,
+      content TEXT NOT NULL,
+      duration_minutes INTEGER NOT NULL DEFAULT 4,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      active BOOLEAN NOT NULL DEFAULT TRUE
+    )`;
+    await q`CREATE TABLE IF NOT EXISTS academy_progress (
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      lesson_id TEXT NOT NULL REFERENCES academy_lessons(id) ON DELETE CASCADE,
+      status TEXT NOT NULL DEFAULT 'in_progress' CHECK (status IN ('in_progress','completed')),
+      started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      completed_at TIMESTAMPTZ,
+      PRIMARY KEY (org_id, user_id, lesson_id)
+    )`;
+    await q`CREATE TABLE IF NOT EXISTS driver_availability_log (
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      day DATE NOT NULL,
+      online_minutes INTEGER NOT NULL DEFAULT 0,
+      ping_count INTEGER NOT NULL DEFAULT 0,
+      session_started_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (org_id, user_id, day)
+    )`;
+    await q`CREATE INDEX IF NOT EXISTS driver_availability_log_org_day_idx ON driver_availability_log(org_id, day)`;
+    // Seed the 10 lesson cards (metrics-academy-spec §4 — one lesson per
+    // metric_key). INSERT ... ON CONFLICT (slug) DO NOTHING: shipped content,
+    // idempotent across every org/deploy.
+    await q`INSERT INTO academy_lessons(id, slug, title, summary, metric_key, content, duration_minutes, sort_order, active) VALUES
+      ('lesson-pre-trip-readiness', 'pre-trip-readiness', 'Pre-trip readiness', 'Accept offers fast and be rolling before the member notices the wait.', 'accept_time', 'WHY IT MATTERS: Offers are time-sensitive — the member is waiting before you even tap. A quick accept sets the whole job up to run on time.\n\nCHECKLIST:\n- Keep your phone unlocked and ringer on while you are on duty\n- When an offer lands, read the pickup + service in one glance and accept\n- If you cannot take it, decline immediately so dispatch can re-route\n- Before your shift, confirm your vehicle is fueled and stocked\n- Park where you can move out fast — no deep parking lots for the first offer', 4, 1, TRUE),
+      ('lesson-eta-honesty', 'eta-honesty', 'ETA honesty', 'Quote the time you can actually hit — the member and dispatch plan around it.', 'eta_accuracy', 'WHY IT MATTERS: An ETA you beat is great; an ETA you blow costs the member time and the company its reputation with the club.\n\nCHECKLIST:\n- Add traffic time, not just distance\n- Account for the extra minutes of prep at the vehicle (hookup, safety)\n- If the route changes, update the ETA instead of hoping\n- Arrive early when you can — early beats late every time\n- Remember the club SLA: quote inside it, then beat it', 4, 2, TRUE),
+      ('lesson-twelve-photo-routine', 'twelve-photo-routine', 'The 12-photo routine', 'Four photos at each stage — arrival, service, and finish — every single job.', 'photos_compliance', 'WHY IT MATTERS: Photos are the proof trail for the job. 12/12 means the member, the club, and the owner can see exactly what happened.\n\nCHECKLIST:\n- On arrival: one photo of each vehicle side (4) and confirm the vehicle matches\n- During service: capture the work as it happens (4)\n- At the finish: final vehicle condition, all four sides (4)\n- If a photo fails, retake it before moving on\n- Review the counts on screen before tapping complete', 4, 3, TRUE),
+      ('lesson-first-impressions', 'first-impressions', 'First impressions at the scene', 'The member rates the whole job in the first minute — make it count.', 'customer_rating', 'WHY IT MATTERS: Your average rating is the first thing the owner sees. Small courtesies move it more than the service itself.\n\nCHECKLIST:\n- Call or text before you arrive if the member is waiting\n- Step out with a greeting and your name\n- Walk the vehicle once and explain what you will do\n- Keep the scene tidy — cones, gloves, and a clean truck\n- Ask if they need anything else before you finish (a lift home, the lock popped, air in the tires)', 4, 4, TRUE),
+      ('lesson-turning-service-into-tips', 'turning-service-into-tips', 'Turning service into tips', 'Tips follow from small touches — the payment link is the easy part.', 'tips', 'WHY IT MATTERS: Tips are part of your pay. Members tip when the experience felt personal and complete.\n\nCHECKLIST:\n- Introduce yourself by name at the scene\n- Point out what you did while the work is fresh\n- Mention the tip link naturally — \"a tip is optional but appreciated\"\n- Leave the vehicle and the area better than you found it\n- Finish with a clean handoff and a genuine goodbye', 4, 5, TRUE),
+      ('lesson-acceptance-discipline', 'acceptance-discipline', 'Acceptance discipline', 'Take the offers that fit your day — dispatch counts on a predictable pool.', 'accept_rate', 'WHY IT MATTERS: Every declined offer costs the company re-dispatch time. A high accept rate keeps you first in line for the good jobs.\n\nCHECKLIST:\n- Accept when the pickup fits your area and your day\n- Decline only for a real reason (range, hours, equipment)\n- If you decline, note the reason so dispatch can adjust\n- Check your availability before a big offer wave\n- Tell dispatch when your day ends — do not just stop answering', 4, 6, TRUE),
+      ('lesson-stay-visible', 'stay-visible', 'Stay visible: GPS & check-in', 'Location updates keep dispatch honest about where you are and how long you will take.', 'gps_coverage', 'WHY IT MATTERS: The dispatcher routes offers by where you are. A driver with no ping reads as a driver that does not exist.\n\nCHECKLIST:\n- Keep location on for the app while on duty\n- Let the app ping while en route — that is how the ETA stays real\n- If the app asks for location permission, allow it\n- At a long scene, nudge your position so the map stays live\n- Check in when you go online and check out when you are done', 4, 7, TRUE),
+      ('lesson-go-offline-planning', 'go-offline-planning', 'GO/Offline planning', 'Plan your hours — being online is what makes the offers come.', 'availability', 'WHY IT MATTERS: Coverage is a real metric now. The members, clubs, and the owner all rely on drivers being online when they say they are.\n\nCHECKLIST:\n- Set a start time and go online at that time\n- Keep the app open and online through your planned window\n- Use Offline for lunch and breaks, then GO again after\n- Log off when you are truly done — a silent online driver is worse than an offline one\n- Watch your weekly coverage in Metrics and aim for 60%+ of the week', 4, 8, TRUE),
+      ('lesson-finish-strong', 'finish-strong', 'Finish strong: the full close-out', 'Complete every job you accept — the close-out is part of the service.', 'completion_rate', 'WHY IT MATTERS: A job you accept is a job you finish. Completion rate is the backbone trust metric between you, the owner, and the club.\n\nCHECKLIST:\n- Confirm the member is safe and the vehicle is drivable before you leave\n- Complete the signature, survey, and tip steps on site\n- If anything is off, call dispatch before you drive away\n- Never leave a job uncompleted to chase the next offer\n- Review the finished job on your screen before moving on', 4, 9, TRUE),
+      ('lesson-paperwork-done-right', 'paperwork-done-right', 'Paperwork done right', 'Your documents on file keep you cleared to work — and to go online.', 'documents', 'WHY IT MATTERS: Required documents gate your GO button. Missing or expired paperwork means you cannot take jobs at all.\n\nCHECKLIST:\n- Open Profile → Documents and check what is required\n- Upload each document as a clear, readable photo or PDF\n- For the driver''s license, add the live selfie too\n- Watch expiry dates — renew before they lapse\n- Re-upload promptly if the owner asks for a correction', 4, 10, TRUE)
+    ON CONFLICT (slug) DO NOTHING`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

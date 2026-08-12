@@ -25,6 +25,7 @@ import { Route as OwnerSettingsRouteImport } from './routes/owner/settings'
 import { Route as OwnerQueueRouteImport } from './routes/owner/queue'
 import { Route as OwnerPerformanceRouteImport } from './routes/owner/performance'
 import { Route as OwnerMoneyRouteImport } from './routes/owner/money'
+import { Route as OwnerMetricsRouteImport } from './routes/owner/metrics'
 import { Route as OwnerHistoryRouteImport } from './routes/owner/history'
 import { Route as OwnerDriversRouteImport } from './routes/owner/drivers'
 import { Route as OwnerContractorsRouteImport } from './routes/owner/contractors'
@@ -35,11 +36,14 @@ import { Route as OpsContractorsRouteImport } from './routes/ops/contractors'
 import { Route as OpsActiveRouteImport } from './routes/ops/active'
 import { Route as DriverProfileRouteImport } from './routes/driver/profile'
 import { Route as DriverOffersRouteImport } from './routes/driver/offers'
+import { Route as DriverMetricsRouteImport } from './routes/driver/metrics'
 import { Route as DriverHelpRouteImport } from './routes/driver/help'
-import { Route as DriverDocumentsRouteImport } from './routes/driver/documents'
 import { Route as DriverEarningsRouteImport } from './routes/driver/earnings'
+import { Route as DriverDocumentsRouteImport } from './routes/driver/documents'
 import { Route as DriverActiveRouteImport } from './routes/driver/active'
+import { Route as OwnerMetricsIdRouteImport } from './routes/owner/metrics.$id'
 import { Route as OwnerContractorsIdRouteImport } from './routes/owner/contractors.$id'
+import { Route as DriverAcademyIdRouteImport } from './routes/driver/academy.$id'
 
 const OwnerRoute = OwnerRouteImport.update({
   id: '/owner',
@@ -121,6 +125,11 @@ const OwnerMoneyRoute = OwnerMoneyRouteImport.update({
   path: '/money',
   getParentRoute: () => OwnerRoute,
 } as any)
+const OwnerMetricsRoute = OwnerMetricsRouteImport.update({
+  id: '/metrics',
+  path: '/metrics',
+  getParentRoute: () => OwnerRoute,
+} as any)
 const OwnerHistoryRoute = OwnerHistoryRouteImport.update({
   id: '/history',
   path: '/history',
@@ -171,6 +180,11 @@ const DriverOffersRoute = DriverOffersRouteImport.update({
   path: '/offers',
   getParentRoute: () => DriverRoute,
 } as any)
+const DriverMetricsRoute = DriverMetricsRouteImport.update({
+  id: '/metrics',
+  path: '/metrics',
+  getParentRoute: () => DriverRoute,
+} as any)
 const DriverHelpRoute = DriverHelpRouteImport.update({
   id: '/help',
   path: '/help',
@@ -181,20 +195,30 @@ const DriverEarningsRoute = DriverEarningsRouteImport.update({
   path: '/earnings',
   getParentRoute: () => DriverRoute,
 } as any)
-const DriverActiveRoute = DriverActiveRouteImport.update({
-  id: '/active',
-  path: '/active',
-  getParentRoute: () => DriverRoute,
-} as any)
 const DriverDocumentsRoute = DriverDocumentsRouteImport.update({
   id: '/documents',
   path: '/documents',
   getParentRoute: () => DriverRoute,
 } as any)
+const DriverActiveRoute = DriverActiveRouteImport.update({
+  id: '/active',
+  path: '/active',
+  getParentRoute: () => DriverRoute,
+} as any)
+const OwnerMetricsIdRoute = OwnerMetricsIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => OwnerMetricsRoute,
+} as any)
 const OwnerContractorsIdRoute = OwnerContractorsIdRouteImport.update({
   id: '/$id',
   path: '/$id',
   getParentRoute: () => OwnerContractorsRoute,
+} as any)
+const DriverAcademyIdRoute = DriverAcademyIdRouteImport.update({
+  id: '/academy/$id',
+  path: '/academy/$id',
+  getParentRoute: () => DriverRoute,
 } as any)
 
 export interface FileRoutesByFullPath {
@@ -208,9 +232,10 @@ export interface FileRoutesByFullPath {
   '/ops': typeof OpsRouteWithChildren
   '/owner': typeof OwnerRouteWithChildren
   '/driver/active': typeof DriverActiveRoute
-  '/driver/earnings': typeof DriverEarningsRoute
   '/driver/documents': typeof DriverDocumentsRoute
+  '/driver/earnings': typeof DriverEarningsRoute
   '/driver/help': typeof DriverHelpRoute
+  '/driver/metrics': typeof DriverMetricsRoute
   '/driver/offers': typeof DriverOffersRoute
   '/driver/profile': typeof DriverProfileRoute
   '/ops/active': typeof OpsActiveRoute
@@ -221,6 +246,7 @@ export interface FileRoutesByFullPath {
   '/owner/contractors': typeof OwnerContractorsRouteWithChildren
   '/owner/drivers': typeof OwnerDriversRoute
   '/owner/history': typeof OwnerHistoryRoute
+  '/owner/metrics': typeof OwnerMetricsRouteWithChildren
   '/owner/money': typeof OwnerMoneyRoute
   '/owner/performance': typeof OwnerPerformanceRoute
   '/owner/queue': typeof OwnerQueueRoute
@@ -228,7 +254,9 @@ export interface FileRoutesByFullPath {
   '/driver/': typeof DriverIndexRoute
   '/ops/': typeof OpsIndexRoute
   '/owner/': typeof OwnerIndexRoute
+  '/driver/academy/$id': typeof DriverAcademyIdRoute
   '/owner/contractors/$id': typeof OwnerContractorsIdRoute
+  '/owner/metrics/$id': typeof OwnerMetricsIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -238,9 +266,10 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/logout': typeof LogoutRoute
   '/driver/active': typeof DriverActiveRoute
-  '/driver/earnings': typeof DriverEarningsRoute
   '/driver/documents': typeof DriverDocumentsRoute
+  '/driver/earnings': typeof DriverEarningsRoute
   '/driver/help': typeof DriverHelpRoute
+  '/driver/metrics': typeof DriverMetricsRoute
   '/driver/offers': typeof DriverOffersRoute
   '/driver/profile': typeof DriverProfileRoute
   '/ops/active': typeof OpsActiveRoute
@@ -251,6 +280,7 @@ export interface FileRoutesByTo {
   '/owner/contractors': typeof OwnerContractorsRouteWithChildren
   '/owner/drivers': typeof OwnerDriversRoute
   '/owner/history': typeof OwnerHistoryRoute
+  '/owner/metrics': typeof OwnerMetricsRouteWithChildren
   '/owner/money': typeof OwnerMoneyRoute
   '/owner/performance': typeof OwnerPerformanceRoute
   '/owner/queue': typeof OwnerQueueRoute
@@ -258,7 +288,9 @@ export interface FileRoutesByTo {
   '/driver': typeof DriverIndexRoute
   '/ops': typeof OpsIndexRoute
   '/owner': typeof OwnerIndexRoute
+  '/driver/academy/$id': typeof DriverAcademyIdRoute
   '/owner/contractors/$id': typeof OwnerContractorsIdRoute
+  '/owner/metrics/$id': typeof OwnerMetricsIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -272,9 +304,10 @@ export interface FileRoutesById {
   '/ops': typeof OpsRouteWithChildren
   '/owner': typeof OwnerRouteWithChildren
   '/driver/active': typeof DriverActiveRoute
-  '/driver/earnings': typeof DriverEarningsRoute
   '/driver/documents': typeof DriverDocumentsRoute
+  '/driver/earnings': typeof DriverEarningsRoute
   '/driver/help': typeof DriverHelpRoute
+  '/driver/metrics': typeof DriverMetricsRoute
   '/driver/offers': typeof DriverOffersRoute
   '/driver/profile': typeof DriverProfileRoute
   '/ops/active': typeof OpsActiveRoute
@@ -285,6 +318,7 @@ export interface FileRoutesById {
   '/owner/contractors': typeof OwnerContractorsRouteWithChildren
   '/owner/drivers': typeof OwnerDriversRoute
   '/owner/history': typeof OwnerHistoryRoute
+  '/owner/metrics': typeof OwnerMetricsRouteWithChildren
   '/owner/money': typeof OwnerMoneyRoute
   '/owner/performance': typeof OwnerPerformanceRoute
   '/owner/queue': typeof OwnerQueueRoute
@@ -292,7 +326,9 @@ export interface FileRoutesById {
   '/driver/': typeof DriverIndexRoute
   '/ops/': typeof OpsIndexRoute
   '/owner/': typeof OwnerIndexRoute
+  '/driver/academy/$id': typeof DriverAcademyIdRoute
   '/owner/contractors/$id': typeof OwnerContractorsIdRoute
+  '/owner/metrics/$id': typeof OwnerMetricsIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -310,6 +346,7 @@ export interface FileRouteTypes {
     | '/driver/documents'
     | '/driver/earnings'
     | '/driver/help'
+    | '/driver/metrics'
     | '/driver/offers'
     | '/driver/profile'
     | '/ops/active'
@@ -320,6 +357,7 @@ export interface FileRouteTypes {
     | '/owner/contractors'
     | '/owner/drivers'
     | '/owner/history'
+    | '/owner/metrics'
     | '/owner/money'
     | '/owner/performance'
     | '/owner/queue'
@@ -327,7 +365,9 @@ export interface FileRouteTypes {
     | '/driver/'
     | '/ops/'
     | '/owner/'
+    | '/driver/academy/$id'
     | '/owner/contractors/$id'
+    | '/owner/metrics/$id'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -340,6 +380,7 @@ export interface FileRouteTypes {
     | '/driver/documents'
     | '/driver/earnings'
     | '/driver/help'
+    | '/driver/metrics'
     | '/driver/offers'
     | '/driver/profile'
     | '/ops/active'
@@ -350,6 +391,7 @@ export interface FileRouteTypes {
     | '/owner/contractors'
     | '/owner/drivers'
     | '/owner/history'
+    | '/owner/metrics'
     | '/owner/money'
     | '/owner/performance'
     | '/owner/queue'
@@ -357,7 +399,9 @@ export interface FileRouteTypes {
     | '/driver'
     | '/ops'
     | '/owner'
+    | '/driver/academy/$id'
     | '/owner/contractors/$id'
+    | '/owner/metrics/$id'
   id:
     | '__root__'
     | '/'
@@ -373,6 +417,7 @@ export interface FileRouteTypes {
     | '/driver/documents'
     | '/driver/earnings'
     | '/driver/help'
+    | '/driver/metrics'
     | '/driver/offers'
     | '/driver/profile'
     | '/ops/active'
@@ -383,6 +428,7 @@ export interface FileRouteTypes {
     | '/owner/contractors'
     | '/owner/drivers'
     | '/owner/history'
+    | '/owner/metrics'
     | '/owner/money'
     | '/owner/performance'
     | '/owner/queue'
@@ -390,7 +436,9 @@ export interface FileRouteTypes {
     | '/driver/'
     | '/ops/'
     | '/owner/'
+    | '/driver/academy/$id'
     | '/owner/contractors/$id'
+    | '/owner/metrics/$id'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -519,6 +567,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OwnerMoneyRouteImport
       parentRoute: typeof OwnerRoute
     }
+    '/owner/metrics': {
+      id: '/owner/metrics'
+      path: '/metrics'
+      fullPath: '/owner/metrics'
+      preLoaderRoute: typeof OwnerMetricsRouteImport
+      parentRoute: typeof OwnerRoute
+    }
     '/owner/history': {
       id: '/owner/history'
       path: '/history'
@@ -589,6 +644,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DriverOffersRouteImport
       parentRoute: typeof DriverRoute
     }
+    '/driver/metrics': {
+      id: '/driver/metrics'
+      path: '/metrics'
+      fullPath: '/driver/metrics'
+      preLoaderRoute: typeof DriverMetricsRouteImport
+      parentRoute: typeof DriverRoute
+    }
     '/driver/help': {
       id: '/driver/help'
       path: '/help'
@@ -617,12 +679,26 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DriverActiveRouteImport
       parentRoute: typeof DriverRoute
     }
+    '/owner/metrics/$id': {
+      id: '/owner/metrics/$id'
+      path: '/$id'
+      fullPath: '/owner/metrics/$id'
+      preLoaderRoute: typeof OwnerMetricsIdRouteImport
+      parentRoute: typeof OwnerMetricsRoute
+    }
     '/owner/contractors/$id': {
       id: '/owner/contractors/$id'
       path: '/$id'
       fullPath: '/owner/contractors/$id'
       preLoaderRoute: typeof OwnerContractorsIdRouteImport
       parentRoute: typeof OwnerContractorsRoute
+    }
+    '/driver/academy/$id': {
+      id: '/driver/academy/$id'
+      path: '/academy/$id'
+      fullPath: '/driver/academy/$id'
+      preLoaderRoute: typeof DriverAcademyIdRouteImport
+      parentRoute: typeof DriverRoute
     }
   }
 }
@@ -632,9 +708,11 @@ interface DriverRouteChildren {
   DriverDocumentsRoute: typeof DriverDocumentsRoute
   DriverEarningsRoute: typeof DriverEarningsRoute
   DriverHelpRoute: typeof DriverHelpRoute
+  DriverMetricsRoute: typeof DriverMetricsRoute
   DriverOffersRoute: typeof DriverOffersRoute
   DriverProfileRoute: typeof DriverProfileRoute
   DriverIndexRoute: typeof DriverIndexRoute
+  DriverAcademyIdRoute: typeof DriverAcademyIdRoute
 }
 
 const DriverRouteChildren: DriverRouteChildren = {
@@ -642,9 +720,11 @@ const DriverRouteChildren: DriverRouteChildren = {
   DriverDocumentsRoute: DriverDocumentsRoute,
   DriverEarningsRoute: DriverEarningsRoute,
   DriverHelpRoute: DriverHelpRoute,
+  DriverMetricsRoute: DriverMetricsRoute,
   DriverOffersRoute: DriverOffersRoute,
   DriverProfileRoute: DriverProfileRoute,
   DriverIndexRoute: DriverIndexRoute,
+  DriverAcademyIdRoute: DriverAcademyIdRoute,
 }
 
 const DriverRouteWithChildren =
@@ -677,12 +757,25 @@ const OwnerContractorsRouteChildren: OwnerContractorsRouteChildren = {
 const OwnerContractorsRouteWithChildren =
   OwnerContractorsRoute._addFileChildren(OwnerContractorsRouteChildren)
 
+interface OwnerMetricsRouteChildren {
+  OwnerMetricsIdRoute: typeof OwnerMetricsIdRoute
+}
+
+const OwnerMetricsRouteChildren: OwnerMetricsRouteChildren = {
+  OwnerMetricsIdRoute: OwnerMetricsIdRoute,
+}
+
+const OwnerMetricsRouteWithChildren = OwnerMetricsRoute._addFileChildren(
+  OwnerMetricsRouteChildren,
+)
+
 interface OwnerRouteChildren {
   OwnerActiveRoute: typeof OwnerActiveRoute
   OwnerAiDispatcherRoute: typeof OwnerAiDispatcherRoute
   OwnerContractorsRoute: typeof OwnerContractorsRouteWithChildren
   OwnerDriversRoute: typeof OwnerDriversRoute
   OwnerHistoryRoute: typeof OwnerHistoryRoute
+  OwnerMetricsRoute: typeof OwnerMetricsRouteWithChildren
   OwnerMoneyRoute: typeof OwnerMoneyRoute
   OwnerPerformanceRoute: typeof OwnerPerformanceRoute
   OwnerQueueRoute: typeof OwnerQueueRoute
@@ -696,6 +789,7 @@ const OwnerRouteChildren: OwnerRouteChildren = {
   OwnerContractorsRoute: OwnerContractorsRouteWithChildren,
   OwnerDriversRoute: OwnerDriversRoute,
   OwnerHistoryRoute: OwnerHistoryRoute,
+  OwnerMetricsRoute: OwnerMetricsRouteWithChildren,
   OwnerMoneyRoute: OwnerMoneyRoute,
   OwnerPerformanceRoute: OwnerPerformanceRoute,
   OwnerQueueRoute: OwnerQueueRoute,
