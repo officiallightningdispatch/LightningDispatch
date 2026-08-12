@@ -40,15 +40,24 @@ const syncResult = (code: TowbookSyncCode, message: string, extra?: Partial<Towb
 
 const TOWBOOK_JOB_PATHS = [
   // Service-Platform API (JSON) FIRST — the authoritative, status-complete
-  // surface. The ?status=N variants guarantee every bucket is pulled even
-  // when a bucket is empty (a 200-empty array is NOT a stop): 0 = Received
-  // (where a freshly accepted offer's call lands — the 2026-08-12 dispatch
-  // gap), 1 = Dispatched, 2 = En Route; the base list is the complete surface
-  // (3/4/5/252/255 included). (2026-08-12: the old list started with the HTML
-  // home page, discovery stopped at its 200 dashboard, and the queue imported
-  // NOTHING from 14:52 on — the sync only ever saw the home page.)
+  // surface. THE UNFILTERED BASE LIST `/api/calls` IS THE ONLY SURFACE THAT
+  // CONTAINS ACCEPTED/DISPATCHED CALLS — it must be walked FIRST (acceptance-
+  // sync fix, 2026-08-12, live-verified): `GET /api/calls?status=1` provably
+  // returns [] even while accepted calls exist (job 279919891 accepted 18:43,
+  // invisible until it advanced to status 2), while the base list returns every
+  // call of every status (42 calls spanning 2/3/5/255 in the 21:41 probe). When
+  // the base list sat after the status buckets, the 10s discovery budget was
+  // exhausted (status=1 alone cost ~4.6s) before it was reached — the
+  // acceptance gap. The status buckets remain AFTER it as FALLBACK: a
+  // 200-empty array is NOT a stop (they're only walked when the base list
+  // yields nothing, e.g. truly zero calls), and 0 = Received / 1 = Dispatched
+  // / 2 = En Route / 3/4/5/252/255 are all covered by the base pull anyway.
+  // (2026-08-12 earlier: the old list started with the HTML home page,
+  // discovery stopped at its 200 dashboard, and the queue imported NOTHING
+  // from 14:52 on — the sync only ever saw the home page.)
+  "/api/calls",
   "/api/calls?status=0", "/api/calls?status=1", "/api/calls?status=2",
-  "/api/calls", "/api/callRequests/",
+  "/api/callRequests/",
   "/api/jobs", "/api/orders", "/api/dispatch", "/api/dispatches",
   "/api/jobs/current", "/api/jobs/open", "/api/jobs/active", "/api/jobs/completed",
   "/api/Calls", "/api/Job/Get", "/api/jobs/list",
@@ -82,13 +91,17 @@ const isLoginRedirect = (loc: string | null) => Boolean(loc && /login/i.test(loc
 
 /* ------------------------------ self-discovering fetch ------------------------------ */
 
-/** Whole-discovery hard budget (resilience, owner-directed 2026-08-12): a slow
- *  Towbook period must never let discovery walk all ~45 paths (worst case
- *  45×12s — this wedged the 3s loop on 2026-08-12). With a valid session the
- *  FIRST working primary path already returns the job page, so discovery stops
- *  there and the entire walk is capped at DISCOVERY_TIMEOUT_MS. */
-const DISCOVERY_TIMEOUT_MS = 10_000;
-const PER_PATH_TIMEOUT_MS = 12_000;
+/** Whole-discovery hard budget (resilience, owner-directed 2026-08-12;
+ *  widened 15s→ same day for the acceptance-sync fix): a slow Towbook period
+ *  must never let discovery walk all ~45 paths (worst case 45×12s — this
+ *  wedged the 3s loop on 2026-08-12). With a valid session the FIRST working
+ *  primary path already returns the job page, so discovery stops there and
+ *  the entire walk is capped at DISCOVERY_TIMEOUT_MS. 15s (not 10s) so the
+ *  UNFILTERED base list — now the first JSON path, and the only surface that
+ *  carries accepted/Dispatched calls — is reachable within budget even on a
+ *  slow Towbook period (measured 8.6s for the full 42-call list at 21:41). */
+const DISCOVERY_TIMEOUT_MS = 15_000;
+const PER_PATH_TIMEOUT_MS = 15_000;
 async function discoverJobPages(cookieJar: string, baseUrl: string): Promise<{ diagnostics: TowbookSyncDiag[]; pages: { url: string; body: string; contentType: string | null }[]; sessionExpired: boolean }> {
   const diagnostics: TowbookSyncDiag[] = [];
   const pages: { url: string; body: string; contentType: string | null }[] = [];
@@ -99,14 +112,16 @@ async function discoverJobPages(cookieJar: string, baseUrl: string): Promise<{ d
   for (const path of TOWBOOK_JOB_PATHS) {
     if (sessionExpired) break; // don't hammer a dead session
     const isJsonPath = path.startsWith("/api/");
-    // JSON API section: walked EVERY tick — a 200-empty array (e.g. no status-0
-    // calls right now) is NOT a stop; every status bucket + the base list must
-    // be pulled so the queue always mirrors Towbook. HTML/MVC section: FALLBACK
-    // only — walked when the JSON surface produced no jobs, and then stopped at
-    // the first page that actually carries jobs (a 200 dashboard with no
-    // parseable table is NOT a stop — 2026-08-12: the home page 200 stopped
-    // discovery and the queue imported nothing for hours).
-    if (!isJsonPath && jsonGotJobs) break;
+    // Walk stops as soon as ANY page yields jobs — the FIRST JSON path is the
+    // unfiltered base list /api/calls, which is the COMPLETE surface (every
+    // status 0..5/252/255 in one pull), so once it returns ≥1 call the queue
+    // mirrors Towbook entirely and the status buckets after it add nothing
+    // but budget burn (acceptance-sync fix 2026-08-12). HTML/MVC section is
+    // FALLBACK only — walked when the JSON surface produced no jobs, and then
+    // stopped at the first page that actually carries jobs (a 200 dashboard
+    // with no parseable table is NOT a stop — 2026-08-12: the home page 200
+    // stopped discovery and the queue imported nothing for hours).
+    if (jsonGotJobs) break;
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 250) {
       diagnostics.push({ url: "<discovery-cap>", status: null, contentType: null, hint: `discovery stopped at the ${Math.round(DISCOVERY_TIMEOUT_MS / 1000)}s budget` });
