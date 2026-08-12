@@ -426,7 +426,7 @@ type SquarePaymentsFactory = { card: () => Promise<SquareCard> };
 type SquareGlobal = { payments: (applicationId: string, locationId: string) => SquarePaymentsFactory };
 
 let squareScriptPromise: Promise<void> | null = null;
-/** Load Square's Web Payments SDK once (https://web.squareup.com/v1/square.js).
+/** Load Square's Web Payments SDK once (https://web.squarecdn.com/v1/square.js).
  *  Client-only — the SDK tokenizes the card in an iframe Square hosts; the raw
  *  PAN never touches this app, and the token is charged server-side. */
 function loadSquareScript(): Promise<void> {
@@ -434,7 +434,7 @@ function loadSquareScript(): Promise<void> {
   if ((window as unknown as { Square?: unknown }).Square) return Promise.resolve();
   squareScriptPromise ??= new Promise<void>((resolve, reject) => {
     const el = document.createElement("script");
-    el.src = "https://web.squareup.com/v1/square.js";
+    el.src = "https://web.squarecdn.com/v1/square.js";
     el.async = true;
     el.onload = () => resolve();
     el.onerror = () => { squareScriptPromise = null; reject(new Error("Square payments couldn't load — check the connection.")); };
