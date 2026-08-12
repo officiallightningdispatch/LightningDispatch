@@ -125,6 +125,14 @@ export function OwnerMetricsView() {
   if (state && !state.ok) return <InlineError message={state.error} />;
   if (state && state.ok) {
     const a = state.aggregate;
+    // Weakest-first (spec §2.3.3): drivers with coach recommendations surface
+    // first, ordered by their largest deviation — the coaching view the owner
+    // asked for. Ties fall back to name order.
+    const fleet = [...state.fleet].sort((x, y) => {
+      const dev = (m: DriverMetricsRow) => (m.academy.length ? Math.max(...m.academy.map((r) => r.deviation)) : -1);
+      const d = dev(y) - dev(x);
+      return d !== 0 ? d : x.name.localeCompare(y.name);
+    });
     return (
       <div className="space-y-6">
         <PeriodControl period={period} onChange={onPeriod} />
@@ -146,13 +154,13 @@ export function OwnerMetricsView() {
             <EmptyState icon={BarChart3} title="No drivers on the roster yet" body="Once drivers are linked, their metrics build here from real job data." />
           ) : (
             <Card className="overflow-hidden">
-              {state.fleet.map((m, i) => {
+              {fleet.map((m, i) => {
                 const { badge, chip } = metricStatusLine(m);
                 return (
                   <Link
                     key={m.userId}
                     to={driverLink(m.userId)}
-                    className={`flex items-center gap-3 px-4 py-3.5 transition-colors hover:bg-ink-50 ${i === state.fleet.length - 1 ? "" : "border-b border-ink-100"}`}
+                    className={`flex items-center gap-3 px-4 py-3.5 transition-colors hover:bg-ink-50 ${i === fleet.length - 1 ? "" : "border-b border-ink-100"}`}
                   >
                     <Avatar name={m.name} />
                     <div className="min-w-0 flex-1">

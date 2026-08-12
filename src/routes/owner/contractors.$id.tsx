@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useParams } from "@tanstack/react-router";
-import { ArrowLeft, CalendarClock, FileText, Loader2, Pencil, Trash2, X } from "lucide-react";
+import { ArrowLeft, BarChart3, CalendarClock, FileText, Loader2, Pencil, Trash2, X } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { AppShell } from "~/components/app-shell";
 import {
@@ -212,6 +212,15 @@ function OwnerContractorDetail() {
                 </div>
               </div>
               {!removed && <div className="mt-3"><ComplianceSummary approved={approvedCount} required={detail.requiredDocCount} actionNames={actionNames} /></div>}
+              {!removed && detail.towbookDriverId && (
+                <Link
+                  to={`/owner/metrics/${id}` as any}
+                  className="mt-3 inline-flex h-9 items-center gap-1.5 rounded-lg border border-ink-200 px-3 text-xs font-bold text-ink-600 transition-colors hover:bg-ink-50"
+                >
+                  <BarChart3 className="size-3.5" aria-hidden="true" />
+                  View metrics →
+                </Link>
+              )}
               {removed && (
                 <div className="mt-3">
                   <Alert variant="danger">
