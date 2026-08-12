@@ -99,7 +99,7 @@ const withSession = (token, fn) => {
     () => eventStorage.run({ h3Event }, fn),
   );
 };
-const auditFor = async (action, entityId) => (await q`SELECT actor_user_id, actor_role, action, entity_type, entity_id, detail FROM audit_log WHERE org_id=${ORG} AND action=${action} AND entity_id=${entityId} ORDER BY created_at DESC`);
+const auditFor = async (action, entityId) => (await q`SELECT actor_user_id, actor_role, action, entity_type, entity_id, detail FROM audit_log WHERE org_id=${ORG} AND action=${action} AND entity_id=${entityId} ORDER BY occurred_at DESC`);
 
 /* ------------------------- 1) picker payload + shape-a UI rule ------------------------- */
 {
