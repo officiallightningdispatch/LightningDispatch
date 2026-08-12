@@ -9,8 +9,8 @@
  * before).
  */
 import { createServerFn } from "@tanstack/react-start";
-import type { MyPayoutMethod, OwnerPayoutMethod, PayoutResult, PayoutRail } from "./payouts-core";
-export type { MyPayoutMethod, OwnerPayoutMethod, PayoutRail, PayoutStatus } from "./payouts-core";
+import type { MyPayoutMethod, OwnerPayoutMethod, PayPeriodDetail, PayPeriodList, PayoutResult, PayoutRail, MoneyOverview } from "./payouts-core";
+export type { MyPayoutMethod, OwnerPayoutMethod, PayPeriodDetail, PayPeriodList, PayoutRecord, PayoutRail, PayoutStatus, MoneyOverview, PayPeriod } from "./payouts-core";
 
 /** UI labels for the payout rails — kept HERE (client-safe facade), never
  *  re-exported from the server-only core: a value re-export of the core pulls
@@ -81,3 +81,102 @@ export const getContractorPayoutMethod = createServerFn({ method: "POST" }).vali
   const contractorId = typeof v?.contractorId === "string" ? v.contractorId : "";
   return core.getContractorPayoutMethodCore({ orgId: u.orgId, id: u.id, role: u.role }, contractorId);
 });
+
+/* ------------------------------ PAYDAY (owner) ------------------------------ */
+
+/** Owner/admin: pay periods (newest first) + the default (just-closed) id. */
+export const listPayPeriods = createServerFn({ method: "GET" }).handler(async (): Promise<PayoutResult<PayPeriodList>> => {
+  const core = await import("./payouts-core");
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u) return { ok: false as const, code: "unauthorized", message: "Sign in first." };
+  return core.listPayPeriodsCore({ orgId: u.orgId, id: u.id, role: u.role });
+});
+
+/** Owner/admin: one period's manifest (records + grouped totals). */
+export const getPayPeriodDetail = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<PayoutResult<PayPeriodDetail | null>> => {
+  const core = await import("./payouts-core");
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u) return { ok: false as const, code: "unauthorized", message: "Sign in first." };
+  const v = data as { periodId?: unknown };
+  const periodId = typeof v?.periodId === "string" ? v.periodId : "";
+  return core.getPayPeriodDetailCore({ orgId: u.orgId, id: u.id, role: u.role }, periodId);
+});
+
+/** Owner/admin: compute (or recompute) a closed period's payday. Idempotent —
+ *  recompute replaces the period's non-paid records; paid rows never change. */
+export const computePayday = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<PayoutResult<PayPeriodDetail>> => {
+  const core = await import("./payouts-core");
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u) return { ok: false as const, code: "unauthorized", message: "Sign in first." };
+  const v = data as { periodId?: unknown };
+  const periodId = typeof v?.periodId === "string" ? v.periodId : "";
+  return core.computePaydayCore({ orgId: u.orgId, id: u.id, role: u.role }, periodId);
+});
+
+/** Owner/admin: mark ONE payout record paid (owner confirmed the send in
+ *  their own app). The period flips to paid when no computed rows remain. */
+export const markPayoutPaid = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<PayoutResult<PayPeriodDetail>> => {
+  const core = await import("./payouts-core");
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u) return { ok: false as const, code: "unauthorized", message: "Sign in first." };
+  return core.markPayoutPaidCore({ orgId: u.orgId, id: u.id, role: u.role }, data);
+});
+
+/** Owner/admin: mark the WHOLE period paid (all computed rows at once). */
+export const markPaydayPeriodPaid = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<PayoutResult<PayPeriodDetail>> => {
+  const core = await import("./payouts-core");
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u) return { ok: false as const, code: "unauthorized", message: "Sign in first." };
+  const v = data as { periodId?: unknown };
+  const periodId = typeof v?.periodId === "string" ? v.periodId : "";
+  return core.markPaydayPeriodPaidCore({ orgId: u.orgId, id: u.id, role: u.role }, periodId);
+});
+
+/** Owner/admin: verify a contractor's payout method (owner-confirmed — the
+ *  owner sends a test payment from their own app before tapping Verify). */
+export const verifyPayoutMethod = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<PayoutResult<OwnerPayoutMethod | null>> => {
+  const core = await import("./payouts-core");
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u) return { ok: false as const, code: "unauthorized", message: "Sign in first." };
+  const v = data as { methodId?: unknown };
+  const methodId = typeof v?.methodId === "string" ? v.methodId : "";
+  return core.verifyPayoutMethodCore({ orgId: u.orgId, id: u.id, role: u.role }, methodId);
+});
+
+/** Owner/admin: reject a contractor's payout method with a note (shown to the
+ *  contractor; re-save resets to connected_unverified). */
+export const rejectPayoutMethod = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<PayoutResult<OwnerPayoutMethod | null>> => {
+  const core = await import("./payouts-core");
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u) return { ok: false as const, code: "unauthorized", message: "Sign in first." };
+  return core.rejectPayoutMethodCore({ orgId: u.orgId, id: u.id, role: u.role }, data);
+});
+
+/** Owner/admin: the three Money-tab cards (Revenue / Tips / Payouts). */
+export const getMoneyOverview = createServerFn({ method: "GET" }).handler(async (): Promise<PayoutResult<MoneyOverview>> => {
+  const core = await import("./payouts-core");
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u) return { ok: false as const, code: "unauthorized", message: "Sign in first." };
+  return core.getMoneyOverviewCore({ orgId: u.orgId, id: u.id, role: u.role });
+});
+
+/** Period label helper (client-safe, pure): "Oct 6 – Oct 12 · pays Wed Oct 15".
+ *  The open period renders "Open period — pays Wed Oct 15". */
+export function payPeriodLabel(startsAtIso: string, endsAtIso: string, payoutDueOn: string, isCurrent: boolean): string {
+  const fmt = (isoStr: string) => {
+    const d = new Date(isoStr);
+    return Number.isNaN(d.getTime()) ? "…" : d.toLocaleDateString([], { month: "short", day: "numeric" });
+  };
+  const due = payoutDueOn ? new Date(`${payoutDueOn}T00:00:00`) : null;
+  const dueLabel = due && !Number.isNaN(due.getTime()) ? due.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) : "";
+  if (isCurrent) return `Open period — pays ${dueLabel}`;
+  return `${fmt(startsAtIso)} – ${fmt(endsAtIso)} · pays ${dueLabel}`;
+}

@@ -684,6 +684,71 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE INDEX IF NOT EXISTS damage_claims_org_status_idx ON damage_claims(org_id, status)`;
     await q`CREATE INDEX IF NOT EXISTS damage_claims_driver_idx ON damage_claims(driver_user_id, status)`;
   }],
+  [32, async (q) => {
+    // Weekly pay periods (owner-directed 2026-08-11, payout-methods-spec §2):
+    // Monday 00:00 → Sunday 23:59:59.999 America/New_York (7-day period),
+    // payout due the Wednesday morning AFTER the period closes. One row per
+    // org per week (UNIQUE(org_id, starts_at, ends_at)); ensureCurrentPeriod
+    // INSERT ON CONFLICT DO NOTHING creates it lazily. status lifecycle:
+    // open → computed → paid. ends_at is stored as the absolute instant of
+    // Sunday 23:59:59.999 ET (the next Monday 00:00 ET minus 1ms) so window
+    // math is a clean [starts_at, ends_at) comparison in UTC.
+    await q`CREATE TABLE IF NOT EXISTS pay_periods (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      starts_at TIMESTAMPTZ NOT NULL,
+      ends_at TIMESTAMPTZ NOT NULL,
+      payout_due_on DATE NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','computed','paid')),
+      computed_at TIMESTAMPTZ,
+      paid_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (org_id, starts_at, ends_at)
+    )`;
+    await q`CREATE INDEX IF NOT EXISTS pay_periods_org_created_idx ON pay_periods(org_id, created_at)`;
+  }],
+  [33, async (q) => {
+    // Payout records — the weekly PAYDAY MANIFEST ledger (payout-methods-spec
+    // §2, build order #8). One row per (org, period, contractor) with
+    // earnings in that period; recompute replaces non-paid rows (upsert by the
+    // unique index), paid rows are IMMUTABLE and never touched. rail/handles
+    // are SNAPSHOTTED at compute time (changing a method later never rewrites
+    // history); handle_full is PII (owner-only surface), handle_masked is the
+    // audit/ledger form. rail is NULL when the contractor has NO method row at
+    // all (method_status 'none' = blocked); an unverified/rejected method still
+    // snapshots rail+handle so the owner can verify it inline. gross_cents =
+    // payrate × completed jobs in the window; tips_cents from completion_tips
+    // paid rows, ALWAYS a separate line. status: computed (due) | paid |
+    // blocked (no verified payout method — amount still recorded, nothing
+    // silently dropped).
+    await q`CREATE TABLE IF NOT EXISTS payout_records (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      period_id TEXT NOT NULL REFERENCES pay_periods(id) ON DELETE CASCADE,
+      contractor_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      method_id TEXT,
+      rail TEXT,
+      handle_full TEXT,
+      handle_masked TEXT NOT NULL DEFAULT '',
+      job_count INTEGER NOT NULL DEFAULT 0,
+      payrate_cents INTEGER,
+      gross_cents INTEGER NOT NULL DEFAULT 0,
+      tips_cents INTEGER NOT NULL DEFAULT 0,
+      total_cents INTEGER NOT NULL DEFAULT 0,
+      method_status TEXT NOT NULL DEFAULT 'none' CHECK (method_status IN ('verified','connected_unverified','rejected','none')),
+      status TEXT NOT NULL DEFAULT 'computed' CHECK (status IN ('computed','paid','blocked')),
+      paid_at TIMESTAMPTZ,
+      paid_by_user_id TEXT REFERENCES users(id),
+      pay_note TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS payout_records_org_period_contractor_uidx
+      ON payout_records(org_id, period_id, contractor_id)`;
+    await q`CREATE INDEX IF NOT EXISTS payout_records_org_period_status_idx ON payout_records(org_id, period_id, status)`;
+    await q`CREATE INDEX IF NOT EXISTS payout_records_org_contractor_idx ON payout_records(org_id, contractor_id)`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

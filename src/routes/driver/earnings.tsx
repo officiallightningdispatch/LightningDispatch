@@ -1,11 +1,12 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { CheckCircle2, ChevronRight, DollarSign, Wallet } from "lucide-react";
+import { Check, CheckCircle2, ChevronRight, CircleX, Clock, DollarSign, Wallet } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "~/components/app-shell";
 import { DriverEmptyState, DriverToolbar, QueueSkeleton } from "~/components/driver-queue";
 import { JobFeedbackPanel } from "~/components/driver-issues";
-import { Card } from "~/components/ui";
+import { Button, Card } from "~/components/ui";
 import { driverEarnings, driverLogout, type DriverEarningsResult } from "~/data/driver-auth";
+import { getMyPayoutMethod, PAYOUT_RAIL_LABELS } from "~/data/payouts";
 
 /**
  * /driver/earnings — R2 (spec §c item 9): Today/This-week segmented toggle,
@@ -48,11 +49,15 @@ const fmtTime = (iso: string | null): string => {
 function EarningsView() {
   const nav = useNavigate();
   const [state, setState] = useState<DriverEarningsResult | null>(null);
+  const [payoutMethod, setPayoutMethod] = useState<{ rail: string; handleMasked: string; status: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [range, setRange] = useState<Range>("week");
   const load = async () => {
     setLoading(true);
     setState(await driverEarnings());
+    const pm = await getMyPayoutMethod();
+    if (pm.ok && pm.data) setPayoutMethod({ rail: pm.data.rail, handleMasked: pm.data.handleMasked, status: pm.data.status });
+    else setPayoutMethod(null);
     setLoading(false);
   };
   useEffect(() => {
@@ -179,6 +184,28 @@ function EarningsView() {
                   This screen shows completed work, not payouts issued yet.
                 </p>
               </div>
+            </div>
+            {/* Payout method line (spec §5 A1 — body above kept verbatim) */}
+            <div className="mt-3 border-t border-ink-100 pt-3">
+              {payoutMethod && payoutMethod.status === "verified" ? (
+                <Link to="/driver/payout" className="flex items-center gap-1.5 text-xs font-semibold text-success-600">
+                  <Check className="size-3.5" /> Paid via {PAYOUT_RAIL_LABELS[payoutMethod.rail as keyof typeof PAYOUT_RAIL_LABELS] ?? payoutMethod.rail} {payoutMethod.handleMasked} ✓
+                  <span className="ml-auto font-bold text-brand-600">Change</span>
+                </Link>
+              ) : payoutMethod && payoutMethod.status === "rejected" ? (
+                <Link to="/driver/payout" className="flex items-center gap-1.5 text-xs font-semibold text-danger-600">
+                  <CircleX className="size-3.5" /> Payout method rejected — tap to fix
+                </Link>
+              ) : payoutMethod ? (
+                <Link to="/driver/payout" className="flex items-center gap-1.5 text-xs font-semibold text-info-600">
+                  <Clock className="size-3.5" /> Awaiting owner verification — usually the same day
+                </Link>
+              ) : (
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-semibold text-danger-600">No payout method set — add one so payday doesn&apos;t block you.</p>
+                  <Link to="/driver/payout" className="shrink-0"><Button variant="primary" size="sm">Add payout method</Button></Link>
+                </div>
+              )}
             </div>
           </Card>
 

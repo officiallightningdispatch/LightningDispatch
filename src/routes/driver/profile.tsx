@@ -8,6 +8,7 @@ import { Avatar, Card } from "~/components/ui";
 import { authStatus } from "~/data/auth";
 import { driverLogout, driverProfile, type DriverProfileResult } from "~/data/driver-auth";
 import { getMyProfilePhoto, uploadMyProfilePhoto } from "~/data/driver-profile-photo";
+import { getMyPayoutMethod, PAYOUT_RAIL_LABELS, type MyPayoutMethod } from "~/data/payouts";
 
 /**
  * /driver/profile — the driver's account card: dispatch identity, login, and
@@ -19,12 +20,14 @@ function ProfileView() {
   const nav = useNavigate();
   const [profile, setProfile] = useState<DriverProfileResult | null>(null);
   const [user, setUser] = useState<Awaited<ReturnType<typeof authStatus>> | null>(null);
+  const [payoutMethod, setPayoutMethod] = useState<MyPayoutMethod | null>(null);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     void (async () => {
-      const [p, s] = await Promise.all([driverProfile(), authStatus()]);
+      const [p, s, pm] = await Promise.all([driverProfile(), authStatus(), getMyPayoutMethod()]);
       setProfile(p);
       setUser(s);
+      if (pm.ok && pm.data) setPayoutMethod(pm.data);
       setLoading(false);
     })();
   }, []);
@@ -154,7 +157,15 @@ function ProfileView() {
             </span>
             <span className="min-w-0 flex-1">
               <span className="block text-sm font-bold text-ink-800">Payout method</span>
-              <span className="block text-xs text-ink-500">Cash App, Venmo, Zelle or bank — how you get paid</span>
+              <span className={`block text-xs ${payoutMethod?.status === "verified" ? "text-success-600" : payoutMethod?.status === "rejected" ? "text-danger-600" : payoutMethod ? "text-info-600" : "text-ink-500"}`}>
+                {payoutMethod?.status === "verified"
+                  ? `Paid via ${PAYOUT_RAIL_LABELS[payoutMethod.rail]} ${payoutMethod.handleMasked} ✓`
+                  : payoutMethod?.status === "rejected"
+                    ? "Payout method rejected — tap to fix"
+                    : payoutMethod
+                      ? `${PAYOUT_RAIL_LABELS[payoutMethod.rail]} — awaiting owner verification`
+                      : "Set up how you get paid"}
+              </span>
             </span>
             <ChevronRight className="size-4 shrink-0 text-ink-400" />
           </Link>

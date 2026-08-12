@@ -97,11 +97,11 @@ function PayoutView() {
                   </div>
                 </div>
                 <p className={`mt-3 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${
-                  method.status === "verified" ? "bg-success-50 text-success-700" : method.status === "rejected" ? "bg-danger-50 text-danger-600" : "bg-amber-50 text-amber-700"
+                  method.status === "verified" ? "bg-success-50 text-success-700" : method.status === "rejected" ? "bg-danger-50 text-danger-600" : "bg-info-50 text-info-700"
                 }`}>
                   {method.status === "verified" ? "✓ Verified by owner"
                     : method.status === "rejected" ? `Rejected — ${method.rejectNote ?? "contact the owner"}`
-                    : "Pending owner verification"}
+                    : "Pending owner verification — usually the same day"}
                 </p>
                 <div className="mt-4 flex gap-2">
                   <Button variant="primary" size="sm" className="flex-1" onClick={startEdit}>Change method</Button>
@@ -160,6 +160,10 @@ function PayoutView() {
                     <label className="block">
                       <span className="mb-1 block text-xs font-semibold text-ink-600">{RAIL_OPTIONS.find((o) => o.rail === rail)?.hint}</span>
                       <input value={handle} onChange={(e) => setHandle(e.target.value)} placeholder={RAIL_OPTIONS.find((o) => o.rail === rail)?.placeholder} className="h-11 w-full rounded-xl border border-ink-200 bg-surface px-3 text-sm outline-none focus:border-brand-500" />
+                      <span className="mt-1.5 block text-[11px] leading-relaxed text-ink-400">
+                        {method ? "Your saved handle stays until you type a new one. " : ""}
+                        The platform can&apos;t verify $cashtags or @handles automatically — the owner confirms yours by sending a small test payment from their own app.
+                      </span>
                     </label>
                   )}
                 </div>
