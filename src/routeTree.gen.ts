@@ -36,6 +36,7 @@ import { Route as OpsActiveRouteImport } from './routes/ops/active'
 import { Route as DriverProfileRouteImport } from './routes/driver/profile'
 import { Route as DriverOffersRouteImport } from './routes/driver/offers'
 import { Route as DriverHelpRouteImport } from './routes/driver/help'
+import { Route as DriverDocumentsRouteImport } from './routes/driver/documents'
 import { Route as DriverEarningsRouteImport } from './routes/driver/earnings'
 import { Route as DriverActiveRouteImport } from './routes/driver/active'
 import { Route as OwnerContractorsIdRouteImport } from './routes/owner/contractors.$id'
@@ -185,6 +186,11 @@ const DriverActiveRoute = DriverActiveRouteImport.update({
   path: '/active',
   getParentRoute: () => DriverRoute,
 } as any)
+const DriverDocumentsRoute = DriverDocumentsRouteImport.update({
+  id: '/documents',
+  path: '/documents',
+  getParentRoute: () => DriverRoute,
+} as any)
 const OwnerContractorsIdRoute = OwnerContractorsIdRouteImport.update({
   id: '/$id',
   path: '/$id',
@@ -203,6 +209,7 @@ export interface FileRoutesByFullPath {
   '/owner': typeof OwnerRouteWithChildren
   '/driver/active': typeof DriverActiveRoute
   '/driver/earnings': typeof DriverEarningsRoute
+  '/driver/documents': typeof DriverDocumentsRoute
   '/driver/help': typeof DriverHelpRoute
   '/driver/offers': typeof DriverOffersRoute
   '/driver/profile': typeof DriverProfileRoute
@@ -232,6 +239,7 @@ export interface FileRoutesByTo {
   '/logout': typeof LogoutRoute
   '/driver/active': typeof DriverActiveRoute
   '/driver/earnings': typeof DriverEarningsRoute
+  '/driver/documents': typeof DriverDocumentsRoute
   '/driver/help': typeof DriverHelpRoute
   '/driver/offers': typeof DriverOffersRoute
   '/driver/profile': typeof DriverProfileRoute
@@ -265,6 +273,7 @@ export interface FileRoutesById {
   '/owner': typeof OwnerRouteWithChildren
   '/driver/active': typeof DriverActiveRoute
   '/driver/earnings': typeof DriverEarningsRoute
+  '/driver/documents': typeof DriverDocumentsRoute
   '/driver/help': typeof DriverHelpRoute
   '/driver/offers': typeof DriverOffersRoute
   '/driver/profile': typeof DriverProfileRoute
@@ -298,6 +307,7 @@ export interface FileRouteTypes {
     | '/ops'
     | '/owner'
     | '/driver/active'
+    | '/driver/documents'
     | '/driver/earnings'
     | '/driver/help'
     | '/driver/offers'
@@ -327,6 +337,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/logout'
     | '/driver/active'
+    | '/driver/documents'
     | '/driver/earnings'
     | '/driver/help'
     | '/driver/offers'
@@ -359,6 +370,7 @@ export interface FileRouteTypes {
     | '/ops'
     | '/owner'
     | '/driver/active'
+    | '/driver/documents'
     | '/driver/earnings'
     | '/driver/help'
     | '/driver/offers'
@@ -591,6 +603,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DriverEarningsRouteImport
       parentRoute: typeof DriverRoute
     }
+    '/driver/documents': {
+      id: '/driver/documents'
+      path: '/documents'
+      fullPath: '/driver/documents'
+      preLoaderRoute: typeof DriverDocumentsRouteImport
+      parentRoute: typeof DriverRoute
+    }
     '/driver/active': {
       id: '/driver/active'
       path: '/active'
@@ -610,6 +629,7 @@ declare module '@tanstack/react-router' {
 
 interface DriverRouteChildren {
   DriverActiveRoute: typeof DriverActiveRoute
+  DriverDocumentsRoute: typeof DriverDocumentsRoute
   DriverEarningsRoute: typeof DriverEarningsRoute
   DriverHelpRoute: typeof DriverHelpRoute
   DriverOffersRoute: typeof DriverOffersRoute
@@ -619,6 +639,7 @@ interface DriverRouteChildren {
 
 const DriverRouteChildren: DriverRouteChildren = {
   DriverActiveRoute: DriverActiveRoute,
+  DriverDocumentsRoute: DriverDocumentsRoute,
   DriverEarningsRoute: DriverEarningsRoute,
   DriverHelpRoute: DriverHelpRoute,
   DriverOffersRoute: DriverOffersRoute,

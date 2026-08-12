@@ -462,6 +462,33 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE UNIQUE INDEX IF NOT EXISTS users_linked_driver_uidx
       ON users(linked_driver_user_id) WHERE linked_driver_user_id IS NOT NULL`;
   }],
+  [25, async (q) => {
+    // Contractor-admin part 3 (owner-directed 2026-08-12): the DRIVER'S LICENSE
+    // WITH FACIAL VERIFICATION pair — the license photo AND a live selfie, both
+    // required, owner approves the pair with ONE verify tap (no facial-matching
+    // service — approval is the owner's review, per owner direction).
+    // requires_facial_verification marks a type as pair-bearing; the selfie
+    // lives in contractor_doc_selfies (one row per contractor+type — re-upload
+    // UPSERTs the same row + same B2 object, photos precedent). Compliance
+    // counting + the GO/Offline gate only count the pair when BOTH are present
+    // (and the license is owner-verified).
+    await q`ALTER TABLE contractor_doc_types ADD COLUMN IF NOT EXISTS requires_facial_verification BOOLEAN NOT NULL DEFAULT FALSE`;
+    await q`CREATE TABLE IF NOT EXISTS contractor_doc_selfies (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      contractor_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      doc_type_id TEXT NOT NULL REFERENCES contractor_doc_types(id) ON DELETE CASCADE,
+      storage_key TEXT NOT NULL,
+      file_name TEXT,
+      mime TEXT,
+      size_bytes INTEGER,
+      uploaded_by_user_id TEXT NOT NULL REFERENCES users(id),
+      uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS contractor_doc_selfies_org_ctr_type_uidx
+      ON contractor_doc_selfies(org_id, contractor_id, doc_type_id)`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

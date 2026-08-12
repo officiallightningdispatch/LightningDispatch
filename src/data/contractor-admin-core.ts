@@ -83,6 +83,10 @@ export type DocTypeRow = {
   id: string;
   name: string;
   requiresExpiry: boolean;
+  /** Pair-bearing type (owner-directed 2026-08-12): the primary document AND a
+   *  live selfie are both required; the owner approves the pair with one verify
+   *  tap (no facial-matching service — approval is the owner's review). */
+  requiresFacialVerification: boolean;
   sortOrder: number;
   active: boolean;
   createdAt: string;
@@ -97,6 +101,9 @@ export type ContractorDocumentRow = {
   docTypeId: string;
   docTypeName: string;
   requiresExpiry: boolean;
+  /** Pair-bearing type — a live selfie is required alongside the primary file
+   *  (part 3, owner-directed 2026-08-12); the pair is approved together. */
+  requiresFacialVerification: boolean;
   status: DocStatus;
   docId: string | null;
   fileName: string | null;
@@ -106,6 +113,12 @@ export type ContractorDocumentRow = {
   reviewNote: string | null;
   uploadedAt: string | null;
   uploadedByUserId: string | null;
+  /** Selfie slot (only meaningful when requiresFacialVerification): binary —
+   *  the selfie is either missing or submitted; its approval rides on the
+   *  primary document's verify (the owner approves the PAIR with one tap). */
+  selfieStatus: "missing" | "uploaded";
+  selfieFileName: string | null;
+  selfieUploadedAt: string | null;
 };
 
 export type DocFilePayload = { base64: string; mime: string; fileName: string | null; sizeBytes: number };
@@ -164,7 +177,7 @@ const TYPE_ID_SCHEMA = z.object({ id: z.string().trim().min(1).max(128) });
 
 async function loadDocType(actor: ContractorAdminActor, id: string): Promise<Record<string, unknown> | null> {
   const q = await db();
-  const rows = await q`SELECT id, org_id, name, requires_expiry, sort_order, active, created_at FROM contractor_doc_types WHERE id=${id} AND org_id=${actor.orgId} LIMIT 1`;
+  const rows = await q`SELECT id, org_id, name, requires_expiry, requires_facial_verification, sort_order, active, created_at FROM contractor_doc_types WHERE id=${id} AND org_id=${actor.orgId} LIMIT 1`;
   return rows.length ? (rows[0] as Record<string, unknown>) : null;
 }
 
@@ -175,13 +188,14 @@ export async function listRequiredDocTypesCore(actor: ContractorAdminActor): Pro
   try {
     await ensure();
     const q = await db();
-    const rows = await q`SELECT id, name, requires_expiry, sort_order, active, created_at
+    const rows = await q`SELECT id, name, requires_expiry, requires_facial_verification, sort_order, active, created_at
       FROM contractor_doc_types WHERE org_id=${actor.orgId}
       ORDER BY active DESC, sort_order ASC, created_at ASC`;
     const out: DocTypeRow[] = (rows as Record<string, unknown>[]).map((r) => ({
       id: String(r.id),
       name: String(r.name),
       requiresExpiry: r.requires_expiry === true,
+      requiresFacialVerification: r.requires_facial_verification === true,
       sortOrder: r.sort_order != null ? Number(r.sort_order) : 0,
       active: r.active === true,
       createdAt: new Date(String(r.created_at)).toISOString(),
@@ -202,10 +216,11 @@ async function nextSortOrder(actor: ContractorAdminActor): Promise<number> {
  *  crash (DB unique index is the hard backstop). Audited. */
 export async function addDocTypeCore(actor: ContractorAdminActor, data: unknown): Promise<ContractorAdminResult<DocTypeRow>> {
   if (!canManage(actor)) return err("unauthorized", "Owner access required.");
-  const v = NAME_SCHEMA.extend({ requiresExpiry: z.boolean().optional() }).safeParse(data);
+  const v = NAME_SCHEMA.extend({ requiresExpiry: z.boolean().optional(), requiresFacialVerification: z.boolean().optional() }).safeParse(data);
   if (!v.success) return err("invalid_input", v.error.issues[0]?.message ?? "Enter a document type name.");
   const name = v.data.name;
   const requiresExpiry = v.data.requiresExpiry === true;
+  const requiresFacialVerification = v.data.requiresFacialVerification === true;
   try {
     await ensure();
     const q = await db();
@@ -213,9 +228,9 @@ export async function addDocTypeCore(actor: ContractorAdminActor, data: unknown)
     if (dup.length) return err("duplicate", `"${String(dup[0].name)}" is already a required type.`);
     const id = `dt-${cryptoRandomId()}`;
     const sortOrder = await nextSortOrder(actor);
-    await q`INSERT INTO contractor_doc_types(id, org_id, name, requires_expiry, sort_order) VALUES(${id}, ${actor.orgId}, ${name}, ${requiresExpiry}, ${sortOrder})`;
-    await recordAudit(actor, "contractor_doc_type_added", id, { name, requiresExpiry, sortOrder });
-    return ok({ id, name, requiresExpiry, sortOrder, active: true, createdAt: new Date().toISOString() });
+    await q`INSERT INTO contractor_doc_types(id, org_id, name, requires_expiry, requires_facial_verification, sort_order) VALUES(${id}, ${actor.orgId}, ${name}, ${requiresExpiry}, ${requiresFacialVerification}, ${sortOrder})`;
+    await recordAudit(actor, "contractor_doc_type_added", id, { name, requiresExpiry, requiresFacialVerification, sortOrder });
+    return ok({ id, name, requiresExpiry, requiresFacialVerification, sortOrder, active: true, createdAt: new Date().toISOString() });
   } catch (e) {
     if (e instanceof Error && /duplicate/i.test(e.message)) {
       return err("duplicate", `"${name}" is already a required type.`);
@@ -242,6 +257,7 @@ export async function renameDocTypeCore(actor: ContractorAdminActor, data: unkno
       id: v.data.id,
       name: v.data.name,
       requiresExpiry: row.requires_expiry === true,
+      requiresFacialVerification: row.requires_facial_verification === true,
       sortOrder: row.sort_order != null ? Number(row.sort_order) : 0,
       active: row.active === true,
       createdAt: new Date(String(row.created_at)).toISOString(),
@@ -343,8 +359,18 @@ export async function setDocumentStatusCore(actor: ContractorAdminActor, data: u
   try {
     await ensure();
     const q = await db();
-    const rows = await q`SELECT id, doc_type_id, status, review_note FROM contractor_documents WHERE id=${v.data.docId} AND org_id=${actor.orgId} LIMIT 1`;
+    const rows = await q`SELECT d.id, d.contractor_id, d.doc_type_id, d.status, d.review_note, t.requires_facial_verification
+      FROM contractor_documents d JOIN contractor_doc_types t ON t.id = d.doc_type_id
+      WHERE d.id=${v.data.docId} AND d.org_id=${actor.orgId} LIMIT 1`;
     if (!rows.length) return err("not_found", "That document isn't on this account.");
+    // Part 3 (owner-directed 2026-08-12): the owner approves the license+selfie
+    // PAIR with one tap — verifying a facial-verification type without the
+    // driver's live selfie on file is refused so a half-approved pair can never
+    // unlock the GO gate.
+    if (v.data.status === "verified" && rows[0].requires_facial_verification === true) {
+      const selfie = await q`SELECT 1 FROM contractor_doc_selfies WHERE org_id=${actor.orgId} AND doc_type_id=${String(rows[0].doc_type_id)} AND contractor_id=${String(rows[0].contractor_id ?? "")} LIMIT 1`;
+      if (!selfie.length) return err("invalid_input", "The driver hasn't uploaded their live selfie yet — approve the pair once both are in.");
+    }
     const reviewNote = v.data.reviewNote && v.data.reviewNote.trim() ? v.data.reviewNote.trim() : null;
     await q`UPDATE contractor_documents SET status=${v.data.status}, review_note=${reviewNote}, updated_at=NOW() WHERE id=${v.data.docId} AND org_id=${actor.orgId}`;
     await recordAudit(actor, `contractor_doc_${v.data.status}`, v.data.docId, {
@@ -472,7 +498,10 @@ export async function listContractorComplianceCore(actor: ContractorAdminActor):
            JOIN contractor_doc_types t ON t.id = d.doc_type_id AND t.active
            WHERE d.org_id=${actor.orgId} AND d.contractor_id = u.id
              AND d.status IN ('uploaded','verified')
-             AND (d.expires_on IS NULL OR d.expires_on >= CURRENT_DATE)) AS on_file_doc_count
+             AND (d.expires_on IS NULL OR d.expires_on >= CURRENT_DATE)
+             AND (t.requires_facial_verification = FALSE OR EXISTS (
+               SELECT 1 FROM contractor_doc_selfies s
+               WHERE s.org_id = d.org_id AND s.contractor_id = d.contractor_id AND s.doc_type_id = d.doc_type_id))) AS on_file_doc_count
       FROM users u
       JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND m.role = 'contractor'
       WHERE u.deactivated_at IS NULL
@@ -548,7 +577,10 @@ export async function getContractorDetailCore(actor: ContractorAdminActor, data:
            JOIN contractor_doc_types t ON t.id = d.doc_type_id AND t.active
            WHERE d.org_id = ${actor.orgId} AND d.contractor_id = u.id
              AND d.status IN ('uploaded','verified')
-             AND (d.expires_on IS NULL OR d.expires_on >= CURRENT_DATE)) AS on_file_doc_count,
+             AND (d.expires_on IS NULL OR d.expires_on >= CURRENT_DATE)
+             AND (t.requires_facial_verification = FALSE OR EXISTS (
+               SELECT 1 FROM contractor_doc_selfies s
+               WHERE s.org_id = d.org_id AND s.contractor_id = d.contractor_id AND s.doc_type_id = d.doc_type_id))) AS on_file_doc_count,
         (SELECT COUNT(*)::int FROM dispatch_jobs j
            WHERE j.org_id = ${actor.orgId} AND j.assigned_contractor_id = u.id
              AND j.status = 'completed' AND j.completed_at >= ${payPeriodStart()}) AS completed_this_period
@@ -663,10 +695,12 @@ async function listContractorDocumentsUnchecked(actor: ContractorAdminActor, con
     const q = await db();
     const member = await q`SELECT 1 FROM organization_memberships m WHERE m.org_id=${actor.orgId} AND m.user_id=${contractorId} AND m.role='contractor' LIMIT 1`;
     if (!member.length) return err("not_found", "That contractor isn't on this account.");
-    const rows = await q`SELECT t.id AS doc_type_id, t.name AS doc_type_name, t.requires_expiry, t.sort_order,
-        d.id AS doc_id, d.file_name, d.mime, d.size_bytes, d.expires_on, d.review_note, d.uploaded_at, d.uploaded_by_user_id, d.status AS stored_status
+    const rows = await q`SELECT t.id AS doc_type_id, t.name AS doc_type_name, t.requires_expiry, t.requires_facial_verification, t.sort_order,
+        d.id AS doc_id, d.file_name, d.mime, d.size_bytes, d.expires_on, d.review_note, d.uploaded_at, d.uploaded_by_user_id, d.status AS stored_status,
+        s.file_name AS selfie_file_name, s.uploaded_at AS selfie_uploaded_at
       FROM contractor_doc_types t
       LEFT JOIN contractor_documents d ON d.org_id=${actor.orgId} AND d.contractor_id=${contractorId} AND d.doc_type_id=t.id
+      LEFT JOIN contractor_doc_selfies s ON s.org_id=${actor.orgId} AND s.contractor_id=${contractorId} AND s.doc_type_id=t.id
       WHERE t.org_id=${actor.orgId} AND t.active=TRUE
       ORDER BY t.sort_order ASC, t.created_at ASC`;
     const out: ContractorDocumentRow[] = (rows as Record<string, unknown>[]).map((r) => {
@@ -677,6 +711,7 @@ async function listContractorDocumentsUnchecked(actor: ContractorAdminActor, con
         docTypeId: String(r.doc_type_id),
         docTypeName: String(r.doc_type_name),
         requiresExpiry: r.requires_expiry === true,
+        requiresFacialVerification: r.requires_facial_verification === true,
         status,
         docId: r.doc_id != null ? String(r.doc_id) : null,
         fileName: r.file_name != null ? String(r.file_name) : null,
@@ -686,6 +721,9 @@ async function listContractorDocumentsUnchecked(actor: ContractorAdminActor, con
         reviewNote: r.review_note != null ? String(r.review_note) : null,
         uploadedAt: r.uploaded_at != null ? new Date(String(r.uploaded_at)).toISOString() : null,
         uploadedByUserId: r.uploaded_by_user_id != null ? String(r.uploaded_by_user_id) : null,
+        selfieStatus: r.selfie_file_name != null ? "uploaded" : "missing",
+        selfieFileName: r.selfie_file_name != null ? String(r.selfie_file_name) : null,
+        selfieUploadedAt: r.selfie_uploaded_at != null ? new Date(String(r.selfie_uploaded_at)).toISOString() : null,
       };
     });
     return ok(out);
@@ -772,6 +810,227 @@ export async function uploadMyDocumentCore(actor: ContractorAdminActor, data: un
     return { ok: true, storageKey: key, status: "uploaded", expiresOn };
   } catch (e) {
     return { ok: false, code: "database_error", message: e instanceof Error ? e.message : "Unable to upload the document." };
+  }
+}
+
+/* ------------------------ live selfie (facial-verification pair) ------------------------ */
+
+const SELFIE_SCHEMA = z.object({
+  docTypeId: z.string().trim().min(1).max(128),
+  dataUrl: z.string().min(20).max(20_000_000),
+  fileName: z.string().trim().max(200).optional().or(z.literal("")),
+});
+
+export type UploadSelfieResult =
+  | { ok: true; storageKey: string }
+  | { ok: false; code: "unauthorized" | "invalid_input" | "not_found" | "b2_not_configured" | "b2_failed" | "database_error"; message: string };
+
+/** The live selfie half of a facial-verification pair (owner-directed
+ *  2026-08-12): only valid for a type with requires_facial_verification=TRUE
+ *  and active. Storage key ld-docs/<org>/<driver>/<docTypeId>.selfie.<ext>;
+ *  images only (a selfie is never a PDF — the allowlist is
+ *  image/jpeg|png|webp); re-upload UPSERTs the same row + overwrites the same
+ *  B2 object. Audited ('contractor_doc_selfie_uploaded'). */
+export async function uploadMySelfieCore(actor: ContractorAdminActor, data: unknown, opts: { fetchImpl?: typeof fetch; b2StableDir?: string } = {}): Promise<UploadSelfieResult> {
+  if (actor.role !== "contractor") return { ok: false, code: "unauthorized", message: "Driver access required." };
+  const v = SELFIE_SCHEMA.safeParse(data);
+  if (!v.success) return { ok: false, code: "invalid_input", message: v.error.issues[0]?.message ?? "Invalid upload." };
+  const decoded = decodeDocumentDataUrl(v.data.dataUrl);
+  if (!decoded) return { ok: false, code: "invalid_input", message: "That file type isn't supported — use JPG, PNG or WebP." };
+  if (decoded.mime === "application/pdf") return { ok: false, code: "invalid_input", message: "A live selfie must be a photo — use JPG, PNG or WebP." };
+  if (decoded.bytes.length < 1024) return { ok: false, code: "invalid_input", message: "The photo looks empty — try again." };
+  if (decoded.bytes.length > 12 * 1024 * 1024) return { ok: false, code: "invalid_input", message: "The photo is too large (max 12 MB)." };
+  try {
+    await ensure();
+    const q = await db();
+    const type = await q`SELECT id, name, requires_facial_verification, active FROM contractor_doc_types WHERE id=${v.data.docTypeId} AND org_id=${actor.orgId} LIMIT 1`;
+    if (!type.length || type[0].active !== true) return { ok: false, code: "not_found", message: "That document type isn't required on your account." };
+    if (type[0].requires_facial_verification !== true) {
+      return { ok: false, code: "invalid_input", message: "This document type doesn't need a live selfie." };
+    }
+    const ext = DOC_EXT[decoded.mime];
+    const key = `ld-docs/${actor.orgId}/${actor.id}/${v.data.docTypeId}.selfie.${ext}`;
+    let b2;
+    try {
+      const config = await loadB2Config(undefined, { stableDir: opts.b2StableDir });
+      const auth = await authorizeAccount({ keyId: config.keyId, applicationKey: config.applicationKey, fetchImpl: opts.fetchImpl });
+      b2 = { config, s3ApiUrl: auth.s3ApiUrl };
+    } catch (e) {
+      return { ok: false, code: "b2_not_configured", message: e instanceof Error ? e.message : "Document storage isn't connected." };
+    }
+    const put = await putObject({ config: b2.config, s3ApiUrl: b2.s3ApiUrl, key, bytes: decoded.bytes, contentType: decoded.mime, fetchImpl: opts.fetchImpl });
+    if (!put.ok) return { ok: false, code: "b2_failed", message: `Document storage rejected the upload (HTTP ${put.status ?? "error"}). Try again.` };
+    const fileName = v.data.fileName && v.data.fileName.trim() ? v.data.fileName.trim() : null;
+    await q`INSERT INTO contractor_doc_selfies(id, org_id, contractor_id, doc_type_id, storage_key, file_name, mime, size_bytes, uploaded_by_user_id, updated_at)
+      VALUES(gen_random_uuid()::text, ${actor.orgId}, ${actor.id}, ${v.data.docTypeId}, ${key}, ${fileName}, ${decoded.mime}, ${decoded.bytes.length}, ${actor.id}, NOW())
+      ON CONFLICT (org_id, contractor_id, doc_type_id) DO UPDATE SET
+        storage_key=EXCLUDED.storage_key, file_name=EXCLUDED.file_name, mime=EXCLUDED.mime,
+        size_bytes=EXCLUDED.size_bytes, uploaded_by_user_id=EXCLUDED.uploaded_by_user_id, uploaded_at=NOW(), updated_at=NOW()`;
+    await recordAudit(actor, "contractor_doc_selfie_uploaded", v.data.docTypeId, {
+      docTypeId: v.data.docTypeId,
+      docTypeName: String(type[0].name),
+      storageKey: key,
+      fileName,
+      mime: decoded.mime,
+      sizeBytes: decoded.bytes.length,
+    });
+    return { ok: true, storageKey: key };
+  } catch (e) {
+    return { ok: false, code: "database_error", message: e instanceof Error ? e.message : "Unable to upload the selfie." };
+  }
+}
+
+/** Read a stored selfie from B2 (base64 + mime for view/download). Owner/admin:
+ *  any selfie in the org. Contractor: own only — cross-contractor reads are
+ *  rejected. */
+export async function getSelfieFileCore(actor: ContractorAdminActor, data: unknown, opts: { fetchImpl?: typeof fetch; b2StableDir?: string } = {}): Promise<ContractorAdminResult<DocFilePayload>> {
+  const v = z.object({ docTypeId: z.string().trim().min(1).max(128) }).safeParse(data);
+  if (!v.success) return err("invalid_input", "Invalid document.");
+  try {
+    await ensure();
+    const q = await db();
+    const rows = await q`SELECT id, contractor_id, storage_key, file_name, mime, size_bytes FROM contractor_doc_selfies WHERE doc_type_id=${v.data.docTypeId} AND org_id=${actor.orgId} LIMIT 1`;
+    if (!rows.length) return err("not_found", "No selfie on file for that document.");
+    const row = rows[0] as Record<string, unknown>;
+    if (actor.role === "contractor" && String(row.contractor_id) !== actor.id) {
+      return err("unauthorized", "This selfie belongs to another contractor.");
+    }
+    const key = String(row.storage_key);
+    let b2;
+    try {
+      const config = await loadB2Config(undefined, { stableDir: opts.b2StableDir });
+      const auth = await authorizeAccount({ keyId: config.keyId, applicationKey: config.applicationKey, fetchImpl: opts.fetchImpl });
+      b2 = { config, s3ApiUrl: auth.s3ApiUrl };
+    } catch (e) {
+      return err("b2_not_configured", e instanceof Error ? e.message : "Document storage isn't connected.");
+    }
+    const got = await getObject({ config: b2.config, s3ApiUrl: b2.s3ApiUrl, key, fetchImpl: opts.fetchImpl });
+    if (!got.ok || !got.bytes) return err("b2_failed", `Document storage rejected the read (HTTP ${got.status ?? "error"}).`);
+    return ok({
+      base64: Buffer.from(got.bytes).toString("base64"),
+      mime: String(row.mime ?? "application/octet-stream"),
+      fileName: row.file_name != null ? String(row.file_name) : null,
+      sizeBytes: row.size_bytes != null ? Number(row.size_bytes) : got.bytes.length,
+    });
+  } catch (e) {
+    return err("database_error", e instanceof Error ? e.message : "Unable to load the selfie.");
+  }
+}
+
+/* -------------------- compliance summary + GO/Offline gate (part 3) -------------------- */
+
+/** The driver-facing compliance snapshot — counts + names for the Home
+ *  compliance chip and the Documents screen header. Derived from the SAME
+ *  read-time rules as the roster counts, with the part-3 addition that a
+ *  facial-verification pair only counts once its live selfie is on file.
+ *  approved = derived status 'verified' (pair complete); onFile = present +
+ *  not expired/rejected (uploaded or verified); needed = the driver can act
+ *  (missing / expired / rejected); pending = awaiting the owner's review
+ *  (uploaded). Seroval-safe. */
+export type MyCompliance = {
+  required: number;
+  approved: number;
+  onFile: number;
+  neededCount: number;
+  pendingCount: number;
+  neededNames: string[];
+  pendingNames: string[];
+};
+export async function getMyComplianceCore(actor: ContractorAdminActor): Promise<ContractorAdminResult<MyCompliance>> {
+  if (actor.role !== "contractor") return err("unauthorized", "Driver access required.");
+  try {
+    await ensure();
+    const q = await db();
+    const rows = await q`SELECT t.id AS doc_type_id, t.name AS doc_type_name, t.requires_facial_verification,
+        d.status AS stored_status, d.expires_on,
+        (s.id IS NOT NULL) AS has_selfie
+      FROM contractor_doc_types t
+      LEFT JOIN contractor_documents d ON d.org_id=${actor.orgId} AND d.contractor_id=${actor.id} AND d.doc_type_id=t.id
+      LEFT JOIN contractor_doc_selfies s ON s.org_id=${actor.orgId} AND s.contractor_id=${actor.id} AND s.doc_type_id=t.id
+      WHERE t.org_id=${actor.orgId} AND t.active=TRUE`;
+    let required = 0, approved = 0, onFile = 0, neededCount = 0, pendingCount = 0;
+    const neededNames: string[] = [];
+    const pendingNames: string[] = [];
+    for (const r of rows as Record<string, unknown>[]) {
+      required += 1;
+      const name = String(r.doc_type_name ?? "");
+      const pairComplete = r.requires_facial_verification !== true || r.has_selfie === true;
+      const stored = r.stored_status != null ? String(r.stored_status) : null;
+      const expiresOn = formatYmd(r.expires_on);
+      const status = stored ? deriveDocStatus(stored, expiresOn) : "missing";
+      const isVerified = status === "verified";
+      if (isVerified && pairComplete) { approved += 1; onFile += 1; continue; }
+      if ((status === "uploaded" || status === "verified") && pairComplete) { onFile += 1; }
+      if (status === "missing" || status === "expired" || status === "rejected") { neededCount += 1; neededNames.push(name); continue; }
+      if (status === "uploaded") { pendingCount += 1; pendingNames.push(name); continue; }
+      // verified-but-pair-incomplete (selfie missing) → the driver must act
+      if (!pairComplete) { neededCount += 1; neededNames.push(`${name} — live selfie`); }
+    }
+    return ok({ required, approved, onFile, neededCount, pendingCount, neededNames, pendingNames });
+  } catch (e) {
+    return err("database_error", e instanceof Error ? e.message : "Unable to load your compliance.");
+  }
+}
+
+/** The GO/Offline compliance gate (part 3, owner-directed 2026-08-12):
+ *  going online is BLOCKED until EVERY active required type is approved —
+ *  derived status 'verified' with the selfie present on facial-verification
+ *  types. Returns the driver-facing block message (white-label, points at the
+ *  Documents screen) with the approved/required counts; ok when compliant.
+ *  Shared by driverSetAvailability (driver-auth) and the Home surface — the
+ *  owner-in-driver-view session resolves to the same effective driver, so the
+ *  gate is identical for staff driving from the contractor app. */
+export async function getComplianceGateCore(actor: ContractorAdminActor): Promise<
+  { ok: true } | { ok: false; code: "docs_incomplete"; approved: number; required: number; message: string }
+> {
+  if (actor.role !== "contractor") return { ok: true };
+  const r = await getMyComplianceCore(actor);
+  if (!r.ok) return { ok: true }; // gate fails OPEN on read errors — never strand a driver over a DB hiccup
+  const c = r.data;
+  if (c.required === 0) return { ok: true };
+  if (c.approved >= c.required) return { ok: true };
+  const pendingNote = c.pendingCount > 0 ? ` ${c.pendingCount} submitted doc${c.pendingCount === 1 ? "" : "s"} ${c.pendingCount === 1 ? "is" : "are"} awaiting the owner's review.` : "";
+  return {
+    ok: false,
+    code: "docs_incomplete",
+    approved: c.approved,
+    required: c.required,
+    message: `You can't go online yet — ${c.approved} of ${c.required} required documents are approved.${pendingNote} Open Documents (Profile → Documents) to upload the rest.`,
+  };
+}
+
+/* ----------------------- mandated doc set seed (owner-directed) ----------------------- */
+
+/** The owner-mandated required doc set (2026-08-12): W-9, I-9, Driver's license
+ *  with facial verification (license photo + live selfie pair, both required),
+ *  and Insurance information. Idempotent — existing types (case-insensitive)
+ *  are left untouched; missing ones are appended. Owner/admin only; audited
+ *  per added type. The owner triggers this from the Required-documents editor —
+ *  nothing is auto-seeded on the live site. */
+export async function seedMandatedDocTypesCore(actor: ContractorAdminActor): Promise<ContractorAdminResult<DocTypeRow[]>> {
+  if (!canManage(actor)) return err("unauthorized", "Owner access required.");
+  const MANDATED: Array<{ name: string; requiresExpiry: boolean; requiresFacialVerification: boolean }> = [
+    { name: "W-9", requiresExpiry: false, requiresFacialVerification: false },
+    { name: "I-9", requiresExpiry: false, requiresFacialVerification: false },
+    { name: "Driver's License", requiresExpiry: true, requiresFacialVerification: true },
+    { name: "Insurance information", requiresExpiry: true, requiresFacialVerification: false },
+  ];
+  try {
+    await ensure();
+    const q = await db();
+    const existing = await q`SELECT LOWER(name) AS n FROM contractor_doc_types WHERE org_id=${actor.orgId}`;
+    const have = new Set((existing as Record<string, unknown>[]).map((r) => String(r.n)));
+    const added: DocTypeRow[] = [];
+    let sortOrder = await nextSortOrder(actor);
+    for (const m of MANDATED) {
+      if (have.has(m.name.toLowerCase())) continue;
+      const r = await addDocTypeCore(actor, m);
+      if (r.ok) added.push(r.data);
+      sortOrder += 1;
+    }
+    return ok(added);
+  } catch (e) {
+    return err("database_error", e instanceof Error ? e.message : "Unable to add the standard document set.");
   }
 }
 
@@ -910,6 +1169,36 @@ export async function uploadMyDocumentHandler(data: unknown, opts?: { fetchImpl?
   const actor = await resolveContractorActor();
   if (!actor) return { ok: false, code: "unauthorized", message: "Driver access required." };
   return uploadMyDocumentCore(actor, data, opts);
+}
+export async function uploadMySelfieHandler(data: unknown, opts?: { fetchImpl?: typeof fetch }): Promise<UploadSelfieResult> {
+  if (!configured()) return { ok: false, code: "database_error", message: "Selfie uploads require database mode." };
+  const actor = await resolveContractorActor();
+  if (!actor) return { ok: false, code: "unauthorized", message: "Driver access required." };
+  return uploadMySelfieCore(actor, data, opts);
+}
+export async function getSelfieFileHandler(data: unknown, opts?: { fetchImpl?: typeof fetch }): Promise<ContractorAdminResult<DocFilePayload>> {
+  if (!configured()) return DB_MODE_ERR("Documents");
+  const actor = await resolveOwnerOrContractorActor();
+  if (!actor) return err("unauthorized", "Sign in first.");
+  return getSelfieFileCore(actor, data, opts);
+}
+export async function getMyComplianceHandler(): Promise<ContractorAdminResult<MyCompliance>> {
+  if (!configured()) return DB_MODE_ERR("Compliance");
+  const actor = await resolveContractorActor();
+  if (!actor) return err("unauthorized", "Driver access required.");
+  return getMyComplianceCore(actor);
+}
+export async function getComplianceGateHandler(): Promise<{ ok: true } | { ok: false; code: "docs_incomplete"; approved: number; required: number; message: string }> {
+  if (!configured()) return { ok: true };
+  const actor = await resolveContractorActor();
+  if (!actor) return { ok: true };
+  return getComplianceGateCore(actor);
+}
+export async function seedMandatedDocTypesHandler(): Promise<ContractorAdminResult<DocTypeRow[]>> {
+  if (!configured()) return DB_MODE_ERR("Document types");
+  const actor = await resolveOwnerActor();
+  if (!actor) return err("unauthorized", "Owner access required.");
+  return seedMandatedDocTypesCore(actor);
 }
 
 async function resolveOwnerOrContractorActor(): Promise<ContractorAdminActor | null> {

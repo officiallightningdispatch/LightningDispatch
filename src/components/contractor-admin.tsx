@@ -6,7 +6,7 @@
  * the doc-status color map, rounded-2xl cards / rounded-xl controls /
  * rounded-full badges, touch targets ≥44px (h-11), tabular-nums for numbers.
  */
-import { Check, ChevronDown, Eye, Pencil, Trash2, X } from "lucide-react";
+import { Camera, Check, CheckCircle2, ChevronDown, Eye, Pencil, Trash2, X } from "lucide-react";
 import { useState } from "react";
 import { Button } from "./ui";
 import type { ContractorDocumentRow, DocStatus, DocTypeRow } from "~/data/contractor-admin";
@@ -380,6 +380,7 @@ export function OwnerDocumentRow({
   onReject,
   onSetExpiry,
   onView,
+  onViewSelfie,
 }: {
   doc: ContractorDocumentRow;
   busy: boolean;
@@ -387,6 +388,10 @@ export function OwnerDocumentRow({
   onReject: (docId: string, reviewNote: string) => Promise<void>;
   onSetExpiry: (docId: string, expiresOn: string | null) => Promise<void>;
   onView: () => Promise<void>;
+  /** Part 3 (owner-directed 2026-08-12): view the live selfie half of a
+   *  facial-verification pair — the pair is approved with ONE verify tap, so
+   *  the owner needs eyes on both files. */
+  onViewSelfie?: () => Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [verifySheet, setVerifySheet] = useState(false);
@@ -449,6 +454,26 @@ export function OwnerDocumentRow({
             <>
               {meta && <p className="mb-2 truncate text-xs text-ink-500">{meta}</p>}
 
+              {doc.requiresFacialVerification && (
+                <p className="mb-2 flex flex-wrap items-center gap-2">
+                  {doc.selfieStatus === "uploaded" ? (
+                    <>
+                      <span className="inline-flex items-center gap-1 rounded-full bg-success-50 px-2 py-0.5 text-[11px] font-bold text-success-700">
+                        <CheckCircle2 className="size-3" aria-hidden="true" /> Live selfie: submitted
+                      </span>
+                      {onViewSelfie && (
+                        <Button size="sm" variant="ghost" className="!px-2.5" disabled={inFlight} onClick={() => void onViewSelfie()}>
+                          <Eye className="size-3.5" aria-hidden="true" /> View selfie
+                        </Button>
+                      )}
+                    </>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-ink-100 px-2 py-0.5 text-[11px] font-semibold text-ink-600">
+                      <Camera className="size-3" aria-hidden="true" /> Live selfie: not uploaded yet — the pair can&apos;t be approved without it
+                    </span>
+                  )}
+                </p>
+              )}
               {doc.status === "missing" && null}
               {doc.status === "rejected" && doc.reviewNote && (
                 <p className="mb-2 rounded-lg border border-accent-200 bg-accent-50 px-3 py-2 text-xs text-accent-800">

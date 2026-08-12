@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { BadgeCheck, ChevronRight, Crown, LifeBuoy, LogOut, Truck, User } from "lucide-react";
+import { BadgeCheck, ChevronRight, Crown, FileText, LifeBuoy, LogOut, Truck, User } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AppShell } from "~/components/app-shell";
 import { DriverToolbar } from "~/components/driver-queue";
@@ -62,6 +62,19 @@ function ProfileView() {
               )}
             </div>
           </Card>
+          <Link
+            to="/driver/documents"
+            className="flex items-center gap-3 rounded-2xl bg-surface p-4 ring-1 ring-ink-100 transition-colors duration-150 hover:bg-hover"
+          >
+            <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-brand-50 text-brand-600">
+              <FileText className="size-5" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-bold text-ink-800">Documents</span>
+              <span className="block text-xs text-ink-500">Upload required paperwork — W-9, I-9, license, insurance</span>
+            </span>
+            <ChevronRight className="size-4 shrink-0 text-ink-400" />
+          </Link>
           <Link
             to="/driver/help"
             className="flex items-center gap-3 rounded-2xl bg-surface p-4 ring-1 ring-ink-100 transition-colors duration-150 hover:bg-hover"

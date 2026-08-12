@@ -19,6 +19,7 @@ import {
 import {
   getContractorDetail,
   getDocumentFile,
+  getSelfieFile,
   listContractorDocuments,
   setContractorContact,
   setContractorPayrate,
@@ -65,7 +66,7 @@ function OwnerContractorDetail() {
   const [removeNotice, setRemoveNotice] = useState<{ kind: "ok" | "warn"; text: string } | null>(null);
 
   /* document viewer */
-  const [viewer, setViewer] = useState<{ doc: ContractorDocumentRow; file: DocFilePayload | null; loading: boolean; error?: string } | null>(null);
+  const [viewer, setViewer] = useState<{ doc: ContractorDocumentRow; file: DocFilePayload | null; loading: boolean; error?: string; titleOverride?: string } | null>(null);
 
   const refresh = async () => {
     const [d, dc] = await Promise.all([
@@ -145,6 +146,15 @@ function OwnerContractorDetail() {
     const r = await getDocumentFile({ data: { docId: doc.docId } });
     if (!r.ok) setViewer({ doc, file: null, loading: false, error: r.message });
     else setViewer({ doc, file: r.data, loading: false });
+  };
+  /** Part 3 (owner-directed 2026-08-12): view the LIVE SELFIE half of a
+   *  facial-verification pair — the pair is approved with ONE verify tap, so
+   *  the owner sees both files before approving. */
+  const openSelfieViewer = async (doc: ContractorDocumentRow) => {
+    setViewer({ doc, file: null, loading: true, titleOverride: `${doc.docTypeName} — live selfie` });
+    const r = await getSelfieFile({ data: { docTypeId: doc.docTypeId } });
+    if (!r.ok) setViewer({ doc, file: null, loading: false, error: r.message, titleOverride: `${doc.docTypeName} — live selfie` });
+    else setViewer({ doc, file: r.data, loading: false, titleOverride: `${doc.docTypeName} — live selfie` });
   };
 
   /* -------------------------------- danger zone -------------------------------- */
@@ -352,6 +362,7 @@ function OwnerContractorDetail() {
                     onReject={actReject}
                     onSetExpiry={actSetExpiry}
                     onView={() => openViewer(doc)}
+                    onViewSelfie={doc.requiresFacialVerification && doc.selfieStatus === "uploaded" ? () => openSelfieViewer(doc) : undefined}
                   />
                 ))
               )}
@@ -401,11 +412,11 @@ function OwnerContractorDetail() {
 
       {/* ------------------------------ document viewer ------------------------------ */}
       {viewer && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-ink-950/40 p-4" role="dialog" aria-modal="true" aria-label={`View ${viewer.doc.docTypeName}`}>
+        <div className="fixed inset-0 z-50 grid place-items-center bg-ink-950/40 p-4" role="dialog" aria-modal="true" aria-label={`View ${viewer.titleOverride ?? viewer.doc.docTypeName}`}>
           <div className="w-full max-w-lg rounded-2xl bg-surface p-5 shadow-card-hover">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div className="min-w-0">
-                <p className="truncate text-sm font-bold">{viewer.doc.docTypeName}</p>
+                <p className="truncate text-sm font-bold">{viewer.titleOverride ?? viewer.doc.docTypeName}</p>
                 <p className="text-xs text-ink-400">{viewer.file?.fileName ?? viewer.doc.fileName ?? ""}</p>
               </div>
               <button type="button" onClick={() => setViewer(null)} aria-label="Close document" className="grid size-9 shrink-0 place-items-center rounded-lg text-ink-500 hover:bg-ink-50 hover:text-ink-700">
@@ -420,7 +431,7 @@ function OwnerContractorDetail() {
               <InlineError message={viewer.error} />
             ) : viewer.file ? (
               viewer.file.mime.startsWith("image/") ? (
-                <img src={`data:${viewer.file.mime};base64,${viewer.file.base64}`} alt={viewer.doc.docTypeName} className="max-h-[55vh] w-full rounded-xl border border-ink-100 object-contain" />
+                <img src={`data:${viewer.file.mime};base64,${viewer.file.base64}`} alt={viewer.titleOverride ?? viewer.doc.docTypeName} className="max-h-[55vh] w-full rounded-xl border border-ink-100 object-contain" />
               ) : (
                 <div className="grid gap-3 rounded-xl border border-ink-100 bg-ink-50/50 p-6 text-center">
                   <FileText className="mx-auto size-8 text-ink-400" aria-hidden="true" />

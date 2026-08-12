@@ -18,6 +18,7 @@ import {
 import {
   addDocType,
   listRequiredDocTypes,
+  seedMandatedDocTypes,
   removeDocType,
   renameDocType,
   reorderDocTypes,
@@ -137,6 +138,23 @@ function OwnerContractors() {
     else setDocTypesError(r.message);
   };
 
+  const [seedingStandard, setSeedingStandard] = useState(false);
+  /** Owner-directed 2026-08-12: add the mandated standard set (W-9, I-9,
+   *  Driver's license with facial verification, Insurance information) —
+   *  idempotent; existing types are left untouched. Nothing auto-seeds. */
+  const seedStandard = async () => {
+    setSeedingStandard(true);
+    setDocTypesError("");
+    const r = await seedMandatedDocTypes();
+    setSeedingStandard(false);
+    if (r.ok) {
+      toast(r.data.length
+        ? `Added the standard set — ${r.data.map((t) => t.name).join(", ")}`
+        : "The standard document set is already in place.");
+      setDocTypesError("");
+      await reloadTypes();
+    } else setDocTypesError(r.message);
+  };
   const handleRename = async (id: string, n: string) => {
     setTypeBusy(true);
     const r = await renameDocType({ data: { id, name: n } });
@@ -417,6 +435,8 @@ function OwnerContractors() {
             suggestions={SUGGESTIONS}
             onAddType={submitAddType}
             onAddSuggestion={addSuggestion}
+            onSeedStandard={seedStandard}
+            seedingStandard={seedingStandard}
             onRename={handleRename}
             onToggle={handleToggle}
             onRemove={handleRemove}
@@ -598,7 +618,7 @@ function RequiredDocsSegment({
   docTypes, docTypesError, activeTypes, pausedTypes,
   newTypeName, newTypeExpiry, addingType, typeBusy,
   setNewTypeName, setNewTypeExpiry, setDocTypesError, suggestions,
-  onAddType, onAddSuggestion, onRename, onToggle, onRemove, onMove,
+  onAddType, onAddSuggestion, onSeedStandard, seedingStandard, onRename, onToggle, onRemove, onMove,
 }: {
   docTypes: DocTypeRow[] | null;
   docTypesError: string;
@@ -614,6 +634,8 @@ function RequiredDocsSegment({
   suggestions: string[];
   onAddType: (e: FormEvent) => Promise<void>;
   onAddSuggestion: (s: string) => Promise<void>;
+  onSeedStandard: () => Promise<void>;
+  seedingStandard: boolean;
   onRename: (id: string, name: string) => Promise<void>;
   onToggle: (id: string, active: boolean) => Promise<void>;
   onRemove: (id: string) => Promise<void>;
@@ -675,6 +697,14 @@ function RequiredDocsSegment({
           body="Add the types every contractor must keep on file — W-9, license, insurance certificate and more. Contractors upload them from their app."
           action={
             <div className="flex flex-wrap justify-center gap-2">
+              <button
+                type="button"
+                disabled={typeBusy || seedingStandard}
+                onClick={() => void onSeedStandard()}
+                className="h-9 rounded-full bg-brand-500 px-3.5 text-[13px] font-bold text-white transition-colors hover:bg-brand-600 disabled:opacity-50"
+              >
+                + Add the standard set (W-9, I-9, license + selfie, insurance)
+              </button>
               {suggestions.map((s) => (
                 <button
                   key={s}

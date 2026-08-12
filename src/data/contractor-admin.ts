@@ -18,7 +18,9 @@ import type {
   ContractorDocumentRow,
   DocFilePayload,
   DocTypeRow,
+  MyCompliance,
   UploadDocumentResult,
+  UploadSelfieResult,
 } from "./contractor-admin-core";
 export type {
   ContractorAdminResult,
@@ -29,7 +31,9 @@ export type {
   DocFilePayload,
   DocStatus,
   DocTypeRow,
+  MyCompliance,
   UploadDocumentResult,
+  UploadSelfieResult,
 } from "./contractor-admin-core";
 
 const passthrough = (x: unknown) => x;
@@ -126,4 +130,39 @@ export const getMyDocuments = createServerFn({ method: "GET" }).handler(async ()
 export const uploadMyDocument = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<UploadDocumentResult> => {
   const core = await import("./contractor-admin-core");
   return core.uploadMyDocumentHandler(data);
+});
+
+/** Upload the live selfie half of a facial-verification pair (driver-only;
+ *  part 3, owner-directed 2026-08-12). */
+export const uploadMySelfie = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<UploadSelfieResult> => {
+  const core = await import("./contractor-admin-core");
+  return core.uploadMySelfieHandler(data);
+});
+
+/** Read a stored selfie (owner: any contractor's; driver: own only). */
+export const getSelfieFile = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<ContractorAdminResult<DocFilePayload>> => {
+  const core = await import("./contractor-admin-core");
+  return core.getSelfieFileHandler(data);
+});
+
+/** The acting driver's compliance snapshot (counts + names) — Home compliance
+ *  chip + Documents screen header. */
+export const getMyCompliance = createServerFn({ method: "GET" }).handler(async (): Promise<ContractorAdminResult<MyCompliance>> => {
+  const core = await import("./contractor-admin-core");
+  return core.getMyComplianceHandler();
+});
+
+/** GO/Offline compliance gate (owner-directed 2026-08-12): ok when every
+ *  active required type is approved; docs_incomplete + driver-facing message
+ *  otherwise. */
+export const getComplianceGate = createServerFn({ method: "GET" }).handler(async (): Promise<{ ok: true } | { ok: false; code: "docs_incomplete"; approved: number; required: number; message: string }> => {
+  const core = await import("./contractor-admin-core");
+  return core.getComplianceGateHandler();
+});
+
+/** Idempotently add the owner-mandated required doc set (W-9, I-9, Driver's
+ *  license with facial verification, Insurance information) to this org. */
+export const seedMandatedDocTypes = createServerFn({ method: "POST" }).handler(async (): Promise<ContractorAdminResult<DocTypeRow[]>> => {
+  const core = await import("./contractor-admin-core");
+  return core.seedMandatedDocTypesHandler();
 });

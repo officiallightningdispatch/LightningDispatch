@@ -9,7 +9,7 @@
  * poll. No demo/seed data anywhere — when the queue is empty/errored the sheet
  * shows the honest empty state and the map still renders (self + nearby pins).
  */
-import { CircleHelp } from "lucide-react";
+import { CircleHelp, FileText } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { AppShell } from "~/components/app-shell";
@@ -19,7 +19,47 @@ import { HomeSheet, MapChips, type HomeEarnings } from "~/components/driver-shee
 import { useDriverQueue } from "~/components/driver-queue";
 import { LiveMap } from "~/components/live-map";
 import { DriverNotificationBanners } from "~/components/notify-banners";
+import { getMyCompliance } from "~/data/contractor-admin";
 import { driverEarnings } from "~/data/driver-auth";
+
+/** Home compliance chip (contractor-admin part 3, owner-directed 2026-08-12):
+ *  over the map hero when required docs aren't all approved — yellow "N docs
+ *  needed — tap to upload" (the ONE accent attention chip on the driver side);
+ *  a calmer brand chip when everything's uploaded but the owner's review is
+ *  still pending. Either state explains why GO stays blocked (the pill toast
+ *  gives the full message). Tapping opens the Documents screen. */
+export function ComplianceHomeChip() {
+  const nav = useNavigate();
+  const [needed, setNeeded] = useState(0);
+  const [pending, setPending] = useState(0);
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    let live = true;
+    void getMyCompliance().then((r) => {
+      if (!live || !r.ok) return;
+      setNeeded(r.data.neededCount);
+      setPending(r.data.pendingCount);
+      setReady(true);
+    }).catch(() => { /* hide silently */ });
+    return () => { live = false; };
+  }, []);
+  if (!ready || (needed === 0 && pending === 0)) return null;
+  const needsAction = needed > 0;
+  return (
+    <button
+      type="button"
+      onClick={() => void nav({ to: "/driver/documents" })}
+      className={`absolute left-1/2 top-14 z-20 flex w-max max-w-[92vw] -translate-x-1/2 items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-bold shadow-card transition-transform active:scale-95 ${
+        needsAction ? "bg-accent-400 text-ink-950" : "bg-surface text-ink-700 ring-1 ring-ink-200"
+      }`}
+    >
+      <FileText className="size-3.5 shrink-0" aria-hidden="true" />
+      {needsAction
+        ? `${needed} doc${needed === 1 ? "" : "s"} needed — tap to upload`
+        : `${pending} doc${pending === 1 ? "" : "s"} awaiting the owner's review — tap to view`}
+    </button>
+  );
+}
 
 function HelpIcon({ className = "" }: { className?: string }) {
   const nav = useNavigate();
@@ -97,6 +137,7 @@ export function RealDriverPortal() {
             {flash}
           </p>
         )}
+        <ComplianceHomeChip />
         <MapChips chips={chips} gps={gpsState} />
       </div>
 

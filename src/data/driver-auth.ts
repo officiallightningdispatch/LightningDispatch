@@ -624,7 +624,15 @@ export type AvailabilityResult = { ok: boolean; message?: string };
  *  driver's last known position. It NEVER blocks assignment — per the owner's
  *  dispatch directive the AI may still pick an offline driver, so this is a
  *  preference + Towbook presence signal, not a hard pool gate. Idempotent:
- *  re-toggling the same state is a harmless repeat of the checkin/checkout. */
+ *  re-toggling the same state is a harmless repeat of the checkin/checkout.
+ *  Part 3 (owner-directed 2026-08-12) adds the COMPLIANCE GATE: going ONLINE
+ *  is blocked until every required document is submitted AND approved
+ *  (getComplianceGateCore in contractor-admin-core — the same read-time rules
+ *  as the roster counts; facial-verification pairs need the live selfie too).
+ *  The block message is white-label driver-facing copy pointing at the
+ *  Documents screen. Owner-in-driver-view resolves to the same effective
+ *  driver, so the gate is identical for staff driving the contractor app.
+ *  Going OFFLINE is never blocked. */
 export const driverSetAvailability = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<AvailabilityResult> => {
   const v = z.object({ online: z.boolean() }).safeParse(data);
   if (!v.success) return { ok: false as const, message: "Invalid availability value." };
@@ -633,6 +641,12 @@ export const driverSetAvailability = createServerFn({ method: "POST" }).validato
   if (!ctx) return { ok: false as const, message: "Sign in as a driver first." };
   try {
     await ensure();
+    if (v.data.online) {
+      // Compliance gate FIRST — no Towbook call, no checkin, until approved.
+      const { getComplianceGateCore } = await import("./contractor-admin-core");
+      const gate = await getComplianceGateCore({ orgId: ctx.u.orgId, id: ctx.identity.userRowId, role: "contractor" });
+      if (!gate.ok) return { ok: false as const, message: gate.message };
+    }
     const q = await db();
     const rows = await q`SELECT towbook_driver_id, towbook_user_id FROM users WHERE id=${ctx.identity.userRowId}`;
     const driverId = rows.length ? String(rows[0].towbook_driver_id ?? "") : "";
@@ -668,7 +682,7 @@ export type DriverEarningsTip = {
   createdAtIso: string | null;
 };
 export type DriverEarningsResult =
-  | { ok: true; profile: { name: string; email: string; towbookDriverId: string }; completed: DriverCall[]; tips: DriverEarningsTip[]; totals: { completedJobs: number; tipsTotalCents: number; tipCount: number } }
+  | { ok: true; profile: { name: string; email: string; towbookDriverId: string; payrateCents: number | null }; completed: DriverCall[]; tips: DriverEarningsTip[]; totals: { completedJobs: number; tipsTotalCents: number; tipCount: number } }
   | { ok: false; expired: boolean; message: string };
 /** The driver-facing email: real addresses are shown; derived @towbook.driver
  *  placeholders are internal-only and must never reach a driver's screen
@@ -689,7 +703,11 @@ export const driverEarnings = createServerFn({ method: "GET" }).handler(async ()
   try {
     await ensure();
     const q = await db();
-    const rows = await q`SELECT name, email, towbook_driver_id FROM users WHERE id=${ctx.identity.userRowId}`;
+    // Payrate joins contractor_profiles (part 1/3) so the Earnings screen can
+    // show "+$rate" per completed job and the honest per-job math.
+    const rows = await q`SELECT u.name, u.email, u.towbook_driver_id, cp.payrate_cents
+      FROM users u LEFT JOIN contractor_profiles cp ON cp.org_id = ${ctx.u.orgId} AND cp.user_id = u.id
+      WHERE u.id=${ctx.identity.userRowId}`;
     const driverId = rows.length ? String(rows[0].towbook_driver_id ?? "") : "";
     if (!driverId) return { ok: false as const, expired: true, message: "Your account isn't linked to a driver yet — reconnect." };
     const queue = await fetchDriverQueue({ orgId: ctx.u.orgId, towbookDriverId: driverId });
@@ -718,7 +736,12 @@ export const driverEarnings = createServerFn({ method: "GET" }).handler(async ()
     const tipsTotalCents = tips.reduce((s, t) => s + t.amountCents, 0);
     return {
       ok: true as const,
-      profile: { name: String(rows[0].name ?? ""), email: driverFacingEmail(rows[0].email), towbookDriverId: driverId },
+      profile: {
+        name: String(rows[0].name ?? ""),
+        email: driverFacingEmail(rows[0].email),
+        towbookDriverId: driverId,
+        payrateCents: rows[0].payrate_cents != null ? Number(rows[0].payrate_cents) : null,
+      },
       completed,
       tips,
       totals: { completedJobs: completed.length, tipsTotalCents, tipCount: tips.length },

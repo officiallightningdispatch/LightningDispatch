@@ -106,8 +106,13 @@ function EarningsView() {
               <div>
                 <p className="text-sm font-semibold text-ink-700">Payday is handled by the owner</p>
                 <p className="mt-0.5 text-xs leading-relaxed text-ink-500">
-                  Your completed jobs are logged here for reconciliation. The owner pays contractors from the Payments tab — per-job
-                  payrate × completed jobs plus tips. This screen shows completed work, not payouts issued yet.
+                  Your completed jobs are logged here for reconciliation. The owner pays contractors from the Payments tab —{" "}
+                  {state.profile.payrateCents != null ? (
+                    <>at <span className="font-semibold tabular-nums text-brand-700">{money(state.profile.payrateCents)}</span> per job × completed jobs plus tips.</>
+                  ) : (
+                    <>per-job payrate × completed jobs plus tips.</>
+                  )}{" "}
+                  This screen shows completed work, not payouts issued yet.
                 </p>
               </div>
             </div>
@@ -148,6 +153,9 @@ function EarningsView() {
                           </p>
                         </div>
                         <div className="shrink-0 text-right">
+                          {state.profile.payrateCents != null && state.profile.payrateCents > 0 && (
+                            <p className="text-sm font-bold tabular-nums text-brand-600">+{money(state.profile.payrateCents)}</p>
+                          )}
                           {tip != null && tip > 0 && (
                             <p className="text-sm font-bold text-success-600">+{money(tip)}</p>
                           )}
