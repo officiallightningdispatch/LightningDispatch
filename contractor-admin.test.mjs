@@ -1,10 +1,18 @@
-// Hermetic tests for the contractor-administration core (part 1/3): required
-// doc-type CRUD (add/rename/reorder/toggle/soft-remove), per-contractor
-// documents with READ-TIME derived status (MISSING/UPLOADED/VERIFIED/EXPIRED/
-// REJECTED — date wins), payrate set/clear with audit rows, the extended
-// roster payload (payrateCents/requiredDocCount/onFileDocCount), compliance
-// counts, contractor-own scoping, and the B2 document path (upload + read via
-// an injectable mock fetchImpl — real network calls never happen).
+// Hermetic tests for the contractor-administration core (parts 1/3 + 2/3):
+//   part 1 — required doc-type CRUD (add/rename/reorder/toggle/soft-remove),
+//   per-contractor documents with READ-TIME derived status (MISSING/UPLOADED/
+//   VERIFIED/EXPIRED/REJECTED — date wins), payrate set/clear with audit rows,
+//   the extended roster payload (payrateCents/requiredDocCount/onFileDocCount),
+//   compliance counts, contractor-own scoping, and the B2 document path
+//   (upload + read via an injectable mock fetchImpl — real network calls never
+//   happen).
+//   part 2 — getContractorDetailCore (identity/LD-only contact/payrate/doc
+//   counts/completed-jobs-this-period; removed contractor still resolves;
+//   unknown id → not_found; foreign-org isolation), setContractorContactCore
+//   (upsert + audit + clear + validation + wrong-role denied; never pushed to
+//   Towbook), and the completedJobsThisPeriod pay-period math (Mon 00:00 start,
+//   in-period vs out-of-period dispatch_jobs; estEarnings = payrate × count,
+//   payrate changes reflect immediately).
 // DB-backed against throwaway QA orgs deleted at the end (zero rows left).
 //   DATABASE_URL=... bun contractor-admin.test.mjs
 import { randomUUID } from "node:crypto";
@@ -24,6 +32,7 @@ const {
   listContractorDocumentsCore, setDocumentStatusCore, setDocumentExpiryCore,
   getDocumentFileCore, setContractorPayrateCore, listContractorComplianceCore,
   getMyDocumentsCore, uploadMyDocumentCore, deriveDocStatus, decodeDocumentDataUrl,
+  getContractorDetailCore, setContractorContactCore,
 } = await import("./src/data/contractor-admin-core.ts");
 const { listContractorsCore } = await import("./src/data/contractor-management-core.ts");
 const { ensureSchema } = await import("./src/data/migrations.ts");
@@ -365,6 +374,134 @@ const b2 = makeFetch();
     roster.ok === true && roster.data.length === 1 && roster.data[0].id === DRIVER2 && roster.data[0].requiredDocCount === 0 && roster.data[0].onFileDocCount === 0, JSON.stringify(roster));
 }
 
+/* ============ 8) getContractorDetailCore: identity + contact + payrate + docs + period ============ */
+// Monday 00:00 (server-local) — mirror of the core's payPeriodStart() so the
+// fixture timestamps are deterministic relative to the SAME period the core
+// computes at runtime (both processes share the machine's local time).
+const PERIOD_START = (() => {
+  const now = new Date();
+  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const diff = (d.getDay() + 6) % 7; // days since Monday
+  d.setDate(d.getDate() - diff);
+  return d;
+})();
+const IN_PERIOD = (h = 1) => new Date(PERIOD_START.getTime() + h * 3600_000).toISOString();
+const OUT_PERIOD = new Date(PERIOD_START.getTime() - 3600_000).toISOString();
+
+{
+  // Payrate for the est-earnings math (7500) — drives payrate × completed.
+  const pr = await setContractorPayrateCore(ACTOR, { contractorId: DRIVER, payrateCents: 7500 });
+  check("detail: payrate set 7500 for the math", pr.ok === true && pr.data.payrateCents === 7500, JSON.stringify(pr));
+  // Legacy roster rows so the dispatch_jobs FK (assigned_contractor_id →
+  // dispatch_contractors.id) is satisfiable; ids mirror the user ids, matching
+  // how imported contractors are represented in the app.
+  await q`INSERT INTO dispatch_contractors(id, org_id, name, status, lat, lng, area, vehicle_types, rating, completed_job_count, response_time_history_minutes)
+    VALUES(${DRIVER}, ${ORG}, 'QA CA Driver', 'offline', 41.17, -73.2, 'Bridgeport', '[]', 4.5, 0, '[]')`;
+  await q`INSERT INTO dispatch_contractors(id, org_id, name, status, lat, lng, area, vehicle_types, rating, completed_job_count, response_time_history_minutes)
+    VALUES(${OTHER_DRIVER}, ${ORG}, 'QA CA Other', 'offline', 41.17, -73.21, 'Fairfield', '[]', 4.6, 0, '[]')`;
+  const seedJob = (id, who, status, completedAt) => q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, assigned_at, arrived_at, completed_at, note, assigned_contractor_id)
+    VALUES(${id}, ${ORG}, 'QA Customer', '2035550000', 41.17, -73.2, 'Bridgeport', 'tire_change', ${status}, ${IN_PERIOD(0)}, ${IN_PERIOD(0)}, ${IN_PERIOD(0)}, ${completedAt}, 'qa part2 job', ${who})`;
+  await seedJob(`qa-jb-${randomUUID()}`, DRIVER, 'completed', IN_PERIOD(1)); // in-period ✓
+  await seedJob(`qa-jb-${randomUUID()}`, DRIVER, 'completed', IN_PERIOD(2)); // in-period ✓
+  await seedJob(`qa-jb-${randomUUID()}`, DRIVER, 'completed', OUT_PERIOD);   // last Sunday — outside ✗
+  await seedJob(`qa-jb-${randomUUID()}`, DRIVER, 'new', IN_PERIOD(3));       // not completed — excluded ✗
+  await seedJob(`qa-jb-${randomUUID()}`, OTHER_DRIVER, 'completed', IN_PERIOD(4)); // other driver — not DRIVER's ✗
+
+  const det = await getContractorDetailCore(ACTOR, { contractorId: DRIVER });
+  check("detail: valid contractor resolves with identity",
+    det.ok === true && det.data.id === DRIVER && det.data.name === "QA CA Driver" &&
+    det.data.email.endsWith("@lightning.test") && det.data.towbookDriverId === String(DRIVER_TB_ID) &&
+    det.data.status === "not_signed_in" && det.data.removedAt === null && det.data.createdAt != null, JSON.stringify(det));
+  check("detail: LD-only contact + payrate + doc counts",
+    det.ok === true && det.data.phone === null && det.data.vehicleDesc === null && det.data.payrateCents === 7500 &&
+    det.data.requiredDocCount === 3 && det.data.onFileDocCount === 1, JSON.stringify(det));
+  check("detail: completedJobsThisPeriod = 2 (in-period only) + est earnings 15000",
+    det.ok === true && det.data.completedJobsThisPeriod === 2 && det.data.estEarningsCents === 15000, JSON.stringify(det));
+  check("detail: seroval-safe (null, never undefined)", det.ok === true && Object.values(det.data).every((v) => v !== undefined), JSON.stringify(det));
+  check("detail: admin actor allowed", (await getContractorDetailCore(ADMIN_ACTOR, { contractorId: DRIVER })).ok === true);
+  check("detail: contractor actor → unauthorized", (await getContractorDetailCore(DRIVER_ACTOR, { contractorId: DRIVER })).ok === false);
+  check("detail: unknown id → not_found", (await getContractorDetailCore(ACTOR, { contractorId: "nope" })).ok === false);
+  check("detail: blank id → invalid_input", (await getContractorDetailCore(ACTOR, { contractorId: "   " })).ok === false);
+  check("detail: foreign-org contractor invisible → not_found", (await getContractorDetailCore(WRONG_ORG_ACTOR, { contractorId: DRIVER })).ok === false);
+
+  // Removed (deactivated) contractor still resolves — history preserved.
+  await q`UPDATE users SET deactivated_at=NOW() WHERE id=${OTHER_DRIVER}`;
+  const detRemoved = await getContractorDetailCore(ACTOR, { contractorId: OTHER_DRIVER });
+  check("detail: deactivated contractor still resolves + removedAt set",
+    detRemoved.ok === true && detRemoved.data.id === OTHER_DRIVER && detRemoved.data.removedAt != null, JSON.stringify(detRemoved));
+  check("detail: deactivated contractor period count 1 + est earnings null (no payrate)",
+    detRemoved.ok === true && detRemoved.data.completedJobsThisPeriod === 1 && detRemoved.data.estEarningsCents === null, JSON.stringify(detRemoved));
+}
+
+/* ============ 9) setContractorContactCore: upsert / audit / clear / validation / LD-only ============ */
+{
+  const set1 = await setContractorContactCore(ACTOR, { contractorId: DRIVER, phone: "(203) 555-9911", vehicleDesc: "White Ford F-250 — LD-9911" });
+  check("contact: set phone + vehicle", set1.ok === true && set1.data.phone === "(203) 555-9911" && set1.data.vehicleDesc === "White Ford F-250 — LD-9911", JSON.stringify(set1));
+  const det = await getContractorDetailCore(ACTOR, { contractorId: DRIVER });
+  check("contact: detail reflects phone/vehicle", det.ok === true && det.data.phone === "(203) 555-9911" && det.data.vehicleDesc === "White Ford F-250 — LD-9911", JSON.stringify(det));
+  const aud1 = await q`SELECT detail FROM audit_log WHERE org_id=${ORG} AND action='contractor_contact_updated' ORDER BY occurred_at DESC LIMIT 1`;
+  check("contact: audited with from(null/null) → to(phone/vehicle)",
+    aud1.length === 1 && aud1[0].detail.from.phone === null && aud1[0].detail.from.vehicleDesc === null &&
+    aud1[0].detail.to.phone === "(203) 555-9911" && aud1[0].detail.to.vehicleDesc === "White Ford F-250 — LD-9911", JSON.stringify(aud1));
+
+  // Admin can update. The UI always submits BOTH fields from the form state
+  // (full-replacement contract) — send both, both update.
+  const set2 = await setContractorContactCore(ADMIN_ACTOR, { contractorId: DRIVER, phone: "(203) 555-2233", vehicleDesc: "White Ford F-250 — LD-9911" });
+  check("contact: admin can update; both fields replaced", set2.ok === true && set2.data.phone === "(203) 555-2233" && set2.data.vehicleDesc === "White Ford F-250 — LD-9911", JSON.stringify(set2));
+  const aud2 = await q`SELECT detail FROM audit_log WHERE org_id=${ORG} AND action='contractor_contact_updated' ORDER BY occurred_at DESC LIMIT 1`;
+  check("contact: audit from carries prior phone", aud2.length === 1 && aud2[0].detail.from.phone === "(203) 555-9911" && aud2[0].detail.from.vehicleDesc === "White Ford F-250 — LD-9911", JSON.stringify(aud2));
+  // An OMITTED field clears it (full replacement — the owner form always sends
+  // both fields; absence means "remove"), matching the UI contract.
+  const omit = await setContractorContactCore(ACTOR, { contractorId: DRIVER, phone: "(203) 555-4455" });
+  check("contact: omitted field clears (full-replacement contract)", omit.ok === true && omit.data.phone === "(203) 555-4455" && omit.data.vehicleDesc === null, JSON.stringify(omit));
+  await setContractorContactCore(ACTOR, { contractorId: DRIVER, phone: "(203) 555-4455", vehicleDesc: "White Ford F-250 — LD-9911" }); // restore both before clear
+
+  // Clearing with empty strings → null (the LD-only fields go back to unset).
+  const clear = await setContractorContactCore(ACTOR, { contractorId: DRIVER, phone: "", vehicleDesc: "   " });
+  check("contact: clear → null", clear.ok === true && clear.data.phone === null && clear.data.vehicleDesc === null, JSON.stringify(clear));
+  const det2 = await getContractorDetailCore(ACTOR, { contractorId: DRIVER });
+  check("contact: detail shows cleared nulls", det2.ok === true && det2.data.phone === null && det2.data.vehicleDesc === null, JSON.stringify(det2));
+  const cnt = await q`SELECT COUNT(*)::int AS n FROM contractor_profiles WHERE org_id=${ORG} AND user_id=${DRIVER}`;
+  check("contact: upsert — exactly ONE profile row after multiple sets", Number(cnt[0].n) === 1, JSON.stringify(cnt));
+
+  check("contact: phone >40 chars → invalid_input", (await setContractorContactCore(ACTOR, { contractorId: DRIVER, phone: "1".repeat(41) })).ok === false);
+  check("contact: vehicleDesc >200 chars → invalid_input", (await setContractorContactCore(ACTOR, { contractorId: DRIVER, vehicleDesc: "v".repeat(201) })).ok === false);
+  check("contact: unknown contractor → not_found", (await setContractorContactCore(ACTOR, { contractorId: "nope", phone: "2035550000" })).ok === false);
+  check("contact: wrong-org owner → not_found (their org has no such contractor)", (await setContractorContactCore(WRONG_ORG_ACTOR, { contractorId: DRIVER, phone: "2035550000" })).ok === false);
+  check("contact: contractor actor → unauthorized", (await setContractorContactCore(DRIVER_ACTOR, { contractorId: DRIVER, phone: "2035550000" })).ok === false);
+
+  // LD-only contract: this fn touches contractor_profiles + audit_log ONLY —
+  // never a Towbook session or any Towbook push surface.
+  const tbSess = await q`SELECT COUNT(*)::int AS n FROM towbook_sessions WHERE org_id=${ORG}`;
+  check("contact: never creates/pushes a Towbook session for the org", Number(tbSess[0].n) === 0, JSON.stringify(tbSess));
+}
+
+/* ============ 10) completedJobsThisPeriod math: pay-period boundary + est earnings ============ */
+{
+  const raw = await q`SELECT COUNT(*)::int AS n FROM dispatch_jobs j
+    WHERE j.org_id=${ORG} AND j.assigned_contractor_id=${DRIVER} AND j.status='completed' AND j.completed_at >= ${PERIOD_START.toISOString()}`;
+  const det = await getContractorDetailCore(ACTOR, { contractorId: DRIVER });
+  check("period math: core count (2) matches raw SQL recount",
+    det.ok === true && det.data.completedJobsThisPeriod === 2 && Number(raw[0].n) === 2,
+    JSON.stringify({ core: det.ok ? det.data.completedJobsThisPeriod : null, raw: raw[0].n }));
+  check("period math: estEarnings = payrateCents × completed (7500 × 2 = 15000)",
+    det.ok === true && det.data.payrateCents * det.data.completedJobsThisPeriod === det.data.estEarningsCents && det.data.estEarningsCents === 15000, JSON.stringify(det));
+  // Payrate change reflects immediately: count stays 2, earnings move to 16000.
+  await setContractorPayrateCore(ACTOR, { contractorId: DRIVER, payrateCents: 8000 });
+  const det2 = await getContractorDetailCore(ACTOR, { contractorId: DRIVER });
+  check("period math: payrate change updates earnings immediately (8000 × 2 = 16000), count unchanged",
+    det2.ok === true && det2.data.completedJobsThisPeriod === 2 && det2.data.estEarningsCents === 16000, JSON.stringify(det2));
+  // Out-of-period boundary: the job completed 1h before period start is the
+  // ONLY completed job outside the window (excluded by the >= predicate).
+  const out = await q`SELECT COUNT(*)::int AS n FROM dispatch_jobs j
+    WHERE j.org_id=${ORG} AND j.assigned_contractor_id=${DRIVER} AND j.status='completed' AND j.completed_at < ${PERIOD_START.toISOString()}`;
+  check("period math: exactly ONE completed job outside the period (excluded by predicate)", Number(out[0].n) === 1, JSON.stringify(out));
+  // No payrate → the earnings line stays null even with completed jobs.
+  const detOther = await getContractorDetailCore(ACTOR, { contractorId: OTHER_DRIVER });
+  check("period math: no payrate → estEarningsCents null despite 1 completed",
+    detOther.ok === true && detOther.data.completedJobsThisPeriod === 1 && detOther.data.estEarningsCents === null, JSON.stringify(detOther));
+}
+
 /* ================================ summary + cleanup ================================ */
 const failed = checks.filter(([, ok]) => !ok);
 console.log(`contractor-admin.test.mjs: ${checks.length - failed.length}/${checks.length} passed`);
@@ -383,7 +520,9 @@ const leftover = await q`SELECT
   (SELECT COUNT(*)::int FROM contractor_documents d JOIN organizations o ON o.id=d.org_id WHERE o.name LIKE 'qa contractor-admin%') AS docs,
   (SELECT COUNT(*)::int FROM contractor_profiles p JOIN organizations o ON o.id=p.org_id WHERE o.name LIKE 'qa contractor-admin%') AS profiles,
   (SELECT COUNT(*)::int FROM audit_log a JOIN organizations o ON o.id=a.org_id WHERE o.name LIKE 'qa contractor-admin%') AS audit,
-  (SELECT COUNT(*)::int FROM organization_memberships m JOIN organizations o ON o.id=m.org_id WHERE o.name LIKE 'qa contractor-admin%') AS members`;
+  (SELECT COUNT(*)::int FROM organization_memberships m JOIN organizations o ON o.id=m.org_id WHERE o.name LIKE 'qa contractor-admin%') AS members,
+  (SELECT COUNT(*)::int FROM dispatch_jobs j JOIN organizations o ON o.id=j.org_id WHERE o.name LIKE 'qa contractor-admin%') AS jobs,
+  (SELECT COUNT(*)::int FROM dispatch_contractors c JOIN organizations o ON o.id=c.org_id WHERE o.name LIKE 'qa contractor-admin%') AS cons`;
 const z = Object.values(leftover[0]).every((n) => Number(n) === 0);
 console.log(`cleanup: ${JSON.stringify(leftover[0])}`);
 if (!z) { console.error("FAIL: QA cleanup left rows behind"); process.exit(1); }
