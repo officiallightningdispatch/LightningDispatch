@@ -39,7 +39,7 @@ function Login(){ const nav=useNavigate(); const search=useSearch({from:"/login"
  async function submit(e:React.FormEvent){e.preventDefault();setBusy(true);setError("");setDriverNotice(""); try {
    // 1) LD account (owner/dispatcher/admin)
    const r=first?await createOwner({data:{name,email:identifier,password}}):await login({data:{identifier,password}});
-   if(r.ok){ const role=("role" in r && r.role)?r.role:"owner"; void nav({to:search.next||portal(role),replace:true}); return; }
+   if(r.ok){ const role: string = ("role" in r && typeof r.role === "string") ? r.role : "owner"; void nav({to:typeof search.next === "string" && search.next ? search.next : portal(role),replace:true}); return; }
    // 2) Driver: their username+password ARE their dispatch credentials. Only
    //    attempted when the LD path did not match — one form, server decides.
    const d=await driverLogin({data:{username:identifier,password,latitude:geo.latitude,longitude:geo.longitude,locationDenied:geo.denied}});

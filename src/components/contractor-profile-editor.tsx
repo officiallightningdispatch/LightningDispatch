@@ -368,9 +368,7 @@ export function ContractorProfileEditor({ contractorId, initialSection = "profil
     document.getElementById(`cm-sec-${s}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
   const removed = detail?.removedAt != null;
-  const onFileCount = (docs ?? []).filter((d) => d.status === "uploaded" || d.status === "verified").length;
   const approvedCount = (docs ?? []).filter((d) => d.status === "verified").length;
-  const missingNames = (docs ?? []).filter((d) => d.status !== "uploaded" && d.status !== "verified").map((d) => d.docTypeName);
   const actionNames = (docs ?? []).filter((d) => d.status !== "verified" && d.status !== "missing").map((d) => d.docTypeName);
   const docsBadge = detail && detail.requiredDocCount > 0
     ? { complete: approvedCount >= detail.requiredDocCount, missing: detail.requiredDocCount - approvedCount }
@@ -481,7 +479,7 @@ export function ContractorProfileEditor({ contractorId, initialSection = "profil
             <div className="space-y-8 p-4 pb-6">
               {/* ---- compliance overview (top) ---- */}
               <section id="cm-sec-compliance" className="scroll-mt-2">
-                <ComplianceCard detail={detail} docs={docs ?? []} approvedCount={approvedCount} actionNames={actionNames} />
+                <ComplianceCard detail={detail} approvedCount={approvedCount} actionNames={actionNames} />
               </section>
               {/* ---- profile ---- */}
               <section id="cm-sec-profile" className="scroll-mt-2">
@@ -579,8 +577,8 @@ function DetailRow({ label, value, mono, sub }: { label: string; value: string; 
 const INPUT_CLS = "h-11 w-full rounded-xl border border-ink-200 bg-surface px-3 text-sm outline-none placeholder:text-ink-300 focus:border-brand-500 focus:ring-2 focus:ring-brand-100";
 
 /* ------------------------------ compliance overview ------------------------------ */
-function ComplianceCard({ detail, docs, approvedCount, actionNames }: {
-  detail: ContractorDetailRow; docs: ContractorDocumentRow[]; approvedCount: number; actionNames: string[];
+function ComplianceCard({ detail, approvedCount, actionNames }: {
+  detail: ContractorDetailRow; approvedCount: number; actionNames: string[];
 }) {
   return (
     <Card className="p-5">

@@ -205,13 +205,13 @@ function OwnerContractorDetail() {
                   </p>
                   {!removed && (
                     <p className="mt-2 flex flex-wrap items-center gap-2">
-                      <ComplianceBadge onFile={onFileCount} required={detail.requiredDocCount} size="lg" />
+                      <ComplianceBadge approved={approvedCount} required={detail.requiredDocCount} size="lg" />
                       {detail.docsExpiringSoon.length > 0 && <ExpiryChip expiresOn={detail.docsExpiringSoon[0].expiresOn} />}
                     </p>
                   )}
                 </div>
               </div>
-              {!removed && <div className="mt-3"><ComplianceSummary onFile={onFileCount} required={detail.requiredDocCount} missingNames={missingNames} /></div>}
+              {!removed && <div className="mt-3"><ComplianceSummary approved={approvedCount} required={detail.requiredDocCount} actionNames={actionNames} /></div>}
               {removed && (
                 <div className="mt-3">
                   <Alert variant="danger">
@@ -338,7 +338,7 @@ function OwnerContractorDetail() {
                     onReject={actReject}
                     onSetExpiry={actSetExpiry}
                     onView={() => openViewer(doc)}
-                    onViewSelfie={doc.requiresFacialVerification && doc.selfieStatus === "uploaded" ? () => openSelfieViewer(doc) : undefined}
+                    onViewSelfie={doc.requiresFacialVerification && doc.selfieStatus === "uploaded" ? async () => { openSelfieViewer(doc); } : undefined}
                     onReviewPair={doc.requiresFacialVerification && doc.selfieStatus === "uploaded" ? async () => { setCompare(doc); } : undefined}
                   />
                 ))

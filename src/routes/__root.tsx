@@ -1,6 +1,4 @@
-import { HeadContent, Outlet, Scripts, createRootRoute, Link, useLocation, useNavigate } from "@tanstack/react-router";
-import { useEffect } from "react";
-import { authStatus } from "~/data/auth";
+import { HeadContent, Outlet, Scripts, createRootRoute, Link } from "@tanstack/react-router";
 import { Route as RouteIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { EmptyState } from "~/components/ui";

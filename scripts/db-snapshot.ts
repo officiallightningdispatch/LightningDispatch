@@ -48,9 +48,13 @@ const dbName = (() => {
 const KEY = `${PREFIX}${dbName}-${STAMP}.json`;
 
 /** Enumerate public-schema base tables + per-table row counts. */
-async function tablesWithCounts(q: ReturnType<typeof neon>) {
-  const names = await q`SELECT table_name FROM information_schema.tables
-    WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name`;
+interface SqlTag {
+  (strings: TemplateStringsArray, ...values: unknown[]): Promise<Record<string, unknown>[]>;
+  unsafe(sql: string): string;
+}
+async function tablesWithCounts(q: SqlTag) {
+  const names = (await q`SELECT table_name FROM information_schema.tables
+    WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name`) as Record<string, unknown>[];
   const counts: Record<string, number> = {};
   for (const r of names) {
     const table = String(r.table_name);
@@ -70,7 +74,7 @@ async function pgDumpAvailable(): Promise<boolean> {
 }
 
 async function main(): Promise<void> {
-  const q = neon(process.env.DATABASE_URL!);
+  const q = neon(process.env.DATABASE_URL!) as unknown as SqlTag;
   const { names, counts } = await tablesWithCounts(q);
 
   let data: unknown;

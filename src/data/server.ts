@@ -284,7 +284,7 @@ export const resetDemo=createServerFn({method:"POST"}).validator(passthrough).ha
 
 export type TowbookSyncCode = "ok" | "not_connected" | "session_unavailable" | "session_expired" | "no_jobs" | "unauthorized" | "error" | "timeout";
 export type TowbookSyncDiag = { url: string; status: number | null; contentType: string | null; hint: string };
-export type TowbookSyncResult = { ok: boolean; code: TowbookSyncCode; message: string; added: number; updated: number; failed: number; diagnostics: TowbookSyncDiag[]; ranAt: string; sample?: Record<string, unknown>[]; statusShapes?: string[]; sampleByStatus?: Record<string, Record<string, unknown>> };
+export type TowbookSyncResult = { ok: boolean; code: TowbookSyncCode; message: string; added: number; updated: number; failed: number; diagnostics: TowbookSyncDiag[]; ranAt: string; sample?: Record<string, any>[]; statusShapes?: string[]; sampleByStatus?: Record<string, Record<string, any>> };
 const syncResult = (code: TowbookSyncCode, message: string, extra?: Partial<TowbookSyncResult>): TowbookSyncResult => ({ ok: code === "ok", code, message, added: 0, updated: 0, failed: 0, diagnostics: [], ranAt: new Date().toISOString(), ...extra });
 
 /** Sync result message with EXACT arithmetic: found = added + updated +

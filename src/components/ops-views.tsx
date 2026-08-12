@@ -477,7 +477,7 @@ export function PerformanceView() {
   // excluded from both the numerator and the denominator of the completion rate.
   const eligible = jobs.filter((j) => j.status !== "cancelled");
   const completionRate = eligible.length ? Math.round((completed.length / eligible.length) * 100) : 0;
-  const counts = [...JOB_LIFECYCLE, "cancelled"].map((status) => ({ status, count: jobs.filter((j) => j.status === status).length }));
+  const counts = ([...JOB_LIFECYCLE, "cancelled"] as JobStatus[]).map((status) => ({ status, count: jobs.filter((j) => j.status === status).length }));
   // Avg time-to-complete from status_events: per completed job, the elapsed
   // time between its first recorded event and its completed event.
   const byJob = useMemo(() => {
