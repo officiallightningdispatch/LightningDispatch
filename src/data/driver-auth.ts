@@ -515,6 +515,16 @@ async function writeThrough(user: { orgId: string; towbookDriverId: string }, ac
 
 const passthrough = (x: unknown) => x;
 
+/** Sign-in copy for a failed driver (Towbook) login (owner bug 2026-08-12): the
+ *  raw towbookLogin failure messages are shared with the owner's Connect Towbook
+ *  card (server.ts connectTowbook shows them verbatim), but the login form must
+ *  not surface the connect-card's "interactive reconnect" hint — a network /
+ *  unreachable failure reads as a plain "try again in a moment". Only the
+ *  towbook_unreachable classification is reworded; invalid_credentials ("Towbook
+ *  rejected those credentials.") and blocked keep their raw copy. */
+export const driverSignInErrorCopy = (code: string | undefined, raw: string): string =>
+  code === "towbook_unreachable" ? "Towbook didn't respond — please try again in a moment." : raw;
+
 export const driverLogin = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }) => {
   const v = z.object({
     username: z.string().min(1).max(256),
@@ -532,7 +542,7 @@ export const driverLogin = createServerFn({ method: "POST" }).validator(passthro
     if (!orgId) return { ok: false as const, error: "No owner workspace exists yet — set it up first." };
     const { towbookLogin } = await import("./towbook-login");
     const login = await towbookLogin(d.username, d.password);
-    if (!login.ok) return { ok: false as const, error: login.error.message };
+    if (!login.ok) return { ok: false as const, code: login.error.code, error: driverSignInErrorCopy(login.error.code, login.error.message) };
     const session: DriverSession = { cookies: login.cookies, baseUrl: login.baseUrl };
     const identity = await identifyDriver(session);
     if (!identity.ok) return { ok: false as const, error: identity.message };

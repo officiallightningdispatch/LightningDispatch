@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate, useSearch } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { Button, Card } from "~/components/ui";
-import { authStatus, createOwner, login } from "~/data/auth";
+import { authStatus, createOwner, login, shouldFallThroughToDriverLogin } from "~/data/auth";
 import { driverLogin } from "~/data/driver-auth";
 export const Route = createFileRoute('/login')({ component: Login });
 
@@ -37,11 +37,20 @@ function Login(){ const nav=useNavigate(); const search=useSearch({from:"/login"
  // One login routes every role to its own workspace — the server decides the role.
  const portal=(role:string)=>role==="contractor"?"/driver":role==="dispatcher"?"/ops":"/owner";
  async function submit(e:React.FormEvent){e.preventDefault();setBusy(true);setError("");setDriverNotice(""); try {
-   // 1) LD account (owner/dispatcher/admin)
-   const r=first?await createOwner({data:{name,email:identifier,password}}):await login({data:{identifier,password}});
+   // Owner bootstrap (first run) — never falls through to the Towbook driver sign-in.
+   if(first){const r=await createOwner({data:{name,email:identifier,password}});if(r.ok)void nav({to:typeof search.next==="string"&&search.next?search.next:"/owner",replace:true});else setError(r.error);return;}
+   // 1) LD account (owner/admin/dispatcher/contractor). The LD failure carries a
+   //    machine-readable reason; only an unknown identifier (likely a Towbook
+   //    driver) or a contractor account (drivers authenticate via Towbook) may
+   //    fall through to the driver sign-in below.
+   const r=await login({data:{identifier,password}});
    if(r.ok){ const role: string = ("role" in r && typeof r.role === "string") ? r.role : "owner"; void nav({to:typeof search.next === "string" && search.next ? search.next : portal(role),replace:true}); return; }
-   // 2) Driver: their username+password ARE their dispatch credentials. Only
-   //    attempted when the LD path did not match — one form, server decides.
+   // 2) Owner/admin/dispatcher LD account: a wrong LD password STOPS here — never
+   //    hit Towbook (it surfaced a misleading "Towbook could not be connected"
+   //    error; the interactive-reconnect hint belongs to the Connect Towbook card).
+   if(!shouldFallThroughToDriverLogin(r)){setError(r.reason==="invalid_password"?"That Lightning Dispatch password didn't match — try again, or contact dispatch for help.":r.error);return;}
+   // 3) Driver: their username+password ARE their dispatch credentials (unknown
+   //    identifier or contractor account) — one form, server decides.
    const d=await driverLogin({data:{username:identifier,password,latitude:geo.latitude,longitude:geo.longitude,locationDenied:geo.denied}});
    if(d.ok){ if(d.checkinWarning) setDriverNotice(d.checkinWarning); void nav({to:"/driver",replace:true}); return; }
    setError(d.error || r.error);

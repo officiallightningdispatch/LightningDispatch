@@ -58,6 +58,48 @@ export async function ensureAuthSchema() {
   await q`UPDATE organization_memberships SET role='owner' WHERE role='manager'`;
 }
 
+/* ------------------------------ login core ------------------------------ */
+/** Machine-readable reason for an LD login failure (owner bug 2026-08-12: an
+ *  LD user with a wrong password was silently falling through to the Towbook
+ *  driver login, surfacing a confusing "Towbook could not be connected" error).
+ *  The login form uses the reason to decide whether the Towbook driver sign-in
+ *  fallback may run:
+ *   - invalid_password    → identifier matched an LD STAFF user (owner/admin/
+ *                           dispatcher) but the password is wrong — STOP.
+ *   - contractor_account  → identifier matched an LD contractor row whose hash
+ *                           is the synthetic random kind (upsertDriverUser) —
+ *                           drivers authenticate via Towbook, fallback allowed.
+ *   - unknown_identifier  → no LD user matched — likely a Towbook driver,
+ *                           fallback allowed.
+ *   - no_workspace        → real password but no workspace row — STOP.
+ *   - invalid_input       → empty/oversized input — STOP (UI blocks these). */
+export type LoginFailureReason = "invalid_input" | "unknown_identifier" | "contractor_account" | "invalid_password" | "no_workspace";
+export type LoginCoreResult =
+  | { ok: true; userId: string; role: Role }
+  | { ok: false; error: string; reason: LoginFailureReason };
+/** Username OR email resolution (handles are unique and stored lowercase;
+ *  emails match case-insensitively) + password verify + role classification.
+ *  The user-facing string stays "Invalid username or password." wherever that
+ *  is accurate; the caller (auth.ts login handler / login form) branches on
+ *  the reason. */
+export async function loginCore(identifier: string, password: string): Promise<LoginCoreResult> {
+  await ensureAuthSchema();
+  const ident = identifier.trim().toLowerCase();
+  const rows = await sql()`SELECT u.id,u.password_hash,m.role FROM users u LEFT JOIN organization_memberships m ON m.user_id=u.id WHERE LOWER(u.login_handle)=${ident} OR LOWER(u.email)=${ident}`;
+  const hit = rows[0] as Record<string, unknown> | undefined;
+  if (!hit) return { ok: false, error: "Invalid username or password.", reason: "unknown_identifier" };
+  const role = normalizeRole(hit.role);
+  // Contractor LD accounts never hold a usable password (upsertDriverUser writes
+  // a random, never-usable hash) — drivers authenticate through Towbook, so the
+  // login form must fall through to the driver sign-in instead of blocking.
+  if (role === "contractor") return { ok: false, error: "Invalid username or password.", reason: "contractor_account" };
+  if (!verify(password, String(hit.password_hash))) return { ok: false, error: "Invalid username or password.", reason: "invalid_password" };
+  // A session without a workspace row would resolve currentUser to null and bounce
+  // the user back to /login (a loop). Refuse to start the session instead.
+  if (!hit.role) return { ok: false, error: "Your account has no workspace assigned yet. Contact your administrator.", reason: "no_workspace" };
+  return { ok: true, userId: String(hit.id), role };
+}
+
 const id = () => randomBytes(18).toString("hex");
 
 /** Every value for a cookie name in the raw Cookie header, in send order.
