@@ -69,6 +69,11 @@ const API_USER = "GET https://app.towbook.com/api/user";
   }) });
   check("type 3 → refused with calm 'disabled' message",
     !r.ok && String(r.message).includes("disabled") && String(r.message).includes("owner"), JSON.stringify(r));
+  // Owner-clarified 2026-08-12: type 3 = disabled, NO access, exact copy.
+  check("type 3 → exact white-label refusal copy (no brand leakage)",
+    !r.ok && r.message === "This account is disabled — contact the owner." && !String(r.message).includes("Towbook"), JSON.stringify(r));
+  check("type 3 → refusal is NOT an expired-session signal (no silent retry)",
+    !r.ok && r.expired !== true, JSON.stringify(r));
 }
 /* ==================== unknown type → refused ==================== */
 {

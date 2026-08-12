@@ -73,9 +73,17 @@ export async function ensureAuthSchema() {
  *                           live in Towbook, fallback allowed.
  *   - unknown_identifier  → no LD user matched — likely a Towbook driver,
  *                           fallback allowed.
+ *   - deactivated         → the LD user row is soft-deactivated (deactivated_at
+ *                           set — removed contractor, disabled manager, etc.).
+ *                           NO access on ANY path, never a Towbook fallback
+ *                           (owner-clarified 2026-08-12: inactive/deactivated
+ *                           accounts get no access). Checked BEFORE password
+ *                           verification and BEFORE the contractor_account
+ *                           classification so a disabled account can never
+ *                           reach the Towbook driver flow or gain a session.
  *   - no_workspace        → real password but no workspace row — STOP.
  *   - invalid_input       → empty/oversized input — STOP (UI blocks these). */
-export type LoginFailureReason = "invalid_input" | "unknown_identifier" | "contractor_account" | "invalid_password" | "no_workspace";
+export type LoginFailureReason = "invalid_input" | "unknown_identifier" | "contractor_account" | "invalid_password" | "deactivated" | "no_workspace";
 export type LoginCoreResult =
   | { ok: true; userId: string; role: Role }
   | { ok: false; error: string; reason: LoginFailureReason };
@@ -87,9 +95,14 @@ export type LoginCoreResult =
 export async function loginCore(identifier: string, password: string): Promise<LoginCoreResult> {
   await ensureAuthSchema();
   const ident = identifier.trim().toLowerCase();
-  const rows = await sql()`SELECT u.id,u.password_hash,u.email,m.role FROM users u LEFT JOIN organization_memberships m ON m.user_id=u.id WHERE LOWER(u.login_handle)=${ident} OR LOWER(u.email)=${ident}`;
+  const rows = await sql()`SELECT u.id,u.password_hash,u.email,u.deactivated_at,m.role FROM users u LEFT JOIN organization_memberships m ON m.user_id=u.id WHERE LOWER(u.login_handle)=${ident} OR LOWER(u.email)=${ident}`;
   const hit = rows[0] as Record<string, unknown> | undefined;
   if (!hit) return { ok: false, error: "Invalid username or password.", reason: "unknown_identifier" };
+  // Deactivated rows get NO access on any path — refused BEFORE password
+  // verification and BEFORE the contractor_account fallback classification
+  // (owner-clarified 2026-08-12: only ACTIVE accounts sign in). currentUser's
+  // deactivated_at filter is the session-side backstop; this is the gate.
+  if (hit.deactivated_at != null) return { ok: false, error: "This account is disabled — contact the owner.", reason: "deactivated" };
   const role = normalizeRole(hit.role);
   const email = String(hit.email ?? "");
   // Towbook-authenticated LD accounts never hold a usable password
@@ -199,7 +212,10 @@ export const makeId = id;
  *  towbook_user_id or login_handle (and promotes a stale membership to owner).
  *  NEVER writes a driver session row or runs a GPS checkin — manager sign-ins
  *  are owner-portal users. Server-only (auth-server is never client-reachable);
- *  the driver-auth handler dynamic-imports this from inside the server fn. */
+ *  the driver-auth handler dynamic-imports this from inside the server fn.
+ *  Deactivated LD rows are REFUSED (throws with clear copy) — a disabled
+ *  manager/dispatcher must never get an owner session, even on re-sign-in
+ *  (owner-clarified 2026-08-12: only ACTIVE accounts sign in). */
 export async function upsertTowbookOwnerUser(
   orgId: string,
   username: string,
@@ -210,8 +226,13 @@ export async function upsertTowbookOwnerUser(
   const handle = username.trim().toLowerCase();
   const emailLike = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(handle);
   const email = emailLike ? handle : `${handle.replace(/[^a-z0-9._-]/g, "") || "manager"}@towbook.manager`;
-  const existing = await q`SELECT id FROM users WHERE towbook_user_id=${tbUser.userId} OR LOWER(login_handle)=${handle} LIMIT 1`;
+  const existing = await q`SELECT id, deactivated_at FROM users WHERE towbook_user_id=${tbUser.userId} OR LOWER(login_handle)=${handle} LIMIT 1`;
   if (existing.length) {
+    // Hard refusal — never reuse/refresh a deactivated row, never start a
+    // session for it. Throwing surfaces the copy through driverLogin's catch.
+    if (existing[0].deactivated_at != null) {
+      throw new Error("This account is disabled — contact the owner.");
+    }
     const userId = String(existing[0].id);
     await q`UPDATE users SET name=${tbUser.name}, towbook_user_id=${tbUser.userId} WHERE id=${userId}`;
     const memberships = await q`SELECT role FROM organization_memberships WHERE org_id=${orgId} AND user_id=${userId}`;

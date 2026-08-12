@@ -92,14 +92,21 @@ export async function loadDriverSession(user: { orgId: string; towbookDriverId: 
 /** True when the LD users row for a driver is soft-deactivated (removed by the
  *  owner — contractor edit/remove feature). driverLogin refuses deactivated
  *  drivers BEFORE persisting a session, so a removed contractor cannot sign in
- *  even with valid Towbook credentials. */
+ *  even with valid Towbook credentials.
+ *  Keyed on BOTH the Towbook DRIVER id (the normal assignment key) and the
+ *  Towbook USER id (harden 2026-08-12): the roster-fallback resolution writes
+ *  towbook_driver_id = the Towbook user id, and a deactivated row whose
+ *  towbook_driver_id changed between sign-ins still matches via the stable
+ *  towbook_user_id — a removed contractor can never slip back in through an id
+ *  shift. */
 export async function isDriverDeactivated(orgId: string, towbookDriverId: string): Promise<boolean> {
   await ensure();
   const q = await db();
   const rows = await q`SELECT u.deactivated_at
     FROM users u
     JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${orgId} AND m.role = 'contractor'
-    WHERE u.towbook_driver_id = ${towbookDriverId} LIMIT 1`;
+    WHERE u.towbook_driver_id = ${towbookDriverId} OR u.towbook_user_id = ${towbookDriverId}
+    LIMIT 1`;
   return rows.length > 0 && rows[0].deactivated_at != null;
 }
 

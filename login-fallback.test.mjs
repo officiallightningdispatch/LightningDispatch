@@ -23,6 +23,8 @@ check("dispatcher wrong password → no Towbook fallback",
   shouldFallThroughToDriverLogin({ ok: false, error: "Invalid username or password.", reason: "invalid_password" }) === false);
 check("no-workspace account → no Towbook fallback",
   shouldFallThroughToDriverLogin({ ok: false, error: "Your account has no workspace assigned yet. Contact your administrator.", reason: "no_workspace" }) === false);
+check("deactivated account (owner-clarified 2026-08-12) → NO Towbook fallback",
+  shouldFallThroughToDriverLogin({ ok: false, error: "This account is disabled — contact the owner.", reason: "deactivated" }) === false);
 check("invalid input (empty/oversized) → no Towbook fallback",
   shouldFallThroughToDriverLogin({ ok: false, error: "Invalid username or password.", reason: "invalid_input" }) === false);
 check("demo-mode failure (no reason) → no Towbook fallback",

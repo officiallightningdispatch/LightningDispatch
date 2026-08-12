@@ -18,7 +18,7 @@ const credentials=(x:unknown)=>{const v=x as Record<string,unknown>;if(typeof v.
 // password simply fails verification below — never force a Towbook attempt on
 // input shape alone. Max 256 mirrors driverLogin.
 const loginCredentials=(x:unknown)=>{const v=x as Record<string,unknown>;if(typeof v.identifier!=="string"||!v.identifier.trim()||typeof v.password!=="string"||!v.password||v.password.length>256)return null;return {identifier:v.identifier.trim().toLowerCase(),password:v.password};};
-export type LoginFailureReason = "invalid_input" | "unknown_identifier" | "contractor_account" | "invalid_password" | "no_workspace";
+export type LoginFailureReason = "invalid_input" | "unknown_identifier" | "contractor_account" | "invalid_password" | "deactivated" | "no_workspace";
 /** Decision helper for the login form (owner bug 2026-08-12): may the sign-in
  *  fall through to the Towbook driver login after an LD failure? ONLY unknown
  *  identifiers (likely a Towbook driver) and contractor accounts (drivers

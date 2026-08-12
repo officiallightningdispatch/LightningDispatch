@@ -214,11 +214,13 @@ try {
   const nP = normalizeJsonCall(plain, "");
   check("plain call: top-level customer wins over account", nP.ok && nP.job.customer === "Jane Public", nP.ok ? nP.job.customer : nP.reason);
 
-  // ---- 0) mapping consts: 255 → cancelled, 252 → completed, 0..5 unchanged,
+  // ---- 0) mapping consts: 255 → cancelled, 252 → completed, 0..5 matches the
+  //        CORRECTED map (2026-08-12 owner-reported bug: 1=Dispatched→accepted,
+  //        2=En Route→en_route, 3=On Scene→arrived, 4=Towing→arrived),
   //        nothing left unmapped
   check("TOWBOOK_STATUS_ID_TO_LIFECYCLE[255] === 'cancelled'", TOWBOOK_STATUS_ID_TO_LIFECYCLE[255] === "cancelled");
   check("TOWBOOK_STATUS_ID_TO_LIFECYCLE[252] === 'completed'", TOWBOOK_STATUS_ID_TO_LIFECYCLE[252] === "completed");
-  check("TOWBOOK_STATUS_ID_TO_LIFECYCLE[0..5] unchanged", [0, 1, 2, 3, 4, 5].every((n, i) => TOWBOOK_STATUS_ID_TO_LIFECYCLE[n] === ["new", "offered", "accepted", "en_route", "arrived", "completed"][i]));
+  check("TOWBOOK_STATUS_ID_TO_LIFECYCLE[0..5] matches the corrected map (1=accepted, 2=en_route, 3/4=arrived, 5=completed)", [0, 1, 2, 3, 4, 5].every((n, i) => TOWBOOK_STATUS_ID_TO_LIFECYCLE[n] === ["new", "accepted", "en_route", "arrived", "arrived", "completed"][i]));
   check("TOWBOOK_STATUS_ID_UNMAPPED is empty (252 no longer unmapped)", !TOWBOOK_STATUS_ID_UNMAPPED.has(252) && TOWBOOK_STATUS_ID_UNMAPPED.size === 0);
 
   // ---- 1) capture: sample / statusShapes / sampleByStatus
@@ -322,12 +324,13 @@ try {
   check("transition event carries the status-change note", String(tev[1].note).includes("status change from Towbook"));
 
   // ---- 5b) accepted→completed TRANSITION via 252: a job first imported as
-  //        accepted (status 2 — the owner's live job 279656932 shape) re-syncs
-  //        as 252 → UPDATE accepted→completed + event + audit
-  const acceptedCall = fixtureCall(111, 2, [0, 1, 2, 3, 4, 5], { createDate: "2026-08-10T21:00:00", dispatchTime: "2026-08-10T21:05:00", notes: "accepted→completed via 252" });
+  //        accepted (status 1 = Dispatched — corrected map 2026-08-12; the
+  //        owner's live job 279656932 shape) re-syncs as 252 → UPDATE
+  //        accepted→completed + event + audit
+  const acceptedCall = fixtureCall(111, 1, [0, 1, 2, 3, 4, 5], { createDate: "2026-08-10T21:00:00", dispatchTime: "2026-08-10T21:05:00", notes: "accepted→completed via 252" });
   const completedVia252 = fixtureCall(111, 252, [0, 1, 2, 3, 4, 5], { createDate: "2026-08-10T21:00:00", dispatchTime: "2026-08-10T21:05:00", enrouteTime: "2026-08-10T21:06:00", arrivalTime: "2026-08-10T21:20:00", completionTime: "2026-08-10T21:33:00", invoiceStatusId: 1, purchaseOrderNumber: "112509304", availableActions: ["ACKNOWLEDGE_COMPLETE", "UPDATE_STATUS", "CANCEL"], notes: "accepted→completed via 252" });
   const nAcc = normalizeJsonCall(acceptedCall, "");
-  check("5b pre-step: status-2 call normalizes as accepted", nAcc.ok && nAcc.job.status === "accepted", JSON.stringify(nAcc));
+  check("5b pre-step: status-1 call normalizes as accepted", nAcc.ok && nAcc.job.status === "accepted", JSON.stringify(nAcc));
   const res5 = await upsertPulledJobs(ORG, actor, [nAcc.job], "fixture-test");
   check("5b step 1: accepted job added", res5.added === 1 && res5.updated === 0, JSON.stringify(res5));
   const n252 = normalizeJsonCall(completedVia252, "");
