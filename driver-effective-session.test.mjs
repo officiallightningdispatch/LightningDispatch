@@ -178,29 +178,30 @@ const callsOn = (path, method) => tbCalls.filter((c) => c.url.includes(path) && 
   check("accept: PUT body = {id, status:{id:2}} (thumbs-up)",
     put.some((c) => c.body && String(c.body).includes('"id":2') && String(c.body).includes('"status"')), JSON.stringify(put));
   const row = await q`SELECT status, towbook_status FROM dispatch_jobs WHERE id='job-900001' AND org_id=${ORG}`;
-  check("accept: dispatch_jobs row flips offered→accepted (owner board mirror, spec Q3)",
-    row.length === 1 && row[0].status === "accepted" && String(row[0].towbook_status) === "2", JSON.stringify(row));
+  check("accept: dispatch_jobs row flips offered→en_route — accept&go in ONE step (owner board mirror, spec Q3)",
+    row.length === 1 && row[0].status === "en_route" && String(row[0].towbook_status) === "2", JSON.stringify(row));
   const ev = await q`SELECT from_status, to_status, actor_user_id, actor_role, note FROM status_events WHERE org_id=${ORG} AND job_id='job-900001' ORDER BY occurred_at ASC`;
-  const acceptEv = ev.find((e) => e.to_status === "accepted");
+  const acceptEv = ev.find((e) => e.to_status === "en_route");
   check("accept: status_events under the REAL session actor (owner id, role owner) with '(owner in driver view)' note",
-    Boolean(acceptEv) && acceptEv.actor_user_id === OWNER && acceptEv.actor_role === "owner" &&
+    Boolean(acceptEv) && acceptEv.from_status === "offered" && acceptEv.actor_user_id === OWNER && acceptEv.actor_role === "owner" &&
     String(acceptEv.note).includes("driver accepted (Lightning Dispatch)") && String(acceptEv.note).includes("(owner in driver view)"),
     JSON.stringify(acceptEv));
   const audit = await q`SELECT actor_user_id, actor_role, action, detail FROM audit_log WHERE org_id=${ORG} AND entity_id='job-900001' AND action='driver_status_change'`;
   check("accept: audit_log driver_status_change under the owner id",
-    audit.some((a) => a.actor_user_id === OWNER && a.actor_role === "owner" && a.detail?.to === "accepted"), JSON.stringify(audit));
+    audit.some((a) => a.actor_user_id === OWNER && a.actor_role === "owner" && a.detail?.to === "en_route"), JSON.stringify(audit));
 }
-/* ------------------------- 3) en route (second transition) ------------------------- */
+/* ------------------------- 3) en-route re-tap is a NO-OP (accept&go) ------------------------- */
 {
-  await withSession(OWNER_TOKEN, () => driverJobAction({ data: { jobId: "900001", action: "en_route" } }));
-  const put = callsOn("/api/calls/900001", "PUT");
-  check("en-route: PUT status id 3 via the LINKED driver's session",
-    put.some((c) => c.cookie === `xtl=fake-session-${T_DRIVER}` && String(c.body).includes('"id":3')), JSON.stringify(put));
-  const ev = await q`SELECT from_status, to_status, actor_user_id, actor_role, note FROM status_events WHERE org_id=${ORG} AND job_id='job-900001' AND to_status='en_route' ORDER BY occurred_at DESC`;
-  check("en-route: status_events under the owner id with '(owner in driver view)' note",
-    ev.length === 1 && ev[0].from_status === "accepted" && ev[0].actor_user_id === OWNER && ev[0].actor_role === "owner" &&
-    String(ev[0].note).includes("driver en route (Lightning Dispatch)") && String(ev[0].note).includes("(owner in driver view)"),
-    JSON.stringify(ev));
+  const putBefore = tbCalls.filter((c) => c.method === "PUT").length;
+  const evBefore = await q`SELECT COUNT(*)::int AS n FROM status_events WHERE org_id=${ORG} AND job_id='job-900001'`;
+  const auditBefore = await q`SELECT COUNT(*)::int AS n FROM audit_log WHERE org_id=${ORG} AND entity_id='job-900001' AND action='driver_status_change'`;
+  const res = await withSession(OWNER_TOKEN, () => driverJobAction({ data: { jobId: "900001", action: "en_route" } })).catch(() => null);
+  const putAfter = tbCalls.filter((c) => c.method === "PUT").length;
+  const evAfter = await q`SELECT COUNT(*)::int AS n FROM status_events WHERE org_id=${ORG} AND job_id='job-900001'`;
+  const auditAfter = await q`SELECT COUNT(*)::int AS n FROM audit_log WHERE org_id=${ORG} AND entity_id='job-900001' AND action='driver_status_change'`;
+  check("en-route re-tap: accept&go already at en_route → no-op (no new PUT, no double event/audit)",
+    putAfter === putBefore && evAfter[0].n === evBefore[0].n && auditAfter[0].n === auditBefore[0].n,
+    JSON.stringify({ res, putDelta: putAfter - putBefore, evBefore: evBefore[0].n, evAfter: evAfter[0].n }));
 }
 /* ------------------------- 4) availability GO/Offline ------------------------- */
 {

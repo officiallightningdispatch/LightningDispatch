@@ -46,7 +46,7 @@ export async function ensureAuthSchema() {
   // Soft-deactivate flag (migration 14 also adds it; adding here keeps
   // currentUser's deactivated_at filter safe even when ensureSchema has not run).
   await q`ALTER TABLE users ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ`;
-  // Owner↔contractor view toggle (migration 24): the linked-driver column.
+  // Owner↔contractor view toggle (migration 30): the linked-driver column.
   // Added here so currentUser's driverIdentity resolution stays safe even when
   // ensureAuthSchema runs before the migrations table (idempotent).
   await q`ALTER TABLE users ADD COLUMN IF NOT EXISTS linked_driver_user_id TEXT`;

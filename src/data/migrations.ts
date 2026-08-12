@@ -450,7 +450,7 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
       PRIMARY KEY (org_id, user_id)
     )`;
   }],
-  [24, async (q) => {
+  [30, async (q) => {
     // Owner↔contractor view toggle (owner-directed 2026-08-12): staff accounts
     // (owner/admin) may link ONE active org contractor as their driver identity
     // so they can switch to the driver app from the SAME sign-in (view-only —
@@ -458,6 +458,8 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     // itself carries towbook_driver_id — is recognized at read time and needs
     // no link column. Shape (b) stores the explicit link here. One driver per
     // owner (single-valued column); one owner per driver (partial unique index).
+    // NOTE: numbered 30 (not the spec's stale 24/25) — 24-29 are consumed by
+    // later features; the payday plan must take 31-32 (lead directive 2026-08-12).
     await q`ALTER TABLE users ADD COLUMN IF NOT EXISTS linked_driver_user_id TEXT REFERENCES users(id)`;
     await q`CREATE UNIQUE INDEX IF NOT EXISTS users_linked_driver_uidx
       ON users(linked_driver_user_id) WHERE linked_driver_user_id IS NOT NULL`;

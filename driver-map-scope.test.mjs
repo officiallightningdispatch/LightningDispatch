@@ -1,5 +1,5 @@
 // Hermetic tests for the driver-map scope of the view toggle (spec TEST item 6)
-// + migration-24 idempotency:
+// + migration-30 idempotency:
 //   - liveMapDataHandler(driverScope=true) returns the CONTRACTOR-scoped feed
 //     for an owner in driver view (shape-b linked): only the linked driver's
 //     pin + self pin, own active jobs with full detail (mine), other jobs
@@ -7,7 +7,7 @@
 //   - liveMapDataHandler() (owner view) returns the ORG feed: all drivers, all
 //     jobs with customer detail, no self pin.
 //   - staff without a usable identity requesting driver scope → null.
-//   - migration 24 (linked_driver_user_id + partial unique index) is idempotent:
+//   - migration 30 (linked_driver_user_id + partial unique index) is idempotent:
 //     ensureAuthSchema()/ensureSchema() re-run on a fixture DB where the column
 //     is already present → no error; users_linked_driver_uidx still exists and
 //     still enforces one-owner-per-driver (23505 on a second link).
@@ -125,7 +125,7 @@ const withSession = (token, fn) => {
   check("owner view for pure owner still returns the org feed",
     orgFeed !== null && orgFeed.drivers.length === 2 && orgFeed.jobs.length === 2);
 }
-/* ------------------------- 4) migration-24 idempotency + index intact ------------------------- */
+/* ------------------------- 4) migration-30 idempotency + index intact ------------------------- */
 {
   let threw = false;
   try {
@@ -134,17 +134,17 @@ const withSession = (token, fn) => {
     await ensureSchema();
     await ensureSchema();
   } catch (err) { threw = true; console.error("migration re-run error:", err); }
-  check("migration 24 idempotent: ensureAuthSchema + ensureSchema re-run with linked_driver_user_id present → no error", threw === false);
+  check("migration 30 idempotent: ensureAuthSchema + ensureSchema re-run with linked_driver_user_id present → no error", threw === false);
   const idx = await q`SELECT indexname FROM pg_indexes WHERE schemaname='public' AND indexname='users_linked_driver_uidx'`;
-  check("migration 24: users_linked_driver_uidx still exists", idx.length === 1, JSON.stringify(idx));
+  check("migration 30: users_linked_driver_uidx still exists", idx.length === 1, JSON.stringify(idx));
   let dup = null;
   try {
     await q`UPDATE users SET linked_driver_user_id=${DRIVER_B} WHERE id=${OWNER2}`;
   } catch (err) { dup = err; }
-  check("migration 24: unique index still enforces ONE owner per driver (23505)",
+  check("migration 30: unique index still enforces ONE owner per driver (23505)",
     dup !== null && String(dup.message).includes("duplicate key"), dup ? String(dup.message).slice(0, 120) : "no error");
   const linked = await q`SELECT id FROM users WHERE linked_driver_user_id=${DRIVER_B}`;
-  check("migration 24: the original link is untouched after the failed second link",
+  check("migration 30: the original link is untouched after the failed second link",
     linked.length === 1 && linked[0].id === OWNER, JSON.stringify(linked));
 }
 /* ------------------------------- summary + cleanup ------------------------------- */

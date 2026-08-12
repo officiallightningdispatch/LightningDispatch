@@ -98,8 +98,8 @@ function ProfileView() {
               <p className="truncate text-lg font-bold text-ink-800">{name}</p>
               {email && <p className="truncate text-sm text-ink-500">{email}</p>}
               {staffDriverView ? (
-                <p className="mt-1 inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-700">
-                  <Crown className="size-3.5" /> Owner (driver view)
+                <p className="mt-1 inline-flex items-center gap-1 rounded-full bg-brand-50 px-2 py-0.5 text-xs font-semibold text-brand-700">
+                  <BadgeCheck className="size-3.5" /> Owner (driver view)
                 </p>
               ) : (
                 <p className="mt-1 inline-flex items-center gap-1 rounded-full bg-brand-50 px-2 py-0.5 text-xs font-semibold text-brand-700">
