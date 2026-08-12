@@ -43,10 +43,16 @@ import { CLAIM_COMPANIES, CLAIM_PHRASES } from "./claims-core";
 const SITE_ROOT = findSiteRoot(import.meta.url);
 /** Stable, publish-proof key path: sibling of the site root, outside the repo. */
 const STABLE_DIR = join(dirname(SITE_ROOT), ".secrets");
+/** Artifact fallbacks (mirror b2-client.ts / towbook-key.ts LEGACY_KEY_FILES):
+ *  the hosted live deployment (…ctonew.app, a CloudFront snapshot) cannot read
+ *  the machine-local sibling dir, so the build embeds the creds at
+ *  <site-root>/dist/.secrets (preferred over the source-tree .secrets, which
+ *  only local source runs would have). */
+const ARTIFACT_DIRS = [join(SITE_ROOT, "dist", ".secrets"), join(SITE_ROOT, ".secrets")];
 
 export type GmailConfig = { address: string; appPassword: string };
 
-const readEnvOrFile = async (env: string | undefined, envFile: string | undefined, stableFile: string): Promise<string | null> => {
+const readEnvOrFile = async (env: string | undefined, envFile: string | undefined, stableFiles: string[]): Promise<string | null> => {
   if (env && env.trim() !== "") return env.trim();
   if (envFile) {
     try {
@@ -57,29 +63,38 @@ const readEnvOrFile = async (env: string | undefined, envFile: string | undefine
       throw new Error(`${envFile} is not readable: ${String(err)}`);
     }
   }
-  try {
-    const v = (await readFile(stableFile, "utf8")).trim();
-    if (v) return v;
-  } catch { /* fall through to the missing-creds error below */ }
+  for (const file of stableFiles) {
+    try {
+      const v = (await readFile(file, "utf8")).trim();
+      if (v) return v;
+    } catch { /* try the next candidate */ }
+  }
   return null;
 };
 
 /** Resolve the owner's Gmail IMAP credentials. Throws a clear, structured
  *  error when any part is missing — callers surface it as gmail_not_configured,
- *  never a fake success. Resolution: GMAIL_ADDRESS/GMAIL_APP_PASSWORD env →
- *  GMAIL_ADDRESS_FILE/GMAIL_APP_PASSWORD_FILE → <site-parent>/.secrets/gmail-*.
- *  Hermetic tests pass a nonexistent stableDir to simulate "not configured". */
-export async function loadGmailConfig(env: NodeJS.ProcessEnv = process.env, opts: { stableDir?: string } = {}): Promise<GmailConfig> {
+ *  never a fake success. Resolution order (first hit wins):
+ *  GMAIL_ADDRESS/GMAIL_APP_PASSWORD env → *_FILE env → <site-parent>/.secrets/
+ *  gmail-* → <site-root>/dist/.secrets/gmail-* → <site-root>/.secrets/gmail-*.
+ *  Hermetic tests pass a nonexistent stableDir to simulate "not configured";
+ *  the artifact fallback is skipped whenever a stableDir override is pinned
+ *  (unless the caller opts in with allowArtifactFallback), so a test can never
+ *  accidentally resolve the real production creds. */
+export async function loadGmailConfig(env: NodeJS.ProcessEnv = process.env, opts: { stableDir?: string; allowArtifactFallback?: boolean } = {}): Promise<GmailConfig> {
   const stableDir = opts.stableDir ?? STABLE_DIR;
+  const fallbackDirs = opts.stableDir && !opts.allowArtifactFallback ? [] : ARTIFACT_DIRS;
+  const filesFor = (name: string) => [join(stableDir, name), ...fallbackDirs.map((dir) => join(dir, name))];
   const [address, appPassword] = await Promise.all([
-    readEnvOrFile(env.GMAIL_ADDRESS, env.GMAIL_ADDRESS_FILE, join(stableDir, "gmail-address")),
-    readEnvOrFile(env.GMAIL_APP_PASSWORD, env.GMAIL_APP_PASSWORD_FILE, join(stableDir, "gmail-app-password")),
+    readEnvOrFile(env.GMAIL_ADDRESS, env.GMAIL_ADDRESS_FILE, filesFor("gmail-address")),
+    readEnvOrFile(env.GMAIL_APP_PASSWORD, env.GMAIL_APP_PASSWORD_FILE, filesFor("gmail-app-password")),
   ]);
   const missing: string[] = [];
-  if (!address) missing.push("GMAIL_ADDRESS (or a gmail-address file in .secrets)");
-  if (!appPassword) missing.push("GMAIL_APP_PASSWORD (or a gmail-app-password file in .secrets)");
+  if (!address) missing.push("gmail-address");
+  if (!appPassword) missing.push("gmail-app-password");
   if (missing.length) {
-    throw new Error(`Gmail scanning is not configured — missing ${missing.join(", ")}.`);
+    const envNames = missing.map((m) => (m === "gmail-address" ? "GMAIL_ADDRESS" : "GMAIL_APP_PASSWORD")).join(", ");
+    throw new Error(`Gmail scanning is not configured — the site secrets are missing ${missing.join(" and ")}. Missing env: ${envNames}.`);
   }
   return { address: address!, appPassword: appPassword! };
 }

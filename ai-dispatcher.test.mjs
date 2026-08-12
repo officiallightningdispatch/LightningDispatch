@@ -1244,11 +1244,11 @@ try {
   {
     const rows = await decisions();
     const byDecision = rows.reduce((acc, x) => { acc[x.decision] = (acc[x.decision] || 0) + 1; return acc; }, {});
-    check("ledger: every auto_accept + escalation path present exactly once", byDecision["auto_accept_with_driver"] === 15 && byDecision["auto_accept_no_driver"] === 1 && byDecision["escalated_out_of_zone"] === 1 && byDecision["escalated_missing_coords"] === 1 && byDecision["escalated_expired"] === 1 && byDecision["escalated_unexpected_shape"] === 1 && byDecision["escalated_driver_lookup_failed"] === 1 && byDecision["escalated_accept_failed"] === 1 && byDecision["escalated_dispatch_failed"] === 1, JSON.stringify(byDecision));
+    check("ledger: every auto_accept + escalation path present exactly once", byDecision["auto_accept_with_driver"] === 17 && byDecision["auto_accept_no_driver"] === 1 && byDecision["escalated_out_of_zone"] === 1 && byDecision["escalated_missing_coords"] === 1 && byDecision["escalated_expired"] === 1 && byDecision["escalated_unexpected_shape"] === 1 && byDecision["escalated_driver_lookup_failed"] === 1 && byDecision["escalated_accept_failed"] === 1 && byDecision["escalated_dispatch_failed"] === 2, JSON.stringify(byDecision));
     const a = await audits();
-    check("audit: 16 ai_dispatcher:accept rows (every accept incl. no-driver)", Number(a[0].n) === 16, String(a[0].n));
+    check("audit: 18 ai_dispatcher:accept rows (every accept incl. no-driver)", Number(a[0].n) === 18, String(a[0].n));
     const adAudit = await q`SELECT count(*)::int n FROM audit_log WHERE org_id=${ORG} AND action='ai_dispatcher:decision'`;
-    check("audit: 7 ai_dispatcher:decision rows (escalations)", Number(adAudit[0].n) === 7, String(adAudit[0].n));
+    check("audit: 8 ai_dispatcher:decision rows (escalations)", Number(adAudit[0].n) === 8, String(adAudit[0].n));
     // Scope to the OWNER session row: since migration 10 a real contractor
     // sign-in (driver-auth.ts) legitimately adds session_kind='driver' rows to
     // the same org — the check's intent is that the owner session is untouched.

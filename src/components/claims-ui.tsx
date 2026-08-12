@@ -152,7 +152,7 @@ export function OwnerClaimsView() {
       } else {
         setError(r.message ?? "Inbox scan failed.");
       }
-    }).catch(() => setError("Inbox scan failed — it took too long. Please try again.")).finally(() => setScanning(false));
+    }).catch(() => setError("Inbox scan failed — the request didn't complete. Please try again.")).finally(() => setScanning(false));
   };
 
   const run = (key: string, p: Promise<{ ok: boolean; message?: string }>, okMsg: string) => {

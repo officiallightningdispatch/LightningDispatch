@@ -463,16 +463,34 @@ export type ScanClaimsResult = {
 
 /** Run the read-only Gmail scan → detect → upsert claim records. Dedupes on
  *  (org, email_message_id); a re-scan never duplicates. Hermetic tests pass a
- *  fake mailbox via connectImpl (see claims.test.mjs). */
+ *  fake mailbox via connectImpl (see claims.test.mjs).
+ *
+ *  HONEST ERRORS: Gmail config is resolved FIRST and a missing config returns
+ *  {ok:false, message:…} immediately — the UI shows the true reason instead of
+ *  a generic timeout, and the scan never hangs toward an edge timeout. Any
+ *  thrown mail-phase error is likewise returned as {ok:false, message:…} rather
+ *  than surfacing as a raw server error the client would swallow. The
+ *  envelope-first two-phase scan (91089da) is preserved inside scanMailEnvelopes. */
 export async function scanClaimsCore(actor: ClaimActor, opts: ScanClaimsOptions = {}): Promise<ClaimResult<ScanClaimsResult>> {
   if (!configured()) return err("database_error", "Database not configured.");
-  const { scanMailEnvelopes } = await import("./club-mail");
-  const mail = await scanMailEnvelopes({
-    sinceDays: opts.sinceDays,
-    maxMessages: opts.maxMessages,
-    connectImpl: opts.connectImpl as never,
-    stableDir: opts.stableDir,
-  });
+  const { loadGmailConfig, scanMailEnvelopes } = await import("./club-mail");
+  // Config check FIRST — fast early return when the site secrets lack gmail-*.
+  try {
+    await loadGmailConfig(process.env, { stableDir: opts.stableDir });
+  } catch (err) {
+    return err("scan_failed", err instanceof Error ? err.message : "Gmail scanning is not configured.");
+  }
+  let mail;
+  try {
+    mail = await scanMailEnvelopes({
+      sinceDays: opts.sinceDays,
+      maxMessages: opts.maxMessages,
+      connectImpl: opts.connectImpl as never,
+      stableDir: opts.stableDir,
+    });
+  } catch (err) {
+    return err("scan_failed", err instanceof Error ? err.message : "Gmail scan failed.");
+  }
   if (!mail.ok) return err("scan_failed", mail.error ?? "Gmail scan failed.");
   const q = await db();
   let created = 0;

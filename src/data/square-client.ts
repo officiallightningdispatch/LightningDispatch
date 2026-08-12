@@ -16,11 +16,19 @@
  *
  * LIVE-GATED exactly like B2 was: the owner's Square production credentials are
  * wired, so loadSquareConfig resolves them; until they all land in
- * <site-parent>/.secrets (or env) it fails loudly (structured error) and the
- * feature stays offline. Credential resolution mirrors b2-client.ts:
+ * <site-parent>/.secrets (or the build-embedded dist/.secrets, or env) it fails
+ * loudly (structured error) and the feature stays offline. Credential
+ * resolution mirrors b2-client.ts (env → explicit file → stable files, first
+ * match wins):
  *   access token:    SQUARE_ACCESS_TOKEN    → SQUARE_ACCESS_TOKEN_FILE    → <site-parent>/.secrets/square-access-token
+ *                                                                    → <site-root>/dist/.secrets/square-access-token
+ *                                                                    → <site-root>/.secrets/square-access-token
  *   location id:     SQUARE_LOCATION_ID     → SQUARE_LOCATION_ID_FILE     → <site-parent>/.secrets/square-location-id
+ *                                                                    → <site-root>/dist/.secrets/square-location-id
+ *                                                                    → <site-root>/.secrets/square-location-id
  *   application id:  SQUARE_APPLICATION_ID  → SQUARE_APPLICATION_ID_FILE  → <site-parent>/.secrets/square-application-id
+ *                                                                    → <site-root>/dist/.secrets/square-application-id
+ *                                                                    → <site-root>/.secrets/square-application-id
  * loadSquareConfig(env, { stableDir }) supports hermetic tests (pass a
  * nonexistent stableDir to simulate "not configured").
  *
@@ -40,10 +48,16 @@ import { findSiteRoot } from "./towbook-key";
 const SITE_ROOT = findSiteRoot(import.meta.url);
 /** Stable, publish-proof key path: sibling of the site root, outside the repo. */
 const STABLE_DIR = join(dirname(SITE_ROOT), ".secrets");
+/** Artifact fallbacks (mirror b2-client.ts / club-mail.ts / towbook-key.ts):
+ *  the hosted live deployment (…ctonew.app, a CloudFront snapshot) cannot read
+ *  the machine-local sibling dir, so the build embeds the creds at
+ *  <site-root>/dist/.secrets (preferred over the source-tree .secrets, which
+ *  only local source runs would have). */
+const ARTIFACT_DIRS = [join(SITE_ROOT, "dist", ".secrets"), join(SITE_ROOT, ".secrets")];
 
 export type SquareConfig = { accessToken: string; locationId: string; applicationId: string };
 
-const readEnvOrFile = async (env: string | undefined, envFile: string | undefined, stableFile: string): Promise<string | null> => {
+const readEnvOrFile = async (env: string | undefined, envFile: string | undefined, stableFiles: string[]): Promise<string | null> => {
   if (env && env.trim() !== "") return env.trim();
   if (envFile) {
     try {
@@ -54,22 +68,32 @@ const readEnvOrFile = async (env: string | undefined, envFile: string | undefine
       throw new Error(`${envFile} is not readable: ${String(err)}`);
     }
   }
-  try {
-    const v = (await readFile(stableFile, "utf8")).trim();
-    if (v) return v;
-  } catch { /* fall through to the missing-creds error below */ }
+  for (const file of stableFiles) {
+    try {
+      const v = (await readFile(file, "utf8")).trim();
+      if (v) return v;
+    } catch { /* try the next candidate */ }
+  }
   return null;
 };
 
 /** Resolve the Square credentials. Throws a clear, structured error when any
  *  part is missing — callers surface it as square_not_configured, never a fake
- *  success. */
-export async function loadSquareConfig(env: NodeJS.ProcessEnv = process.env, opts: { stableDir?: string } = {}): Promise<SquareConfig> {
+ *  success. Resolution order (first hit wins):
+ *  SQUARE_* env → *_FILE env → <site-parent>/.secrets/square-* →
+ *  <site-root>/dist/.secrets/square-* → <site-root>/.secrets/square-*.
+ *  Hermetic tests pass a nonexistent stableDir to simulate "not configured";
+ *  the artifact fallback is skipped whenever a stableDir override is pinned
+ *  (unless the caller opts in with allowArtifactFallback), so a test can never
+ *  accidentally resolve the real production creds. */
+export async function loadSquareConfig(env: NodeJS.ProcessEnv = process.env, opts: { stableDir?: string; allowArtifactFallback?: boolean } = {}): Promise<SquareConfig> {
   const stableDir = opts.stableDir ?? STABLE_DIR;
+  const fallbackDirs = opts.stableDir && !opts.allowArtifactFallback ? [] : ARTIFACT_DIRS;
+  const filesFor = (name: string) => [join(stableDir, name), ...fallbackDirs.map((dir) => join(dir, name))];
   const [accessToken, locationId, applicationId] = await Promise.all([
-    readEnvOrFile(env.SQUARE_ACCESS_TOKEN, env.SQUARE_ACCESS_TOKEN_FILE, join(stableDir, "square-access-token")),
-    readEnvOrFile(env.SQUARE_LOCATION_ID, env.SQUARE_LOCATION_ID_FILE, join(stableDir, "square-location-id")),
-    readEnvOrFile(env.SQUARE_APPLICATION_ID, env.SQUARE_APPLICATION_ID_FILE, join(stableDir, "square-application-id")),
+    readEnvOrFile(env.SQUARE_ACCESS_TOKEN, env.SQUARE_ACCESS_TOKEN_FILE, filesFor("square-access-token")),
+    readEnvOrFile(env.SQUARE_LOCATION_ID, env.SQUARE_LOCATION_ID_FILE, filesFor("square-location-id")),
+    readEnvOrFile(env.SQUARE_APPLICATION_ID, env.SQUARE_APPLICATION_ID_FILE, filesFor("square-application-id")),
   ]);
   const missing: string[] = [];
   if (!accessToken) missing.push("SQUARE_ACCESS_TOKEN (or a square-access-token file in .secrets)");
