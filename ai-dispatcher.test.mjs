@@ -274,6 +274,11 @@ try {
   // "zero decisions" assumption predates it. Capture the count so the final
   // check proves THIS run adds nothing to the owner org.
   const ownerBaseline = Number((await q`SELECT count(*)::int n FROM ai_dispatcher_decisions WHERE org_id=${"89e15ce587651cc47c3bc45b1c612a220955"}`)[0].n);
+  // Owner-session baseline: the production org's owner towbook_sessions row(s). Since
+  // the 2026-08-12 incident deleted org-scoped rows and the owner has not re-linked
+  // Towbook, this is currently EMPTY — the final check must compare against this
+  // snapshot (row count + statuses), not assume a connected row exists.
+  const ownerSessionBaseline = (await q`SELECT status FROM towbook_sessions WHERE org_id=${"89e15ce587651cc47c3bc45b1c612a220955"} AND session_kind='owner'`).map(r => String(r.status));
 
   /* ============ 1) pure functions: zone math ============ */
   check("haversine(centroid) = 0", haversineMiles(ZONE.lat, ZONE.lng, ZONE.lat, ZONE.lng) === 0);
@@ -1170,8 +1175,8 @@ try {
     // Scope to the OWNER session row: since migration 10 a real contractor
     // sign-in (driver-auth.ts) legitimately adds session_kind='driver' rows to
     // the same org — the check's intent is that the owner session is untouched.
-    const ownerSession = await q`SELECT status FROM towbook_sessions WHERE org_id=${"89e15ce587651cc47c3bc45b1c612a220955"} AND session_kind='owner'`;
-    check("owner org session untouched", ownerSession.length === 1 && String(ownerSession[0].status) === "connected", JSON.stringify(ownerSession));
+    const ownerSession = (await q`SELECT status FROM towbook_sessions WHERE org_id=${"89e15ce587651cc47c3bc45b1c612a220955"} AND session_kind='owner'`).map(r => String(r.status));
+    check("owner org session untouched", ownerSession.length === ownerSessionBaseline.length && ownerSession.every((s, i) => s === ownerSessionBaseline[i]), `${JSON.stringify(ownerSessionBaseline)} → ${JSON.stringify(ownerSession)}`);
     const ownerDecisions = await q`SELECT count(*)::int n FROM ai_dispatcher_decisions WHERE org_id=${"89e15ce587651cc47c3bc45b1c612a220955"}`;
     check("owner org untouched: decision count unchanged by this run", Number(ownerDecisions[0].n) === ownerBaseline, `${ownerBaseline} → ${Number(ownerDecisions[0].n)}`);
   }
