@@ -190,8 +190,9 @@ check("send: VAPID auth header on the wire", sent[0].init.headers.authorization.
 const wirePayload = JSON.parse(decryptPushBody(SUB_PRIV, SUB_AUTH, sent[0].init.body).toString("utf8"));
 check("send: wire payload title/body/tag", wirePayload.title === "New job — Lightning Dispatch" && wirePayload.tag === "job-279999001" && wirePayload.data.url === "/driver");
 const audit = await q`SELECT detail FROM audit_log WHERE org_id=${ORG} AND action='assignment_push' ORDER BY occurred_at DESC LIMIT 1`;
-check("audit: assignment_push status sent (in detail)", JSON.parse(audit[0].detail).status === "sent");
-check("audit: attempts recorded", Array.isArray(JSON.parse(audit[0].detail).attempts) && JSON.parse(audit[0].detail).attempts.length === 2);
+const auditDetail = typeof audit[0].detail === "string" ? JSON.parse(audit[0].detail) : audit[0].detail;
+check("audit: assignment_push status sent (in detail)", auditDetail.status === "sent");
+check("audit: attempts recorded", Array.isArray(auditDetail.attempts) && auditDetail.attempts.length === 2);
 
 // Failure path: 500 → never throws, audited, escalated decision row.
 let failing = 0;
@@ -212,15 +213,17 @@ const noneOut = await sendAssignmentPush(ORG, DRIVER2, payload, { fetchImpl: okF
 check("no-subs: skipped (no send attempted)", noneOut.skipped === true && noneOut.attempted === 0);
 
 /* ---------------------- sendAssignmentPushByTowbookDriver ---------------------- */
-await q`UPDATE users SET towbook_driver_id=${"99901"} WHERE id=${DRIVER}`;
-let byDriver = await sendAssignmentPushByTowbookDriver(ORG, "99901", payload, { fetchImpl: okFetch });
+const TOW_DRIVER = `99901-${TAG}`;
+const TOW_MISSING = `99999-${TAG}`;
+await q`UPDATE users SET towbook_driver_id=${TOW_DRIVER} WHERE id=${DRIVER}`;
+let byDriver = await sendAssignmentPushByTowbookDriver(ORG, TOW_DRIVER, payload, { fetchImpl: okFetch });
 check("byDriver: resolves LD user by towbook_driver_id", byDriver.attempted === 1 && byDriver.sent === 1);
-const missingDriver = await sendAssignmentPushByTowbookDriver(ORG, "99999", payload, { fetchImpl: okFetch });
+const missingDriver = await sendAssignmentPushByTowbookDriver(ORG, TOW_MISSING, payload, { fetchImpl: okFetch });
 check("byDriver: unknown driver → clean skip", missingDriver.skipped === true && missingDriver.reason === "no_ld_user_for_towbook_driver");
 
 /* ----------------------------- fireAssignmentPush (manual path) ----------------------------- */
 const jobId = `job-${TAG}`;
-await q`INSERT INTO dispatch_jobs(id, org_id, service_type, pickup, area, towbook_job_id, status) VALUES(${jobId}, ${ORG}, 'flatbed_tow', '88 Main St', '06606', '279999004', 'new')`;
+await q`INSERT INTO dispatch_jobs(id, org_id, service_type, pickup, area, towbook_job_id, status, customer_name, phone, lat, lng, created_at) VALUES(${jobId}, ${ORG}, 'flatbed_tow', '88 Main St', '06606', '279999004', 'new', 'QA Push Customer', '(555) 000-0000', 41.2, -73.2, NOW())`;
 let fireOut = await fireAssignmentPush(ORG, DRIVER, jobId, { fetchImpl: okFetch });
 check("fireAssignmentPush: payload built from job row", fireOut.sent === 1 && sent.length > 0);
 const fireWire = JSON.parse(decryptPushBody(SUB_PRIV, SUB_AUTH, sent[sent.length - 1].init.body).toString("utf8"));
