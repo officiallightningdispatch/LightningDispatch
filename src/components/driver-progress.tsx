@@ -8,9 +8,9 @@ import { Check } from "lucide-react";
 
 const STEPS = [
   { id: 1, label: "Offer" },
-  { id: 2, label: "Accepted" },
-  { id: 3, label: "En route" },
-  { id: 4, label: "Arrived" },
+  { id: 2, label: "En route" },
+  { id: 3, label: "On scene" },
+  { id: 4, label: "Towing" },
   { id: 5, label: "Complete" },
 ];
 

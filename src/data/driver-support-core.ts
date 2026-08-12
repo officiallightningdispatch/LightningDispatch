@@ -83,6 +83,22 @@ export async function submitDriverIssueHandler(data: unknown): Promise<DriverIss
   }
 }
 
+/** Testable core: persists one rating for a contractor context (used by the
+ *  handler and by hermetic tests — same split as the gps/photo cores). */
+export async function submitDriverFeedbackCore(
+  ctx: { orgId: string; userId: string },
+  payload: { jobId: string; rating: number; comment: string | null },
+): Promise<DriverFeedbackResult> {
+  try {
+    await insertWithAudit(
+      { orgId: ctx.orgId, userId: ctx.userId, actorRole: "contractor", action: "driver_feedback", entityType: "job", entityId: payload.jobId, detail: { jobId: payload.jobId, rating: payload.rating, comment: payload.comment } },
+      { table: "job_feedback", cols: { org_id: ctx.orgId, job_id: payload.jobId, driver_id: ctx.userId, rating: payload.rating, comment: payload.comment } },
+    );
+    return { ok: true };
+  } catch {
+    return { ok: false, message: "Unable to save your feedback. Try again." };
+  }
+}
 export async function submitDriverFeedbackHandler(data: unknown): Promise<DriverFeedbackResult> {
   const v = z.object({
     jobId: z.string().min(1).max(64),
@@ -91,15 +107,14 @@ export async function submitDriverFeedbackHandler(data: unknown): Promise<Driver
   }).safeParse(data);
   if (!v.success) return { ok: false, message: "Pick a rating (1–5 stars) to submit." };
   if (!configured()) return { ok: false, message: "Feedback requires database mode." };
-  const ctx = await contractorContext();
-  if (!ctx) return { ok: false, message: "Sign in as a driver first." };
+  // Context resolution lives INSIDE the try (2026-08-12, owner bug: a context
+  // failure must surface as a clean ok:false message — never throw through the
+  // client fetch into the UI's "check your connection" catch branch).
   try {
+    const ctx = await contractorContext();
+    if (!ctx) return { ok: false, message: "Sign in as a driver first." };
     const comment = v.data.comment && v.data.comment.trim() ? v.data.comment.trim() : null;
-    await insertWithAudit(
-      { orgId: ctx.orgId, userId: ctx.userId, actorRole: "contractor", action: "driver_feedback", entityType: "job", entityId: v.data.jobId, detail: { jobId: v.data.jobId, rating: v.data.rating, comment } },
-      { table: "job_feedback", cols: { org_id: ctx.orgId, job_id: v.data.jobId, driver_id: ctx.userId, rating: v.data.rating, comment } },
-    );
-    return { ok: true };
+    return await submitDriverFeedbackCore(ctx, { jobId: v.data.jobId, rating: v.data.rating, comment });
   } catch {
     return { ok: false, message: "Unable to save your feedback. Try again." };
   }

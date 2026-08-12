@@ -336,7 +336,7 @@ export async function autoArrive(opts: {
     const idForBody = Number.isInteger(numericId) && numericId > 0 ? numericId : job.towbookJobId;
     const put = await tbFetch(fetchImpl, `${session.baseUrl}/api/calls/${job.towbookJobId}`, session, {
       method: "PUT",
-      body: JSON.stringify({ id: idForBody, status: { id: 4 } }),
+      body: JSON.stringify({ id: idForBody, status: { id: 3 } }), // 3 = On Scene (corrected 2026-08-12; 4 is Towing)
     });
     attempts.push(`PUT /api/calls/${job.towbookJobId} → ${put.status ?? "network error"} (${put.ok ? "ok" : "failed"})`);
     towbookOk = put.ok && !isExpired(put);
@@ -347,8 +347,8 @@ export async function autoArrive(opts: {
       attempts.push(`GET /api/calls/${job.towbookJobId} → ${getRes.status ?? "network error"}`);
       const call = getRes.ok && getRes.body && typeof getRes.body === "object" ? (getRes.body as Record<string, unknown>) : null;
       const statusId = call ? extractTowbookStatusId(call.status) : null;
-      if (statusId === 4) {
-        detail = "PUT ok; verified status 4 on Towbook";
+      if (statusId === 3) {
+        detail = "PUT ok; verified status 3 (On Scene) on Towbook";
       } else {
         towbookOk = false;
         detail = `PUT returned ok but verification shows status ${statusId ?? "unknown"} — NOT arrived on Towbook`;

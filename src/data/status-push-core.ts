@@ -54,11 +54,16 @@ export type StatusPushResult =
 /** Portal lifecycle → Towbook numeric status id (mirror of the pull side's
  *  TOWBOOK_STATUS_ID_TO_LIFECYCLE — same mapping, reversed; never invented). */
 export const LIFECYCLE_TO_TOWBOOK_STATUS_ID: Readonly<Record<string, number>> = {
+  // CORRECTED 2026-08-12 (owner-reported sync bug, recon-verified): Towbook
+  // statuses are 0 Received, 1 Dispatched, 2 En Route, 3 On Scene, 4 Towing,
+  // 5 Complete, 7 Arrived. LD accepted ↔ 1 (Dispatched = a driver is on it),
+  // en_route ↔ 2, arrived ↔ 3 (On Scene), completed ↔ 5. LD 'offered' is the
+  // assign/offer state — expressed as Dispatched (1) exactly like before.
   new: 0,
   offered: 1,
-  accepted: 2,
-  en_route: 3,
-  arrived: 4,
+  accepted: 1,
+  en_route: 2,
+  arrived: 3,
   completed: 5,
 };
 
@@ -69,11 +74,10 @@ export const LIFECYCLE_TO_TOWBOOK_STATUS_ID: Readonly<Record<string, number>> = 
  *  push still fires and any Towbook rejection escalates with evidence. */
 const STATUS_PREDECESSOR: Readonly<Record<number, number | null>> = {
   0: 1, // decline: offered → new
-  1: 0, // assign: new → offered
-  2: 1, // accept: offered → accepted
-  3: 2, // en route: accepted → en_route
-  4: 3, // arrive: en_route → arrived
-  5: 4, // complete: arrived → completed
+  1: 0, // assign/accept: new/offered → dispatched
+  2: 1, // en route: dispatched → en route
+  3: 2, // arrive: en_route → on scene
+  5: 4, // complete: (≤ towing) → completed — never clobbers 252/255 (252>5, 255>5)
 };
 
 const configured = () => Boolean(process.env.DATABASE_URL);

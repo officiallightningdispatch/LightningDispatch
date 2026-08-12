@@ -53,13 +53,22 @@ export type DriverCall = {
   updatedAtIso: string | null;
 };
 export type DriverJobAction = "accept" | "en_route";
-const STATUS_ID_FOR_ACTION: Record<DriverJobAction, number> = { accept: 2, en_route: 3 };
+/* LD action → Towbook status id. CORRECTED 2026-08-12 (owner-reported bug):
+ * Towbook's real statuses are 0 Received, 1 Dispatched, 2 En Route, 3 On
+ * Scene, 4 Towing, 5 Complete, 7 Arrived (verified in the dispatch editor's
+ * statusTimes mapping). Accept now performs accept→en_route in ONE step
+ * (owner 2026-08-12: "Accept & go") — both actions target Towbook 2 (En
+ * Route); the separate en_route action remains as a manual fallback. */
+const STATUS_ID_FOR_ACTION: Record<DriverJobAction, number> = { accept: 2, en_route: 2 };
 
 /* ------------------------- local copies of Towbook helpers ------------------------- */
-/** Mirrors server.ts TOWBOOK_STATUS_ID_TO_LIFECYCLE (owner-verified 2026-08-10). */
+/** Mirrors server.ts TOWBOOK_STATUS_ID_TO_LIFECYCLE (corrected 2026-08-12:
+ *  Towbook 1=Dispatched→accepted, 2=En Route→en_route, 3=On Scene→arrived,
+ *  4=Towing→arrived, 5=Complete→completed, 7=Arrived→arrived; 252 completed,
+ *  255 cancelled — owner-reported status-sync bug, recon-verified). */
 const STATUS_ID_TO_LIFECYCLE: Readonly<Record<number, string>> = {
-  0: "new", 1: "offered", 2: "accepted", 3: "en_route", 4: "arrived", 5: "completed",
-  252: "completed", 255: "cancelled",
+  0: "new", 1: "accepted", 2: "en_route", 3: "arrived", 4: "arrived", 5: "completed",
+  7: "arrived", 252: "completed", 255: "cancelled",
 };
 /** Local copy of server.ts assignedDriverFromRawCall (this module deliberately
  *  keeps tiny Towbook-shape helpers local instead of importing server modules):

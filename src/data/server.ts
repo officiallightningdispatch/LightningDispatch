@@ -328,12 +328,13 @@ export function mapTowbookStatus(raw: string): JobStatus | null {
  *  across syncs — Towbook-side reopen/acknowledge — and our upsert simply
  *  follows whatever Towbook says, which is correct.) */
 export const TOWBOOK_STATUS_ID_TO_LIFECYCLE: Readonly<Record<number, JobStatus>> = {
-  0: "new", // workflow start — call created / not yet dispatched
-  1: "offered", // dispatched to a driver (observed next.statusId = 2)
-  2: "accepted", // driver accepted
-  3: "en_route", // driver heading to the scene
-  4: "arrived", // on scene
-  5: "completed", // workflow end (observed; terminal)
+  0: "new", // Received — call created / not yet dispatched
+  1: "accepted", // Dispatched — a driver is assigned (LD "accepted")
+  2: "en_route", // En Route — driver heading to the scene
+  3: "arrived", // On Scene — driver on scene (LD "arrived")
+  4: "arrived", // Towing — in-progress (tow jobs), still active
+  5: "completed", // Complete — workflow end (observed; terminal)
+  7: "arrived", // Arrived at destination — in-progress (tow jobs), still active
   252: "completed", // completed-awaiting-acknowledgement (owner-verified 2026-08-10)
   255: "cancelled", // completed-then-cancelled / cancelled call (terminal, import-only)
 };

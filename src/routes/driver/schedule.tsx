@@ -74,7 +74,7 @@ function ScheduleView() {
     }
     setError("");
     setSaving(true);
-    const res = await setMySchedule({ schedule: schedule.map(({ day, start, end }) => ({ day, start, end })) }).catch(() => null);
+    const res = await setMySchedule({ data: { schedule: schedule.map(({ day, start, end }) => ({ day, start, end })) } }).catch(() => null);
     setSaving(false);
     if (!res || !res.ok) { setError(res && res.ok === false ? res.message : "Couldn't save your schedule — try again."); return; }
     apply(res.data);

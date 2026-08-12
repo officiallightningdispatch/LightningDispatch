@@ -19,9 +19,9 @@ import { pingDriverLocation } from "~/data/driver-gps";
 export const STATUS_META: Record<number, { label: string; badge: string; dot: string }> = {
   0: { label: "New", badge: "bg-ink-100 text-ink-600", dot: "bg-ink-400" },
   1: { label: "Offered", badge: "bg-amber-100 text-amber-700", dot: "bg-amber-500" },
-  2: { label: "Accepted", badge: "bg-blue-100 text-blue-700", dot: "bg-blue-500" },
-  3: { label: "En route", badge: "bg-violet-100 text-violet-700", dot: "bg-violet-500" },
-  4: { label: "Arrived", badge: "bg-brand-100 text-brand-700", dot: "bg-brand-500" },
+  2: { label: "En route", badge: "bg-violet-100 text-violet-700", dot: "bg-violet-500" },
+  3: { label: "On scene", badge: "bg-brand-100 text-brand-700", dot: "bg-brand-500" },
+  4: { label: "Towing", badge: "bg-emerald-100 text-emerald-700", dot: "bg-emerald-500" },
   5: { label: "Completed", badge: "bg-emerald-100 text-emerald-700", dot: "bg-emerald-500" },
   6: { label: "Complete", badge: "bg-emerald-100 text-emerald-700", dot: "bg-emerald-500" },
   255: { label: "Cancelled", badge: "bg-danger-100 text-danger-600", dot: "bg-danger-500" },
@@ -42,7 +42,7 @@ export function useDriverGps(calls: DriverCall[] | null): GpsState {
   const [state, setState] = useState<GpsState>("idle");
   const activeJobRef = useRef<string | null>(null);
   useEffect(() => {
-    const active = calls?.find((c) => c.statusId === 3 || c.statusId === 4);
+    const active = calls?.find((c) => c.statusId === 2 || c.statusId === 3); // en route / on scene
     activeJobRef.current = active ? active.id : null;
   }, [calls]);
   useEffect(() => {
@@ -189,12 +189,12 @@ export function QueueSkeleton() {
  *  bottom sheets (TripSheet/HomeSheet): Accept → En route → photo callouts +
  *  JobPhotoFlow → detail disclosure. One source of truth for the act() wiring. */
 export function JobCardActions({ call, acting, onAct, onQueueChanged }: { call: DriverCall; acting: boolean; onAct: (id: string, a: "accept" | "en_route") => Promise<void>; onQueueChanged: () => void }) {
-  const jobStatus = call.statusId === 3 ? "en_route" : call.statusId === 4 ? "arrived" : call.statusId === 5 ? "completed" : "other";
+  const jobStatus = call.statusId === 2 ? "en_route" : call.statusId === 3 ? "arrived" : call.statusId === 5 ? "completed" : "other";
   return (
     <>
       {call.statusId === 1 && (
         <Button className="mt-4 w-full" loading={acting} onClick={() => void onAct(call.id, "accept")}>
-          <ThumbsUp className="size-5" /> Accept — I&apos;m on it
+          <ThumbsUp className="size-5" /> Accept &amp; go — I&apos;m on it
         </Button>
       )}
       {call.statusId === 2 && (
@@ -204,15 +204,15 @@ export function JobCardActions({ call, acting, onAct, onQueueChanged }: { call: 
       )}
       {call.statusId === 3 && (
         <p className="mt-4 flex items-center gap-2 rounded-xl bg-violet-50 p-3 text-center text-sm font-medium text-violet-700">
-          <Navigation className="size-4 shrink-0" /> On the way — take the arrival photos when you reach the vehicle.
+          <Check className="size-4 shrink-0" /> You&apos;re on scene — take the arrival photos, then the service photos.
         </p>
       )}
       {call.statusId === 4 && (
         <p className="mt-4 flex items-center gap-2 rounded-xl bg-brand-50 p-3 text-center text-sm font-medium text-brand-700">
-          <Check className="size-4 shrink-0" /> You&apos;ve arrived — finish the photo steps to complete the job.
+          <Navigation className="size-4 shrink-0" /> Towing — keep going until the drop-off is complete.
         </p>
       )}
-      {(call.statusId === 3 || call.statusId === 4) && (
+      {(call.statusId === 2 || call.statusId === 3) && (
         <JobPhotoFlow callId={call.id} jobStatus={jobStatus} onCompleted={onQueueChanged} />
       )}
       <JobDetailDisclosure jobId={call.id} label="Details & photos" />

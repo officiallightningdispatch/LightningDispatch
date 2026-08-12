@@ -51,10 +51,10 @@ const OWNER = `qa-status-owner-${randomUUID()}`;
 const OWNER2 = `qa-status2-owner-${randomUUID()}`; // ORG2's owner — hoisted so cleanup deletes it too (2026-08-12: it was inlined at setup and orphaned)
 const ADMIN = `qa-status-admin-${randomUUID()}`;
 const DISPATCHER = `qa-status-dispatch-${randomUUID()}`;
-const JOB_ACCEPT = `qa-status-accept-${randomUUID()}`;   // offered→accepted push (2)
+const JOB_ACCEPT = `qa-status-accept-${randomUUID()}`;   // offered→accepted push (1 = Dispatched)
 const JOB_NOOP = `qa-status-noop-${randomUUID()}`;       // already-at-status no-op
 const JOB_RACE = `qa-status-race-${randomUUID()}`;       // newer-status-wins guard
-const JOB_DISPATCHER = `qa-status-disp-${randomUUID()}`; // en_route→arrived (4), dispatcher actor
+const JOB_DISPATCHER = `qa-status-disp-${randomUUID()}`; // en_route→arrived (3 = On Scene), dispatcher actor
 const JOB_FAIL = `qa-status-fail-${randomUUID()}`;       // PUT 500 → retry → escalate
 const JOB_VERIFY = `qa-status-verify-${randomUUID()}`;   // PUT ok, verify mismatch → escalate
 const JOB_DECLINE = `qa-status-decline-${randomUUID()}`; // offered→new push (0)
@@ -149,33 +149,33 @@ await setup();
 
 /* ==================== 1) owner push fires exactly one verified PUT ==================== */
 {
-  // The owner advanced offered→accepted locally; Towbook is still at 1 (offered).
-  const m = makeFetch({ initialStatus: 1 });
+  // The owner advanced offered→accepted locally; Towbook is still at 0 (Received).
+  const m = makeFetch({ initialStatus: 0 });
   const r = await pushJobStatusToTowbook({ orgId: ORG, jobId: JOB_ACCEPT, actor: ACTOR, opts: { fetchImpl: m.fetchImpl } });
   check("owner push ok + changed", r.ok === true && r.changed === true && r.skipped === false, JSON.stringify(r));
   const p = puts(m.calls);
   check("exactly ONE PUT fired", p.length === 1, JSON.stringify(m.calls));
-  check("PUT has the right shape + status id", p[0].url.endsWith(`/api/calls/${CALL_ACCEPT}`) && p[0].body && p[0].body.id === 880001 && p[0].body.status && p[0].body.status.id === 2, JSON.stringify(p[0]));
+  check("PUT has the right shape + status id", p[0].url.endsWith(`/api/calls/${CALL_ACCEPT}`) && p[0].body && p[0].body.id === 880001 && p[0].body.status && p[0].body.status.id === 1, JSON.stringify(p[0]));
   check("sequence: GET-idempotency → PUT → GET-verify", gets(m.calls).length === 2 && m.calls[0].method === "GET" && m.calls[1].method === "PUT" && m.calls[2].method === "GET", JSON.stringify(m.calls));
   const row = await q`SELECT status, towbook_status FROM dispatch_jobs WHERE id=${JOB_ACCEPT}`;
-  check("DB towbook_status records the verified push", row.length === 1 && String(row[0].status) === "accepted" && String(row[0].towbook_status) === "2", JSON.stringify(row));
+  check("DB towbook_status records the verified push", row.length === 1 && String(row[0].status) === "accepted" && String(row[0].towbook_status) === "1", JSON.stringify(row));
   const aud = await q`SELECT action, actor_role, detail FROM audit_log WHERE org_id=${ORG} AND entity_id=${JOB_ACCEPT} AND action='status_push_verified'`;
-  check("audit status_push_verified (owner actor)", aud.length === 1 && String(aud[0].actor_role) === "owner" && aud[0].detail && aud[0].detail.toStatus === 2 && aud[0].detail.towbookJobId === CALL_ACCEPT, JSON.stringify(aud));
+  check("audit status_push_verified (owner actor)", aud.length === 1 && String(aud[0].actor_role) === "owner" && aud[0].detail && aud[0].detail.toStatus === 1 && aud[0].detail.towbookJobId === CALL_ACCEPT, JSON.stringify(aud));
 }
 
 /* ==================== 2) dispatcher actor push (en_route→arrived) ==================== */
 {
   const m = makeFetch({ initialStatus: 2 });
   const r = await pushJobStatusToTowbook({ orgId: ORG, jobId: JOB_DISPATCHER, actor: DISPATCH_ACTOR, opts: { fetchImpl: m.fetchImpl } });
-  check("dispatcher push ok, one PUT status 4", r.ok === true && r.changed === true && puts(m.calls).length === 1 && puts(m.calls)[0].body.status.id === 4, JSON.stringify(r) + JSON.stringify(m.calls));
+  check("dispatcher push ok, one PUT status 3 (On Scene)", r.ok === true && r.changed === true && puts(m.calls).length === 1 && puts(m.calls)[0].body.status.id === 3, JSON.stringify(r) + JSON.stringify(m.calls));
   const aud = await q`SELECT actor_role FROM audit_log WHERE org_id=${ORG} AND entity_id=${JOB_DISPATCHER} AND action='status_push_verified'`;
   check("audit actor_role dispatcher", aud.length === 1 && String(aud[0].actor_role) === "dispatcher", JSON.stringify(aud));
 }
 
 /* ==================== 3) same transition again → no-op, never a double PUT ==================== */
 {
-  // Towbook already reports 4 (arrived) — re-pushing the same transition is a no-op.
-  const m = makeFetch({ initialStatus: 4 });
+  // Towbook already reports 3 (On Scene) — the same status this push targets — no-op.
+  const m = makeFetch({ initialStatus: 3 });
   const r = await pushJobStatusToTowbook({ orgId: ORG, jobId: JOB_NOOP, actor: ACTOR, opts: { fetchImpl: m.fetchImpl } });
   check("re-push no-op", r.ok === true && r.changed === false && r.skipped === true && r.reason === "already-at-status", JSON.stringify(r));
   check("zero PUTs on no-op", puts(m.calls).length === 0, JSON.stringify(m.calls));
@@ -183,8 +183,9 @@ await setup();
 
 /* ==================== 4) newer status on Towbook wins — no clobber ==================== */
 {
-  // Local said accepted, but the 30s pull already imported en_route (3) from the
-  // driver's phone: the push must refuse (last-write-wins — newer status wins).
+  // Local says accepted (target 1 Dispatched), but the 30s pull already imported
+  // a newer Towbook status (3 On Scene) from the driver's phone: the push must
+  // refuse (last-write-wins — newer status wins).
   const m = makeFetch({ initialStatus: 3 });
   const r = await pushJobStatusToTowbook({ orgId: ORG, jobId: JOB_RACE, actor: ACTOR, opts: { fetchImpl: m.fetchImpl } });
   check("newer-status-wins → skipped, no PUT", r.ok === true && r.changed === false && r.skipped === true && r.reason === "newer-status-wins" && puts(m.calls).length === 0, JSON.stringify(r) + JSON.stringify(m.calls));
@@ -194,26 +195,26 @@ await setup();
 
 /* ==================== 5) PUT failure → retry once → escalate ==================== */
 {
-  const m = makeFetch({ initialStatus: 3, failPut: true });
+  const m = makeFetch({ initialStatus: 2, failPut: true }); // 2 En Route < 3 On Scene → PUT fires
   const r = await pushJobStatusToTowbook({ orgId: ORG, jobId: JOB_FAIL, actor: ACTOR, opts: { fetchImpl: m.fetchImpl } });
   check("put failure → towbook_failed + escalated", r.ok === false && r.code === "towbook_failed" && r.escalated === true, JSON.stringify(r));
   check("exactly TWO PUTs (initial + retry), no more", puts(m.calls).length === 2, JSON.stringify(m.calls));
-  const esc = await q`SELECT decision, escalated, reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG} AND decision='escalated_status_push_failed' AND call_request_id=${`status-push-${JOB_FAIL}-4`}`;
+  const esc = await q`SELECT decision, escalated, reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG} AND decision='escalated_status_push_failed' AND call_request_id=${`status-push-${JOB_FAIL}-3`}`;
   check("escalation row with evidence", esc.length === 1 && Boolean(esc[0].escalated) && String(esc[0].reason).includes("500") && esc[0].raw_response && Array.isArray(esc[0].raw_response.attempts) && esc[0].raw_response.attempts.length === 3, JSON.stringify(esc));
   // Dedupe: a second identical failure must not spam the ledger.
-  const m2 = makeFetch({ initialStatus: 3, failPut: true });
+  const m2 = makeFetch({ initialStatus: 2, failPut: true });
   await pushJobStatusToTowbook({ orgId: ORG, jobId: JOB_FAIL, actor: ACTOR, opts: { fetchImpl: m2.fetchImpl } });
-  const again = await q`SELECT COUNT(*)::int AS n FROM ai_dispatcher_decisions WHERE org_id=${ORG} AND decision='escalated_status_push_failed' AND call_request_id=${`status-push-${JOB_FAIL}-4`}`;
+  const again = await q`SELECT COUNT(*)::int AS n FROM ai_dispatcher_decisions WHERE org_id=${ORG} AND decision='escalated_status_push_failed' AND call_request_id=${`status-push-${JOB_FAIL}-3`}`;
   check("escalation dedupes (ON CONFLICT DO NOTHING)", Number(again[0].n) === 1, JSON.stringify(again));
 }
 
 /* ==================== 6) PUT ok but verify mismatch → escalate ==================== */
 {
-  const m = makeFetch({ initialStatus: 3, getStatus: () => 3 }); // verify always sees old status
+  const m = makeFetch({ initialStatus: 2, getStatus: () => 2 }); // PUT to 3, verify keeps seeing 2
   const r = await pushJobStatusToTowbook({ orgId: ORG, jobId: JOB_VERIFY, actor: ACTOR, opts: { fetchImpl: m.fetchImpl } });
   check("verify mismatch → verify_failed + escalated", r.ok === false && r.code === "verify_failed" && r.escalated === true, JSON.stringify(r));
   check("PUT fired once, then verify GET", puts(m.calls).length === 1 && gets(m.calls).length === 2, JSON.stringify(m.calls));
-  const esc = await q`SELECT reason FROM ai_dispatcher_decisions WHERE org_id=${ORG} AND decision='escalated_status_push_failed' AND call_request_id=${`status-push-${JOB_VERIFY}-4`}`;
+  const esc = await q`SELECT reason FROM ai_dispatcher_decisions WHERE org_id=${ORG} AND decision='escalated_status_push_failed' AND call_request_id=${`status-push-${JOB_VERIFY}-3`}`;
   check("verify escalation recorded", esc.length === 1 && String(esc[0].reason).includes("did not confirm"), JSON.stringify(esc));
 }
 
@@ -247,14 +248,14 @@ await setup();
   const m = makeFetch({ initialStatus: 1, expireGet: true });
   const r = await pushJobStatusToTowbook({ orgId: ORG, jobId: JOB_ACCEPT, actor: ACTOR, opts: { fetchImpl: m.fetchImpl } });
   check("expired session → session_expired + escalated, no PUT", r.ok === false && r.code === "session_expired" && r.escalated === true && puts(m.calls).length === 0, JSON.stringify(r));
-  const esc = await q`SELECT COUNT(*)::int AS n FROM ai_dispatcher_decisions WHERE org_id=${ORG} AND call_request_id=${`status-push-${JOB_ACCEPT}-2`}`;
+  const esc = await q`SELECT COUNT(*)::int AS n FROM ai_dispatcher_decisions WHERE org_id=${ORG} AND call_request_id=${`status-push-${JOB_ACCEPT}-1`}`;
   check("session-expired escalation recorded", Number(esc[0].n) >= 1, JSON.stringify(esc));
 }
 
 /* ==================== 10) pull still works after push (no regression) ==================== */
 {
   // After the verified push (test 1), the 30s pull imports a NEWER Towbook
-  // status (driver moved on their phone: status 3): the pull must still win and
+  // status (driver moved on their phone: status 2 En Route): the pull must still win and
   // overwrite status + towbook_status + record the transition.
   const pulled = await upsertPulledJobs(ORG, ACTOR, [{
     towbookJobId: CALL_ACCEPT,
@@ -264,7 +265,7 @@ await setup();
     pickup: "Main St",
     dropoff: "",
     status: "en_route",
-    towbookStatus: "3",
+    towbookStatus: "2",
     serviceType: "flatbed_tow",
     createdAt: new Date().toISOString(),
     note: "",
@@ -272,7 +273,7 @@ await setup();
   }], "sync:test");
   check("pull updates the pushed job (updated=1)", pulled.updated === 1, JSON.stringify(pulled));
   const row = await q`SELECT status, towbook_status FROM dispatch_jobs WHERE id=${JOB_ACCEPT}`;
-  check("pull overrides push (newer Towbook status wins in DB too)", String(row[0].status) === "en_route" && String(row[0].towbook_status) === "3", JSON.stringify(row));
+  check("pull overrides push (newer Towbook status wins in DB too)", String(row[0].status) === "en_route" && String(row[0].towbook_status) === "2", JSON.stringify(row));
   const ev = await q`SELECT to_status, note FROM status_events WHERE org_id=${ORG} AND job_id=${JOB_ACCEPT} ORDER BY occurred_at DESC LIMIT 1`;
   check("pull recorded the imported transition", String(ev[0].to_status) === "en_route" && String(ev[0].note).includes("Towbook"), JSON.stringify(ev));
 }
@@ -346,8 +347,11 @@ await setup();
   check("declineJob pushes via d.jobId", src.includes("pushJobStatus(u.orgId,d.jobId"));
   check("setContractorStatus does NOT push (contractor availability ≠ job status)", !src.slice(src.indexOf("setContractorStatus"), src.indexOf("getStatusEvents")).includes("pushJobStatus"));
   check("push is a dynamic import (client-graph safe)", src.includes('await import("./status-push-core")'));
-  // Mapping parity with the pull side: 0..5 map 1:1.
-  check("lifecycle→status id mapping parity (0-5)", LIFECYCLE_TO_TOWBOOK_STATUS_ID.new === 0 && LIFECYCLE_TO_TOWBOOK_STATUS_ID.offered === 1 && LIFECYCLE_TO_TOWBOOK_STATUS_ID.accepted === 2 && LIFECYCLE_TO_TOWBOOK_STATUS_ID.en_route === 3 && LIFECYCLE_TO_TOWBOOK_STATUS_ID.arrived === 4 && LIFECYCLE_TO_TOWBOOK_STATUS_ID.completed === 5, JSON.stringify(LIFECYCLE_TO_TOWBOOK_STATUS_ID));
+  // Mapping parity with the pull side (corrected 2026-08-12, recon-verified):
+  // 0 Received→new, 1 Dispatched→offered/accepted, 2 En Route→en_route,
+  // 3 On Scene→arrived, 5 Complete→completed. 4 Towing/7 Arrived pull as
+  // arrived but are never pushed (arrived pushes 3 On Scene).
+  check("lifecycle→status id mapping parity (0-5)", LIFECYCLE_TO_TOWBOOK_STATUS_ID.new === 0 && LIFECYCLE_TO_TOWBOOK_STATUS_ID.offered === 1 && LIFECYCLE_TO_TOWBOOK_STATUS_ID.accepted === 1 && LIFECYCLE_TO_TOWBOOK_STATUS_ID.en_route === 2 && LIFECYCLE_TO_TOWBOOK_STATUS_ID.arrived === 3 && LIFECYCLE_TO_TOWBOOK_STATUS_ID.completed === 5, JSON.stringify(LIFECYCLE_TO_TOWBOOK_STATUS_ID));
   check("cancelled is NOT pushable (252/255 import-only)", LIFECYCLE_TO_TOWBOOK_STATUS_ID.cancelled === undefined, JSON.stringify(LIFECYCLE_TO_TOWBOOK_STATUS_ID));
 }
 
@@ -385,9 +389,13 @@ await setup();
   check("13b: status-1 call + driver response 1 → lifecycle accepted", acc.ok && acc.job.status === "accepted", JSON.stringify(acc));
   check("13b: raw towbookStatus preserved (still 1 — no churn)", acc.ok && acc.job.towbookStatus === "1", JSON.stringify(acc));
   const off = normalizeJsonCall(callOffered(0), "status-sync.test");
-  check("13b: status-1 call + response 0 → offered (unchanged path)", off.ok && off.job.status === "offered", JSON.stringify(off));
+  check("13b: status-1 call + response 0 → accepted (Dispatched = a driver is assigned; corrected 2026-08-12)", off.ok && off.job.status === "accepted", JSON.stringify(off));
   const s2 = normalizeJsonCall({ id: 1, status: { id: 2 }, assets: [{ drivers: [{ driver: { id: 1, responseStatusId: 1 } }] }] }, "status-sync.test");
-  check("13b: status-2 call stays accepted via NORMAL mapping (override only at 1)", s2.ok && s2.job.status === "accepted" && s2.job.towbookStatus === "2", JSON.stringify(s2));
+  check("13b: status-2 call pulls as en_route (En Route; corrected 2026-08-12 — was wrongly accepted)", s2.ok && s2.job.status === "en_route" && s2.job.towbookStatus === "2", JSON.stringify(s2));
+  const s3 = normalizeJsonCall({ id: 1, status: { id: 3 } }, "status-sync.test");
+  check("13b: status-3 call pulls as arrived (On Scene; corrected 2026-08-12 — was wrongly en_route)", s3.ok && s3.job.status === "arrived", JSON.stringify(s3));
+  const s7 = normalizeJsonCall({ id: 1, status: { id: 7 } }, "status-sync.test");
+  check("13b: status-7 call pulls as arrived (Arrived at destination, in-progress)", s7.ok && s7.job.status === "arrived", JSON.stringify(s7));
   const s252 = normalizeJsonCall({ id: 1, status: { id: 252 } }, "status-sync.test");
   check("13b: 252 still maps to completed", s252.ok && s252.job.status === "completed", JSON.stringify(s252));
   const s255 = normalizeJsonCall({ id: 1, status: { id: 255 } }, "status-sync.test");
