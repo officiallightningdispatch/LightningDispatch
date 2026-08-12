@@ -4,9 +4,10 @@ import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "~/components/app-shell";
 import { DriverEmptyState, DriverToolbar, QueueSkeleton } from "~/components/driver-queue";
 import { JobFeedbackPanel } from "~/components/driver-issues";
-import { Button, Card } from "~/components/ui";
+import { Button, Card, useToast } from "~/components/ui";
 import { driverEarnings, driverLogout, type DriverEarningsResult } from "~/data/driver-auth";
 import { getMyPayoutMethod, PAYOUT_RAIL_LABELS } from "~/data/payouts";
+import { TipCashoutPanel } from "~/components/tip-cashout-ui";
 
 /**
  * /driver/earnings — R2 (spec §c item 9): Today/This-week segmented toggle,
@@ -48,6 +49,7 @@ const fmtTime = (iso: string | null): string => {
 
 function EarningsView() {
   const nav = useNavigate();
+  const toast = useToast();
   const [state, setState] = useState<DriverEarningsResult | null>(null);
   const [payoutMethod, setPayoutMethod] = useState<{ rail: string; handleMasked: string; status: string } | null>(null);
   const [loading, setLoading] = useState(true);
@@ -139,6 +141,10 @@ function EarningsView() {
               <p className="text-xs text-ink-400">{state.totals.tipCount} tip{state.totals.tipCount === 1 ? "" : "s"}</p>
             </Card>
           </div>
+
+          {/* Immediate tip cash-out (owner-directed 2026-08-12) — ONE TAP.
+              Server-computed amount; states handled in the shared panel. */}
+          <TipCashoutPanel onSubmitted={() => toast("Cash-out requested — the owner pays it from the Payments tab.")} />
 
           {/* Pay periods (feature batch 8): current open week + last closed
               week — earnings = rate × completed + tips, Mon→Sun. */}
@@ -235,10 +241,10 @@ function EarningsView() {
                     <div key={c.id} className="p-3">
                       <div className="flex items-center justify-between gap-2">
                         <div className="min-w-0">
-                          <p className="truncate text-sm font-semibold text-ink-800">
+                          <p className="text-sm font-semibold text-ink-800">
                             Call #{c.callNumber} — {c.serviceName}
                           </p>
-                          <p className="truncate text-xs text-ink-400">
+                          <p className="text-xs text-ink-400">
                             {[c.pickupAddress, c.zip].filter(Boolean).join(", ") || "Pickup"}
                             {c.customerName ? ` · ${c.customerName}` : ""}
                           </p>
@@ -276,7 +282,7 @@ function EarningsView() {
                     <div className="flex min-w-0 items-center gap-2">
                       <DollarSign className="size-4 shrink-0 text-success-600" />
                       <div className="min-w-0">
-                        <p className="truncate text-sm font-semibold text-ink-700">
+                        <p className="text-sm font-semibold text-ink-700">
                           {t.callNumber ? `Call #${t.callNumber}` : "Tip"}
                           {t.customerName ? ` — ${t.customerName}` : ""}
                         </p>

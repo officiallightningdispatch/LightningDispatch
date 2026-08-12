@@ -14,6 +14,7 @@
 import { Camera, Check, CreditCard, Loader2, PenLine, ShieldCheck, Star, TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button, useToast } from "~/components/ui";
+import { TipCashoutPanel } from "~/components/tip-cashout-ui";
 import { completeJobWithPhotos, getJobPhotoStatus, setVehicleMatch, softCompleteJob, finalCompleteJob, uploadJobPhoto } from "~/data/driver-photos";
 import type { JobPhotoStatus, PhotoPhase, PhotoSide } from "~/data/driver-photos";
 import { captureCompletion, chargeTip, declineTip, getCompletionCapture, getSquareWebPaymentsConfig, isSquareConfigured } from "~/data/completion";
@@ -378,6 +379,15 @@ export function JobPhotoFlow({ callId, jobStatus, onCompleted }: { callId: strin
               onDeclined={() => toast("No tip — noted. The job can still be completed.")}
             />
           )}
+          {/* Post-completion ONE-TAP tip cash-out (owner-directed 2026-08-12):
+              right where the tip prompt lives. Server-computed amount; every
+              state (rail missing / unverified / pending / success) is handled
+              in the shared panel. */}
+          <TipCashoutPanel
+            compact
+            refreshKey={capture?.tip?.status === "paid" ? capture.tip.amountCents : null}
+            onSubmitted={() => toast("Cash-out requested — the owner pays it from the Payments tab.")}
+          />
           <Button
             className="mt-3 w-full"
             loading={actionBusy === "complete"}

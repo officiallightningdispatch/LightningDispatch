@@ -34,9 +34,13 @@ import { formatCents } from "~/components/contractor-admin";
 import { Alert, Avatar, BoardSkeleton, Button, Card, DemoChip, EmptyState, StatCard, StatusBadge, useToast } from "~/components/ui";
 import {
   computePayday, getMoneyOverview, getPayPeriodDetail, listPayPeriods, markPayoutPaid,
-  payPeriodLabel, rejectPayoutMethod, verifyPayoutMethod, type PayPeriod, type PayPeriodDetail,
-  type PayoutRail, type PayoutRecord,
+  payPeriodLabel, rejectPayoutMethod, setBankDeposit, verifyPayoutMethod,
+  type PayPeriod, type PayPeriodDetail, type PayoutRail, type PayoutRecord,
 } from "~/data/payouts";
+import {
+  listTipCashoutRequests, markTipCashoutPaid,
+  type TipCashoutList, type TipCashoutRequest,
+} from "~/data/tip-cashout";
 import {
   chargeStaged,
   createClubCard,
@@ -87,10 +91,24 @@ function MoneyView() {
   const [rejectBusy, setRejectBusy] = useState<string | null>(null);
   const [rejectOpenFor, setRejectOpenFor] = useState<string | null>(null);
   const [rejectNote, setRejectNote] = useState("");
+  // Tip cash-outs (owner-directed 2026-08-12) — open requests + recently paid.
+  const [cashouts, setCashouts] = useState<TipCashoutList | null>(null);
+  const [markingCashoutId, setMarkingCashoutId] = useState<string | null>(null);
+  // Bank rail micro-deposit recording (blocked card) — the owner sends a small
+  // test deposit from their own bank app and records the amount here (the
+  // driver confirms it; the amount is never shown to the contractor client).
+  const [depositOpenFor, setDepositOpenFor] = useState<string | null>(null);
+  const [depositAmount, setDepositAmount] = useState("");
+  const [depositBusyFor, setDepositBusyFor] = useState<string | null>(null);
 
   const loadOverview = useCallback(async () => {
     const res = await getMoneyOverview();
     if (res.ok) setOverview(res.data);
+  }, []);
+
+  const loadCashouts = useCallback(async () => {
+    const res = await listTipCashoutRequests();
+    if (res.ok) setCashouts(res.data);
   }, []);
 
   const loadDetail = useCallback(async (periodId: string) => {
@@ -103,6 +121,7 @@ function MoneyView() {
 
   useEffect(() => {
     void loadOverview();
+    void loadCashouts();
     void listPayPeriods().then((res) => {
       if (!res.ok) { setDetailError(res.message); return; }
       setPeriods(res.data.periods);
@@ -110,7 +129,7 @@ function MoneyView() {
       setSelectedId(def);
       void loadDetail(def);
     });
-  }, [loadDetail, loadOverview]);
+  }, [loadDetail, loadOverview, loadCashouts]);
 
   const selectedPeriod = useMemo(
     () => periods?.find((p) => p.id === selectedId) ?? null,
@@ -174,6 +193,56 @@ function MoneyView() {
     void loadDetail(selectedId ?? "");
   };
 
+  /** Owner confirms they already sent the tip cash-out from their own app —
+   *  marks the request PAID (idempotent server-side). */
+  const markCashoutPaid = async (r: TipCashoutRequest) => {
+    setMarkingCashoutId(r.id);
+    const res = await markTipCashoutPaid({ data: { cashoutId: r.id } });
+    setMarkingCashoutId(null);
+    if (!res.ok) { setDetailError(res.message); return; }
+    toast(`${r.contractorName} — ${money(r.amountCents)} tip cash-out marked paid`);
+    void loadCashouts();
+    void loadOverview();
+  };
+
+  /** Bank rail micro-deposit: the owner sent a small test deposit from their
+   *  own bank app — record the amount so the contractor can confirm it. The
+   *  amount is the verification secret and never leaves this screen. */
+  const recordDeposit = async (methodId: string) => {
+    const amountCents = Number(depositAmount.replace(/\D/g, ""));
+    if (!Number.isInteger(amountCents) || amountCents < 1 || amountCents > 10000) {
+      setDetailError("Enter the test deposit amount in cents (1–10000) — e.g. 12 for $0.12.");
+      return;
+    }
+    setDepositBusyFor(methodId);
+    const res = await setBankDeposit({ data: { methodId, amountCents } });
+    setDepositBusyFor(null);
+    setDepositOpenFor(null);
+    setDepositAmount("");
+    if (!res.ok) { setDetailError(res.message); return; }
+    toast("Test deposit recorded — the contractor confirms the amount to verify the bank account.");
+  };
+
+  /** Cashed-out tip totals per contractor (PAID requests only — a requested
+   *  cash-out still owes its tips in payday). Presentation-only: the manifest
+   *  amounts already exclude covered tips; this annotates why. */
+  const cashedOutByContractor = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of cashouts?.paid ?? []) m.set(r.contractorId, (m.get(r.contractorId) ?? 0) + r.amountCents);
+    return m;
+  }, [cashouts]);
+  const cashedOutTotalCents = useMemo(
+    () => [...cashedOutByContractor.values()].reduce((s, c) => s + c, 0),
+    [cashedOutByContractor],
+  );
+  /** Presentation-only "cashed out" note for a manifest line — the tips were
+   *  already excluded server-side; this explains why to the owner. */
+  const cashedOutNote = (rec: PayoutRecord) => {
+    const c = cashedOutByContractor.get(rec.contractorId) ?? 0;
+    if (c <= 0) return null;
+    return <span className="text-info-600"> · {money(c)} cashed out (paid outside payday)</span>;
+  };
+
   const groupByRail = useMemo(() => {
     const groups = new Map<PayoutRail, PayoutRecord[]>();
     for (const rec of detail?.records ?? []) {
@@ -213,7 +282,7 @@ function MoneyView() {
           <StatCard
             label="Tips"
             value={<span className="text-success-600">{money(overview.tipsCents)}</span>}
-            detail={`${overview.tipsCount} paid tips — attributed to drivers`}
+            detail={`${overview.tipsCount} paid tips — attributed to drivers${(cashouts?.openTotalCents ?? 0) > 0 ? ` · ${money(cashouts!.openTotalCents)} in open cash-outs` : ""}`}
           />
           <StatCard
             label="Payouts due"
@@ -225,6 +294,69 @@ function MoneyView() {
             }
           />
         </div>
+
+        {/* ------------------------- tip cash-outs ------------------------- */}
+        <section aria-label="Tip cash-outs" className="space-y-3">
+          <div className="flex items-end justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="text-base font-bold text-ink-800">Tip cash-outs</h2>
+              <p className="mt-0.5 text-xs text-ink-500">
+                Drivers cash out tips with one tap — you send from your own app and mark the request paid. Cashed-out tips never appear in payday again.
+              </p>
+            </div>
+            {(cashouts?.openTotalCents ?? 0) > 0 && (
+              <span className="shrink-0 rounded-full bg-accent-100 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-accent-700">
+                {money(cashouts!.openTotalCents)} open
+              </span>
+            )}
+          </div>
+
+          {cashouts === null ? (
+            <div className="h-28 animate-pulse rounded-2xl bg-ink-100/70" aria-busy="true" />
+          ) : cashouts.open.length === 0 && cashouts.paid.length === 0 ? (
+            <EmptyState
+              icon={CircleDollarSign}
+              title="No tip cash-outs yet"
+              body="When a driver taps cash out, the request lands here — send it from your own app and mark it paid."
+            />
+          ) : (
+            <Card className="divide-y divide-ink-100">
+              {cashouts.open.map((r) => (
+                <div key={r.id} className="flex flex-wrap items-center gap-3 px-4 py-3.5">
+                  <Avatar name={r.contractorName} className="size-9" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-ink-800">{r.contractorName}</p>
+                    <p className="text-xs text-ink-400">
+                      {RAIL_LABELS[r.rail] ?? r.rail} {r.handleMasked} · {timeLabel(r.createdAt)}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-bold tabular-nums text-ink-900">{money(r.amountCents)}</p>
+                    <StatusBadge className="bg-info-100 text-info-700" dot>Requested</StatusBadge>
+                  </div>
+                  <Button variant="primary" size="md" loading={markingCashoutId === r.id} disabled={markingCashoutId !== null} onClick={() => void markCashoutPaid(r)}>
+                    Mark paid
+                  </Button>
+                </div>
+              ))}
+              {cashouts.paid.map((r) => (
+                <div key={r.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
+                  <Avatar name={r.contractorName} className="size-9" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-ink-800">{r.contractorName}</p>
+                    <p className="text-xs text-ink-400">
+                      {RAIL_LABELS[r.rail] ?? r.rail} {r.handleMasked} · paid {timeLabel(r.paidAt)}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-bold tabular-nums text-ink-500">{money(r.amountCents)}</p>
+                    <StatusBadge className="bg-success-100 text-success-700">Paid</StatusBadge>
+                  </div>
+                </div>
+              ))}
+            </Card>
+          )}
+        </section>
 
         {/* payday manifest */}
         <section aria-label="Payday manifest" className="space-y-3">
@@ -302,8 +434,8 @@ function MoneyView() {
                     <div className="flex items-center gap-3">
                       <Avatar name={rec.contractorName} className="size-9" />
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-semibold text-ink-800">{rec.contractorName}</p>
-                        <p className="truncate text-xs text-ink-400">
+                        <p className="text-sm font-semibold text-ink-800">{rec.contractorName}</p>
+                        <p className="text-xs text-ink-400">
                           {rec.rail && rec.handleFull ? (
                             <span className="font-mono">{rec.handleFull} — verified ✓</span>
                           ) : (
@@ -317,6 +449,7 @@ function MoneyView() {
                           {rec.jobCount} job{rec.jobCount === 1 ? "" : "s"}
                           {rec.payrateCents == null ? " · rate not set" : ` · ${money(rec.grossCents)}`}
                           {rec.tipsCents > 0 && <span className="text-success-600"> + {money(rec.tipsCents)} tips</span>}
+                          {cashedOutNote(rec)}
                         </p>
                       </div>
                       <Button variant="primary" size="sm" onClick={() => { setConfirmMarkId(rec.id); setMarkNote(""); }}>Mark paid</Button>
@@ -359,10 +492,11 @@ function MoneyView() {
                 <div key={rec.id} className="flex items-center gap-3 border-b border-ink-100 px-4 py-3.5 last:border-0">
                   <Avatar name={rec.contractorName} className="size-9" />
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-semibold text-ink-800">{rec.contractorName} ✓</p>
-                    <p className="truncate text-xs text-ink-400">
+                    <p className="text-sm font-semibold text-ink-800">{rec.contractorName} ✓</p>
+                    <p className="text-xs text-ink-400">
                       {rec.jobCount} job{rec.jobCount === 1 ? "" : "s"} · {money(rec.totalCents)}
                       {rec.tipsCents > 0 && <span className="text-success-600"> + {money(rec.tipsCents)} tips</span>}
+                      {cashedOutNote(rec)}
                     </p>
                   </div>
                   <p className="text-xs font-semibold text-success-600">Paid {timeLabel(rec.paidAt)}</p>
@@ -383,8 +517,8 @@ function MoneyView() {
                   <div className="flex items-center gap-3">
                     <Avatar name={rec.contractorName} className="size-9" />
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-semibold text-ink-800">{rec.contractorName}</p>
-                      <p className="truncate text-xs text-ink-400">
+                      <p className="text-sm font-semibold text-ink-800">{rec.contractorName}</p>
+                      <p className="text-xs text-ink-400">
                         {rec.methodStatus === "connected_unverified" && (
                           <span className="text-info-600">Awaiting verification{rec.rail && rec.handleFull ? ` — ${rec.handleFull}` : ""}</span>
                         )}
@@ -398,6 +532,7 @@ function MoneyView() {
                         {rec.jobCount} job{rec.jobCount === 1 ? "" : "s"}
                         {rec.payrateCents == null ? " · rate not set" : ` · ${money(rec.grossCents)}`}
                         {rec.tipsCents > 0 && <span className="text-success-600"> + {money(rec.tipsCents)} tips</span>}
+                        {cashedOutNote(rec)}
                       </p>
                     </div>
                   </div>
@@ -407,6 +542,29 @@ function MoneyView() {
                     </span>
                     {(rec.methodStatus === "connected_unverified" || rec.methodStatus === "rejected") && (
                       <>
+                        {rec.rail === "bank" && rec.methodStatus === "connected_unverified" && (
+                          <>
+                            {depositOpenFor === rec.methodId ? (
+                              <span className="flex flex-wrap items-center gap-1.5">
+                                <span className="text-[11px] text-ink-500">Sent $0.01–$1.00 from your bank app — enter the amount in cents:</span>
+                                <input
+                                  value={depositAmount}
+                                  onChange={(e) => { setDepositAmount(e.target.value.replace(/\D/g, "").slice(0, 5)); }}
+                                  placeholder="e.g. 12"
+                                  inputMode="numeric"
+                                  aria-label="Test deposit amount in cents"
+                                  className="h-10 w-24 rounded-lg border border-ink-200 bg-surface px-2 text-xs outline-none focus:border-brand-500"
+                                />
+                                <Button variant="ghost" size="sm" loading={depositBusyFor === rec.methodId} onClick={() => void recordDeposit(rec.methodId!)}>Save</Button>
+                                <Button variant="ghost" size="sm" onClick={() => { setDepositOpenFor(null); setDepositAmount(""); }}>Cancel</Button>
+                              </span>
+                            ) : (
+                              <Button variant="ghost" size="sm" onClick={() => { setDepositOpenFor(rec.methodId); setDepositAmount(""); setRejectOpenFor(null); }}>
+                                Record test deposit
+                              </Button>
+                            )}
+                          </>
+                        )}
                         <Button variant="ghost" size="sm" loading={verifyBusy === rec.id} onClick={() => void runVerify(rec)}>Verify</Button>
                         {rejectOpenFor === rec.id ? (
                           <span className="flex items-center gap-1.5">
@@ -446,6 +604,7 @@ function MoneyView() {
                 <CalendarDays className="size-3.5" />
                 {detail.totals.contractorCount} contractor{detail.totals.contractorCount === 1 ? "" : "s"} · {detail.totals.jobCount} job{detail.totals.jobCount === 1 ? "" : "s"}
                 {detail.totals.tipsCents > 0 && <span className="text-success-600"> · {money(detail.totals.tipsCents)} in tips</span>}
+                {cashedOutTotalCents > 0 && <span className="text-info-600"> · {money(cashedOutTotalCents)} cashed out directly to contractors</span>}
                 {detail.totals.blockedCount > 0 && <span className="text-danger-600"> · {detail.totals.blockedCount} blocked</span>}
               </p>
             </Card>

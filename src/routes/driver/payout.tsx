@@ -6,14 +6,30 @@
  * nothing can prove a cashtag; Plaid cannot verify handles), so this screen
  * only captures and stores the choice with a "pending owner verification"
  * state. White-label: Lightning Dispatch copy only, no Towbook mention.
+ *
+ * BANK RAIL (owner-directed 2026-08-12, Plaid DROPPED): routing + account
+ * number entry with client-side shape checks; the numbers are encrypted
+ * server-side under a dedicated key and NEVER stored/logged in plaintext or
+ * kept in localStorage. Verification = micro-deposit: the owner records a
+ * small test deposit from their own bank app, then the driver confirms the
+ * exact amount here — the amount never crosses to this client (only a
+ * bankDepositSent flag does). Verified bank shows "✓ Bank verified".
  */
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { Banknote, ChevronLeft, Landmark, Mail, Plus, Smartphone, Wallet } from "lucide-react";
+import { Banknote, ChevronLeft, Clock, Landmark, Lock, Mail, Plus, Smartphone, Wallet } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AppShell } from "~/components/app-shell";
 import { DriverToolbar } from "~/components/driver-queue";
 import { Button, Card } from "~/components/ui";
-import { getMyPayoutMethod, removeMyPayoutMethod, setMyPayoutMethod, PAYOUT_RAIL_LABELS, type MyPayoutMethod, type PayoutRail } from "~/data/payouts";
+import {
+  confirmBankDeposit,
+  getMyPayoutMethod,
+  removeMyPayoutMethod,
+  setMyPayoutMethod,
+  PAYOUT_RAIL_LABELS,
+  type MyPayoutMethod,
+  type PayoutRail,
+} from "~/data/payouts";
 
 export const Route = createFileRoute("/driver/payout")({ component: PayoutView });
 
@@ -21,7 +37,7 @@ const RAIL_OPTIONS: { rail: PayoutRail; label: string; hint: string; icon: typeo
   { rail: "cash_app", label: "Cash App", hint: "Your $cashtag", icon: Smartphone, placeholder: "$yourcashtag" },
   { rail: "venmo", label: "Venmo", hint: "@handle or phone number", icon: Smartphone, placeholder: "@yourhandle" },
   { rail: "zelle", label: "Zelle", hint: "Email or phone number", icon: Mail, placeholder: "you@example.com" },
-  { rail: "bank", label: "Bank account", hint: "Institution + last 4 digits", icon: Landmark, placeholder: "e.g. Chase, 4321" },
+  { rail: "bank", label: "Bank account", hint: "Institution + routing + account", icon: Landmark, placeholder: "e.g. Chase" },
 ];
 
 function PayoutView() {
@@ -31,9 +47,15 @@ function PayoutView() {
   const [rail, setRail] = useState<PayoutRail>("cash_app");
   const [handle, setHandle] = useState("");
   const [bankName, setBankName] = useState("");
-  const [bankLast4, setBankLast4] = useState("");
+  const [bankRouting, setBankRouting] = useState("");
+  const [bankAccount, setBankAccount] = useState("");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  // Micro-deposit confirmation (bank rail): the amount the driver received.
+  const [depositInput, setDepositInput] = useState("");
+  const [depositBusy, setDepositBusy] = useState(false);
+  const [depositError, setDepositError] = useState("");
 
   const load = async () => {
     const res = await getMyPayoutMethod();
@@ -45,19 +67,33 @@ function PayoutView() {
   const startEdit = () => {
     setRail(method?.rail ?? "cash_app");
     setBankName(method?.bankInstitutionName ?? "");
-    setBankLast4(method?.bankLast4 ?? "");
+    setBankRouting("");
+    setBankAccount("");
     setHandle("");
     setEditing(true);
     setMessage(null);
+    setDepositError("");
   };
   const save = async () => {
     setSaving(true);
     setMessage(null);
-    const res = await setMyPayoutMethod({
-      data: rail === "bank"
-        ? { rail, bankInstitutionName: bankName, bankLast4 }
-        : { rail, handle },
-    });
+    if (rail === "bank") {
+      const routing = bankRouting.replace(/\D/g, "");
+      const account = bankAccount.replace(/\D/g, "");
+      if (!bankName.trim()) { setSaving(false); setMessage({ kind: "err", text: "Enter the bank name." }); return; }
+      if (!/^\d{9}$/.test(routing)) { setSaving(false); setMessage({ kind: "err", text: "Routing numbers are 9 digits — check the number on your checks or bank statement." }); return; }
+      if (!/^\d{4,17}$/.test(account)) { setSaving(false); setMessage({ kind: "err", text: "Enter the full account number (4–17 digits). It's stored encrypted — only the owner can see it." }); return; }
+      const res = await setMyPayoutMethod({
+        data: { rail, bankInstitutionName: bankName.trim(), bankLast4: account.slice(-4), bankRoutingNumber: routing, bankAccountNumber: account },
+      });
+      setSaving(false);
+      if (!res.ok) { setMessage({ kind: "err", text: res.message }); return; }
+      setMethod(res.data);
+      setEditing(false);
+      setMessage({ kind: "ok", text: "Bank details saved. The owner verifies payouts outside the app — bank accounts are verified with a small test deposit." });
+      return;
+    }
+    const res = await setMyPayoutMethod({ data: { rail, handle } });
     setSaving(false);
     if (!res.ok) { setMessage({ kind: "err", text: res.message }); return; }
     setMethod(res.data);
@@ -69,9 +105,32 @@ function PayoutView() {
     setMethod(null);
     setEditing(false);
     setMessage(null);
+    setDepositError("");
+  };
+
+  /** Confirm the micro-deposit amount the owner recorded (bank rail). The
+   *  amount is compared server-side — it never crossed to this client. */
+  const confirmDeposit = async () => {
+    const amountCents = Number(depositInput.replace(/\D/g, ""));
+    if (!Number.isInteger(amountCents) || amountCents < 1 || amountCents > 10000) {
+      setDepositError("Enter the deposit amount in cents — e.g. 12 for $0.12.");
+      return;
+    }
+    setDepositBusy(true);
+    setDepositError("");
+    const res = await confirmBankDeposit({ data: { amountCents } });
+    setDepositBusy(false);
+    if (!res.ok) {
+      setDepositError(res.message || "That didn't match — check the amount in your bank account and try again.");
+    } else if (res.data) {
+      setMethod(res.data);
+      setDepositInput("");
+      setMessage({ kind: "ok", text: "Bank verified ✓ — tips and payday can now go to this account." });
+    }
   };
 
   const railLabel = method ? PAYOUT_RAIL_LABELS[method.rail] : null;
+  const isBank = method?.rail === "bank";
 
   return (
     <AppShell portal="driver" title="Payout method" description="How you get paid — Cash App, Venmo, Zelle or bank.">
@@ -99,10 +158,43 @@ function PayoutView() {
                 <p className={`mt-3 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${
                   method.status === "verified" ? "bg-success-50 text-success-700" : method.status === "rejected" ? "bg-danger-50 text-danger-600" : "bg-info-50 text-info-700"
                 }`}>
-                  {method.status === "verified" ? "✓ Verified by owner"
+                  {method.status === "verified"
+                    ? isBank ? "✓ Bank verified" : "✓ Verified by owner"
                     : method.status === "rejected" ? `Rejected — ${method.rejectNote ?? "contact the owner"}`
                     : "Pending owner verification — usually the same day"}
                 </p>
+
+                {/* Bank rail micro-deposit flow (never shows the amount). */}
+                {isBank && method.status === "connected_unverified" && (
+                  <div className="mt-3 rounded-xl border border-info-100 bg-info-50/60 p-3">
+                    {method.bankDepositSent ? (
+                      <>
+                        <p className="flex items-start gap-1.5 text-xs font-semibold leading-snug text-ink-700">
+                          <Banknote className="mt-0.5 size-3.5 shrink-0 text-info-600" />
+                          The owner sent a test deposit — enter the exact amount in cents to verify this bank account.
+                        </p>
+                        <div className="mt-2 flex gap-2">
+                          <input
+                            value={depositInput}
+                            onChange={(e) => { setDepositInput(e.target.value.replace(/\D/g, "").slice(0, 5)); setDepositError(""); }}
+                            placeholder="e.g. 12 = $0.12"
+                            inputMode="numeric"
+                            aria-label="Test deposit amount in cents"
+                            className="h-11 w-full min-w-0 flex-1 rounded-xl border border-ink-200 bg-surface px-3 text-sm outline-none focus:border-brand-500"
+                          />
+                          <Button size="md" loading={depositBusy} onClick={() => void confirmDeposit()}>Verify bank</Button>
+                        </div>
+                        {depositError && <p role="alert" className="mt-1.5 text-xs font-medium leading-snug text-danger-600">{depositError}</p>}
+                      </>
+                    ) : (
+                      <p className="flex items-start gap-1.5 text-xs font-semibold leading-snug text-info-700">
+                        <Clock className="mt-0.5 size-3.5 shrink-0" />
+                        Waiting for the owner&apos;s test deposit — once they send it, confirm the amount here to verify this bank account.
+                      </p>
+                    )}
+                  </div>
+                )}
+
                 <div className="mt-4 flex gap-2">
                   <Button variant="primary" size="sm" className="flex-1" onClick={startEdit}>Change method</Button>
                   <Button variant="ghost" size="sm" className="flex-1" onClick={() => void remove()}>Remove</Button>
@@ -115,7 +207,7 @@ function PayoutView() {
                 <span className="mx-auto grid size-14 place-items-center rounded-2xl bg-brand-50 text-brand-600"><Banknote className="size-7" /></span>
                 <h2 className="mt-3 text-base font-bold text-ink-800">Add a payout method</h2>
                 <p className="mt-1 text-sm leading-relaxed text-ink-500">
-                  Pick where you want weekly paydays sent. You&apos;ll see your earnings on the Earnings tab —
+                  Pick where you want weekly paydays and tip cash-outs sent. You&apos;ll see your earnings on the Earnings tab —
                   the owner verifies your payout details before your first payment.
                 </p>
                 <Button variant="primary" size="sm" className="mt-4 w-full" onClick={startEdit}><Plus className="size-4" /> Add payout method</Button>
@@ -149,11 +241,43 @@ function PayoutView() {
                     <>
                       <label className="block">
                         <span className="mb-1 block text-xs font-semibold text-ink-600">Bank name</span>
-                        <input value={bankName} onChange={(e) => setBankName(e.target.value)} placeholder="e.g. Chase" className="h-11 w-full rounded-xl border border-ink-200 bg-surface px-3 text-sm outline-none focus:border-brand-500" />
+                        <input
+                          value={bankName}
+                          onChange={(e) => setBankName(e.target.value)}
+                          placeholder="e.g. Chase"
+                          autoComplete="organization"
+                          className="h-11 w-full rounded-xl border border-ink-200 bg-surface px-3 text-sm outline-none focus:border-brand-500"
+                        />
                       </label>
                       <label className="block">
-                        <span className="mb-1 block text-xs font-semibold text-ink-600">Last 4 digits of the account</span>
-                        <input value={bankLast4} onChange={(e) => setBankLast4(e.target.value.replace(/\D/g, "").slice(0, 4))} placeholder="4321" inputMode="numeric" maxLength={4} className="h-11 w-full rounded-xl border border-ink-200 bg-surface px-3 text-sm outline-none focus:border-brand-500" />
+                        <span className="mb-1 block text-xs font-semibold text-ink-600">Routing number</span>
+                        <input
+                          value={bankRouting}
+                          onChange={(e) => setBankRouting(e.target.value.replace(/\D/g, "").slice(0, 9))}
+                          placeholder="9 digits — on your checks or bank statement"
+                          inputMode="numeric"
+                          autoComplete="off"
+                          maxLength={9}
+                          className="h-11 w-full rounded-xl border border-ink-200 bg-surface px-3 text-sm outline-none focus:border-brand-500"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-xs font-semibold text-ink-600">Account number</span>
+                        <input
+                          value={bankAccount}
+                          onChange={(e) => setBankAccount(e.target.value.replace(/\D/g, "").slice(0, 17))}
+                          placeholder="Full account number"
+                          inputMode="numeric"
+                          autoComplete="off"
+                          maxLength={17}
+                          className="h-11 w-full rounded-xl border border-ink-200 bg-surface px-3 text-sm outline-none focus:border-brand-500"
+                        />
+                        <span className="mt-1.5 flex items-start gap-1 text-[11px] leading-relaxed text-ink-400">
+                          <Lock className="mt-0.5 size-3 shrink-0" />
+                          {bankAccount.replace(/\D/g, "").length >= 4
+                            ? `Account •••• ${bankAccount.replace(/\D/g, "").slice(-4)} — stored encrypted, only the owner can see it.`
+                            : "Stored encrypted (AES-256) — only the owner can ever see the full number."}
+                        </span>
                       </label>
                     </>
                   ) : (
@@ -181,6 +305,7 @@ function PayoutView() {
                 <li>• Paydays land Wednesday morning after the period closes.</li>
                 <li>• You earn your per-job rate for every completed job, plus any tips.</li>
                 <li>• The owner sends your pay from their own account to the verified handle you set here.</li>
+                <li>• Bank accounts are verified with a small test deposit — the owner sends it, you confirm the amount here.</li>
               </ul>
             </Card>
 
