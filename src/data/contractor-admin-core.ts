@@ -539,7 +539,18 @@ export type ContractorDetailRow = {
   createdAt: string | null;
   removedAt: string | null;
   phone: string | null;
+  address: string | null;
   vehicleDesc: string | null;
+  /** Structured vehicle (v2 — LD-only, net-new; Towbook has no vehicle data). */
+  vehicle: ContractorVehicle;
+  /** Weekly availability template + who owns it (v2). Empty schedule = no
+   *  limit. ownerOverride=TRUE ⇒ the owner took over editing (driver edits
+   *  stop applying). */
+  schedule: ContractorScheduleRow;
+  /** Docs expiring within 14 days (expires_on in [today, today+14]) — the
+   *  ExpiryChip + roster "Expiring soon" filter data. Seroval-safe. */
+  docsExpiringSoon: { docTypeName: string; expiresOn: string; docId: string | null }[];
+  docsExpiringSoonCount: number;
   payrateCents: number | null;
   requiredDocCount: number;
   onFileDocCount: number;
@@ -570,7 +581,8 @@ export async function getContractorDetailCore(actor: ContractorAdminActor, data:
     await ensure();
     const q = await db();
     const rows = await q`SELECT u.id, u.name, u.email, u.login_handle, u.towbook_driver_id, u.towbook_user_id, u.created_at, u.deactivated_at,
-        cp.phone, cp.vehicle_desc, cp.payrate_cents,
+        cp.phone, cp.vehicle_desc, cp.address, cp.vehicle_type, cp.vehicle_make, cp.vehicle_model, cp.vehicle_year, cp.vehicle_plate, cp.vehicle_plate_state, cp.vehicle_color, cp.payrate_cents,
+        cs.schedule, cs.source, cs.owner_override, cs.updated_at AS schedule_updated_at,
         ts.session_updated_at, ls.last_login, dl.last_ping,
         (SELECT COUNT(*)::int FROM contractor_doc_types t WHERE t.org_id = ${actor.orgId} AND t.active) AS required_doc_count,
         (SELECT COUNT(*)::int FROM contractor_documents d
@@ -587,6 +599,7 @@ export async function getContractorDetailCore(actor: ContractorAdminActor, data:
       FROM users u
       JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND m.role = 'contractor'
       LEFT JOIN contractor_profiles cp ON cp.org_id = ${actor.orgId} AND cp.user_id = u.id
+      LEFT JOIN contractor_schedules cs ON cs.org_id = ${actor.orgId} AND cs.user_id = u.id
       LEFT JOIN LATERAL (
         SELECT MAX(updated_at) AS session_updated_at
         FROM towbook_sessions ts
@@ -605,6 +618,16 @@ export async function getContractorDetailCore(actor: ContractorAdminActor, data:
       WHERE u.id = ${v.data.contractorId} LIMIT 1`;
     if (!rows.length) return err("not_found", "That contractor isn't on this account.");
     const r = rows[0] as Record<string, unknown>;
+    const expiring = await q`SELECT d.id AS doc_id, t.name AS doc_type_name, d.expires_on
+      FROM contractor_documents d JOIN contractor_doc_types t ON t.id = d.doc_type_id AND t.active
+      WHERE d.org_id=${actor.orgId} AND d.contractor_id=${v.data.contractorId}
+        AND d.expires_on >= CURRENT_DATE AND d.expires_on <= CURRENT_DATE + INTERVAL '14 days'
+      ORDER BY d.expires_on ASC`;
+    const docsExpiringSoon = (expiring as Record<string, unknown>[]).map((e) => ({
+      docTypeName: String(e.doc_type_name ?? ""),
+      expiresOn: formatYmd(e.expires_on) ?? "",
+      docId: e.doc_id != null ? String(e.doc_id) : null,
+    }));
     const lastPing = r.last_ping != null ? new Date(String(r.last_ping)) : null;
     const sessionAt = r.session_updated_at != null ? new Date(String(r.session_updated_at)) : null;
     const loginAt = r.last_login != null ? new Date(String(r.last_login)) : null;
@@ -626,7 +649,20 @@ export async function getContractorDetailCore(actor: ContractorAdminActor, data:
       createdAt: r.created_at != null ? new Date(String(r.created_at)).toISOString() : null,
       removedAt: r.deactivated_at != null ? new Date(String(r.deactivated_at)).toISOString() : null,
       phone: r.phone != null ? String(r.phone) : null,
+      address: r.address != null ? String(r.address) : null,
       vehicleDesc: r.vehicle_desc != null ? String(r.vehicle_desc) : null,
+      vehicle: {
+        type: r.vehicle_type != null ? String(r.vehicle_type) : null,
+        make: r.vehicle_make != null ? String(r.vehicle_make) : null,
+        model: r.vehicle_model != null ? String(r.vehicle_model) : null,
+        year: r.vehicle_year != null ? Number(r.vehicle_year) : null,
+        plate: r.vehicle_plate != null ? String(r.vehicle_plate) : null,
+        plateState: r.vehicle_plate_state != null ? String(r.vehicle_plate_state) : null,
+        color: r.vehicle_color != null ? String(r.vehicle_color) : null,
+      },
+      schedule: rowToSchedule({ schedule: r.schedule, source: r.source, owner_override: r.owner_override, updated_at: r.schedule_updated_at }),
+      docsExpiringSoon,
+      docsExpiringSoonCount: docsExpiringSoon.length,
       payrateCents: payrate,
       requiredDocCount: r.required_doc_count != null ? Number(r.required_doc_count) : 0,
       onFileDocCount: r.on_file_doc_count != null ? Number(r.on_file_doc_count) : 0,
@@ -642,12 +678,13 @@ const CONTACT_SCHEMA = z.object({
   contractorId: z.string().trim().min(1).max(128),
   phone: z.string().trim().max(40, "Keep the phone number under 40 characters.").optional().or(z.literal("")),
   vehicleDesc: z.string().trim().max(200, "Keep the vehicle description under 200 characters.").optional().or(z.literal("")),
+  address: z.string().trim().max(200, "Keep the address under 200 characters.").optional().or(z.literal("")),
 });
 
-export type ContractorContactResult = { contractorId: string; phone: string | null; vehicleDesc: string | null };
+export type ContractorContactResult = { contractorId: string; phone: string | null; vehicleDesc: string | null; address: string | null };
 
-/** Update the LD-only contact fields (phone + vehicle description) on the
- *  contractor's operational profile. These are Lightning-Dispatch-only — never
+/** Update the LD-only contact fields (phone + vehicle description + address) on
+ *  the contractor's operational profile. These are Lightning-Dispatch-only — never
  *  pushed to Towbook (Towbook's driver-editor phone/vehicle surface is
  *  unverified territory). Upsert + audited ('contractor_contact_updated'). */
 export async function setContractorContactCore(actor: ContractorAdminActor, data: unknown): Promise<ContractorAdminResult<ContractorContactResult>> {
@@ -656,25 +693,291 @@ export async function setContractorContactCore(actor: ContractorAdminActor, data
   if (!v.success) return err("invalid_input", v.error.issues[0]?.message ?? "Invalid contact details.");
   const phone = v.data.phone && v.data.phone.trim() ? v.data.phone.trim() : null;
   const vehicleDesc = v.data.vehicleDesc && v.data.vehicleDesc.trim() ? v.data.vehicleDesc.trim() : null;
+  const address = v.data.address && v.data.address.trim() ? v.data.address.trim() : null;
   try {
     await ensure();
     const q = await db();
     const member = await q`SELECT 1 FROM organization_memberships m WHERE m.org_id=${actor.orgId} AND m.user_id=${v.data.contractorId} AND m.role='contractor' LIMIT 1`;
     if (!member.length) return err("not_found", "That contractor isn't on this account.");
-    const before = await q`SELECT phone, vehicle_desc FROM contractor_profiles WHERE org_id=${actor.orgId} AND user_id=${v.data.contractorId} LIMIT 1`;
-    await q`INSERT INTO contractor_profiles(org_id, user_id, payrate_cents, phone, vehicle_desc, updated_at)
-      VALUES(${actor.orgId}, ${v.data.contractorId}, NULL, ${phone}, ${vehicleDesc}, NOW())
-      ON CONFLICT (org_id, user_id) DO UPDATE SET phone=EXCLUDED.phone, vehicle_desc=EXCLUDED.vehicle_desc, updated_at=NOW()`;
+    const before = await q`SELECT phone, vehicle_desc, address FROM contractor_profiles WHERE org_id=${actor.orgId} AND user_id=${v.data.contractorId} LIMIT 1`;
+    await q`INSERT INTO contractor_profiles(org_id, user_id, payrate_cents, phone, vehicle_desc, address, updated_at)
+      VALUES(${actor.orgId}, ${v.data.contractorId}, NULL, ${phone}, ${vehicleDesc}, ${address}, NOW())
+      ON CONFLICT (org_id, user_id) DO UPDATE SET phone=EXCLUDED.phone, vehicle_desc=EXCLUDED.vehicle_desc, address=EXCLUDED.address, updated_at=NOW()`;
     await recordAudit(actor, "contractor_contact_updated", v.data.contractorId, {
       from: {
         phone: before.length ? (before[0].phone != null ? String(before[0].phone) : null) : null,
         vehicleDesc: before.length ? (before[0].vehicle_desc != null ? String(before[0].vehicle_desc) : null) : null,
+        address: before.length ? (before[0].address != null ? String(before[0].address) : null) : null,
       },
-      to: { phone, vehicleDesc },
+      to: { phone, vehicleDesc, address },
     });
-    return ok({ contractorId: v.data.contractorId, phone, vehicleDesc });
+    return ok({ contractorId: v.data.contractorId, phone, vehicleDesc, address });
   } catch (e) {
     return err("database_error", e instanceof Error ? e.message : "Unable to save the contact details.");
+  }
+}
+
+/* --------------------- structured vehicle + weekly schedule (v2) --------------------- */
+
+/** Structured vehicle (contractor-management-spec §3.2) — net-new LD-only
+ *  columns on contractor_profiles; Towbook has no vehicle data (trucks.json =
+ *  id/name/type-code/duty only), so nothing is imported. vehicle_type is the
+ *  future AI-dispatcher capability-routing target. Seroval-safe (nulls). */
+export type ContractorVehicle = {
+  type: string | null;
+  make: string | null;
+  model: string | null;
+  year: number | null;
+  plate: string | null;
+  plateState: string | null;
+  color: string | null;
+};
+
+/** One weekly-availability entry — day 1 = Monday … 7 = Sunday, 24h "HH:MM"
+ *  start/end (start < end). Repeating template, not date-specific shifts. */
+export type ScheduleDay = { day: number; start: string; end: string };
+
+/** The (org, contractor) schedule row — contractor-declared by default (owner
+ *  decision B 2026-08-12: declared schedule = commitment, GO/Offline = reality);
+ *  the owner can OVERRIDE (source='owner' + owner_override=TRUE), after which
+ *  driver edits stop applying until the driver declares again. */
+export type ContractorScheduleRow = {
+  schedule: ScheduleDay[];
+  source: "owner" | "contractor";
+  ownerOverride: boolean;
+  updatedAt: string | null;
+};
+
+const VEHICLE_TYPE_OPTIONS = ["Flatbed", "Wheel-lift", "Integrated", "Landoll", "Other"] as const;
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/** "2019 Ford F-350 · Flatbed · CT ABC-123" — non-empty structured fields
+ *  joined with " · "; null when nothing is set (the legacy vehicle_desc is then
+ *  kept as-is on save). */
+export function vehicleDisplayString(v: ContractorVehicle): string | null {
+  const parts = [
+    [v.year, v.make, v.model].filter((x): x is string | number => x != null && String(x).trim() !== "").map((x) => String(x).trim()).join(" "),
+    v.type,
+    [v.plateState, v.plate].filter((x): x is string => x != null && x.trim() !== "").map((x) => x.trim()).join(" "),
+  ].map((s) => (s ?? "").trim()).filter((s) => s !== "");
+  return parts.length ? parts.join(" · ") : null;
+}
+
+const VEHICLE_SCHEMA = z.object({
+  contractorId: z.string().trim().min(1).max(128),
+  type: z.enum(VEHICLE_TYPE_OPTIONS).nullable().optional().or(z.literal("").transform(() => null as string | null)),
+  make: z.string().trim().max(60).nullable().optional().or(z.literal("").transform(() => null as string | null)),
+  model: z.string().trim().max(60).nullable().optional().or(z.literal("").transform(() => null as string | null)),
+  year: z.number().int().min(1980).max(new Date().getFullYear() + 1).nullable().optional(),
+  plate: z.string().trim().toUpperCase().max(20).nullable().optional().or(z.literal("").transform(() => null as string | null)),
+  plateState: z.string().trim().toUpperCase().max(2).nullable().optional().or(z.literal("").transform(() => null as string | null)),
+  color: z.string().trim().max(30).nullable().optional().or(z.literal("").transform(() => null as string | null)),
+});
+
+export type ContractorVehicleResult = { contractorId: string; vehicle: ContractorVehicle; vehicleDesc: string | null };
+
+/** Save the contractor's structured vehicle. Upserts contractor_profiles;
+ *  when ANY structured field is set, vehicle_desc is overwritten with the
+ *  generated display string (keeps legacy consumers non-null); when all fields
+ *  are empty, vehicle_desc is left untouched. Audited ('contractor_vehicle_updated'
+ *  with from/to). LD-only — never pushed to Towbook. */
+export async function setContractorVehicleCore(actor: ContractorAdminActor, data: unknown): Promise<ContractorAdminResult<ContractorVehicleResult>> {
+  if (!canManage(actor)) return err("unauthorized", "Owner access required.");
+  const v = VEHICLE_SCHEMA.safeParse(data);
+  if (!v.success) return err("invalid_input", v.error.issues[0]?.message ?? "Invalid vehicle details.");
+  const vehicle: ContractorVehicle = {
+    type: v.data.type ?? null,
+    make: v.data.make ?? null,
+    model: v.data.model ?? null,
+    year: v.data.year ?? null,
+    plate: v.data.plate ?? null,
+    plateState: v.data.plateState ?? null,
+    color: v.data.color ?? null,
+  };
+  try {
+    await ensure();
+    const q = await db();
+    const member = await q`SELECT 1 FROM organization_memberships m WHERE m.org_id=${actor.orgId} AND m.user_id=${v.data.contractorId} AND m.role='contractor' LIMIT 1`;
+    if (!member.length) return err("not_found", "That contractor isn't on this account.");
+    const before = await q`SELECT vehicle_type, vehicle_make, vehicle_model, vehicle_year, vehicle_plate, vehicle_plate_state, vehicle_color, vehicle_desc
+      FROM contractor_profiles WHERE org_id=${actor.orgId} AND user_id=${v.data.contractorId} LIMIT 1`;
+    const from: ContractorVehicle = {
+      type: before.length && before[0].vehicle_type != null ? String(before[0].vehicle_type) : null,
+      make: before.length && before[0].vehicle_make != null ? String(before[0].vehicle_make) : null,
+      model: before.length && before[0].vehicle_model != null ? String(before[0].vehicle_model) : null,
+      year: before.length && before[0].vehicle_year != null ? Number(before[0].vehicle_year) : null,
+      plate: before.length && before[0].vehicle_plate != null ? String(before[0].vehicle_plate) : null,
+      plateState: before.length && before[0].vehicle_plate_state != null ? String(before[0].vehicle_plate_state) : null,
+      color: before.length && before[0].vehicle_color != null ? String(before[0].vehicle_color) : null,
+    };
+    const display = vehicleDisplayString(vehicle);
+    const legacyDesc = before.length && before[0].vehicle_desc != null ? String(before[0].vehicle_desc) : null;
+    const vehicleDesc = display ?? legacyDesc;
+    await q`INSERT INTO contractor_profiles(org_id, user_id, payrate_cents, vehicle_type, vehicle_make, vehicle_model, vehicle_year, vehicle_plate, vehicle_plate_state, vehicle_color, vehicle_desc, updated_at)
+      VALUES(${actor.orgId}, ${v.data.contractorId}, NULL, ${vehicle.type}, ${vehicle.make}, ${vehicle.model}, ${vehicle.year}, ${vehicle.plate}, ${vehicle.plateState}, ${vehicle.color}, ${vehicleDesc}, NOW())
+      ON CONFLICT (org_id, user_id) DO UPDATE SET
+        vehicle_type=EXCLUDED.vehicle_type, vehicle_make=EXCLUDED.vehicle_make, vehicle_model=EXCLUDED.vehicle_model,
+        vehicle_year=EXCLUDED.vehicle_year, vehicle_plate=EXCLUDED.vehicle_plate, vehicle_plate_state=EXCLUDED.vehicle_plate_state,
+        vehicle_color=EXCLUDED.vehicle_color, vehicle_desc=EXCLUDED.vehicle_desc, updated_at=NOW()`;
+    await recordAudit(actor, "contractor_vehicle_updated", v.data.contractorId, { from, to: vehicle, vehicleDesc });
+    return ok({ contractorId: v.data.contractorId, vehicle, vehicleDesc });
+  } catch (e) {
+    return err("database_error", e instanceof Error ? e.message : "Unable to save the vehicle.");
+  }
+}
+
+const SCHEDULE_SCHEMA = z.object({
+  contractorId: z.string().trim().min(1).max(128),
+  schedule: z.array(z.object({
+    day: z.number().int().min(1).max(7),
+    start: z.string().regex(TIME_RE, "Use 24-hour times like 08:00."),
+    end: z.string().regex(TIME_RE, "Use 24-hour times like 17:00."),
+  })).max(28),
+});
+
+function parseSchedule(data: unknown): { contractorId: string; schedule: ScheduleDay[] } | { error: string } {
+  const v = SCHEDULE_SCHEMA.safeParse(data);
+  if (!v.success) return { error: v.error.issues[0]?.message ?? "Invalid schedule." };
+  const seen = new Set<number>();
+  for (const d of v.data.schedule) {
+    if (seen.has(d.day)) return { error: "Each day can only appear once." };
+    seen.add(d.day);
+    if (d.start >= d.end) return { error: `Start time must come before the end time on day ${d.day}.` };
+  }
+  return { contractorId: v.data.contractorId, schedule: v.data.schedule.map((d) => ({ day: d.day, start: d.start, end: d.end })) };
+}
+
+/** Owner/admin: read one contractor's weekly schedule (+ who owns it). */
+export async function getContractorScheduleCore(actor: ContractorAdminActor, data: unknown): Promise<ContractorAdminResult<ContractorScheduleRow>> {
+  if (!canManage(actor)) return err("unauthorized", "Owner access required.");
+  const v = z.object({ contractorId: z.string().trim().min(1).max(128) }).safeParse(data);
+  if (!v.success) return err("invalid_input", "Invalid contractor.");
+  try {
+    await ensure();
+    const q = await db();
+    const member = await q`SELECT 1 FROM organization_memberships m WHERE m.org_id=${actor.orgId} AND m.user_id=${v.data.contractorId} AND m.role='contractor' LIMIT 1`;
+    if (!member.length) return err("not_found", "That contractor isn't on this account.");
+    const rows = await q`SELECT schedule, source, owner_override, updated_at FROM contractor_schedules
+      WHERE org_id=${actor.orgId} AND user_id=${v.data.contractorId} LIMIT 1`;
+    return ok(rowToSchedule(rows[0] as Record<string, unknown> | undefined));
+  } catch (e) {
+    return err("database_error", e instanceof Error ? e.message : "Unable to load the schedule.");
+  }
+}
+
+function rowToSchedule(r: Record<string, unknown> | undefined): ContractorScheduleRow {
+  if (!r) return { schedule: [], source: "contractor", ownerOverride: false, updatedAt: null };
+  let schedule: ScheduleDay[] = [];
+  const raw = r.schedule;
+  if (Array.isArray(raw)) {
+    schedule = raw.filter((d): d is ScheduleDay =>
+      Boolean(d && typeof d === "object" && (d as Record<string, unknown>).day != null
+        && typeof (d as Record<string, unknown>).start === "string" && typeof (d as Record<string, unknown>).end === "string"));
+  }
+  return {
+    schedule,
+    source: String(r.source ?? "contractor") === "owner" ? "owner" : "contractor",
+    ownerOverride: r.owner_override === true,
+    updatedAt: r.updated_at != null ? new Date(String(r.updated_at)).toISOString() : null,
+  };
+}
+
+/** Owner/admin: set (or clear) a contractor's schedule. Taking over ownership:
+ *  source='owner' + owner_override=TRUE — the driver's declared availability is
+ *  replaced and driver-side edits stop applying. Audited
+ *  ('contractor_schedule_set' first time, 'contractor_schedule_override' when
+ *  taking over / replacing). */
+export async function setContractorScheduleCore(actor: ContractorAdminActor, data: unknown): Promise<ContractorAdminResult<ContractorScheduleRow>> {
+  if (!canManage(actor)) return err("unauthorized", "Owner access required.");
+  const parsed = parseSchedule(data);
+  if ("error" in parsed) return err("invalid_input", parsed.error);
+  try {
+    await ensure();
+    const q = await db();
+    const member = await q`SELECT 1 FROM organization_memberships m WHERE m.org_id=${actor.orgId} AND m.user_id=${parsed.contractorId} AND m.role='contractor' LIMIT 1`;
+    if (!member.length) return err("not_found", "That contractor isn't on this account.");
+    const before = await q`SELECT source, owner_override FROM contractor_schedules
+      WHERE org_id=${actor.orgId} AND user_id=${parsed.contractorId} LIMIT 1`;
+    const wasOverride = before.length > 0 && before[0].owner_override === true;
+    const scheduleJson = JSON.stringify(parsed.schedule);
+    await q`INSERT INTO contractor_schedules(org_id, user_id, schedule, source, owner_override, updated_by_user_id, updated_at)
+      VALUES(${actor.orgId}, ${parsed.contractorId}, ${scheduleJson}::jsonb, 'owner', TRUE, ${actor.id}, NOW())
+      ON CONFLICT (org_id, user_id) DO UPDATE SET
+        schedule=EXCLUDED.schedule, source='owner', owner_override=TRUE,
+        updated_by_user_id=EXCLUDED.updated_by_user_id, updated_at=NOW()`;
+    await recordAudit(actor, wasOverride ? "contractor_schedule_override" : "contractor_schedule_set", parsed.contractorId, {
+      schedule: parsed.schedule,
+      source: "owner",
+      ownerOverride: true,
+    });
+    return ok({ schedule: parsed.schedule, source: "owner", ownerOverride: true, updatedAt: new Date().toISOString() });
+  } catch (e) {
+    return err("database_error", e instanceof Error ? e.message : "Unable to save the schedule.");
+  }
+}
+
+const MY_SCHEDULE_SCHEMA = z.object({
+  schedule: z.array(z.object({
+    day: z.number().int().min(1).max(7),
+    start: z.string().regex(TIME_RE, "Use 24-hour times like 08:00."),
+    end: z.string().regex(TIME_RE, "Use 24-hour times like 17:00."),
+  })).max(28),
+});
+
+/** The acting driver's own schedule — the actor's id IS the effective driver's
+ *  row id (resolveContractorActor resolves through the view-toggle resolver, so
+ *  an owner in driver view manages their own contractor identity's schedule). */
+export async function getMyScheduleCore(actor: ContractorAdminActor): Promise<ContractorAdminResult<ContractorScheduleRow>> {
+  if (actor.role !== "contractor") return err("unauthorized", "Driver access required.");
+  try {
+    await ensure();
+    const q = await db();
+    const rows = await q`SELECT schedule, source, owner_override, updated_at FROM contractor_schedules
+      WHERE org_id=${actor.orgId} AND user_id=${actor.id} LIMIT 1`;
+    return ok(rowToSchedule(rows[0] as Record<string, unknown> | undefined));
+  } catch (e) {
+    return err("database_error", e instanceof Error ? e.message : "Unable to load your schedule.");
+  }
+}
+
+/** The acting driver declares their own weekly availability (source='contractor',
+ *  owner_override=FALSE). Refused while the owner has OVERRIDDEN the schedule —
+ *  the driver sees "Set by owner" and can't silently replace it; clearing the
+ *  override happens here: a driver save while overridden is REJECTED (the owner
+ *  must clear it, or the driver's next declaration after the owner clears it
+ *  applies). Audited ('contractor_schedule_set'). */
+export async function setMyScheduleCore(actor: ContractorAdminActor, data: unknown): Promise<ContractorAdminResult<ContractorScheduleRow>> {
+  if (actor.role !== "contractor") return err("unauthorized", "Driver access required.");
+  const v = MY_SCHEDULE_SCHEMA.safeParse(data);
+  if (!v.success) return err("invalid_input", v.error.issues[0]?.message ?? "Invalid schedule.");
+  const seen = new Set<number>();
+  for (const d of v.data.schedule) {
+    if (seen.has(d.day)) return err("invalid_input", "Each day can only appear once.");
+    seen.add(d.day);
+    if (d.start >= d.end) return err("invalid_input", "Start time must come before the end time.");
+  }
+  try {
+    await ensure();
+    const q = await db();
+    const existing = await q`SELECT owner_override FROM contractor_schedules
+      WHERE org_id=${actor.orgId} AND user_id=${actor.id} LIMIT 1`;
+    if (existing.length > 0 && existing[0].owner_override === true) {
+      return err("invalid_input", "Your schedule is set by the owner right now — reach out to dispatch if your availability changed.");
+    }
+    const scheduleJson = JSON.stringify(v.data.schedule);
+    await q`INSERT INTO contractor_schedules(org_id, user_id, schedule, source, owner_override, updated_by_user_id, updated_at)
+      VALUES(${actor.orgId}, ${actor.id}, ${scheduleJson}::jsonb, 'contractor', FALSE, ${actor.id}, NOW())
+      ON CONFLICT (org_id, user_id) DO UPDATE SET
+        schedule=EXCLUDED.schedule, source='contractor', owner_override=FALSE,
+        updated_by_user_id=EXCLUDED.updated_by_user_id, updated_at=NOW()`;
+    await recordAudit(actor, "contractor_schedule_set", actor.id, {
+      schedule: v.data.schedule,
+      source: "contractor",
+      ownerOverride: false,
+    });
+    return ok({ schedule: v.data.schedule, source: "contractor", ownerOverride: false, updatedAt: new Date().toISOString() });
+  } catch (e) {
+    return err("database_error", e instanceof Error ? e.message : "Unable to save your schedule.");
   }
 }
 
@@ -1199,6 +1502,36 @@ export async function seedMandatedDocTypesHandler(): Promise<ContractorAdminResu
   const actor = await resolveOwnerActor();
   if (!actor) return err("unauthorized", "Owner access required.");
   return seedMandatedDocTypesCore(actor);
+}
+export async function setContractorVehicleHandler(data: unknown): Promise<ContractorAdminResult<ContractorVehicleResult>> {
+  if (!configured()) return DB_MODE_ERR("Contractor details");
+  const actor = await resolveOwnerActor();
+  if (!actor) return err("unauthorized", "Owner access required.");
+  return setContractorVehicleCore(actor, data);
+}
+export async function getContractorScheduleHandler(data: unknown): Promise<ContractorAdminResult<ContractorScheduleRow>> {
+  if (!configured()) return DB_MODE_ERR("Schedule");
+  const actor = await resolveOwnerActor();
+  if (!actor) return err("unauthorized", "Owner access required.");
+  return getContractorScheduleCore(actor, data);
+}
+export async function setContractorScheduleHandler(data: unknown): Promise<ContractorAdminResult<ContractorScheduleRow>> {
+  if (!configured()) return DB_MODE_ERR("Schedule");
+  const actor = await resolveOwnerActor();
+  if (!actor) return err("unauthorized", "Owner access required.");
+  return setContractorScheduleCore(actor, data);
+}
+export async function getMyScheduleHandler(): Promise<ContractorAdminResult<ContractorScheduleRow>> {
+  if (!configured()) return DB_MODE_ERR("Schedule");
+  const actor = await resolveContractorActor();
+  if (!actor) return err("unauthorized", "Driver access required.");
+  return getMyScheduleCore(actor);
+}
+export async function setMyScheduleHandler(data: unknown): Promise<ContractorAdminResult<ContractorScheduleRow>> {
+  if (!configured()) return DB_MODE_ERR("Schedule");
+  const actor = await resolveContractorActor();
+  if (!actor) return err("unauthorized", "Driver access required.");
+  return setMyScheduleCore(actor, data);
 }
 
 async function resolveOwnerOrContractorActor(): Promise<ContractorAdminActor | null> {

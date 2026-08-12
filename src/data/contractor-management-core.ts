@@ -81,6 +81,11 @@ export type ContractorRow = {
   payrateCents: number | null;
   requiredDocCount: number;
   onFileDocCount: number;
+  /** Docs expiring within 14 days (expires_on in [today, today+14]) — drives
+   *  the roster "Expiring soon" filter pill + per-row ExpiryChip (v2). */
+  expiringSoonCount: number;
+  /** Structured vehicle type (v2 — Flatbed/Wheel-lift/…; LD-only). */
+  vehicleType: string | null;
 };
 
 export type ImportSkip = { towbookDriverId: string; name: string | null; reason: string };
@@ -156,13 +161,17 @@ export async function listContractorsCore(actor: ContractorMgmtActor, opts: { in
         ts.session_updated_at,
         ls.last_login,
         dl.last_ping,
-        cp.payrate_cents,
+        cp.payrate_cents, cp.vehicle_type,
         (SELECT COUNT(*)::int FROM contractor_doc_types t WHERE t.org_id = ${actor.orgId} AND t.active) AS required_doc_count,
         (SELECT COUNT(*)::int FROM contractor_documents d
            JOIN contractor_doc_types t ON t.id = d.doc_type_id AND t.active
            WHERE d.org_id = ${actor.orgId} AND d.contractor_id = u.id
              AND d.status IN ('uploaded','verified')
-             AND (d.expires_on IS NULL OR d.expires_on >= CURRENT_DATE)) AS on_file_doc_count
+             AND (d.expires_on IS NULL OR d.expires_on >= CURRENT_DATE)) AS on_file_doc_count,
+        (SELECT COUNT(*)::int FROM contractor_documents d
+           JOIN contractor_doc_types t ON t.id = d.doc_type_id AND t.active
+           WHERE d.org_id = ${actor.orgId} AND d.contractor_id = u.id
+             AND d.expires_on >= CURRENT_DATE AND d.expires_on <= CURRENT_DATE + INTERVAL '14 days') AS expiring_soon_count
       FROM users u
       JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND m.role = 'contractor'
       LEFT JOIN contractor_profiles cp ON cp.org_id = ${actor.orgId} AND cp.user_id = u.id
@@ -205,6 +214,8 @@ export async function listContractorsCore(actor: ContractorMgmtActor, opts: { in
         payrateCents: r.payrate_cents != null ? Number(r.payrate_cents) : null,
         requiredDocCount: r.required_doc_count != null ? Number(r.required_doc_count) : 0,
         onFileDocCount: r.on_file_doc_count != null ? Number(r.on_file_doc_count) : 0,
+        expiringSoonCount: r.expiring_soon_count != null ? Number(r.expiring_soon_count) : 0,
+        vehicleType: r.vehicle_type != null ? String(r.vehicle_type) : null,
       };
     });
     return { ok: true, data: contractors };
@@ -269,7 +280,7 @@ export async function addContractorCore(actor: ContractorMgmtActor, data: unknow
     const contractor: ContractorRow = {
       id: userId, name, email, loginHandle: handle, towbookDriverId: driverId, towbookUserId: null,
       status: "not_signed_in", lastActivityAt: null, createdAt: new Date().toISOString(), removedAt: null,
-      payrateCents: null, requiredDocCount: 0, onFileDocCount: 0,
+      payrateCents: null, requiredDocCount: 0, onFileDocCount: 0, expiringSoonCount: 0, vehicleType: null,
     };
     return { ok: true, data: contractor };
   } catch (err) {
@@ -323,16 +334,18 @@ async function loadOwnerSession(orgId: string): Promise<{ cookies: string; baseU
 }
 
 /** Normalize one roster row from GET /api/drivers: the driver id (required),
- *  the display name, and inactivity (`endDate` present = inactive, per the
- *  towbook-live-recon evidence). */
-function rosterDriver(raw: unknown): { driverId: string; name: string; active: boolean } | null {
+ *  the display name, the base roster phone (cheap win — fills the LD phone when
+ *  empty; recon: the roster carries `phone`), and inactivity (`endDate` present
+ *  = inactive, per the towbook-live-recon evidence). */
+function rosterDriver(raw: unknown): { driverId: string; name: string; phone: string | null; active: boolean } | null {
   if (!raw || typeof raw !== "object") return null;
   const o = raw as Record<string, unknown>;
   const id = o.id != null ? String(o.id).trim() : "";
   if (!id) return null;
   const name = typeof o.name === "string" && o.name.trim() ? o.name.trim() : "";
+  const phone = o.phone != null && String(o.phone).trim() ? String(o.phone).trim().slice(0, 40) : null;
   const inactive = o.endDate != null && String(o.endDate) !== "" && String(o.endDate) !== "null";
-  return { driverId: id, name, active: !inactive };
+  return { driverId: id, name, phone, active: !inactive };
 }
 
 /** Upsert one roster driver into the org's contractor list. Returns the row's
@@ -341,10 +354,10 @@ type Q = Awaited<ReturnType<typeof db>>;
 async function upsertRosterDriver(
   q: Q,
   actor: ContractorMgmtActor,
-  driver: { driverId: string; name: string },
+  driver: { driverId: string; name: string; phone: string | null },
   orgContractors: Map<string, { id: string; name: string; handle: string | null; deactivated: boolean }>,
 ): Promise<"imported" | "updated" | { skip: string }> {
-  const { driverId, name } = driver;
+  const { driverId, name, phone } = driver;
   const existing = orgContractors.get(driverId);
   if (existing) {
     // A REMOVED contractor (soft-deactivated) is never re-added, never
@@ -354,6 +367,14 @@ async function upsertRosterDriver(
     if (existing.deactivated) return { skip: "deactivated_in_lightning_dispatch" };
     if (name && name !== existing.name) {
       await q`UPDATE users SET name=${name} WHERE id=${existing.id}`;
+    }
+    // Cheap win (contractor-management-spec §7.5): the Towbook roster carries
+    // the driver's phone — fill the LD phone when it's empty (never overwrite a
+    // phone the owner already entered).
+    if (phone) {
+      await q`INSERT INTO contractor_profiles(org_id, user_id, payrate_cents, phone, updated_at)
+        VALUES(${actor.orgId}, ${existing.id}, NULL, ${phone}, NOW())
+        ON CONFLICT (org_id, user_id) DO UPDATE SET phone=COALESCE(contractor_profiles.phone, EXCLUDED.phone), updated_at=NOW()`;
     }
     return "updated";
   }
@@ -370,6 +391,10 @@ async function upsertRosterDriver(
   const randomPassword = Math.random().toString(36).slice(2) + Date.now().toString(36);
   await q`INSERT INTO users(id, name, email, password_hash, login_handle, towbook_driver_id) VALUES(${userId}, ${name}, ${email}, ${hash(randomPassword)}, ${handle}, ${driverId})`;
   await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${actor.orgId}, ${userId}, 'contractor')`;
+  if (phone) {
+    await q`INSERT INTO contractor_profiles(org_id, user_id, payrate_cents, phone, updated_at)
+      VALUES(${actor.orgId}, ${userId}, NULL, ${phone}, NOW())`;
+  }
   return "imported";
 }
 
@@ -719,7 +744,7 @@ export async function editContractorCore(actor: ContractorMgmtActor, data: unkno
       towbookDriverId: row.towbook_driver_id != null ? String(row.towbook_driver_id) : null,
       towbookUserId: row.towbook_user_id != null ? String(row.towbook_user_id) : null,
       status: "not_signed_in", lastActivityAt: null, createdAt: toIso(row.created_at), removedAt: null,
-      payrateCents: null, requiredDocCount: 0, onFileDocCount: 0,
+      payrateCents: null, requiredDocCount: 0, onFileDocCount: 0, expiringSoonCount: 0, vehicleType: null,
     };
     return { ok: true, data: { contractor, towbook } };
   } catch (err) {
@@ -805,7 +830,7 @@ export async function removeContractorCore(actor: ContractorMgmtActor, data: unk
       towbookUserId: row.towbook_user_id != null ? String(row.towbook_user_id) : null,
       status: "not_signed_in", lastActivityAt: null, createdAt: toIso(row.created_at),
       removedAt: new Date().toISOString(),
-      payrateCents: null, requiredDocCount: 0, onFileDocCount: 0,
+      payrateCents: null, requiredDocCount: 0, onFileDocCount: 0, expiringSoonCount: 0, vehicleType: null,
     };
     return { ok: true, data: { contractor, towbook, sessionsInvalidated: sessions.length } };
   } catch (err) {

@@ -552,6 +552,42 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
       ('lesson-paperwork-done-right', 'paperwork-done-right', 'Paperwork done right', 'Your documents on file keep you cleared to work — and to go online.', 'documents', 'WHY IT MATTERS: Required documents gate your GO button. Missing or expired paperwork means you cannot take jobs at all.\n\nCHECKLIST:\n- Open Profile → Documents and check what is required\n- Upload each document as a clear, readable photo or PDF\n- For the driver''s license, add the live selfie too\n- Watch expiry dates — renew before they lapse\n- Re-upload promptly if the owner asks for a correction', 4, 10, TRUE)
     ON CONFLICT (slug) DO NOTHING`;
   }],
+  [27, async (q) => {
+    // Contractor Management v2 "Uber-style" (owner-directed 2026-08-12,
+    // contractor-management-spec.md). TWO additions:
+    //   1. contractor_profiles gains STRUCTURED vehicle fields (type/make/model/
+    //      year/plate/plate_state/color) + a one-line address. Explicit columns,
+    //      not JSONB: vehicle_type is the future AI-dispatcher capability-routing
+    //      target (Flatbed/Wheel-lift/Integrated/Landoll/…). The legacy
+    //      vehicle_desc free-text stays (net-new LD-only; Towbook has no vehicle
+    //      data) — saves overwrite it with a generated display string so existing
+    //      consumers stay non-null.
+    //   2. contractor_schedules: ONE row per (org, contractor) holding the
+    //      weekly availability TEMPLATE — [{ day:1..7, start:"08:00",
+    //      end:"17:00" }] (day 1 = Mon). Owner decision B (2026-08-12):
+    //      contractors DECLARE their own availability (source='contractor');
+    //      GO/Offline stays the on-demand override on top. The owner sees the
+    //      declared schedule read-only and can OVERRIDE it (owner_override=TRUE,
+    //      source='owner') — while overridden, driver edits stop applying.
+    await q`ALTER TABLE contractor_profiles ADD COLUMN IF NOT EXISTS address TEXT`;
+    await q`ALTER TABLE contractor_profiles ADD COLUMN IF NOT EXISTS vehicle_type TEXT`;
+    await q`ALTER TABLE contractor_profiles ADD COLUMN IF NOT EXISTS vehicle_make TEXT`;
+    await q`ALTER TABLE contractor_profiles ADD COLUMN IF NOT EXISTS vehicle_model TEXT`;
+    await q`ALTER TABLE contractor_profiles ADD COLUMN IF NOT EXISTS vehicle_year INTEGER`;
+    await q`ALTER TABLE contractor_profiles ADD COLUMN IF NOT EXISTS vehicle_plate TEXT`;
+    await q`ALTER TABLE contractor_profiles ADD COLUMN IF NOT EXISTS vehicle_plate_state TEXT`;
+    await q`ALTER TABLE contractor_profiles ADD COLUMN IF NOT EXISTS vehicle_color TEXT`;
+    await q`CREATE TABLE IF NOT EXISTS contractor_schedules (
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      schedule JSONB NOT NULL DEFAULT '[]',
+      source TEXT NOT NULL DEFAULT 'contractor' CHECK (source IN ('owner','contractor')),
+      owner_override BOOLEAN NOT NULL DEFAULT FALSE,
+      updated_by_user_id TEXT NOT NULL REFERENCES users(id),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (org_id, user_id)
+    )`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

@@ -784,7 +784,7 @@ function computeOrgAggregate(bounds: { start: number | null; end: number | null 
   const completedCreated = createdInPeriod.filter((j) => j.status === "completed").length;
   const completionRatePct = pct(completedCreated, createdInPeriod.length);
 
-  const periodCompleted = data.completedJobs.filter((j) => inPeriod(j.completedAt, bounds));
+  const periodCompleted = data.completedJobs.filter((j) => j.completedAt != null && inPeriod(j.completedAt, bounds));
   const acceptTimes: number[] = [];
   const measured: { arrivalMinutes: number; targetMinutes: number }[] = [];
   let ratingSum = 0, ratingN = 0;
@@ -833,7 +833,7 @@ function computeOrgAggregate(bounds: { start: number | null; end: number | null 
     const done = evs.find((e) => e.toStatus === "completed");
     const first = evs.length ? evs.reduce((a, b) => (a.occurredAt < b.occurredAt ? a : b)) : null;
     if (done && first) timeToComplete.push(done.occurredAt - first.occurredAt);
-    else timeToComplete.push(j.completedAt - j.createdAt);
+    else timeToComplete.push((j.completedAt ?? j.createdAt) - j.createdAt);
   }
 
   const onTime = measured.filter((m) => m.arrivalMinutes <= m.targetMinutes).length;

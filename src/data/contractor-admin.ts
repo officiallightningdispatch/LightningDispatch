@@ -16,6 +16,8 @@ import type {
   ContractorContactResult,
   ContractorDetailRow,
   ContractorDocumentRow,
+  ContractorScheduleRow,
+  ContractorVehicleResult,
   DocFilePayload,
   DocTypeRow,
   MyCompliance,
@@ -28,6 +30,9 @@ export type {
   ContractorContactResult,
   ContractorDetailRow,
   ContractorDocumentRow,
+  ContractorScheduleRow,
+  ContractorVehicle,
+  ContractorVehicleResult,
   DocFilePayload,
   DocStatus,
   DocTypeRow,
@@ -165,4 +170,42 @@ export const getComplianceGate = createServerFn({ method: "GET" }).handler(async
 export const seedMandatedDocTypes = createServerFn({ method: "POST" }).handler(async (): Promise<ContractorAdminResult<DocTypeRow[]>> => {
   const core = await import("./contractor-admin-core");
   return core.seedMandatedDocTypesHandler();
+});
+
+/* ------------------- structured vehicle + schedule (contractor v2) ------------------- */
+
+/** Save a contractor's structured vehicle (LD-only; Towbook has no vehicle
+ *  data). Overwrites the legacy vehicle_desc with the generated display string
+ *  when any structured field is set. Owner/admin only. */
+export const setContractorVehicle = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<ContractorAdminResult<ContractorVehicleResult>> => {
+  const core = await import("./contractor-admin-core");
+  return core.setContractorVehicleHandler(data);
+});
+
+/** Owner/admin: read one contractor's weekly schedule (+ who owns it). */
+export const getContractorSchedule = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<ContractorAdminResult<ContractorScheduleRow>> => {
+  const core = await import("./contractor-admin-core");
+  return core.getContractorScheduleHandler(data);
+});
+
+/** Owner/admin: set (or clear) a contractor's schedule — takes over ownership
+ *  (source='owner', owner_override=TRUE; driver edits stop applying). */
+export const setContractorSchedule = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<ContractorAdminResult<ContractorScheduleRow>> => {
+  const core = await import("./contractor-admin-core");
+  return core.setContractorScheduleHandler(data);
+});
+
+/** The acting driver's own schedule (contractor-declared; resolves through the
+ *  effective-driver resolver, so an owner in driver view edits their own
+ *  contractor identity's schedule). */
+export const getMySchedule = createServerFn({ method: "GET" }).handler(async (): Promise<ContractorAdminResult<ContractorScheduleRow>> => {
+  const core = await import("./contractor-admin-core");
+  return core.getMyScheduleHandler();
+});
+
+/** The acting driver declares their own weekly availability. Refused while the
+ *  owner has overridden the schedule ("Set by owner"). */
+export const setMySchedule = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<ContractorAdminResult<ContractorScheduleRow>> => {
+  const core = await import("./contractor-admin-core");
+  return core.setMyScheduleHandler(data);
 });
