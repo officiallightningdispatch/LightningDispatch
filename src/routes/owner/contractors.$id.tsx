@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useParams } from "@tanstack/react-router";
-import { ArrowLeft, FileText, Loader2, Pencil, Phone, Trash2, Truck, X } from "lucide-react";
-import { useEffect, useState, type FormEvent } from "react";
+import { ArrowLeft, CalendarClock, FileText, Loader2, Pencil, Trash2, X } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
 import { AppShell } from "~/components/app-shell";
 import {
   ComplianceBadge,
@@ -9,10 +9,18 @@ import {
   PayRateField,
   formatCents,
 } from "~/components/contractor-admin";
+import {
+  ContractorProfileEditor,
+  DocCompareSheet,
+  ExpiryChip,
+  scheduleSourceLine,
+  scheduleSummary,
+  vehicleDisplay,
+  type EditorSection,
+} from "~/components/contractor-profile-editor";
 import { InlineError } from "~/components/mutation-status";
 import { Alert, Avatar, Button, Card, EmptyState, StatusBadge, useToast } from "~/components/ui";
 import {
-  editContractor,
   removeContractor,
   type TowbookPushOutcome,
 } from "~/data/contractor-management";
@@ -21,7 +29,6 @@ import {
   getDocumentFile,
   getSelfieFile,
   listContractorDocuments,
-  setContractorContact,
   setContractorPayrate,
   setDocumentExpiry,
   setDocumentStatus,
@@ -30,44 +37,35 @@ import {
   type DocFilePayload,
 } from "~/data/contractor-admin";
 import { timeAgo } from "~/lib/job-ui";
-
 export const Route = createFileRoute("/owner/contractors/$id")({ component: OwnerContractorDetail });
-
-/** Owner contractor detail (spec §4.2–4.3, part 2/3): identity card, extended
- *  details (phone/vehicle are Lightning-Dispatch-only — never pushed to
- *  Towbook), payrate card with est. earnings for the current pay period, the
- *  per-contractor Documents section (owner review: verify / reject / expiry),
- *  and the danger zone (remove = soft-deactivate + session revocation + Towbook
- *  propagation, following the roster's existing contractor-management flow).
- *  Real data only. */
+const DAY_LABELS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+/** Owner contractor detail — the READ/review record (Contractor Management v2):
+ *  identity card with an "Edit contractor" entry into the full-screen
+ *  ContractorProfileEditor, extended details (phone/vehicle/address are
+ *  Lightning-Dispatch-only — never pushed to Towbook), a read-only schedule
+ *  card, payrate with est. earnings, the per-contractor Documents section
+ *  (verify / reject / expiry + license↔selfie DocCompareSheet), and the danger
+ *  zone. Every section's Edit affordance opens the modal at that section —
+ *  the modal is the single EDIT surface. Real data only. */
 function OwnerContractorDetail() {
   const { id } = useParams({ from: "/owner/contractors/$id" });
   const toast = useToast();
-
   const [detail, setDetail] = useState<ContractorDetailRow | null>(null);
   const [detailError, setDetailError] = useState("");
   const [docs, setDocs] = useState<ContractorDocumentRow[] | null>(null);
   const [docsError, setDocsError] = useState("");
   const [loaded, setLoaded] = useState(false);
-
-  /* name/email edit */
-  const [editingIdentity, setEditingIdentity] = useState(false);
-  const [editName, setEditName] = useState("");
-  const [editEmail, setEditEmail] = useState("");
-  const [identityBusy, setIdentityBusy] = useState(false);
-  const [identityError, setIdentityError] = useState("");
-  const [identityNotice, setIdentityNotice] = useState<{ kind: "ok" | "warn"; text: string } | null>(null);
-
+  /* Contractor Management v2: the profile editor + compare sheet */
+  const [editing, setEditing] = useState<EditorSection | null>(null);
+  const [compare, setCompare] = useState<ContractorDocumentRow | null>(null);
   /* remove */
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   const [reason, setReason] = useState("");
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState("");
   const [removeNotice, setRemoveNotice] = useState<{ kind: "ok" | "warn"; text: string } | null>(null);
-
   /* document viewer */
   const [viewer, setViewer] = useState<{ doc: ContractorDocumentRow; file: DocFilePayload | null; loading: boolean; error?: string; titleOverride?: string } | null>(null);
-
   const refresh = async () => {
     const [d, dc] = await Promise.all([
       getContractorDetail({ data: { contractorId: id } }),
@@ -78,36 +76,12 @@ function OwnerContractorDetail() {
     setLoaded(true);
   };
   useEffect(() => { void refresh(); }, [id]);
-
   const removed = detail?.removedAt != null;
-
-  /* ------------------------------ identity edit ------------------------------ */
   const noticeFor = (t: TowbookPushOutcome): { kind: "ok" | "warn"; text: string } => {
     if (t.status === "verified") return { kind: "ok", text: t.notice };
     if (t.status === "skipped" || t.status === "unsupported") return { kind: "warn", text: t.notice };
     return { kind: "warn", text: t.notice + " This was escalated to the ops queue for review." };
   };
-
-  const submitIdentity = async (e: FormEvent) => {
-    e.preventDefault();
-    setIdentityBusy(true); setIdentityError(""); setIdentityNotice(null);
-    const r = await editContractor({ data: { contractorId: id, name: editName, email: editEmail } });
-    setIdentityBusy(false);
-    if (r.ok) {
-      setIdentityNotice(noticeFor(r.data.towbook));
-      setEditingIdentity(false);
-      void refresh();
-    } else setIdentityError(r.message);
-  };
-
-  /* ------------------------------ LD-only contact ------------------------------ */
-  const saveContact = async (phone: string | null, vehicleDesc: string | null) => {
-    const r = await setContractorContact({ data: { contractorId: id, phone: phone ?? "", vehicleDesc: vehicleDesc ?? "" } });
-    if (!r.ok) throw new Error(r.message);
-    setDetail((d) => (d ? { ...d, phone: r.data.phone, vehicleDesc: r.data.vehicleDesc } : d));
-    toast("Contact saved — Lightning Dispatch only, not pushed to Towbook");
-  };
-
   /* --------------------------------- payrate --------------------------------- */
   const savePayrate = async (cents: number | null) => {
     const prev = detail;
@@ -116,7 +90,6 @@ function OwnerContractorDetail() {
     if (!r.ok) { setDetail(prev); throw new Error(r.message); }
     toast(cents == null ? "Rate removed — payday math won't count it" : `${formatCents(cents)} / job saved — applies to all completed jobs`);
   };
-
   /* ------------------------------- documents ------------------------------- */
   const actVerify = async (docId: string, expiresOn: string | null) => {
     const r = await setDocumentStatus({ data: { docId, status: "verified" } });
@@ -147,16 +120,12 @@ function OwnerContractorDetail() {
     if (!r.ok) setViewer({ doc, file: null, loading: false, error: r.message });
     else setViewer({ doc, file: r.data, loading: false });
   };
-  /** Part 3 (owner-directed 2026-08-12): view the LIVE SELFIE half of a
-   *  facial-verification pair — the pair is approved with ONE verify tap, so
-   *  the owner sees both files before approving. */
   const openSelfieViewer = async (doc: ContractorDocumentRow) => {
     setViewer({ doc, file: null, loading: true, titleOverride: `${doc.docTypeName} — live selfie` });
     const r = await getSelfieFile({ data: { docTypeId: doc.docTypeId } });
     if (!r.ok) setViewer({ doc, file: null, loading: false, error: r.message, titleOverride: `${doc.docTypeName} — live selfie` });
     else setViewer({ doc, file: r.data, loading: false, titleOverride: `${doc.docTypeName} — live selfie` });
   };
-
   /* -------------------------------- danger zone -------------------------------- */
   const confirmRemove = async () => {
     setRemoving(true); setRemoveError(""); setRemoveNotice(null);
@@ -169,12 +138,10 @@ function OwnerContractorDetail() {
       void refresh();
     } else setRemoveError(r.message);
   };
-
   const missingNames = (docs ?? [])
     .filter((d) => d.status !== "uploaded" && d.status !== "verified")
     .map((d) => d.docTypeName);
   const onFileCount = (docs ?? []).filter((d) => d.status === "uploaded" || d.status === "verified").length;
-
   return (
     <AppShell
       portal="owner"
@@ -186,7 +153,6 @@ function OwnerContractorDetail() {
           <ArrowLeft className="size-4" aria-hidden="true" /> Contractors
         </Link>
       </div>
-
       {!loaded ? (
         <Card className="grid place-items-center gap-3 p-10 text-center">
           <Loader2 className="size-5 animate-spin text-brand-500 motion-reduce:animate-none" aria-hidden="true" />
@@ -208,7 +174,15 @@ function OwnerContractorDetail() {
           <div className="space-y-6">
             {/* ------------------------------ identity card ------------------------------ */}
             <Card className="p-5">
-              <div className="flex items-center gap-4">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs font-bold uppercase tracking-wider text-ink-400">Contractor</p>
+                {!removed && (
+                  <Button size="sm" onClick={() => setEditing("profile")}>
+                    <Pencil className="size-3.5" aria-hidden="true" /> Edit contractor
+                  </Button>
+                )}
+              </div>
+              <div className="mt-3 flex items-center gap-4">
                 <Avatar name={detail.name} className="size-14 text-lg" />
                 <div className="min-w-0 flex-1">
                   <p className={`flex flex-wrap items-center gap-x-2 gap-y-1 text-base font-bold ${removed ? "text-ink-400 line-through decoration-ink-300" : ""}`}>
@@ -228,6 +202,7 @@ function OwnerContractorDetail() {
                   {!removed && (
                     <p className="mt-2 flex flex-wrap items-center gap-2">
                       <ComplianceBadge onFile={onFileCount} required={detail.requiredDocCount} size="lg" />
+                      {detail.docsExpiringSoon.length > 0 && <ExpiryChip expiresOn={detail.docsExpiringSoon[0].expiresOn} />}
                     </p>
                   )}
                 </div>
@@ -241,80 +216,71 @@ function OwnerContractorDetail() {
                 </div>
               )}
             </Card>
-
             {/* ------------------------------ details card ------------------------------ */}
             {!removed && (
               <Card className="overflow-hidden">
                 <div className="border-b border-ink-100 px-5 py-4">
                   <div className="flex items-center justify-between gap-2">
                     <p className="text-sm font-bold">Details</p>
-                    {!editingIdentity && (
-                      <Button size="sm" variant="secondary" className="!px-2.5" onClick={() => { setEditingIdentity(true); setIdentityError(""); setIdentityNotice(null); setEditName(detail.name); setEditEmail(detail.email); }}>
-                        <Pencil className="size-3.5" aria-hidden="true" /> Edit
-                      </Button>
-                    )}
+                    <Button size="sm" variant="secondary" className="!px-2.5" onClick={() => setEditing("contact")}>
+                      <Pencil className="size-3.5" aria-hidden="true" /> Edit
+                    </Button>
                   </div>
                 </div>
                 <div className="divide-y divide-ink-100">
-                  {editingIdentity ? (
-                    <form onSubmit={(e) => void submitIdentity(e)} className="grid gap-3 p-5 sm:grid-cols-2">
-                      <label className="block">
-                        <span className="mb-1 block text-xs font-semibold text-ink-500">Name</span>
-                        <input value={editName} onChange={(e) => setEditName(e.target.value)} required maxLength={120}
-                          className="h-11 w-full rounded-xl border border-ink-200 bg-surface px-3 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" />
-                      </label>
-                      <label className="block">
-                        <span className="mb-1 block text-xs font-semibold text-ink-500">Email</span>
-                        <input value={editEmail} onChange={(e) => setEditEmail(e.target.value)} type="email" maxLength={200}
-                          className="h-11 w-full rounded-xl border border-ink-200 bg-surface px-3 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" />
-                      </label>
-                      {identityError && <div className="sm:col-span-2"><InlineError message={identityError} /></div>}
-                      <div className="flex gap-2 sm:col-span-2">
-                        <Button type="submit" loading={identityBusy}>Save</Button>
-                        <Button type="button" variant="secondary" disabled={identityBusy} onClick={() => { setEditingIdentity(false); setIdentityError(""); setIdentityNotice(null); }}>
-                          <X className="size-4" aria-hidden="true" /> Cancel
-                        </Button>
-                      </div>
-                      {identityNotice && (
-                        <div className={`rounded-xl border px-4 py-3 text-sm sm:col-span-2 ${identityNotice.kind === "ok" ? "border-success-100 bg-success-50 text-success-700" : "border-accent-200 bg-accent-50 text-accent-800"}`}>
-                          {identityNotice.text}
-                        </div>
-                      )}
-                    </form>
-                  ) : (
-                    <>
-                      <DetailRow label="Name" value={detail.name} />
-                      <DetailRow label="Email" value={detail.email} />
-                      <ContactField
-                        icon={Phone}
-                        label="Phone"
-                        caption="Lightning Dispatch only — not pushed to Towbook"
-                        value={detail.phone}
-                        placeholder="e.g. (475) 555-0134"
-                        maxLength={40}
-                        inputMode="tel"
-                        onSave={(v) => saveContact(v, detail.vehicleDesc)}
-                      />
-                      <ContactField
-                        icon={Truck}
-                        label="Vehicle"
-                        caption="Lightning Dispatch only — not pushed to Towbook"
-                        value={detail.vehicleDesc}
-                        placeholder="e.g. 2019 Ford F-250, white"
-                        maxLength={200}
-                        onSave={(v) => saveContact(detail.phone, v)}
-                      />
-                      <DetailRow label="Towbook driver ID" mono value={detail.towbookDriverId ?? "—"} sub="Set at import — read-only (re-linking is out of scope)" />
-                    </>
-                  )}
+                  <DetailRow label="Name" value={detail.name} />
+                  <DetailRow label="Email" value={detail.email} />
+                  <DetailRow label="Phone" value={detail.phone ?? "—"} sub="Lightning Dispatch only — not pushed to Towbook" />
+                  <DetailRow label="Address" value={detail.address ?? "—"} sub="Lightning Dispatch only — not pushed to Towbook" />
+                  <DetailRow
+                    label="Vehicle"
+                    value={vehicleDisplay(detail.vehicle) || detail.vehicleDesc || "—"}
+                    sub="Structured — Lightning Dispatch only, not pushed to Towbook"
+                    action={<button type="button" title="Edit vehicle" aria-label="Edit vehicle" onClick={() => setEditing("vehicle")} className="grid size-8 place-items-center rounded-lg text-ink-300 transition-colors hover:bg-ink-50 hover:text-ink-600"><Pencil className="size-3.5" aria-hidden="true" /></button>}
+                  />
+                  <DetailRow label="Towbook driver ID" mono value={detail.towbookDriverId ?? "—"} sub="Set at import — read-only (re-linking is out of scope)" />
                 </div>
               </Card>
             )}
-
+            {/* ------------------------------ schedule card ------------------------------ */}
+            {!removed && (
+              <Card className="p-5">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-bold">Availability schedule</p>
+                  <Button size="sm" variant="secondary" className="!px-2.5" onClick={() => setEditing("schedule")}>
+                    <Pencil className="size-3.5" aria-hidden="true" /> Edit
+                  </Button>
+                </div>
+                <div className="mt-3 flex items-start gap-3">
+                  <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-brand-50 text-brand-600">
+                    <CalendarClock className="size-5" aria-hidden="true" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-ink-900">{scheduleSummary(detail.schedule.schedule) ?? "No schedule set — availability isn't limited"}</p>
+                    <p className="mt-0.5 text-xs text-ink-500">{scheduleSourceLine(detail.schedule)}</p>
+                    {detail.schedule.schedule.length > 0 && (
+                      <ul className="mt-2 space-y-0.5">
+                        {[...detail.schedule.schedule].sort((a, b) => a.day - b.day).map((d) => (
+                          <li key={d.day} className="text-xs text-ink-600">
+                            <span className="inline-block w-24 font-semibold">{DAY_LABELS[d.day - 1]}</span>
+                            {d.start}–{d.end}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </div>
+              </Card>
+            )}
             {/* ------------------------------ payrate card ------------------------------ */}
             {!removed && (
               <Card className="p-5">
-                <p className="text-sm font-bold">Pay rate</p>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-bold">Pay rate</p>
+                  <Button size="sm" variant="secondary" className="!px-2.5" onClick={() => setEditing("pay")}>
+                    <Pencil className="size-3.5" aria-hidden="true" /> Edit
+                  </Button>
+                </div>
                 <div className="mt-3">
                   <PayRateField valueCents={detail.payrateCents} size="lg" onSave={savePayrate} />
                 </div>
@@ -329,12 +295,18 @@ function OwnerContractorDetail() {
               </Card>
             )}
           </div>
-
           <div className="space-y-6">
             {/* ------------------------------ documents card ------------------------------ */}
             <Card className="overflow-hidden">
               <div className="border-b border-ink-100 px-5 py-4">
-                <p className="text-sm font-bold">Required documents</p>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-bold">Required documents</p>
+                  {!removed && (
+                    <Button size="sm" variant="secondary" className="!px-2.5" onClick={() => setEditing("documents")}>
+                      <Pencil className="size-3.5" aria-hidden="true" /> Review
+                    </Button>
+                  )}
+                </div>
                 {!removed && <div className="mt-1"><ComplianceSummary onFile={onFileCount} required={detail.requiredDocCount} missingNames={missingNames} /></div>}
               </div>
               {docsError ? (
@@ -363,11 +335,11 @@ function OwnerContractorDetail() {
                     onSetExpiry={actSetExpiry}
                     onView={() => openViewer(doc)}
                     onViewSelfie={doc.requiresFacialVerification && doc.selfieStatus === "uploaded" ? () => openSelfieViewer(doc) : undefined}
+                    onReviewPair={doc.requiresFacialVerification && doc.selfieStatus === "uploaded" ? () => setCompare(doc) : undefined}
                   />
                 ))
               )}
             </Card>
-
             {/* ------------------------------ danger zone ------------------------------ */}
             {!removed && (
               <Card className="border-danger-200 p-5">
@@ -409,7 +381,6 @@ function OwnerContractorDetail() {
           </div>
         </div>
       )}
-
       {/* ------------------------------ document viewer ------------------------------ */}
       {viewer && (
         <div className="fixed inset-0 z-50 grid place-items-center bg-ink-950/40 p-4" role="dialog" aria-modal="true" aria-label={`View ${viewer.titleOverride ?? viewer.doc.docTypeName}`}>
@@ -449,95 +420,36 @@ function OwnerContractorDetail() {
           </div>
         </div>
       )}
+      {/* ------------------------------ profile editor + compare sheet ------------------------------ */}
+      {editing && (
+        <ContractorProfileEditor
+          contractorId={id}
+          initialSection={editing}
+          onClose={() => setEditing(null)}
+          onChanged={() => void refresh()}
+        />
+      )}
+      {compare && (
+        <DocCompareSheet
+          doc={compare}
+          onApprove={(expiresOn) => actVerify(compare.docId!, expiresOn)}
+          onReject={(note) => actReject(compare.docId!, note)}
+          onClose={() => setCompare(null)}
+        />
+      )}
     </AppShell>
   );
 }
-
 /* ------------------------------ small display helpers ------------------------------ */
-
-function DetailRow({ label, value, mono, sub }: { label: string; value: string; mono?: boolean; sub?: string }) {
+function DetailRow({ label, value, mono, sub, action }: { label: string; value: string; mono?: boolean; sub?: string; action?: ReactNode }) {
   return (
-    <div className="px-5 py-3.5">
-      <p className="text-[10px] font-bold uppercase tracking-wide text-ink-300">{label}</p>
-      <p className={`mt-0.5 truncate text-sm font-semibold text-ink-900 ${mono ? "font-mono tabular-nums" : ""}`}>{value}</p>
-      {sub && <p className="mt-0.5 text-xs text-ink-400">{sub}</p>}
-    </div>
-  );
-}
-
-/** Inline text edit for the LD-only contact fields (phone / vehicle): display
- *  "—" when unset + pencil → input + check/X; save clears to null when empty. */
-function ContactField({
-  icon: Icon,
-  label,
-  caption,
-  value,
-  placeholder,
-  maxLength,
-  inputMode,
-  onSave,
-}: {
-  icon: typeof Phone;
-  label: string;
-  caption: string;
-  value: string | null;
-  placeholder: string;
-  maxLength: number;
-  inputMode?: "tel" | "text";
-  onSave: (v: string | null) => Promise<void>;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-
-  const save = async () => {
-    setSaving(true);
-    setError("");
-    try {
-      await onSave(draft.trim() === "" ? null : draft.trim());
-      setEditing(false);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't save.");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="flex items-start gap-3 px-5 py-3.5">
-      <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg bg-ink-50 text-ink-400">
-        <Icon className="size-4" aria-hidden="true" />
-      </span>
+    <div className="flex items-center gap-2 px-5 py-3.5">
       <div className="min-w-0 flex-1">
         <p className="text-[10px] font-bold uppercase tracking-wide text-ink-300">{label}</p>
-        {editing ? (
-          <span className="mt-1 flex flex-wrap items-center gap-1.5">
-            <input
-              value={draft}
-              onChange={(e) => { setDraft(e.target.value); setError(""); }}
-              onKeyDown={(e) => { if (e.key === "Enter") void save(); if (e.key === "Escape") setEditing(false); }}
-              maxLength={maxLength}
-              inputMode={inputMode}
-              autoFocus
-              placeholder={placeholder}
-              aria-label={label}
-              className="h-10 w-full max-w-60 rounded-lg border border-ink-200 bg-surface px-2.5 text-sm outline-none placeholder:text-ink-300 focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
-            />
-            <Button size="sm" loading={saving} className="!px-2.5" title="Save" onClick={() => void save()}>Save</Button>
-            <Button size="sm" variant="secondary" className="!px-2.5" disabled={saving} title="Cancel" onClick={() => { setEditing(false); setError(""); }}>
-              <X className="size-3.5" aria-hidden="true" />
-            </Button>
-          </span>
-        ) : (
-          <button type="button" onClick={() => { setDraft(value ?? ""); setError(""); setEditing(true); }} className="group mt-0.5 flex w-full items-center gap-2 text-left">
-            <span className={`min-w-0 flex-1 truncate text-sm font-semibold ${value ? "text-ink-900" : "italic text-ink-300"}`}>{value ?? "—"}</span>
-            <Pencil className="size-3.5 shrink-0 text-ink-300 transition-colors group-hover:text-ink-500" aria-hidden="true" />
-          </button>
-        )}
-        <p className="mt-0.5 text-xs text-ink-400">{caption}</p>
-        {error && <p role="alert" className="mt-1 text-xs font-medium text-danger-600">{error}</p>}
+        <p className={`mt-0.5 truncate text-sm font-semibold text-ink-900 ${mono ? "font-mono tabular-nums" : ""}`}>{value}</p>
+        {sub && <p className="mt-0.5 text-xs text-ink-400">{sub}</p>}
       </div>
+      {action}
     </div>
   );
 }

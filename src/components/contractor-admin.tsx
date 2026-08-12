@@ -381,6 +381,7 @@ export function OwnerDocumentRow({
   onSetExpiry,
   onView,
   onViewSelfie,
+  onReviewPair,
 }: {
   doc: ContractorDocumentRow;
   busy: boolean;
@@ -392,6 +393,10 @@ export function OwnerDocumentRow({
    *  facial-verification pair — the pair is approved with ONE verify tap, so
    *  the owner needs eyes on both files. */
   onViewSelfie?: () => Promise<void>;
+  /** Contractor Management v2 (2026-08-12): open the side-by-side
+   *  license+selfie compare sheet (DocCompareSheet) for pair-bearing types.
+   *  When provided, the expanded row's primary action becomes "Review pair". */
+  onReviewPair?: () => Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [verifySheet, setVerifySheet] = useState(false);
@@ -461,11 +466,15 @@ export function OwnerDocumentRow({
                       <span className="inline-flex items-center gap-1 rounded-full bg-success-50 px-2 py-0.5 text-[11px] font-bold text-success-700">
                         <CheckCircle2 className="size-3" aria-hidden="true" /> Live selfie: submitted
                       </span>
-                      {onViewSelfie && (
+                      {onReviewPair ? (
+                        <Button size="sm" className="!px-2.5" disabled={inFlight} onClick={() => void onReviewPair()}>
+                          <Eye className="size-3.5" aria-hidden="true" /> Review pair
+                        </Button>
+                      ) : onViewSelfie ? (
                         <Button size="sm" variant="ghost" className="!px-2.5" disabled={inFlight} onClick={() => void onViewSelfie()}>
                           <Eye className="size-3.5" aria-hidden="true" /> View selfie
                         </Button>
-                      )}
+                      ) : null}
                     </>
                   ) : (
                     <span className="inline-flex items-center gap-1 rounded-full bg-ink-100 px-2 py-0.5 text-[11px] font-semibold text-ink-600">

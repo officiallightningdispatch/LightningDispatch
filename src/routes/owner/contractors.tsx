@@ -3,11 +3,11 @@ import { AlertTriangle, ChevronRight, CloudDownload, FileText, Loader2, Pencil, 
 import { useEffect, useState, type FormEvent } from "react";
 import { AppShell } from "~/components/app-shell";
 import { ComplianceBadge, DocumentTypeEditorRow, PayRateField, formatCents } from "~/components/contractor-admin";
+import { ContractorProfileEditor, type EditorSection } from "~/components/contractor-profile-editor";
 import { InlineError } from "~/components/mutation-status";
 import { Avatar, Button, Card, EmptyState, StatusBadge, useToast } from "~/components/ui";
 import {
   addContractor,
-  editContractor,
   importContractors,
   listContractors,
   removeContractor,
@@ -40,6 +40,11 @@ export const Route = createFileRoute("/owner/contractors")({ component: OwnerCon
 function OwnerContractors() {
   const [segment, setSegment] = useState<"roster" | "docs">("roster");
   const toast = useToast();
+  /** Contractor Management v2: the full-screen profile editor (opens at a
+   *  section from the roster pencil / detail-page affordances). */
+  const [editing, setEditing] = useState<{ id: string; section: EditorSection } | null>(null);
+  /** Roster compliance filter pills: All / Missing docs / Expiring soon. */
+  const [rosterFilter, setRosterFilter] = useState<"all" | "missing" | "expiring">("all");
 
   /* ---- roster ---- */
   const [rows, setRows] = useState<ContractorRow[] | null>(null);
@@ -197,6 +202,11 @@ function OwnerContractors() {
   // Compliance strip: contractors with at least one ACTIVE required type that
   // has no file on file (missing / expired / rejected).
   const missingDocs = (rows ?? []).filter((c) => !c.removedAt && c.requiredDocCount > 0 && c.onFileDocCount < c.requiredDocCount).length;
+  const expiringSoon = (rows ?? []).filter((c) => !c.removedAt && c.expiringSoonCount > 0);
+  const visibleRows = (rows ?? []).filter((c) =>
+    rosterFilter === "all" ? true
+    : rosterFilter === "missing" ? (!c.removedAt && c.requiredDocCount > 0 && c.onFileDocCount < c.requiredDocCount)
+    : (!c.removedAt && c.expiringSoonCount > 0));
 
   const activeTypes = (docTypes ?? []).filter((t) => t.active).sort((a, b) => a.sortOrder - b.sortOrder);
   const pausedTypes = (docTypes ?? []).filter((t) => !t.active).sort((a, b) => a.sortOrder - b.sortOrder);
@@ -243,6 +253,21 @@ function OwnerContractors() {
               </Card>
             )}
 
+            {/* ---- expiring-docs strip (accent — attention state) ---- */}
+            {expiringSoon.length > 0 && (
+              <Card className="border-accent-200 bg-accent-50/60 p-4">
+                <div className="flex items-center gap-3">
+                  <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-accent-100 text-accent-700">
+                    <AlertTriangle className="size-5" aria-hidden="true" />
+                  </span>
+                  <span className="min-w-0 flex-1 text-sm">
+                    <span className="font-bold text-accent-800">{expiringSoon.length} contractor{expiringSoon.length === 1 ? " has" : "s have"} document{expiringSoon.length === 1 ? "" : "s"} expiring within 14 days</span>
+                    <span className="block text-xs text-accent-700">Expired documents flag automatically — ask for reuploads before they lapse.</span>
+                  </span>
+                  <span className="text-xs font-bold uppercase tracking-wide text-accent-700">Expiring soon</span>
+                </div>
+              </Card>
+            )}
             {/* ---- stats ---- */}
             <section className="grid grid-cols-3 gap-3">
               <div className="rounded-2xl border border-ink-100 bg-surface p-4 shadow-card">
@@ -263,6 +288,22 @@ function OwnerContractors() {
             <section>
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <h3 className="text-sm font-bold uppercase tracking-wider text-ink-500">Roster</h3>
+                <div className="flex items-center gap-1 rounded-xl border border-ink-200 bg-surface p-1" role="tablist" aria-label="Compliance filter">
+                  {([["all", "All"], ["missing", "Missing docs"], ["expiring", "Expiring soon"]] as const).map(([key, label]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      role="tab"
+                      aria-selected={rosterFilter === key}
+                      onClick={() => setRosterFilter(key)}
+                      className={`h-8 rounded-lg px-3 text-[13px] font-semibold transition-colors ${rosterFilter === key ? "bg-ink-950 text-white" : "text-ink-500 hover:text-ink-700"}`}
+                    >
+                      {label}
+                      {key === "missing" && missingDocs > 0 && <span className="ml-1 tabular-nums text-danger-600">{missingDocs}</span>}
+                      {key === "expiring" && expiringSoon.length > 0 && <span className="ml-1 tabular-nums text-accent-600">{expiringSoon.length}</span>}
+                    </button>
+                  ))}
+                </div>
                 <div className="flex flex-wrap items-center gap-2">
                   {/* Records-on-demand: removed/inactive contractors are hidden
                       unless the owner explicitly asks to include them. */}
@@ -412,15 +453,30 @@ function OwnerContractors() {
                 />
               ) : (
                 <Card className="overflow-hidden">
-                  {rows.map((c, i) => (
-                    <ContractorRowView key={c.id} c={c} last={i === rows.length - 1} onChanged={() => void refresh()} onPayrate={(cents) => savePayrate(c, cents)} />
-                  ))}
+                  {visibleRows.length === 0 ? (
+                    <div className="grid place-items-center p-10 text-center">
+                      <p className="text-sm text-ink-400">{rosterFilter === "all" ? "No contractors match." : rosterFilter === "missing" ? "No contractors missing documents — everyone's compliant." : "Nothing expiring within 14 days."}</p>
+                    </div>
+                  ) : (
+                    visibleRows.map((c, i) => (
+                      <ContractorRowView key={c.id} c={c} last={i === visibleRows.length - 1} onChanged={() => void refresh()} onPayrate={(cents) => savePayrate(c, cents)} onEdit={() => setEditing({ id: c.id, section: "profile" })} />
+                    ))
+                  )}
                 </Card>
               )}
             </section>
           </>
         ) : (
-          <RequiredDocsSegment
+          <>
+            {editing && (
+              <ContractorProfileEditor
+                contractorId={editing.id}
+                initialSection={editing.section}
+                onClose={() => setEditing(null)}
+                onChanged={() => void refresh()}
+              />
+            )}
+            <RequiredDocsSegment
             docTypes={docTypes}
             docTypesError={docTypesError}
             activeTypes={activeTypes}
@@ -442,6 +498,7 @@ function OwnerContractors() {
             onRemove={handleRemove}
             onMove={handleMove}
           />
+          </>
         )}
       </div>
     </AppShell>
@@ -450,39 +507,25 @@ function OwnerContractors() {
 
 /* ------------------------------ roster row ------------------------------ */
 
-function ContractorRowView({ c, last, onChanged, onPayrate }: {
+function ContractorRowView({ c, last, onChanged, onPayrate, onEdit }: {
   c: ContractorRow;
   last: boolean;
   onChanged: () => void;
   onPayrate: (cents: number | null) => Promise<void>;
+  onEdit: () => void;
 }) {
   const removed = Boolean(c.removedAt);
-  const [editing, setEditing] = useState(false);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
-  const [editName, setEditName] = useState(c.name);
-  const [editEmail, setEditEmail] = useState(c.email);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState<{ kind: "ok" | "warn"; text: string } | null>(null);
 
-  /** Renders the Towbook outcome from edit/remove as a user-facing notice. */
+  /** Renders the Towbook outcome from remove as a user-facing notice. */
   const noticeFor = (t: TowbookPushOutcome): { kind: "ok" | "warn"; text: string } => {
     if (t.status === "verified") return { kind: "ok", text: t.notice };
     if (t.status === "skipped" || t.status === "unsupported") return { kind: "warn", text: t.notice };
     return { kind: "warn", text: t.notice + " This was escalated to the ops queue for review." };
-  };
-
-  const saveEdit = async (e: FormEvent) => {
-    e.preventDefault();
-    setBusy(true); setError(""); setNotice(null);
-    const r = await editContractor({ data: { contractorId: c.id, name: editName, email: editEmail } });
-    setBusy(false);
-    if (r.ok) {
-      setNotice(noticeFor(r.data.towbook));
-      setEditing(false);
-      onChanged();
-    } else setError(r.message);
   };
 
   const confirmRemove = async () => {
@@ -522,11 +565,18 @@ function ContractorRowView({ c, last, onChanged, onPayrate }: {
             <p className="mt-0.5 truncate text-xs text-ink-500">
               {c.email}
               {c.loginHandle ? ` · handle ${c.loginHandle}` : ""}
+              {c.vehicleType ? ` · ${c.vehicleType} truck` : ""}
             </p>
             {!removed && (
               <p className="mt-1.5 flex flex-wrap items-center gap-2">
                 <ComplianceBadge onFile={c.onFileDocCount} required={c.requiredDocCount} />
                 <PayRateField valueCents={c.payrateCents} onSave={onPayrate} />
+                {c.expiringSoonCount > 0 && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-accent-50 px-2 py-0.5 text-[11px] font-bold text-accent-700" title="A required document expires within 14 days">
+                    <AlertTriangle className="size-3" aria-hidden="true" />
+                    {c.expiringSoonCount} doc{c.expiringSoonCount === 1 ? "" : "s"} expire soon
+                  </span>
+                )}
               </p>
             )}
           </div>
@@ -550,12 +600,24 @@ function ContractorRowView({ c, last, onChanged, onPayrate }: {
           </span>
           {!removed && (
             <span className="flex gap-1.5 sm:ml-2">
-              <Button size="sm" variant="secondary" className="!px-2.5" title="Edit contractor" onClick={() => { setEditing(true); setConfirmingRemove(false); setError(""); setNotice(null); setEditName(c.name); setEditEmail(c.email); }}>
-                <Pencil className="size-3.5" aria-hidden="true" /> Edit
-              </Button>
-              <Button size="sm" variant="danger-ghost" className="!px-2.5" title="Remove contractor" onClick={() => { setConfirmingRemove(true); setEditing(false); setError(""); setNotice(null); }}>
-                <Trash2 className="size-3.5" aria-hidden="true" /> Remove
-              </Button>
+              <button
+                type="button"
+                title="Edit contractor"
+                aria-label={`Edit ${c.name}`}
+                onClick={() => onEdit()}
+                className="grid size-9 place-items-center rounded-lg border border-ink-200 bg-surface text-ink-500 transition-colors hover:border-brand-300 hover:text-brand-700"
+              >
+                <Pencil className="size-4" aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                title="Remove contractor"
+                aria-label={`Remove ${c.name}`}
+                onClick={() => { setConfirmingRemove(true); setError(""); setNotice(null); }}
+                className="grid size-9 place-items-center rounded-lg border border-danger-200 bg-danger-50/60 text-danger-600 transition-colors hover:bg-danger-100"
+              >
+                <Trash2 className="size-4" aria-hidden="true" />
+              </button>
             </span>
           )}
         </div>
@@ -566,27 +628,6 @@ function ContractorRowView({ c, last, onChanged, onPayrate }: {
         <div className={`mt-3 rounded-xl border px-4 py-3 text-sm ${notice.kind === "ok" ? "border-success-100 bg-success-50 text-success-700" : "border-accent-200 bg-accent-50 text-accent-800"}`}>
           {notice.text}
         </div>
-      )}
-
-      {editing && !removed && (
-        <form onSubmit={(e) => void saveEdit(e)} className="mt-3 grid gap-3 rounded-xl border border-ink-100 bg-ink-50/50 p-4 sm:grid-cols-[1fr_1fr_auto]">
-          <label className="block">
-            <span className="mb-1 block text-xs font-semibold text-ink-500">Name</span>
-            <input value={editName} onChange={(e) => setEditName(e.target.value)} required maxLength={120}
-              className="h-11 w-full rounded-xl border border-ink-200 bg-surface px-3 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" />
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-xs font-semibold text-ink-500">Email</span>
-            <input value={editEmail} onChange={(e) => setEditEmail(e.target.value)} type="email" maxLength={200}
-              className="h-11 w-full rounded-xl border border-ink-200 bg-surface px-3 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" />
-          </label>
-          <div className="flex items-end gap-2">
-            <Button type="submit" loading={busy} className="flex-1 sm:flex-none">Save</Button>
-            <Button type="button" variant="secondary" onClick={() => { setEditing(false); setError(""); setNotice(null); }}>
-              <X className="size-4" aria-hidden="true" /> <span className="sm:hidden">Cancel</span>
-            </Button>
-          </div>
-        </form>
       )}
 
       {confirmingRemove && !removed && (
@@ -611,7 +652,6 @@ function ContractorRowView({ c, last, onChanged, onPayrate }: {
     </div>
   );
 }
-
 /* ------------------------- required documents segment ------------------------- */
 
 function RequiredDocsSegment({
