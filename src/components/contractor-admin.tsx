@@ -6,10 +6,10 @@
  * the doc-status color map, rounded-2xl cards / rounded-xl controls /
  * rounded-full badges, touch targets ≥44px (h-11), tabular-nums for numbers.
  */
-import { Check, Pencil, Trash2, X } from "lucide-react";
+import { Check, ChevronDown, Eye, Pencil, Trash2, X } from "lucide-react";
 import { useState } from "react";
 import { Button } from "./ui";
-import type { DocTypeRow } from "~/data/contractor-admin";
+import type { ContractorDocumentRow, DocStatus, DocTypeRow } from "~/data/contractor-admin";
 
 /* ------------------------------ ComplianceBadge ------------------------------ */
 /** "{onFile}/{required}" pill — green ✓ when complete, danger tint when not;
@@ -311,6 +311,234 @@ export function DocumentTypeEditorRow({
             <Button variant="danger" size="sm" loading={saving} onClick={() => void confirmRemove()}>Remove type</Button>
             <Button variant="secondary" size="sm" disabled={saving} onClick={() => setConfirmingRemove(false)}>Keep it</Button>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------- DocStatusBadge ------------------------------- */
+/** Per-doc status pill following the spec's color map: MISSING ink-neutral,
+ *  UPLOADED info, VERIFIED success, EXPIRED danger, REJECTED accent (yellow is
+ *  reserved for rejected + the driver-side docs-needed chip — nothing else). */
+export function DocStatusBadge({ status, className }: { status: DocStatus; className?: string }) {
+  const map = {
+    missing: { cls: "bg-ink-100 text-ink-600", dot: "bg-ink-400", label: "Missing" },
+    uploaded: { cls: "bg-info-50 text-info-700", dot: "bg-info-500", label: "Submitted" },
+    verified: { cls: "bg-success-50 text-success-700", dot: "bg-success-500", label: "Verified ✓" },
+    expired: { cls: "bg-danger-50 text-danger-700", dot: "bg-danger-500", label: "Expired" },
+    rejected: { cls: "bg-accent-100 text-accent-700", dot: "bg-accent-500", label: "Reupload requested" },
+  } as const;
+  const m = map[status];
+  return (
+    <span
+      className={`inline-flex min-h-[22px] items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide ${m.cls} ${className ?? ""}`}
+    >
+      <span aria-hidden="true" className={`size-1.5 rounded-full ${m.dot}`} />
+      {m.label}
+    </span>
+  );
+}
+
+/* ------------------------------ ComplianceSummary ------------------------------ */
+/** "3 of 5 required docs on file — missing: W-9, Insurance Cert" (names come
+ *  from the caller's doc rows); "all on file ✓" when complete. Hidden when the
+ *  org requires no document types. */
+export function ComplianceSummary({ onFile, required, missingNames = [] }: { onFile: number; required: number; missingNames?: string[] }) {
+  if (required <= 0) return null;
+  const missing = required - onFile;
+  return (
+    <p className="text-xs leading-relaxed">
+      <span className="font-bold tabular-nums text-ink-900">{onFile} of {required}</span>{" "}
+      <span className="text-ink-500">required docs on file</span>
+      {missing > 0 ? (
+        <>
+          {" — missing: "}
+          <span className="font-semibold text-danger-600">{missingNames.length ? missingNames.join(", ") : `${missing} more`}</span>
+        </>
+      ) : (
+        <>
+          {" — "}
+          <span className="font-semibold text-success-600">all on file ✓</span>
+        </>
+      )}
+    </p>
+  );
+}
+
+/* ------------------------- OwnerDocumentRow (owner view) ------------------------- */
+/** One required type + the contractor's current file, owner review surface:
+ *  tap the row body to expand the detail panel. MISSING has no actions (the
+ *  owner doesn't upload in v1 — contractors upload from their app). UPLOADED →
+ *  Verify (optional expiry when requiresExpiry) / Ask to reupload. VERIFIED →
+ *  editable expiry + View + reupload request. EXPIRED / REJECTED → View +
+ *  reupload paths. The parent owns the server calls + refresh + viewer. */
+export function OwnerDocumentRow({
+  doc,
+  busy,
+  onVerify,
+  onReject,
+  onSetExpiry,
+  onView,
+}: {
+  doc: ContractorDocumentRow;
+  busy: boolean;
+  onVerify: (docId: string, expiresOn: string | null) => Promise<void>;
+  onReject: (docId: string, reviewNote: string) => Promise<void>;
+  onSetExpiry: (docId: string, expiresOn: string | null) => Promise<void>;
+  onView: () => Promise<void>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [verifySheet, setVerifySheet] = useState(false);
+  const [rejectSheet, setRejectSheet] = useState(false);
+  const [expiryDraft, setExpiryDraft] = useState(doc.expiresOn ?? "");
+  const [rejectNote, setRejectNote] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const inFlight = busy || saving;
+  const hasFile = doc.docId != null;
+
+  const run = async (fn: () => Promise<void>) => {
+    setSaving(true);
+    setError("");
+    try {
+      await fn();
+      setVerifySheet(false);
+      setRejectSheet(false);
+      setRejectNote("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "That action didn't go through — try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const meta = hasFile
+    ? [doc.fileName, doc.uploadedAt ? `uploaded ${new Date(doc.uploadedAt).toLocaleDateString()}` : null, doc.expiresOn ? `expires ${doc.expiresOn}` : null]
+        .filter(Boolean)
+        .join(" · ")
+    : null;
+
+  return (
+    <div className="border-b border-ink-100 px-4 py-3.5 last:border-0">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        className="flex w-full items-center gap-2 text-left"
+      >
+        <span className="min-w-0 flex-1">
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+            <span className="truncate text-sm font-semibold text-ink-900">{doc.docTypeName}</span>
+            {doc.requiresExpiry && (
+              <span className="rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-ink-500">expires</span>
+            )}
+          </span>
+          <span className="mt-1 block">
+            <DocStatusBadge status={doc.status} />
+          </span>
+        </span>
+        <ChevronDown className={`size-4 shrink-0 text-ink-400 transition-transform ${expanded ? "rotate-180" : ""}`} aria-hidden="true" />
+      </button>
+
+      {expanded && (
+        <div className="mt-3 rounded-xl bg-ink-50/50 p-3">
+          {!hasFile ? (
+            <p className="text-xs italic text-ink-400">Awaiting contractor upload — the owner doesn&apos;t upload in v1.</p>
+          ) : (
+            <>
+              {meta && <p className="mb-2 truncate text-xs text-ink-500">{meta}</p>}
+
+              {doc.status === "missing" && null}
+              {doc.status === "rejected" && doc.reviewNote && (
+                <p className="mb-2 rounded-lg border border-accent-200 bg-accent-50 px-3 py-2 text-xs text-accent-800">
+                  <strong>Reason:</strong> {doc.reviewNote}
+                </p>
+              )}
+
+              {error && <p role="alert" className="mb-2 text-xs font-medium text-danger-600">{error}</p>}
+
+              <div className="flex flex-wrap items-center gap-2">
+                {doc.status !== "missing" && (
+                  <Button size="sm" variant="secondary" className="!px-2.5" disabled={inFlight} onClick={() => void onView()}>
+                    <Eye className="size-3.5" aria-hidden="true" /> View
+                  </Button>
+                )}
+                {(doc.status === "uploaded" || doc.status === "rejected") && (
+                  <Button size="sm" className="!px-2.5" disabled={inFlight} onClick={() => { setVerifySheet(true); setError(""); }}>
+                    {doc.status === "rejected" ? "Clear & re-verify" : "Verify"}
+                  </Button>
+                )}
+                {(doc.status === "verified" || doc.status === "expired") && (
+                  <span className="flex items-center gap-1.5">
+                    <input
+                      type="date"
+                      value={expiryDraft}
+                      onChange={(e) => setExpiryDraft(e.target.value)}
+                      disabled={inFlight}
+                      aria-label={`Expiry for ${doc.docTypeName}`}
+                      className="h-9 rounded-lg border border-ink-200 bg-surface px-2 text-xs tabular-nums text-ink-700 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                    />
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      className="!px-2.5"
+                      disabled={inFlight || expiryDraft === (doc.expiresOn ?? "")}
+                      onClick={() => run(() => onSetExpiry(doc.docId!, expiryDraft || null))}
+                    >
+                      Save
+                    </Button>
+                  </span>
+                )}
+                {(doc.status === "uploaded" || doc.status === "verified" || doc.status === "expired") && (
+                  <Button size="sm" variant="ghost" className="!px-2.5" disabled={inFlight} onClick={() => { setRejectSheet(true); setError(""); }}>
+                    Ask to reupload
+                  </Button>
+                )}
+              </div>
+
+              {verifySheet && (
+                <div className="mt-3 rounded-xl border border-ink-200 bg-surface p-3">
+                  <p className="text-sm font-bold text-ink-900">Verify “{doc.docTypeName}”?</p>
+                  {doc.requiresExpiry && (
+                    <label className="mt-2 block">
+                      <span className="mb-1 block text-xs font-semibold text-ink-500">Expires on <span className="font-normal text-ink-300">(optional — expired dates flag automatically)</span></span>
+                      <input
+                        type="date"
+                        value={expiryDraft}
+                        onChange={(e) => setExpiryDraft(e.target.value)}
+                        className="h-11 w-full max-w-56 rounded-xl border border-ink-200 bg-surface px-3 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                      />
+                    </label>
+                  )}
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button size="sm" loading={saving} onClick={() => run(() => onVerify(doc.docId!, expiryDraft || null))}>Mark verified</Button>
+                    <Button size="sm" variant="secondary" disabled={saving} onClick={() => setVerifySheet(false)}>Cancel</Button>
+                  </div>
+                </div>
+              )}
+
+              {rejectSheet && (
+                <div className="mt-3 rounded-xl border border-ink-200 bg-surface p-3">
+                  <p className="text-sm font-bold text-ink-900">Ask {doc.status === "expired" ? "for a reupload" : "to reupload"} — reason shown to the contractor</p>
+                  <textarea
+                    value={rejectNote}
+                    onChange={(e) => setRejectNote(e.target.value)}
+                    maxLength={300}
+                    rows={2}
+                    placeholder="e.g. The insurance certificate is blurry — please upload a clearer copy."
+                    className="mt-2 h-auto w-full rounded-xl border border-ink-200 bg-surface px-3 py-2 text-sm outline-none placeholder:text-ink-300 focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                  />
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button size="sm" loading={saving} disabled={!rejectNote.trim()} onClick={() => run(() => onReject(doc.docId!, rejectNote.trim()))}>
+                      Request reupload
+                    </Button>
+                    <Button size="sm" variant="secondary" disabled={saving} onClick={() => setRejectSheet(false)}>Cancel</Button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
         </div>
       )}
     </div>

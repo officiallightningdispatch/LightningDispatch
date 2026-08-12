@@ -13,6 +13,8 @@ import { createServerFn } from "@tanstack/react-start";
 import type {
   ContractorAdminResult,
   ContractorComplianceRow,
+  ContractorContactResult,
+  ContractorDetailRow,
   ContractorDocumentRow,
   DocFilePayload,
   DocTypeRow,
@@ -21,6 +23,8 @@ import type {
 export type {
   ContractorAdminResult,
   ContractorComplianceRow,
+  ContractorContactResult,
+  ContractorDetailRow,
   ContractorDocumentRow,
   DocFilePayload,
   DocStatus,
@@ -96,6 +100,20 @@ export const setContractorPayrate = createServerFn({ method: "POST" }).validator
 export const listContractorCompliance = createServerFn({ method: "GET" }).handler(async (): Promise<ContractorAdminResult<ContractorComplianceRow[]>> => {
   const core = await import("./contractor-admin-core");
   return core.listContractorComplianceHandler();
+});
+
+/* --------------------------- contractor detail (owner) --------------------------- */
+
+export const getContractorDetail = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<ContractorAdminResult<ContractorDetailRow>> => {
+  const core = await import("./contractor-admin-core");
+  return core.getContractorDetailHandler(data);
+});
+
+/** Update the LD-only contact fields (phone + vehicle description) — never
+ *  pushed to Towbook. Owner/admin only. */
+export const setContractorContact = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<ContractorAdminResult<ContractorContactResult>> => {
+  const core = await import("./contractor-admin-core");
+  return core.setContractorContactHandler(data);
 });
 
 /* ---------------------------- contractor-own documents ---------------------------- */

@@ -1,5 +1,5 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { AlertTriangle, CloudDownload, FileText, Loader2, Pencil, Plus, Trash2, UserCog, Users, X } from "lucide-react";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { AlertTriangle, ChevronRight, CloudDownload, FileText, Loader2, Pencil, Plus, Trash2, UserCog, Users, X } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { AppShell } from "~/components/app-shell";
 import { ComplianceBadge, DocumentTypeEditorRow, PayRateField, formatCents } from "~/components/contractor-admin";
@@ -34,7 +34,8 @@ export const Route = createFileRoute("/owner/contractors")({ component: OwnerCon
  *  row now carries the per-job payrate (inline immediate-save) and a
  *  compliance badge; the Required documents segment is the org-level editor
  *  (add / rename / reorder / toggle / soft-remove types). The per-contractor
- *  Documents section + detail screen land in part 2. */
+ *  detail screen (/owner/contractors/:id) hosts the Documents section, payrate
+ *  card and danger zone (part 2). */
 function OwnerContractors() {
   const [segment, setSegment] = useState<"roster" | "docs">("roster");
   const toast = useToast();
@@ -459,10 +460,14 @@ function ContractorRowView({ c, last, onChanged, onPayrate }: {
     <div className={`px-4 py-3.5 ${last ? "" : "border-b border-ink-100"} ${removed ? "bg-ink-50/60" : ""}`}>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
         <div className="flex min-w-0 flex-1 items-center gap-3">
-          <Avatar name={c.name} />
+          <Link to="/owner/contractors/$id" params={{ id: c.id }} aria-label={`Open ${c.name} details`} className="shrink-0 rounded-full focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500">
+            <Avatar name={c.name} />
+          </Link>
           <div className="min-w-0">
             <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm font-semibold">
-              <span className={`truncate ${removed ? "text-ink-400 line-through decoration-ink-300" : ""}`}>{c.name}</span>
+              <Link to="/owner/contractors/$id" params={{ id: c.id }} className={`truncate hover:underline ${removed ? "text-ink-400 line-through decoration-ink-300" : "hover:text-ink-700"}`}>
+                {c.name}
+              </Link>
               {removed ? (
                 <StatusBadge dot className="bg-ink-200 text-ink-600">
                   Removed {c.removedAt ? timeAgo(c.removedAt) : ""}
@@ -486,6 +491,10 @@ function ContractorRowView({ c, last, onChanged, onPayrate }: {
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pl-12 text-xs tabular-nums text-ink-500 sm:shrink-0 sm:pl-0 sm:text-right">
+          <Link to="/owner/contractors/$id" params={{ id: c.id }} aria-label={`Open ${c.name} details`}
+            className="order-last grid size-9 shrink-0 place-items-center rounded-lg text-ink-300 transition-colors hover:bg-ink-50 hover:text-ink-600 sm:order-first sm:-mr-1">
+            <ChevronRight className="size-4" aria-hidden="true" />
+          </Link>
           <span className="min-w-28">
             <span className="block text-[10px] font-bold uppercase tracking-wide text-ink-300 sm:hidden">Towbook ID</span>
             {c.towbookDriverId ? <span className="font-mono">{c.towbookDriverId}</span> : "—"}

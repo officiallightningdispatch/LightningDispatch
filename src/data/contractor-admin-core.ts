@@ -489,6 +489,163 @@ export async function listContractorComplianceCore(actor: ContractorAdminActor):
   }
 }
 
+/* --------------------------- contractor detail (part 2) --------------------------- */
+
+/** The full per-contractor record for the owner detail screen
+ *  (/owner/contractors/:id). Identity + sign-in meta + LD-only contact
+ *  (phone/vehicle — never pushed to Towbook) + payrate + compliance counts +
+ *  this-pay-period completed jobs (est. earnings = completed × payrate).
+ *  INCLUDES removed (deactivated) contractors — the detail screen renders a
+ *  removed contractor with history preserved. Seroval-safe: every property
+ *  defined (null, never undefined). */
+export type ContractorDetailRow = {
+  id: string;
+  name: string;
+  email: string;
+  loginHandle: string | null;
+  towbookDriverId: string | null;
+  towbookUserId: string | null;
+  status: "signed_in" | "not_signed_in";
+  lastActivityAt: string | null;
+  createdAt: string | null;
+  removedAt: string | null;
+  phone: string | null;
+  vehicleDesc: string | null;
+  payrateCents: number | null;
+  requiredDocCount: number;
+  onFileDocCount: number;
+  completedJobsThisPeriod: number;
+  estEarningsCents: number | null;
+};
+
+/** Monday 00:00 (server-local) — the pay-period start. The payroll engine
+ *  (part 4) owns the canonical weekly-period math; the detail card just needs
+ *  "jobs completed this period" for the est-earnings line. */
+function payPeriodStart(): Date {
+  const now = new Date();
+  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const diff = (d.getDay() + 6) % 7; // days since Monday
+  d.setDate(d.getDate() - diff);
+  return d;
+}
+
+const DETAIL_SCHEMA = z.object({ contractorId: z.string().trim().min(1).max(128) });
+
+/** One contractor's detail record — owner/admin only, INCLUDES removed rows
+ *  (unlike the roster, which excludes them). */
+export async function getContractorDetailCore(actor: ContractorAdminActor, data: unknown): Promise<ContractorAdminResult<ContractorDetailRow>> {
+  if (!canManage(actor)) return err("unauthorized", "Owner access required.");
+  const v = DETAIL_SCHEMA.safeParse(data);
+  if (!v.success) return err("invalid_input", "Invalid contractor.");
+  try {
+    await ensure();
+    const q = await db();
+    const rows = await q`SELECT u.id, u.name, u.email, u.login_handle, u.towbook_driver_id, u.towbook_user_id, u.created_at, u.deactivated_at,
+        cp.phone, cp.vehicle_desc, cp.payrate_cents,
+        ts.session_updated_at, ls.last_login, dl.last_ping,
+        (SELECT COUNT(*)::int FROM contractor_doc_types t WHERE t.org_id = ${actor.orgId} AND t.active) AS required_doc_count,
+        (SELECT COUNT(*)::int FROM contractor_documents d
+           JOIN contractor_doc_types t ON t.id = d.doc_type_id AND t.active
+           WHERE d.org_id = ${actor.orgId} AND d.contractor_id = u.id
+             AND d.status IN ('uploaded','verified')
+             AND (d.expires_on IS NULL OR d.expires_on >= CURRENT_DATE)) AS on_file_doc_count,
+        (SELECT COUNT(*)::int FROM dispatch_jobs j
+           WHERE j.org_id = ${actor.orgId} AND j.assigned_contractor_id = u.id
+             AND j.status = 'completed' AND j.completed_at >= ${payPeriodStart()}) AS completed_this_period
+      FROM users u
+      JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND m.role = 'contractor'
+      LEFT JOIN contractor_profiles cp ON cp.org_id = ${actor.orgId} AND cp.user_id = u.id
+      LEFT JOIN LATERAL (
+        SELECT MAX(updated_at) AS session_updated_at
+        FROM towbook_sessions ts
+        WHERE ts.org_id = ${actor.orgId} AND ts.towbook_driver_id = u.towbook_driver_id
+      ) ts ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT MAX(created_at) AS last_login
+        FROM sessions s
+        WHERE s.user_id = u.id AND s.expires_at > NOW()
+      ) ls ON TRUE
+      LEFT JOIN (
+        SELECT driver_id, MAX(captured_at) AS last_ping
+        FROM driver_locations WHERE org_id = ${actor.orgId}
+        GROUP BY driver_id
+      ) dl ON dl.driver_id = u.id
+      WHERE u.id = ${v.data.contractorId} LIMIT 1`;
+    if (!rows.length) return err("not_found", "That contractor isn't on this account.");
+    const r = rows[0] as Record<string, unknown>;
+    const lastPing = r.last_ping != null ? new Date(String(r.last_ping)) : null;
+    const sessionAt = r.session_updated_at != null ? new Date(String(r.session_updated_at)) : null;
+    const loginAt = r.last_login != null ? new Date(String(r.last_login)) : null;
+    const signedIn = sessionAt != null || loginAt != null;
+    const lastActivity = [lastPing, sessionAt, loginAt]
+      .filter((d): d is Date => d != null)
+      .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
+    const completed = r.completed_this_period != null ? Number(r.completed_this_period) : 0;
+    const payrate = r.payrate_cents != null ? Number(r.payrate_cents) : null;
+    return ok({
+      id: String(r.id),
+      name: String(r.name ?? ""),
+      email: String(r.email ?? ""),
+      loginHandle: r.login_handle != null ? String(r.login_handle) : null,
+      towbookDriverId: r.towbook_driver_id != null ? String(r.towbook_driver_id) : null,
+      towbookUserId: r.towbook_user_id != null ? String(r.towbook_user_id) : null,
+      status: signedIn ? "signed_in" : "not_signed_in",
+      lastActivityAt: lastActivity ? lastActivity.toISOString() : null,
+      createdAt: r.created_at != null ? new Date(String(r.created_at)).toISOString() : null,
+      removedAt: r.deactivated_at != null ? new Date(String(r.deactivated_at)).toISOString() : null,
+      phone: r.phone != null ? String(r.phone) : null,
+      vehicleDesc: r.vehicle_desc != null ? String(r.vehicle_desc) : null,
+      payrateCents: payrate,
+      requiredDocCount: r.required_doc_count != null ? Number(r.required_doc_count) : 0,
+      onFileDocCount: r.on_file_doc_count != null ? Number(r.on_file_doc_count) : 0,
+      completedJobsThisPeriod: completed,
+      estEarningsCents: payrate != null ? payrate * completed : null,
+    });
+  } catch (e) {
+    return err("database_error", e instanceof Error ? e.message : "Unable to load the contractor.");
+  }
+}
+
+const CONTACT_SCHEMA = z.object({
+  contractorId: z.string().trim().min(1).max(128),
+  phone: z.string().trim().max(40, "Keep the phone number under 40 characters.").optional().or(z.literal("")),
+  vehicleDesc: z.string().trim().max(200, "Keep the vehicle description under 200 characters.").optional().or(z.literal("")),
+});
+
+export type ContractorContactResult = { contractorId: string; phone: string | null; vehicleDesc: string | null };
+
+/** Update the LD-only contact fields (phone + vehicle description) on the
+ *  contractor's operational profile. These are Lightning-Dispatch-only — never
+ *  pushed to Towbook (Towbook's driver-editor phone/vehicle surface is
+ *  unverified territory). Upsert + audited ('contractor_contact_updated'). */
+export async function setContractorContactCore(actor: ContractorAdminActor, data: unknown): Promise<ContractorAdminResult<ContractorContactResult>> {
+  if (!canManage(actor)) return err("unauthorized", "Owner access required.");
+  const v = CONTACT_SCHEMA.safeParse(data);
+  if (!v.success) return err("invalid_input", v.error.issues[0]?.message ?? "Invalid contact details.");
+  const phone = v.data.phone && v.data.phone.trim() ? v.data.phone.trim() : null;
+  const vehicleDesc = v.data.vehicleDesc && v.data.vehicleDesc.trim() ? v.data.vehicleDesc.trim() : null;
+  try {
+    await ensure();
+    const q = await db();
+    const member = await q`SELECT 1 FROM organization_memberships m WHERE m.org_id=${actor.orgId} AND m.user_id=${v.data.contractorId} AND m.role='contractor' LIMIT 1`;
+    if (!member.length) return err("not_found", "That contractor isn't on this account.");
+    const before = await q`SELECT phone, vehicle_desc FROM contractor_profiles WHERE org_id=${actor.orgId} AND user_id=${v.data.contractorId} LIMIT 1`;
+    await q`INSERT INTO contractor_profiles(org_id, user_id, payrate_cents, phone, vehicle_desc, updated_at)
+      VALUES(${actor.orgId}, ${v.data.contractorId}, NULL, ${phone}, ${vehicleDesc}, NOW())
+      ON CONFLICT (org_id, user_id) DO UPDATE SET phone=EXCLUDED.phone, vehicle_desc=EXCLUDED.vehicle_desc, updated_at=NOW()`;
+    await recordAudit(actor, "contractor_contact_updated", v.data.contractorId, {
+      from: {
+        phone: before.length ? (before[0].phone != null ? String(before[0].phone) : null) : null,
+        vehicleDesc: before.length ? (before[0].vehicle_desc != null ? String(before[0].vehicle_desc) : null) : null,
+      },
+      to: { phone, vehicleDesc },
+    });
+    return ok({ contractorId: v.data.contractorId, phone, vehicleDesc });
+  } catch (e) {
+    return err("database_error", e instanceof Error ? e.message : "Unable to save the contact details.");
+  }
+}
+
 /* ------------------------------ contractor-own docs ------------------------------ */
 
 /** The acting contractor's own documents — same shape as
@@ -723,6 +880,18 @@ export async function listContractorComplianceHandler(): Promise<ContractorAdmin
   const actor = await resolveOwnerActor();
   if (!actor) return err("unauthorized", "Owner access required.");
   return listContractorComplianceCore(actor);
+}
+export async function getContractorDetailHandler(data: unknown): Promise<ContractorAdminResult<ContractorDetailRow>> {
+  if (!configured()) return DB_MODE_ERR("Contractor details");
+  const actor = await resolveOwnerActor();
+  if (!actor) return err("unauthorized", "Owner access required.");
+  return getContractorDetailCore(actor, data);
+}
+export async function setContractorContactHandler(data: unknown): Promise<ContractorAdminResult<ContractorContactResult>> {
+  if (!configured()) return DB_MODE_ERR("Contractor details");
+  const actor = await resolveOwnerActor();
+  if (!actor) return err("unauthorized", "Owner access required.");
+  return setContractorContactCore(actor, data);
 }
 export async function getMyDocumentsHandler(): Promise<ContractorAdminResult<ContractorDocumentRow[]>> {
   if (!configured()) return DB_MODE_ERR("Documents");
