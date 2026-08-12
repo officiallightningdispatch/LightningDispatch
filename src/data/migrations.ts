@@ -749,6 +749,31 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE INDEX IF NOT EXISTS payout_records_org_period_status_idx ON payout_records(org_id, period_id, status)`;
     await q`CREATE INDEX IF NOT EXISTS payout_records_org_contractor_idx ON payout_records(org_id, contractor_id)`;
   }],
+  [34, async (q) => {
+    // Card-on-file store (owner spec 2026-08-11, backlog #1 payment tab): ONE
+    // stored card per motor club, tokenized CLIENT-SIDE by Square's Web Payments
+    // SDK and created on the OWNER's Square account via the Cards API
+    // (POST /v2/cards — source_id accepts a card nonce; the response card id is
+    // `ccof:…`). square_card_id is the Square card id (UNIQUE — it is the
+    // payment source); the PAN is NEVER stored (brand + last4 only). The unique
+    // (org_id, lower(club_name)) index enforces one card per club per org —
+    // createClubCardCore UPSERTS on it (a re-added card replaces the previous
+    // row and best-effort deletes the replaced Square card).
+    // Note: payment_transactions deliberately keeps the club_name JOIN (no
+    // card_id FK) — chargeStagedCore resolves the club's ccof at charge time by
+    // club_name, so a staged row stays chargeable even if the card was replaced
+    // since the email arrived (the row's own card_source_id remains an override).
+    await q`CREATE TABLE IF NOT EXISTS motor_club_cards (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      club_name TEXT NOT NULL,
+      square_card_id TEXT NOT NULL UNIQUE,
+      brand TEXT,
+      last4 TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS motor_club_cards_org_club_uidx ON motor_club_cards(org_id, lower(club_name))`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

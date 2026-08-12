@@ -46,7 +46,7 @@
  * gate is enforced at the core, not just the handler.
  */
 import { z } from "zod";
-import { loadSquareConfig, createCardPayment } from "./square-client";
+import { loadSquareConfig, loadSquarePublicConfig, createCardPayment, createCardOnFile, deleteCardOnFile } from "./square-client";
 import { scanGmail, type ClubChargeCandidate } from "./club-mail";
 import { randomUUID } from "node:crypto";
 
@@ -134,6 +134,46 @@ export type MirrorTipResult =
   | { ok: true; data: PaymentTxnRow }
   | { ok: false; code: "unauthorized" | "not_found" | "invalid_state" | "database_error"; message: string };
 
+/* --------------------------- card on file (club) --------------------------- */
+
+/** One stored motor-club card (motor_club_cards row) — the ccof payment source
+ *  for auto-charging that club's staged charges. brand + last4 only, never the
+ *  PAN. */
+export type ClubCardRow = {
+  id: string;
+  orgId: string;
+  clubName: string;
+  squareCardId: string; // "ccof:…"
+  brand: string | null;
+  last4: string | null;
+  createdAt: string;
+};
+
+export type ListClubCardsResult =
+  | { ok: true; data: ClubCardRow[] }
+  | { ok: false; code: "unauthorized" | "database_error"; message: string };
+
+export type CreateClubCardResult =
+  | { ok: true; data: ClubCardRow }
+  | { ok: false; code: "unauthorized" | "invalid_input" | "square_not_configured" | "square_failed" | "database_error"; message: string };
+
+export type DeleteClubCardResult =
+  | { ok: true; data: { id: string; removedFromSquare: boolean } }
+  | { ok: false; code: "unauthorized" | "not_found" | "square_failed" | "database_error"; message: string };
+
+/** A tip ledger row with the paying driver's name (LEFT JOIN completion_tips →
+ *  users) — the payment tab's tips view shows driver attribution without
+ *  duplicating tip data. */
+export type TipLedgerRow = PaymentTxnRow & { driverName: string | null; driverTowbookId: string | null };
+
+export type ListTipsResult =
+  | { ok: true; data: TipLedgerRow[] }
+  | { ok: false; code: "unauthorized" | "database_error"; message: string };
+
+export type SquarePublicConfigResult =
+  | { ok: true; data: { applicationId: string; locationId: string } }
+  | { ok: false; code: "unauthorized" | "square_not_configured"; message: string };
+
 /* ------------------------------- row mapping ------------------------------- */
 
 /** DB row → Seroval-safe ledger row. Every property defined (null, never
@@ -166,6 +206,20 @@ function toTxnRow(r: Record<string, unknown>): PaymentTxnRow {
     error: str(r.error),
     createdAt: iso(r.created_at) ?? "",
     updatedAt: iso(r.updated_at) ?? "",
+  };
+}
+
+/** DB row → Seroval-safe club card row (brand/last4 null, never undefined). */
+function toClubCardRow(r: Record<string, unknown>): ClubCardRow {
+  const str = (v: unknown): string | null => (v == null || v === "" ? null : String(v));
+  return {
+    id: String(r.id),
+    orgId: String(r.org_id),
+    clubName: String(r.club_name),
+    squareCardId: String(r.square_card_id),
+    brand: str(r.brand),
+    last4: str(r.last4),
+    createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : new Date(String(r.created_at)).toISOString(),
   };
 }
 
@@ -290,11 +344,23 @@ export async function chargeStagedCore(actor: PaymentEngineActor, data: unknown,
     const rowStatus = String(row.status);
     if (rowStatus !== "staged" && rowStatus !== "failed") return { ok: false, code: "invalid_state", message: `This charge is already ${rowStatus} — refresh the list.` };
 
-    const sourceId = (v.data.sourceId && v.data.sourceId.trim()) || (row.card_source_id != null && String(row.card_source_id) !== "" ? String(row.card_source_id) : null);
+    let sourceId = (v.data.sourceId && v.data.sourceId.trim()) || (row.card_source_id != null && String(row.card_source_id) !== "" ? String(row.card_source_id) : null);
+    // Auto-resolve the club's stored card-on-file (payment tab slice): when the
+    // staged row carries no tokenized source, charge through the club's ccof
+    // card if one is on file — the owner-approved flow "charge club cards via
+    // Square without re-entering card details". The resolved id is persisted on
+    // the row so the ledger shows exactly which source was charged.
+    if (!sourceId && row.club_name != null && String(row.club_name) !== "") {
+      const clubCards = await q`SELECT square_card_id FROM motor_club_cards WHERE org_id=${actor.orgId} AND lower(club_name)=lower(${String(row.club_name)}) LIMIT 1`;
+      if (clubCards.length) {
+        sourceId = String(clubCards[0].square_card_id);
+        await q`UPDATE payment_transactions SET card_source_id=${sourceId}, updated_at=NOW() WHERE id=${String(row.id)}`;
+      }
+    }
     if (!sourceId) {
       return {
         ok: false, code: "square_source_missing", retryable: true,
-        message: "This charge has no tokenized card source. Square cannot charge raw card details parsed from an email — collect a card nonce (payment form / Web Payments SDK) or store the club's card on file (Cards API) and attach its id, then retry.",
+        message: "This charge has no tokenized card source. Square cannot charge raw card details parsed from an email — add this club's card on the Payments tab (card on file), then retry.",
       };
     }
 
@@ -508,6 +574,175 @@ export async function mirrorTipCore(actor: PaymentEngineActor, data: unknown): P
   }
 }
 
+/* --------------------------- card on file (club) --------------------------- */
+
+const CLUB_CARD_SCHEMA = z.object({
+  clubName: z.string().min(1).max(120),
+  /** The Web Payments SDK card nonce (cnon:…) collected CLIENT-SIDE — never a
+   *  raw PAN (Square rejects raw card fields on /v2/cards). */
+  sourceId: z.string().min(8).max(255),
+});
+
+/** Store one motor-club card on the OWNER's Square account (Cards API
+ *  POST /v2/cards — the nonce becomes a `ccof:…` card id) and record it in
+ *  motor_club_cards. UPSERT semantics per club: re-adding a card for a club
+ *  that already has one REPLACES the local row and best-effort deletes the
+ *  replaced Square card (never fails the call if that cleanup hiccups). The
+ *  PAN never touches this code — Square returns only card id/brand/last4.
+ *  Injectable fetchImpl/squareStableDir for hermetic tests. */
+export async function createClubCardCore(actor: PaymentEngineActor, data: unknown, opts: { fetchImpl?: typeof fetch; squareStableDir?: string } = {}): Promise<CreateClubCardResult> {
+  if (!canManage(actor)) return { ok: false, code: "unauthorized", message: "Only the owner or an admin can store club cards." };
+  const v = CLUB_CARD_SCHEMA.safeParse(data);
+  if (!v.success) return { ok: false, code: "invalid_input", message: "A club name and a tokenized card (from the card form) are required." };
+  let config;
+  try {
+    config = await loadSquareConfig(process.env, { stableDir: opts.squareStableDir });
+  } catch (err) {
+    return { ok: false, code: "square_not_configured", message: err instanceof Error ? err.message : "Square isn't connected." };
+  }
+  const id = `clubcard-${actor.orgId.slice(0, 8)}-${randomUUID()}`;
+  // Max 45 chars per the Cards API docs; the uuid suffix keeps keys unique.
+  const idempotencyKey = `clubcard-${actor.orgId.slice(0, 8)}-${randomUUID()}`.slice(0, 45);
+  let card;
+  try {
+    card = await createCardOnFile({
+      config,
+      idempotencyKey,
+      sourceId: v.data.sourceId,
+      referenceId: actor.orgId.slice(0, 64),
+      fetchImpl: opts.fetchImpl,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Square could not store the card.";
+    return { ok: false, code: "square_failed", message, retryable: true };
+  }
+  try {
+    await ensure();
+    const q = await db();
+    // UPSERT per (org, club): one stored card per club. The replaced Square
+    // card is deleted best-effort AFTER the local row points at the new one.
+    const existing = await q`SELECT square_card_id FROM motor_club_cards WHERE org_id=${actor.orgId} AND lower(club_name)=lower(${v.data.clubName}) LIMIT 1`;
+    const replacedCardId = existing.length ? String(existing[0].square_card_id) : null;
+    await q`INSERT INTO motor_club_cards(id, org_id, club_name, square_card_id, brand, last4)
+      VALUES(${id}, ${actor.orgId}, ${v.data.clubName}, ${card.cardId}, ${card.brand}, ${card.last4})
+      ON CONFLICT (org_id, lower(club_name)) DO UPDATE SET square_card_id=${card.cardId}, brand=${card.brand}, last4=${card.last4}, created_at=NOW()`;
+    if (replacedCardId && replacedCardId !== card.cardId) {
+      try { await deleteCardOnFile({ config, cardId: replacedCardId, fetchImpl: opts.fetchImpl }); } catch { /* the new card is stored — cleanup is best-effort */ }
+    }
+    try {
+      await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
+        SELECT gen_random_uuid()::text, ${actor.orgId}, ${actor.id}, ${actor.role}, 'payment_club_card_saved', 'motor_club_card', ${id},
+          ${JSON.stringify({ clubName: v.data.clubName, squareCardId: card.cardId, brand: card.brand ?? null, last4: card.last4 ?? null, replaced: replacedCardId != null })}::jsonb, 'payment-engine'`;
+    } catch { /* best-effort audit */ }
+    const row = await q`SELECT * FROM motor_club_cards WHERE id=${id} LIMIT 1`;
+    if (!row.length) {
+      // ON CONFLICT kept the original id — re-read by (org, club).
+      const rows = await q`SELECT * FROM motor_club_cards WHERE org_id=${actor.orgId} AND lower(club_name)=lower(${v.data.clubName}) LIMIT 1`;
+      return { ok: true, data: toClubCardRow(rows[0] as Record<string, unknown>) };
+    }
+    return { ok: true, data: toClubCardRow(row[0] as Record<string, unknown>) };
+  } catch (err) {
+    return { ok: false, code: "database_error", message: err instanceof Error ? err.message : "Unable to store the club card." };
+  }
+}
+
+/** Owner/admin read: every stored club card for the org, club name A→Z. */
+export async function listClubCardsCore(actor: PaymentEngineActor): Promise<ListClubCardsResult> {
+  if (!canManage(actor)) return { ok: false, code: "unauthorized", message: "Only the owner or an admin can view club cards." };
+  try {
+    await ensure();
+    const q = await db();
+    const rows = await q`SELECT * FROM motor_club_cards WHERE org_id=${actor.orgId} ORDER BY lower(club_name) ASC, created_at DESC`;
+    return { ok: true, data: rows.map((r: Record<string, unknown>) => toClubCardRow(r)) };
+  } catch (err) {
+    return { ok: false, code: "database_error", message: err instanceof Error ? err.message : "Unable to list club cards." };
+  }
+}
+
+const DELETE_CARD_SCHEMA = z.object({ clubCardId: z.string().min(1).max(128) });
+
+/** Remove a stored club card: DELETE /v2/cards/{id} on Square (a 404 there is
+ *  treated as already-gone) and delete the local row. A Square failure that is
+ *  NOT a 404 keeps the local row and surfaces as square_failed (retryable). */
+export async function deleteClubCardCore(actor: PaymentEngineActor, data: unknown, opts: { fetchImpl?: typeof fetch; squareStableDir?: string } = {}): Promise<DeleteClubCardResult> {
+  if (!canManage(actor)) return { ok: false, code: "unauthorized", message: "Only the owner or an admin can remove club cards." };
+  const v = DELETE_CARD_SCHEMA.safeParse(data);
+  if (!v.success) return { ok: false, code: "not_found", message: "Invalid card reference." };
+  let config;
+  try {
+    config = await loadSquareConfig(process.env, { stableDir: opts.squareStableDir });
+  } catch (err) {
+    return { ok: false, code: "square_failed", message: err instanceof Error ? err.message : "Square isn't connected." };
+  }
+  try {
+    await ensure();
+    const q = await db();
+    const rows = await q`SELECT * FROM motor_club_cards WHERE id=${v.data.clubCardId} AND org_id=${actor.orgId} LIMIT 1`;
+    if (!rows.length) return { ok: false, code: "not_found", message: "Club card not found." };
+    const row = rows[0] as Record<string, unknown>;
+    const squareCardId = String(row.square_card_id);
+    let removedFromSquare = true;
+    try {
+      const res = await deleteCardOnFile({ config, cardId: squareCardId, fetchImpl: opts.fetchImpl });
+      removedFromSquare = res.deleted;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Square could not remove the card.";
+      return { ok: false, code: "square_failed", message, retryable: true };
+    }
+    await q`DELETE FROM motor_club_cards WHERE id=${v.data.clubCardId} AND org_id=${actor.orgId}`;
+    try {
+      await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
+        SELECT gen_random_uuid()::text, ${actor.orgId}, ${actor.id}, ${actor.role}, 'payment_club_card_removed', 'motor_club_card', ${v.data.clubCardId},
+          ${JSON.stringify({ clubName: String(row.club_name), squareCardId, removedFromSquare })}::jsonb, 'payment-engine'`;
+    } catch { /* best-effort audit */ }
+    return { ok: true, data: { id: v.data.clubCardId, removedFromSquare } };
+  } catch (err) {
+    return { ok: false, code: "database_error", message: err instanceof Error ? err.message : "Unable to remove the club card." };
+  }
+}
+
+/* ------------------------------ tips (ledger) ------------------------------ */
+
+/** Owner/admin tips read: kind='tip' ledger rows newest first, with the paying
+ *  driver's name (users join via completion_tips driver_id — the ledger row
+ *  itself stays slim; the mirror already preserved attribution in
+ *  completion_tips). Seroval-safe (driverName null, never undefined). */
+export async function listTipsCore(actor: PaymentEngineActor): Promise<ListTipsResult> {
+  if (!canManage(actor)) return { ok: false, code: "unauthorized", message: "Only the owner or an admin can view tips." };
+  try {
+    await ensure();
+    const q = await db();
+    const rows = await q`SELECT pt.*, u.name AS driver_name, ct.driver_towbook_id AS tip_driver_towbook_id
+      FROM payment_transactions pt
+      LEFT JOIN completion_tips ct ON pt.org_id=ct.org_id AND pt.idempotency_key = 'tip-mirror-' || ct.id
+      LEFT JOIN users u ON u.id = ct.driver_id
+      WHERE pt.org_id=${actor.orgId} AND pt.kind='tip'
+      ORDER BY pt.created_at DESC`;
+    return {
+      ok: true,
+      data: rows.map((r: Record<string, unknown>) => {
+        const str = (v: unknown): string | null => (v == null || v === "" ? null : String(v));
+        return { ...toTxnRow(r), driverName: str(r.driver_name), driverTowbookId: str(r.tip_driver_towbook_id) };
+      }),
+    };
+  } catch (err) {
+    return { ok: false, code: "database_error", message: err instanceof Error ? err.message : "Unable to list tips." };
+  }
+}
+
+/** Owner/admin PUBLIC Square Web Payments config (application id + location id
+ *  ONLY — the access token never leaves the server). Drives the card form in
+ *  the payment tab; the tab renders a graceful "payments not configured" state
+ *  when this fails. */
+export async function getPaymentSquareConfigCore(opts: { squareStableDir?: string } = {}): Promise<SquarePublicConfigResult> {
+  try {
+    const config = await loadSquarePublicConfig(process.env, { stableDir: opts.squareStableDir });
+    return { ok: true, data: { applicationId: config.applicationId, locationId: config.locationId } };
+  } catch (err) {
+    return { ok: false, code: "square_not_configured", message: err instanceof Error ? err.message : "Square isn't connected." };
+  }
+}
+
 /* ------------------------------ handler layer ------------------------------ */
 
 /** Thin auth wrappers for the client-safe facade — resolve the real session
@@ -553,4 +788,39 @@ export async function mirrorTipHandler(data: unknown): Promise<MirrorTipResult> 
   const actor = await resolveManageActor();
   if (!actor) return { ok: false, code: "unauthorized", message: "Sign in as the owner or an admin first." };
   return mirrorTipCore(actor, data);
+}
+
+export async function createClubCardHandler(data: unknown): Promise<CreateClubCardResult> {
+  if (!configured()) return { ok: false, code: "square_not_configured", message: "Requires database mode." };
+  const actor = await resolveManageActor();
+  if (!actor) return { ok: false, code: "unauthorized", message: "Sign in as the owner or an admin first." };
+  return createClubCardCore(actor, data);
+}
+
+export async function listClubCardsHandler(): Promise<ListClubCardsResult> {
+  if (!configured()) return { ok: false, code: "database_error", message: "Requires database mode." };
+  const actor = await resolveManageActor();
+  if (!actor) return { ok: false, code: "unauthorized", message: "Sign in as the owner or an admin first." };
+  return listClubCardsCore(actor);
+}
+
+export async function deleteClubCardHandler(data: unknown): Promise<DeleteClubCardResult> {
+  if (!configured()) return { ok: false, code: "square_failed", message: "Requires database mode." };
+  const actor = await resolveManageActor();
+  if (!actor) return { ok: false, code: "unauthorized", message: "Sign in as the owner or an admin first." };
+  return deleteClubCardCore(actor, data);
+}
+
+export async function listTipsHandler(): Promise<ListTipsResult> {
+  if (!configured()) return { ok: false, code: "database_error", message: "Requires database mode." };
+  const actor = await resolveManageActor();
+  if (!actor) return { ok: false, code: "unauthorized", message: "Sign in as the owner or an admin first." };
+  return listTipsCore(actor);
+}
+
+export async function getPaymentSquareConfigHandler(): Promise<SquarePublicConfigResult> {
+  if (!configured()) return { ok: false, code: "square_not_configured", message: "Requires database mode." };
+  const actor = await resolveManageActor();
+  if (!actor) return { ok: false, code: "unauthorized", message: "Sign in as the owner or an admin first." };
+  return getPaymentSquareConfigCore();
 }

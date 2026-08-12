@@ -10,8 +10,8 @@
  * exports — the core owns all logic (client-graph rule).
  */
 import { createServerFn } from "@tanstack/react-start";
-import type { ScanClubMailResult, StageClubChargeResult, ListStagedChargesResult, ChargeStagedResult, MirrorTipResult } from "./payment-engine-core";
-export type { PaymentTxnRow, ScanClubMailResult, StageClubChargeResult, ListStagedChargesResult, ChargeStagedResult, MirrorTipResult, ScanItem } from "./payment-engine-core";
+import type { ScanClubMailResult, StageClubChargeResult, ListStagedChargesResult, ChargeStagedResult, MirrorTipResult, CreateClubCardResult, ListClubCardsResult, DeleteClubCardResult, ListTipsResult, SquarePublicConfigResult } from "./payment-engine-core";
+export type { PaymentTxnRow, ScanClubMailResult, StageClubChargeResult, ListStagedChargesResult, ChargeStagedResult, MirrorTipResult, ClubCardRow, CreateClubCardResult, ListClubCardsResult, DeleteClubCardResult, TipLedgerRow, ListTipsResult, SquarePublicConfigResult, ScanItem } from "./payment-engine-core";
 
 const passthrough = (x: unknown) => x;
 
@@ -47,4 +47,38 @@ export const scanClubMail = createServerFn({ method: "POST" }).validator(passthr
 export const mirrorTip = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<MirrorTipResult> => {
   const core = await import("./payment-engine-core");
   return core.mirrorTipHandler(data);
+});
+
+/** Store ONE motor-club card on file (owner/admin). The card is tokenized
+ *  CLIENT-SIDE by Square's Web Payments SDK (public app/location ids only —
+ *  never the access token); the nonce becomes a ccof card on the OWNER's
+ *  Square account via the Cards API. Re-adding a club's card replaces it. */
+export const createClubCard = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<CreateClubCardResult> => {
+  const core = await import("./payment-engine-core");
+  return core.createClubCardHandler(data);
+});
+
+/** Every stored club card for this org (owner/admin). */
+export const listClubCards = createServerFn({ method: "GET" }).handler(async (): Promise<ListClubCardsResult> => {
+  const core = await import("./payment-engine-core");
+  return core.listClubCardsHandler();
+});
+
+/** Remove a stored club card from Square + this org (owner/admin). */
+export const deleteClubCard = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<DeleteClubCardResult> => {
+  const core = await import("./payment-engine-core");
+  return core.deleteClubCardHandler(data);
+});
+
+/** Tips ledger read with driver attribution (owner/admin). */
+export const listTips = createServerFn({ method: "GET" }).handler(async (): Promise<ListTipsResult> => {
+  const core = await import("./payment-engine-core");
+  return core.listTipsHandler();
+});
+
+/** PUBLIC Square Web Payments config (application id + location id only) for
+ *  the payment tab's card form — owner/admin gated. */
+export const getPaymentSquareConfig = createServerFn({ method: "GET" }).handler(async (): Promise<SquarePublicConfigResult> => {
+  const core = await import("./payment-engine-core");
+  return core.getPaymentSquareConfigHandler();
 });

@@ -13,6 +13,13 @@
 // location_id; success + 400 + network-blip paths), the tip mirror into
 // payment_transactions (kind='tip', idempotent), and role gates (contractor
 // denied everywhere).
+// Sections 11-18 (payment-tab slice, 2026-08-12): Cards API card on file
+// (create/replace/delete on the OWNER's Square account — brand+last4 only,
+// never the PAN), chargeStagedCore AUTO-resolving the club's stored ccof card,
+// listTips driver attribution, the owner-approval gate (scan/stage/store NEVER
+// charge — only an explicit per-row Charge does), and proof that only
+// /v2/cards + /v2/payments are ever touched (funds never transfer OUT of the
+// owner's Square balance).
 //
 // Real network calls never happen: Square takes an injectable fetchImpl,
 // Gmail takes an injectable connectImpl (fake IMAP mailbox). DB-backed against
@@ -35,6 +42,11 @@ const {
   chargeStagedCore,
   scanClubMailCore,
   mirrorTipCore,
+  createClubCardCore,
+  listClubCardsCore,
+  deleteClubCardCore,
+  listTipsCore,
+  getPaymentSquareConfigCore,
 } = await import("./src/data/payment-engine-core.ts");
 const { assertQaOrg } = await import("./src/data/db-guard.ts");
 const checks = [];
@@ -349,7 +361,7 @@ await setup();
   const r = await stageClubChargeCore(ACTOR, { amountCents: 3000, clubName: "Honk", messageId: `nosrc-${TAG}@mail.gmail.com` });
   const txnId = r.ok ? r.data.id : "";
   const noSrc = await chargeStagedCore(ACTOR, { txnId }, { fetchImpl: async () => { throw new Error("unexpected Square call"); } });
-  check("no tokenized source → square_source_missing (caveat surfaced)", noSrc.ok === false && noSrc.code === "square_source_missing" && noSrc.retryable === true && String(noSrc.message).includes("nonce"), JSON.stringify(noSrc));
+  check("no tokenized source → square_source_missing (caveat surfaced)", noSrc.ok === false && noSrc.code === "square_source_missing" && noSrc.retryable === true && String(noSrc.message).includes("card on file"), JSON.stringify(noSrc));
   const rows = await q`SELECT id FROM payment_transactions WHERE org_id=${ORG2} AND kind='club_charge' LIMIT 1`;
   const crossOrg = await chargeStagedCore(ACTOR, { txnId: String(rows[0].id) }, { fetchImpl: async () => { throw new Error("unexpected Square call"); } });
   check("charge: other org's txn → not_found", crossOrg.ok === false && crossOrg.code === "not_found", JSON.stringify(crossOrg));
@@ -381,6 +393,224 @@ await setup();
   check("audit payment_tip_mirrored (driver attribution preserved)", tipAud.length === 1 && tipAud[0].detail && tipAud[0].detail.driverTowbookId === "910088" && tipAud[0].detail.amountCents === 500 && tipAud[0].detail.jobId === tipJob, JSON.stringify(tipAud));
 }
 
+/* ============ 11) card on file: Cards API request shape + persist ============ */
+// Mock Square handling BOTH the Cards API (POST /v2/cards, DELETE /v2/cards/{id})
+// and the Payments API (POST /v2/payments) — records every call. Card ids are
+// derived deterministically from the source nonce (one nonce → one ccof card).
+// modes: 'ok' | 'card-fail' (Cards POST 400) | 'delete-fail' (Cards DELETE 500).
+function makeCardsSquare({ mode = "ok" } = {}) {
+  const squareCalls = [];
+  const cardIds = new Map();
+  const paymentIds = new Map();
+  let paymentSeq = 0;
+  const ccofFor = (sourceId) => {
+    const slug = String(sourceId).replace(/^cnon:/, "").replace(/[^A-Za-z0-9]/g, "_");
+    const id = `ccof:qa_${slug}`;
+    cardIds.set(sourceId, id);
+    return id;
+  };
+  const fetchImpl = async (url, init = {}) => {
+    const u = String(url);
+    const method = init.method || "GET";
+    if (method === "POST" && u === "https://connect.squareup.com/v2/cards") {
+      const body = JSON.parse(String(init.body));
+      squareCalls.push({ url: u, method, body, headers: init.headers });
+      if (mode === "card-fail") return resp(400, { json: { errors: [{ code: "VALIDATION_ERROR", detail: "Invalid card data." }] } });
+      const cardId = cardIds.get(body.source_id) ?? ccofFor(body.source_id);
+      return resp(200, { json: { card: { id: cardId, card_brand: "VISA", last_4: "4242" } } });
+    }
+    if (method === "DELETE" && u.startsWith("https://connect.squareup.com/v2/cards/")) {
+      squareCalls.push({ url: u, method, headers: init.headers });
+      if (mode === "delete-fail") return resp(500, { json: { errors: [{ code: "INTERNAL_SERVER_ERROR" }] } });
+      const id = decodeURIComponent(u.split("/").pop());
+      if (id === "ccof:qa_gone") return resp(404, { json: { errors: [{ code: "NOT_FOUND" }] } });
+      return resp(200, { json: { card: { id } } });
+    }
+    if (method === "POST" && u === "https://connect.squareup.com/v2/payments") {
+      const body = JSON.parse(String(init.body));
+      squareCalls.push({ url: u, method, body, headers: init.headers });
+      if (!paymentIds.has(body.idempotency_key)) paymentIds.set(body.idempotency_key, `pymt_club_${++paymentSeq}`);
+      const paymentId = paymentIds.get(body.idempotency_key);
+      return resp(200, { json: { payment: { id: paymentId, status: "COMPLETED", receipt_url: `https://square.link/receipt/${paymentId}` } } });
+    }
+    throw new Error(`unexpected Square call: ${method} ${u}`);
+  };
+  return { fetchImpl, squareCalls, cardIds, paymentIds };
+}
+{
+  const { fetchImpl, squareCalls } = makeCardsSquare();
+  const r = await createClubCardCore(ACTOR, { clubName: "Allied Dispatch", sourceId: "cnon:qa_webpayments_nonce_1" }, { fetchImpl });
+  check("createClubCard ok → ccof + brand + last4 + org", r.ok === true && r.data.squareCardId.startsWith("ccof:") && r.data.brand === "VISA" && r.data.last4 === "4242" && r.data.clubName === "Allied Dispatch" && r.data.orgId === ORG, JSON.stringify(r));
+  const call = squareCalls[0];
+  check("Cards API POST /v2/cards with Bearer", call.method === "POST" && call.url === "https://connect.squareup.com/v2/cards" && call.headers.authorization === "Bearer test-square-token", JSON.stringify(call));
+  check("body: source_id = nonce + idempotency key 8–45 chars", call.body.source_id === "cnon:qa_webpayments_nonce_1" && typeof call.body.idempotency_key === "string" && call.body.idempotency_key.length >= 8 && call.body.idempotency_key.length <= 45, JSON.stringify(call.body));
+  check("body: billing_address + cardholder_name, PAN never sent", call.body.card && call.body.card.billing_address && call.body.card.billing_address.postal_code === "06606" && call.body.card.billing_address.country === "US" && call.body.card.cardholder_name === "Lightning Roadside Assistants LLC" && !JSON.stringify(call.body).includes("4242".padStart(16, "4")), JSON.stringify(call.body));
+  const rows = await q`SELECT * FROM motor_club_cards WHERE org_id=${ORG}`;
+  check("card row persisted (club, square_card_id, brand, last4)", rows.length === 1 && String(rows[0].club_name) === "Allied Dispatch" && String(rows[0].square_card_id).startsWith("ccof:") && String(rows[0].brand) === "VISA" && String(rows[0].last4) === "4242", JSON.stringify(rows));
+  const aud = await q`SELECT action, detail, actor_role FROM audit_log WHERE org_id=${ORG} AND action='payment_club_card_saved'`;
+  check("audit payment_club_card_saved (owner, last4 only, never PAN)", aud.length === 1 && String(aud[0].actor_role) === "owner" && aud[0].detail.last4 === "4242" && !JSON.stringify(aud[0].detail).includes("4242".padStart(16, "4")), JSON.stringify(aud));
+  const list = await listClubCardsCore(ACTOR);
+  check("listClubCards seroval-safe (no undefined)", list.ok === true && list.data.length === 1 && list.data[0].squareCardId.startsWith("ccof:") && Object.values(list.data[0]).every((v) => v !== undefined), JSON.stringify(list));
+}
+/* ============ 12) duplicate club card → UPSERT (replace, not duplicate) ============ */
+{
+  const before = await q`SELECT square_card_id FROM motor_club_cards WHERE org_id=${ORG}`;
+  const oldSquareId = String(before[0].square_card_id);
+  const { fetchImpl, squareCalls } = makeCardsSquare();
+  const r2 = await createClubCardCore(ACTOR, { clubName: "Allied Dispatch", sourceId: "cnon:qa_webpayments_nonce_2" }, { fetchImpl });
+  check("re-add same club ok → new ccof stored", r2.ok === true && r2.data.squareCardId.startsWith("ccof:"), JSON.stringify(r2));
+  const rows = await q`SELECT * FROM motor_club_cards WHERE org_id=${ORG}`;
+  check("exactly ONE row per club (upsert)", rows.length === 1, JSON.stringify(rows));
+  const row = rows[0];
+  check("row now points at the NEW ccof card", String(row.square_card_id) === r2.data.squareCardId && String(row.square_card_id) !== oldSquareId, JSON.stringify(row));
+  const deletes = squareCalls.filter((c) => c.method === "DELETE");
+  check("replaced Square card best-effort DELETEd", deletes.length === 1 && deletes[0].url === `https://connect.squareup.com/v2/cards/${encodeURIComponent(oldSquareId)}`, JSON.stringify(deletes));
+  const creates = squareCalls.filter((c) => c.method === "POST" && c.url === "https://connect.squareup.com/v2/cards");
+  check("one Create in this run with a fresh idempotency key ≤ 45", creates.length === 1 && typeof creates[0].body.idempotency_key === "string" && creates[0].body.idempotency_key.length <= 45, JSON.stringify(creates.map((c) => c.body.idempotency_key)));
+}
+/* ============ 13) deleteClubCard: DELETE + 404-already-gone + 500 keeps row ============ */
+{
+  const list = await listClubCardsCore(ACTOR);
+  const cardId = list.data[0].id;
+  const squareId = list.data[0].squareCardId;
+  const { fetchImpl, squareCalls } = makeCardsSquare();
+  const r = await deleteClubCardCore(ACTOR, { clubCardId: cardId }, { fetchImpl });
+  check("delete ok → removed from Square", r.ok === true && r.data.removedFromSquare === true && r.data.id === cardId, JSON.stringify(r));
+  check("DELETE /v2/cards/{id} with Bearer", squareCalls.length === 1 && squareCalls[0].method === "DELETE" && squareCalls[0].url === `https://connect.squareup.com/v2/cards/${encodeURIComponent(squareId)}` && squareCalls[0].headers.authorization === "Bearer test-square-token", JSON.stringify(squareCalls));
+  const gone = await q`SELECT COUNT(*)::int AS n FROM motor_club_cards WHERE id=${cardId} AND org_id=${ORG}`;
+  check("local row deleted", Number(gone[0].n) === 0, JSON.stringify(gone));
+  const aud = await q`SELECT action, detail FROM audit_log WHERE org_id=${ORG} AND action='payment_club_card_removed'`;
+  check("audit payment_club_card_removed", aud.length === 1 && aud[0].detail.removedFromSquare === true, JSON.stringify(aud));
+  // Square 404 → treated as already removed (local row still deleted).
+  await q`INSERT INTO motor_club_cards(id, org_id, club_name, square_card_id, brand, last4) VALUES(${`clubcard-gone-${TAG}`}, ${ORG}, 'Gone Club', 'ccof:qa_gone', 'VISA', '1234')`;
+  const r404 = await deleteClubCardCore(ACTOR, { clubCardId: `clubcard-gone-${TAG}` }, { fetchImpl });
+  check("Square 404 → removed locally, removedFromSquare false", r404.ok === true && r404.data.removedFromSquare === false, JSON.stringify(r404));
+  const gone404 = await q`SELECT COUNT(*)::int AS n FROM motor_club_cards WHERE id=${`clubcard-gone-${TAG}`}`;
+  check("404 path deleted the local row too", Number(gone404[0].n) === 0, JSON.stringify(gone404));
+  // Square 500 → local row kept + square_failed retryable.
+  await q`INSERT INTO motor_club_cards(id, org_id, club_name, square_card_id, brand, last4) VALUES(${`clubcard-keep-${TAG}`}, ${ORG}, 'Keep Club', 'ccof:qa_keep', 'VISA', '9999')`;
+  const { fetchImpl: fFail } = makeCardsSquare({ mode: "delete-fail" });
+  const rFail = await deleteClubCardCore(ACTOR, { clubCardId: `clubcard-keep-${TAG}` }, { fetchImpl: fFail });
+  check("Square 500 → square_failed retryable, row kept", rFail.ok === false && rFail.code === "square_failed" && rFail.retryable === true, JSON.stringify(rFail));
+  const kept = await q`SELECT COUNT(*)::int AS n FROM motor_club_cards WHERE id=${`clubcard-keep-${TAG}`}`;
+  check("failed delete left the local row", Number(kept[0].n) === 1, JSON.stringify(kept));
+  await q`DELETE FROM motor_club_cards WHERE id=${`clubcard-keep-${TAG}`}`;
+}
+/* ============ 14) chargeStaged AUTO-resolves the club's stored ccof ============ */
+{
+  const { fetchImpl, squareCalls } = makeCardsSquare();
+  await createClubCardCore(ACTOR, { clubName: "Allied Dispatch", sourceId: "cnon:qa_webpayments_nonce_3" }, { fetchImpl });
+  const staged = await stageClubChargeCore(ACTOR, { amountCents: 8500, clubName: "Allied Dispatch", cardLast4: "4242", poRef: "88231", messageId: `ccof-${TAG}@mail.gmail.com` });
+  check("staged row for Allied (no card_source_id)", staged.ok === true && staged.data.cardSourceId === null && staged.data.status === "staged", JSON.stringify(staged));
+  const r = await chargeStagedCore(ACTOR, { txnId: staged.data.id }, { fetchImpl });
+  check("charge ok via auto-resolved ccof → charged", r.ok === true && r.data.status === "charged", JSON.stringify(r));
+  const payCall = squareCalls.find((c) => c.method === "POST" && c.url === "https://connect.squareup.com/v2/payments");
+  check("Square payment used source_id = stored ccof (not a nonce)", payCall && payCall.body.source_id.startsWith("ccof:") && payCall.body.source_id !== "cnon:qa_webpayments_nonce_3", JSON.stringify(payCall?.body));
+  check("payment body amount/currency/location correct", payCall.body.amount_money.amount === 8500 && payCall.body.amount_money.currency === "USD" && payCall.body.location_id === "loc_test", JSON.stringify(payCall.body));
+  const dbRow = await q`SELECT card_source_id FROM payment_transactions WHERE id=${staged.data.id}`;
+  check("resolved ccof persisted on the ledger row", String(dbRow[0].card_source_id).startsWith("ccof:"), JSON.stringify(dbRow));
+  // No club card on file → still fails cleanly, ZERO Square calls.
+  const staged2 = await stageClubChargeCore(ACTOR, { amountCents: 12950, clubName: "Honk", messageId: `nosrc2-${TAG}@mail.gmail.com` });
+  const before = squareCalls.length;
+  const noCard = await chargeStagedCore(ACTOR, { txnId: staged2.data.id }, { fetchImpl });
+  check("no stored card → square_source_missing retryable", noCard.ok === false && noCard.code === "square_source_missing" && noCard.retryable === true && String(noCard.message).includes("card on file"), JSON.stringify(noCard));
+  check("zero NEW Square calls when the source is missing", squareCalls.length === before, JSON.stringify(squareCalls.length));
+  const dbRow2 = await q`SELECT status, card_source_id FROM payment_transactions WHERE id=${staged2.data.id}`;
+  check("row untouched (staged, no source)", String(dbRow2[0].status) === "staged" && dbRow2[0].card_source_id == null, JSON.stringify(dbRow2));
+}
+/* ============ 15) org scoping + role gates (card ops) ============ */
+{
+  const { fetchImpl } = makeCardsSquare();
+  const otherList = await listClubCardsCore(OTHER_ACTOR);
+  check("listClubCards org-scoped (ORG2 sees none of ORG's)", otherList.ok === true && otherList.data.length === 0, JSON.stringify(otherList));
+  const list = await listClubCardsCore(ACTOR);
+  const crossDel = await deleteClubCardCore(OTHER_ACTOR, { clubCardId: list.data[0].id }, { fetchImpl });
+  check("delete: other org's card → not_found", crossDel.ok === false && crossDel.code === "not_found", JSON.stringify(crossDel));
+  const deniedCreate = await createClubCardCore(WRONG_ACTOR, { clubName: "Allstate", sourceId: "cnon:qa_nope" }, { fetchImpl });
+  check("create: contractor → unauthorized", deniedCreate.ok === false && deniedCreate.code === "unauthorized", JSON.stringify(deniedCreate));
+  const deniedList = await listClubCardsCore(WRONG_ACTOR);
+  check("list: contractor → unauthorized", deniedList.ok === false && deniedList.code === "unauthorized", JSON.stringify(deniedList));
+  const deniedDelete = await deleteClubCardCore(WRONG_ACTOR, { clubCardId: "x" }, { fetchImpl });
+  check("delete: contractor → unauthorized", deniedDelete.ok === false && deniedDelete.code === "unauthorized", JSON.stringify(deniedDelete));
+  const deniedTips = await listTipsCore(WRONG_ACTOR);
+  check("listTips: contractor → unauthorized", deniedTips.ok === false && deniedTips.code === "unauthorized", JSON.stringify(deniedTips));
+  const adminCreate = await createClubCardCore(ADMIN_ACTOR, { clubName: "Allstate", sourceId: "cnon:qa_admin_nonce" }, { fetchImpl });
+  check("admin can store a club card", adminCreate.ok === true && adminCreate.data.clubName === "Allstate", JSON.stringify(adminCreate));
+}
+/* ============ 16) invalid input + Square not configured ============ */
+{
+  const bad = await createClubCardCore(ACTOR, { clubName: "Honk", sourceId: "short" });
+  check("short sourceId → invalid_input", bad.ok === false && bad.code === "invalid_input", JSON.stringify(bad));
+  // The not-configured path only triggers when the env has NO Square creds.
+  const saved = { t: process.env.SQUARE_ACCESS_TOKEN, l: process.env.SQUARE_LOCATION_ID, a: process.env.SQUARE_APPLICATION_ID };
+  delete process.env.SQUARE_ACCESS_TOKEN; delete process.env.SQUARE_LOCATION_ID; delete process.env.SQUARE_APPLICATION_ID;
+  const noConfig = await createClubCardCore(ACTOR, { clubName: "Honk", sourceId: "cnon:qa_config_nonce" }, { squareStableDir: `/tmp/square-missing-${Date.now()}` });
+  check("missing Square creds → square_not_configured", noConfig.ok === false && noConfig.code === "square_not_configured" && String(noConfig.message).includes("missing"), JSON.stringify(noConfig));
+  const cfg = await getPaymentSquareConfigCore({ squareStableDir: `/tmp/square-missing-${Date.now()}` });
+  check("public config missing → square_not_configured", cfg.ok === false && cfg.code === "square_not_configured", JSON.stringify(cfg));
+  process.env.SQUARE_ACCESS_TOKEN = saved.t; process.env.SQUARE_LOCATION_ID = saved.l; process.env.SQUARE_APPLICATION_ID = saved.a;
+  const cfgOk = await getPaymentSquareConfigCore();
+  check("public config → app id + location id ONLY (no token)", cfgOk.ok === true && cfgOk.data.applicationId === "app_test" && cfgOk.data.locationId === "loc_test" && !JSON.stringify(cfgOk).includes("test-square-token"), JSON.stringify(cfgOk));
+}
+/* ============ 17) listTips: driver attribution via completion_tips join ============ */
+{
+  const tipId = `tip-cc-${TAG}`;
+  const tipJob = `tb-447100-${TAG}`;
+  await q`INSERT INTO completion_tips(id, org_id, job_id, driver_id, driver_towbook_id, amount_cents, currency, square_payment_id, status, attempt, idempotency_key)
+    VALUES(${tipId}, ${ORG}, ${tipJob}, ${DRIVER}, '910088', 750, 'USD', 'pymt_tip_cc', 'paid', 1, ${`tip-${tipJob}-1`})`;
+  const m = await mirrorTipCore(ACTOR, { tipId });
+  check("tip mirrored into ledger (separate from club charges)", m.ok === true && m.data.kind === "tip", JSON.stringify(m));
+  const tips = await listTipsCore(ACTOR);
+  check("listTips shows driver name + towbook id", tips.ok === true && tips.data.length >= 1 && tips.data.some((t) => t.driverName === "QA Tip Driver" && t.driverTowbookId === "910088" && t.amountCents === 750), JSON.stringify(tips.data));
+  check("tips seroval-safe", tips.data.every((t) => t.driverName !== undefined && t.driverTowbookId !== undefined && Object.values(t).every((v) => v !== undefined)), JSON.stringify(tips.data[0]));
+  const kindCounts = await q`SELECT kind, COUNT(*)::int AS n FROM payment_transactions WHERE org_id=${ORG} AND kind IN ('tip','club_charge') GROUP BY kind`;
+  const kinds = Object.fromEntries(kindCounts.map((k) => [String(k.kind), Number(k.n)]));
+  check("tips kept as kind='tip' rows, club charges kind='club_charge' (never merged)", (kinds.tip ?? 0) >= 1 && (kinds.club_charge ?? 0) >= 1, JSON.stringify(kinds));
+}
+/* ============ 18) approval gate: staging NEVER charges; no funds ever transfer ============ */
+{
+  // Full end-to-end: a fresh club-charge email is scanned + staged, and the
+  // engine makes ZERO Square calls of any kind until the owner EXPLICITLY taps
+  // Charge (chargeStagedCore). A stored club card is only charged after that
+  // explicit per-row approval — nothing is ever auto-charged.
+  const { fetchImpl, squareCalls } = makeCardsSquare();
+  const gateMail = { ...MAIL[0], messageId: `gate-${TAG}@mail.gmail.com`, subject: MAIL[0].subject, from: MAIL[0].from, body: MAIL[0].body };
+  const gateMailbox = {
+    async connect() {},
+    async mailboxOpen() {},
+    async search() { return [1]; },
+    async fetchOne() {
+      return {
+        envelope: { messageId: gateMail.messageId, date: new Date("2026-08-11T10:00:00Z"), from: [{ address: gateMail.from }], subject: gateMail.subject },
+        source: rawMessage(gateMail),
+      };
+    },
+    async logout() {},
+  };
+  const scan = await scanClubMailCore(ACTOR, {}, { connectImpl: async () => gateMailbox });
+  check("gate: scan staged exactly 1 fresh Allied charge", scan.ok === true && scan.staged === 1 && scan.skipped === 0, JSON.stringify(scan));
+  check("gate: scan/stage made ZERO Square calls (nothing auto-charged)", squareCalls.length === 0, JSON.stringify(squareCalls));
+  const stagedRow = await q`SELECT * FROM payment_transactions WHERE org_id=${ORG} AND source_email_message_id=${gateMail.messageId} LIMIT 1`;
+  check("gate: staged row exists, status staged, no payment id", stagedRow.length === 1 && String(stagedRow[0].status) === "staged" && stagedRow[0].square_payment_id == null, JSON.stringify(stagedRow));
+  // Add the club's card on file (Cards API only — still no payment).
+  const card = await createClubCardCore(ACTOR, { clubName: "Allied Dispatch", sourceId: "cnon:qa_gate_nonce" }, { fetchImpl });
+  check("gate: card stored via Cards API", card.ok === true && card.data.squareCardId.startsWith("ccof:"), JSON.stringify(card));
+  check("gate: storing the card made NO payment calls", squareCalls.filter((c) => c.method === "POST" && c.url === "https://connect.squareup.com/v2/payments").length === 0, JSON.stringify(squareCalls));
+  // NOW the explicit owner approval: tap Charge on that one row.
+  const charge = await chargeStagedCore(ACTOR, { txnId: String(stagedRow[0].id) }, { fetchImpl });
+  check("gate: explicit chargeStagedCore → charged", charge.ok === true && charge.data.status === "charged" && charge.data.squarePaymentId != null, JSON.stringify(charge));
+  const paymentCalls = squareCalls.filter((c) => c.method === "POST" && c.url === "https://connect.squareup.com/v2/payments");
+  check("gate: exactly ONE payment call after explicit approval", paymentCalls.length === 1, JSON.stringify(squareCalls));
+  check("gate: payment source is the stored ccof card", paymentCalls[0].body.source_id.startsWith("ccof:"), JSON.stringify(paymentCalls[0].body));
+  // The engine may ONLY ever touch /v2/cards and /v2/payments — never a
+  // transfer/payout/bank endpoint: funds never LEAVE the owner's Square
+  // balance (Square settles club charges INTO it; the owner's own rails send
+  // payouts out, and that is a different, owner-executed flow).
+  const badUrls = squareCalls.filter((c) => !c.url.startsWith("https://connect.squareup.com/v2/cards") && c.url !== "https://connect.squareup.com/v2/payments");
+  check("no transfer/payout/bank-account endpoints ever called (funds never transferred out)", badUrls.length === 0, JSON.stringify(badUrls));
+  const allUrls = squareCalls.map((c) => c.url);
+  check("every Square call this section is Cards or Payments API", allUrls.every((u) => u.startsWith("https://connect.squareup.com/v2/cards") || u === "https://connect.squareup.com/v2/payments"), JSON.stringify(allUrls));
+}
 /* ================================ summary + cleanup ================================ */
 const failed = checks.filter(([, ok]) => !ok);
 console.log(`payment-engine.test.mjs: ${checks.length - failed.length}/${checks.length} passed`);
@@ -400,12 +630,13 @@ for (const u of memberIds) {
 }
 const leftover = await q`SELECT
   (SELECT COUNT(*)::int FROM organizations WHERE name LIKE 'qa payment%') AS orgs,
+  (SELECT COUNT(*)::int FROM motor_club_cards WHERE org_id LIKE 'qa-payment%') AS cards,
   (SELECT COUNT(*)::int FROM payment_transactions WHERE org_id LIKE 'qa-payment%') AS txns,
   (SELECT COUNT(*)::int FROM completion_tips WHERE org_id LIKE 'qa-payment%') AS tips,
   (SELECT COUNT(*)::int FROM audit_log WHERE org_id LIKE 'qa-payment%') AS audit,
   (SELECT COUNT(*)::int FROM users WHERE email LIKE 'qa-payment-%@lightning.test' OR email LIKE 'qa-payment2-%@lightning.test') AS users,
   (SELECT COUNT(*)::int FROM organization_memberships WHERE org_id LIKE 'qa-payment%') AS members`;
-const z = Number(leftover[0].orgs) === 0 && Number(leftover[0].txns) === 0 && Number(leftover[0].tips) === 0 && Number(leftover[0].audit) === 0 && Number(leftover[0].users) === 0 && Number(leftover[0].members) === 0;
+const z = Number(leftover[0].orgs) === 0 && Number(leftover[0].cards) === 0 && Number(leftover[0].txns) === 0 && Number(leftover[0].tips) === 0 && Number(leftover[0].audit) === 0 && Number(leftover[0].users) === 0 && Number(leftover[0].members) === 0;
 console.log(`cleanup: ${JSON.stringify(leftover[0])}`);
 if (!z) { console.error("FAIL: QA cleanup left rows behind"); process.exit(1); }
 console.log("payment-engine.test.mjs: cleanup verified — zero QA rows left");

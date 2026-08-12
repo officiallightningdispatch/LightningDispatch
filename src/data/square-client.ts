@@ -147,6 +147,115 @@ export async function createPaymentLink(opts: {
   return { paymentLinkId: linkId, url };
 }
 
+/* ------------------------- Cards API (card on file) ------------------------- */
+
+/** A card stored on the OWNER's Square account via the Cards API — the returned
+ *  id (`ccof:…`) is a payment source for POST /v2/payments, so a stored club
+ *  card can be charged later without re-entering card details. */
+export type SquareCardOnFile = {
+  cardId: string; // "ccof:…"
+  brand: string | null; // e.g. "VISA"
+  last4: string | null;
+};
+
+/**
+ * Store a card on file: POST /v2/cards. Verified request shape against the
+ * Square docs (developer.squareup.com/reference/square/cards-api/create-card,
+ * 2026-08-11): required body fields are `idempotency_key` (unique per request,
+ * max 45 chars) and `source_id` (a card NONCE — the example shows
+ * `"source_id": "cnon:…"`, the Web Payments SDK token) plus a `card` object.
+ * The docs' request example always includes `card.billing_address` (address
+ * line / locality / administrative_district_level_1 / postal_code / country)
+ * and `card.cardholder_name` — Square validates the card's zip/postal code
+ * against the billing address, so the OWNER'S verified business address
+ * placeholder is used here (Lightning Roadside Assistants LLC, Bridgeport CT —
+ * see FIXED_BILLING_ADDRESS below). The response `card.id` is the `ccof:…`
+ * payment source; `card.card_brand` / `card.last_4` are stored for display
+ * (the PAN is never returned by Square and never stored).
+ * NOTE: a Web Payments card nonce is single-use — it must be passed to this
+ * endpoint (or a payment) exactly once.
+ */
+export const FIXED_BILLING_ADDRESS = {
+  address_line_1: "3874 Main Street",
+  locality: "Bridgeport",
+  administrative_district_level_1: "CT",
+  postal_code: "06606",
+  country: "US",
+} as const;
+
+export async function createCardOnFile(opts: {
+  config: SquareConfig;
+  idempotencyKey: string; // max 45 chars — caller truncates
+  sourceId: string; // the Web Payments SDK card nonce (cnon:…)
+  cardholderName?: string;
+  referenceId?: string;
+  fetchImpl?: typeof fetch;
+}): Promise<SquareCardOnFile> {
+  const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
+  const res = await fetchImpl("https://connect.squareup.com/v2/cards", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${opts.config.accessToken}`,
+      "content-type": "application/json",
+      "square-version": "2025-01-23",
+    },
+    body: JSON.stringify({
+      idempotency_key: opts.idempotencyKey,
+      source_id: opts.sourceId,
+      card: {
+        billing_address: FIXED_BILLING_ADDRESS,
+        cardholder_name: opts.cardholderName ?? "Lightning Roadside Assistants LLC",
+        ...(opts.referenceId ? { reference_id: opts.referenceId } : {}),
+      },
+    }),
+    signal: AbortSignal.timeout(20000),
+  });
+  const text = await res.text();
+  let body: unknown = text;
+  if (text) { try { body = JSON.parse(text); } catch { /* keep raw */ } }
+  if (!res.ok) {
+    const msg = body && typeof body === "object"
+      ? JSON.stringify((body as Record<string, unknown>).errors ?? body).slice(0, 300)
+      : String(body).slice(0, 300);
+    throw new Error(`Square card create failed (HTTP ${res.status ?? "error"}) — ${msg}`);
+  }
+  const card = body && typeof body === "object" ? (body as Record<string, unknown>).card : null;
+  const cardId = card && typeof card === "object" ? (card as Record<string, unknown>).id : null;
+  if (typeof cardId !== "string" || !cardId) {
+    throw new Error("Square card response did not include a card id.");
+  }
+  const c = card as Record<string, unknown>;
+  const brand = typeof c.card_brand === "string" && c.card_brand !== "" ? c.card_brand : null;
+  const last4 = typeof c.last_4 === "string" && c.last_4 !== "" ? c.last_4 : null;
+  return { cardId, brand, last4 };
+}
+
+/** Remove a stored card: DELETE /v2/cards/{card_id}. Returns false when Square
+ *  reports 404 (already removed) so callers can treat it as success and clean
+ *  up their local row. Other failures throw with the Square error message. */
+export async function deleteCardOnFile(opts: {
+  config: SquareConfig;
+  cardId: string;
+  fetchImpl?: typeof fetch;
+}): Promise<{ deleted: boolean }> {
+  const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
+  const res = await fetchImpl(`https://connect.squareup.com/v2/cards/${encodeURIComponent(opts.cardId)}`, {
+    method: "DELETE",
+    headers: {
+      authorization: `Bearer ${opts.config.accessToken}`,
+      "square-version": "2025-01-23",
+    },
+    signal: AbortSignal.timeout(20000),
+  });
+  if (res.status === 404) return { deleted: false };
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    const msg = text ? text.slice(0, 300) : "";
+    throw new Error(`Square card delete failed (HTTP ${res.status ?? "error"}) — ${msg}`);
+  }
+  return { deleted: true };
+}
+
 /* ------------------------- Web Payments (card, in-app) ------------------------- */
 
 export type SquareCardPaymentResult = {
