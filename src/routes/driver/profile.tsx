@@ -1,11 +1,13 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { BadgeCheck, CalendarClock, ChevronRight, Crown, FileText, LifeBuoy, LogOut, Truck, User } from "lucide-react";
-import { useEffect, useState } from "react";
+import { BadgeCheck, CalendarClock, Camera, ChevronRight, Crown, FileText, LifeBuoy, LogOut, Truck, User, Wallet } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { AppShell } from "~/components/app-shell";
 import { DriverToolbar } from "~/components/driver-queue";
+import { resizeImageToJpeg } from "~/components/driver-photos-ui";
 import { Avatar, Card } from "~/components/ui";
 import { authStatus } from "~/data/auth";
 import { driverLogout, driverProfile, type DriverProfileResult } from "~/data/driver-auth";
+import { getMyProfilePhoto, uploadMyProfilePhoto } from "~/data/driver-profile-photo";
 
 /**
  * /driver/profile — the driver's account card: dispatch identity, login, and
@@ -39,6 +41,38 @@ function ProfileView() {
   // Owner↔contractor view toggle: an owner/admin in driver view sees their hat
   // (spec §1b badge swap) + a one-tap way back to the owner dashboard.
   const staffDriverView = Boolean(user?.user && (user.user.role === "owner" || user.user.role === "admin") && user.user.driverIdentity && !user.user.driverIdentity.deactivated);
+
+  /* Feature batch 7 — profile photo: fetch the current avatar once, upload a
+   * new one via B2 (same infra as the job-photo workflow), refresh the header
+   * avatar through the shared module cache in app-shell (window reload of the
+   * avatar link is implicit — the shell re-fetches on mount). */
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    let stopped = false;
+    void getMyProfilePhoto().then((res) => { if (!stopped && res.ok) setPhotoUrl(res.dataUrl); });
+    return () => { stopped = true; };
+  }, []);
+  const onPickPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setPhotoBusy(true);
+    setPhotoError(null);
+    try {
+      const dataUrl = await resizeImageToJpeg(file, 640, 0.85);
+      const res = await uploadMyProfilePhoto({ data: { dataUrl } });
+      if (!res.ok) { setPhotoError(res.message); return; }
+      const got = await getMyProfilePhoto();
+      if (got.ok && got.dataUrl) setPhotoUrl(got.dataUrl);
+    } catch {
+      setPhotoError("We couldn't read that photo — try another one.");
+    } finally {
+      setPhotoBusy(false);
+    }
+  };
   return (
     <AppShell portal="driver" title="Profile" description="Your account details and sign-out.">
       <DriverToolbar loading={loading} onRefresh={() => undefined} onSignOut={() => void signOut()} />
@@ -47,8 +81,20 @@ function ProfileView() {
       ) : (
         <div className="space-y-4">
           <Card className="flex items-center gap-4 p-4">
-            <Avatar name={name} className="size-14" />
-            <div className="min-w-0">
+            <div className="relative shrink-0">
+              <Avatar name={name} src={photoUrl} className="size-14" />
+              <button
+                type="button"
+                onClick={() => fileRef.current?.click()}
+                disabled={photoBusy}
+                aria-label="Change profile photo"
+                className="absolute -bottom-1 -right-1 grid size-7 place-items-center rounded-full border-2 border-surface bg-ink-950 text-white shadow-sm transition-transform active:scale-90 disabled:opacity-50"
+              >
+                <Camera className="size-3.5" aria-hidden="true" />
+              </button>
+              <input ref={fileRef} type="file" accept="image/*" capture="user" className="hidden" onChange={(e) => void onPickPhoto(e)} />
+            </div>
+            <div className="min-w-0 flex-1">
               <p className="truncate text-lg font-bold text-ink-800">{name}</p>
               {email && <p className="truncate text-sm text-ink-500">{email}</p>}
               {staffDriverView ? (
@@ -61,7 +107,18 @@ function ProfileView() {
                 </p>
               )}
             </div>
+            <button
+              type="button"
+              onClick={() => fileRef.current?.click()}
+              disabled={photoBusy}
+              className="shrink-0 rounded-xl border border-ink-200 px-3 py-2 text-xs font-bold text-ink-600 transition-colors hover:bg-hover disabled:opacity-50"
+            >
+              {photoBusy ? "Saving…" : photoUrl ? "Change" : "Add photo"}
+            </button>
           </Card>
+          {photoError && (
+            <p className="rounded-xl border border-danger-200 bg-danger-50 px-3 py-2 text-xs font-semibold text-danger-600" role="alert">{photoError}</p>
+          )}
           <Link
             to="/driver/documents"
             className="flex items-center gap-3 rounded-2xl bg-surface p-4 ring-1 ring-ink-100 transition-colors duration-150 hover:bg-hover"
@@ -85,6 +142,19 @@ function ProfileView() {
             <span className="min-w-0 flex-1">
               <span className="block text-sm font-bold text-ink-800">Availability schedule</span>
               <span className="block text-xs text-ink-500">Set the days and hours you typically work</span>
+            </span>
+            <ChevronRight className="size-4 shrink-0 text-ink-400" />
+          </Link>
+          <Link
+            to="/driver/payout"
+            className="flex items-center gap-3 rounded-2xl bg-surface p-4 ring-1 ring-ink-100 transition-colors duration-150 hover:bg-hover"
+          >
+            <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-brand-50 text-brand-600">
+              <Wallet className="size-5" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-bold text-ink-800">Payout method</span>
+              <span className="block text-xs text-ink-500">Cash App, Venmo, Zelle or bank — how you get paid</span>
             </span>
             <ChevronRight className="size-4 shrink-0 text-ink-400" />
           </Link>

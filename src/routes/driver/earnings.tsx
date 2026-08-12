@@ -1,5 +1,5 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { CheckCircle2, DollarSign, Wallet } from "lucide-react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { CheckCircle2, ChevronRight, DollarSign, Wallet } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "~/components/app-shell";
 import { DriverEmptyState, DriverToolbar, QueueSkeleton } from "~/components/driver-queue";
@@ -80,6 +80,40 @@ function EarningsView() {
     return m;
   }, [state]);
 
+  /* Feature batch 8 (owner-directed 2026-08-12): per-PAY-PERIOD totals.
+   * Pay periods run Mon 00:00 → Sun 23:59; the "current" period is open, the
+   * "last" one is the immediately previous closed week. Earnings = editable
+   * per-job payrate × completed jobs + tips, computed from the existing
+   * completed/tips tables (the same numbers the owner's payday math uses). */
+  const payPeriods = useMemo(() => {
+    const monday = new Date(now);
+    monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
+    monday.setHours(0, 0, 0, 0);
+    const lastStart = new Date(monday.getTime() - 7 * 86400000);
+    const rateCents = state?.ok && state.profile.payrateCents != null ? state.profile.payrateCents : 0;
+    const period = (start: Date, end: Date) => {
+      let jobs = 0;
+      let tips = 0;
+      if (state?.ok) {
+        for (const c of state.completed) {
+          const t = c.updatedAtIso ? new Date(c.updatedAtIso).getTime() : Number.NaN;
+          if (Number.isFinite(t) && t >= start.getTime() && t < end.getTime()) jobs += 1;
+        }
+        for (const tip of state.tips) {
+          const t = tip.createdAtIso ? new Date(tip.createdAtIso).getTime() : Number.NaN;
+          if (Number.isFinite(t) && t >= start.getTime() && t < end.getTime()) tips += tip.amountCents;
+        }
+      }
+      return { jobs, tips, earnings: rateCents * jobs + tips };
+    };
+    const current = period(monday, new Date(monday.getTime() + 7 * 86400000));
+    const last = period(lastStart, monday);
+    return { current, last, monday };
+  }, [state, now]);
+
+  const fmtPeriod = (monday: Date, offsetWeeks: number) =>
+    new Date(monday.getTime() + offsetWeeks * 7 * 86400000).toLocaleDateString([], { month: "short", day: "numeric" });
+
   return (
     <AppShell portal="driver" title="Earnings" description="Completed jobs and tips on your account — updated live.">
       <DriverToolbar loading={loading} onRefresh={() => void load()} onSignOut={() => void signOut()} />
@@ -100,6 +134,36 @@ function EarningsView() {
               <p className="text-xs text-ink-400">{state.totals.tipCount} tip{state.totals.tipCount === 1 ? "" : "s"}</p>
             </Card>
           </div>
+
+          {/* Pay periods (feature batch 8): current open week + last closed
+              week — earnings = rate × completed + tips, Mon→Sun. */}
+          <div className="grid grid-cols-2 gap-3">
+            <Card className="p-4">
+              <p className="text-[11px] font-bold uppercase tracking-wide text-brand-600">This pay period</p>
+              <p className="mt-0.5 text-xs text-ink-400">{fmtPeriod(payPeriods.monday, 0)} – {fmtPeriod(payPeriods.monday, 1)}</p>
+              <p className="mt-1 text-2xl font-bold tabular-nums text-ink-900">{money(payPeriods.current.earnings)}</p>
+              <p className="text-xs text-ink-500">{payPeriods.current.jobs} job{payPeriods.current.jobs === 1 ? "" : "s"} · {money(payPeriods.current.tips)} tips</p>
+            </Card>
+            <Card className="p-4">
+              <p className="text-[11px] font-bold uppercase tracking-wide text-ink-400">Last pay period</p>
+              <p className="mt-0.5 text-xs text-ink-400">{fmtPeriod(payPeriods.monday, -1)} – {fmtPeriod(payPeriods.monday, 0)}</p>
+              <p className="mt-1 text-2xl font-bold tabular-nums text-ink-900">{money(payPeriods.last.earnings)}</p>
+              <p className="text-xs text-ink-500">{payPeriods.last.jobs} job{payPeriods.last.jobs === 1 ? "" : "s"} · {money(payPeriods.last.tips)} tips</p>
+            </Card>
+          </div>
+
+          <Link
+            to="/driver/payout"
+            className="flex items-center gap-3 rounded-2xl bg-surface p-4 ring-1 ring-ink-100 transition-colors duration-150 hover:bg-hover"
+          >
+            <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-brand-50 text-brand-600"><Wallet className="size-5" /></span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-bold text-ink-800">Payout method</span>
+              <span className="block text-xs text-ink-500">Set how payday sends your money</span>
+            </span>
+            <ChevronRight className="size-4 shrink-0 text-ink-400" />
+          </Link>
+
           <Card className="p-4">
             <div className="flex items-start gap-3">
               <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-ink-100"><Wallet className="size-5 text-ink-500" /></div>

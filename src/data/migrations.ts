@@ -552,6 +552,38 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
       ('lesson-paperwork-done-right', 'paperwork-done-right', 'Paperwork done right', 'Your documents on file keep you cleared to work — and to go online.', 'documents', 'WHY IT MATTERS: Required documents gate your GO button. Missing or expired paperwork means you cannot take jobs at all.\n\nCHECKLIST:\n- Open Profile → Documents and check what is required\n- Upload each document as a clear, readable photo or PDF\n- For the driver''s license, add the live selfie too\n- Watch expiry dates — renew before they lapse\n- Re-upload promptly if the owner asks for a correction', 4, 10, TRUE)
     ON CONFLICT (slug) DO NOTHING`;
   }],
+  [28, async (q) => {
+    // Driver-portal feature batch (owner-directed 2026-08-12): payout method
+    // capture + profile photo. TWO additions:
+    //   1. payout_methods — ONE row per (org, contractor): the driver's
+    //      chosen payout rail (cash_app/venmo/zelle/bank) + handle. Owner-
+    //      confirmed verification happens OUTSIDE the app (no provider API can
+    //      prove a cashtag — the owner sends from their own app and marks it),
+    //      so the driver UI only captures/stores; status starts
+    //      connected_unverified and the owner verifies/rejects later (payday
+    //      milestone). "No method" = no row (derived at read). Handles are PII:
+    //      drivers always see masked forms; the full handle is owner-only.
+    //   2. contractor_profiles.profile_photo_key — B2 object key of the
+    //      driver's profile photo (avatar). Re-upload overwrites the same key.
+    await q`CREATE TABLE IF NOT EXISTS payout_methods (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      contractor_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      rail TEXT NOT NULL CHECK (rail IN ('cash_app','venmo','zelle','bank')),
+      handle TEXT,
+      bank_institution_name TEXT,
+      bank_last4 TEXT,
+      status TEXT NOT NULL DEFAULT 'connected_unverified'
+        CHECK (status IN ('connected_unverified','verified','rejected')),
+      reject_note TEXT,
+      is_default BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS payout_methods_org_contractor_uidx
+      ON payout_methods(org_id, contractor_id)`;
+    await q`ALTER TABLE contractor_profiles ADD COLUMN IF NOT EXISTS profile_photo_key TEXT`;
+  }],
   [27, async (q) => {
     // Contractor Management v2 "Uber-style" (owner-directed 2026-08-12,
     // contractor-management-spec.md). TWO additions:

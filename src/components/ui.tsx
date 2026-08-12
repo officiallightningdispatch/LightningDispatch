@@ -113,7 +113,16 @@ export function StatusBadge({
 
 /* -------------------------------- avatar ---------------------------------- */
 
-export function Avatar({ name, className }: { name: string; className?: string }) {
+export function Avatar({ name, className, src }: { name: string; className?: string; src?: string | null }) {
+  if (src) {
+    return (
+      <img
+        src={src}
+        alt={name ? `${name}'s avatar` : "Avatar"}
+        className={`size-9 shrink-0 rounded-full object-cover ring-1 ring-ink-100 ${className ?? ""}`}
+      />
+    );
+  }
   return (
     <span
       className={`grid size-9 shrink-0 place-items-center rounded-full bg-ink-800 text-sm font-bold text-white ${className ?? ""}`}

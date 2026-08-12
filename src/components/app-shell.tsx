@@ -2,8 +2,36 @@ import { Link, useLocation } from "@tanstack/react-router";
 import { CarFront, Home, Inbox, Briefcase, DollarSign, LayoutDashboard, List, LogOut, Settings, User, UserRound, Users, History, BarChart3, Wallet, Bot, Map, UserCog, Zap } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { authStatus, type AuthUser } from "~/data/auth";
+import { getMyProfilePhoto } from "~/data/driver-profile-photo";
+import { Avatar } from "~/components/ui";
 
 export type Portal = "driver" | "ops" | "owner";
+
+/** Module-level one-shot cache: the profile photo is fetched once per session
+ *  (the driver's avatar) and reused across the header/profile screens; a
+ *  re-upload resets it via the hook's reload. */
+let cachedProfilePhoto: { dataUrl: string | null; at: number } | null = null;
+function useProfilePhoto(portal: Portal) {
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  useEffect(() => {
+    if (portal !== "driver") { setDataUrl(null); return; }
+    let stopped = false;
+    const fiveMin = 5 * 60 * 1000;
+    if (cachedProfilePhoto && Date.now() - cachedProfilePhoto.at < fiveMin) {
+      setDataUrl(cachedProfilePhoto.dataUrl);
+      return;
+    }
+    void getMyProfilePhoto().then((res) => {
+      if (stopped) return;
+      const url = res.ok ? res.dataUrl : null;
+      cachedProfilePhoto = { dataUrl: url, at: Date.now() };
+      setDataUrl(url);
+    });
+    return () => { stopped = true; };
+  }, [portal, reloadKey]);
+  return { dataUrl, reload: () => setReloadKey((k) => k + 1) };
+}
 
 type NavItem = { to: string; label: string; icon: typeof Home };
 
@@ -141,6 +169,7 @@ export function AppShell({
   const { links, mobile } = NAV[portal];
   const meta = PORTAL_META[portal];
   const identity = useSessionIdentity();
+  const { dataUrl: profilePhotoUrl } = useProfilePhoto(portal);
   /** A nav item is active on its exact path, or on any sub-route of it (so the
    *  Contractors tab stays highlighted on /owner/contractors/:id). The bare
    *  portal roots stay exact-only — Dashboard must not highlight on every
@@ -156,7 +185,13 @@ export function AppShell({
     </Link>
   ));
   return <div className={`min-h-dvh min-w-0 overflow-x-clip bg-canvas text-ink-900 ${meta.mobileBottomPad ? "pb-20" : ""}`}>
-    <header className="border-b border-ink-100 bg-surface"><div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-3 sm:px-6"><Link to={links[0].to as any} className="flex items-center gap-3"><span className="grid size-9 place-items-center rounded-xl bg-brand-500"><Zap className="size-5 text-white" fill="currentColor" strokeWidth={0} /></span><strong className="text-sm font-bold">Lightning Dispatch OS</strong></Link><span className="hidden text-xs text-ink-400 sm:block">{meta.appLabel}</span>{actions && <div className="ml-auto flex items-center gap-2">{identity.staffWithDriver && portal === "owner" ? <DriverViewPill /> : null}{actions}</div>}</div></header>
+    <header className="border-b border-ink-100 bg-surface"><div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-3 sm:px-6"><Link to={links[0].to as any} className="flex items-center gap-3"><span className="grid size-9 place-items-center rounded-xl bg-brand-500"><Zap className="size-5 text-white" fill="currentColor" strokeWidth={0} /></span><strong className="text-sm font-bold">Lightning Dispatch OS</strong></Link><span className="hidden text-xs text-ink-400 sm:block">{meta.appLabel}</span>{actions || portal === "driver" ? <div className="ml-auto flex items-center gap-2">{identity.staffWithDriver && portal === "owner" ? <DriverViewPill /> : null}{actions}{portal === "driver" && (
+  // Feature batch 7: the driver's profile photo (or initials) as the header
+  // avatar → taps into Profile, where the photo is uploaded/changed.
+  <Link to="/driver/profile" aria-label="Profile" className="flex items-center">
+    <Avatar name={identity.driverName ?? "Driver"} src={profilePhotoUrl} className="size-9" />
+  </Link>
+)}</div> : null}</div></header>
     {identity.staffWithDriver && portal === "driver" && (
       // §1b — persistent view-mode banner on every driver page for staff in
       // driver view. Never dismissible: the owner must never forget which hat

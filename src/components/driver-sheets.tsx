@@ -5,10 +5,12 @@
  * disclosure) so the dominant-action logic has ONE source of truth.
  */
 import { ChevronDown, MapPin, Navigation, Phone, RefreshCw, Truck } from "lucide-react";
+import { useState } from "react";
 import { DriverBottomSheet } from "~/components/driver-bottom-sheet";
 import { ProgressRail } from "~/components/driver-progress";
 import { etaLabel, JobCardActions, STATUS_META, type GpsState } from "~/components/driver-queue";
 import { GpsStatusChip } from "~/components/driver-queue";
+import { NavigateMenu } from "~/components/nav-sheet";
 import { Button } from "~/components/ui";
 import type { DriverCall } from "~/data/driver-auth";
 
@@ -196,9 +198,8 @@ export function TripSheet({
 }) {
   const address = addressOf(call);
   const phoneDigits = call.customerPhone.replace(/[^+\d]/g, "");
-  const mapsUrl = call.pickupLat != null && call.pickupLng != null
-    ? `https://www.google.com/maps/dir/?api=1&destination=${call.pickupLat},${call.pickupLng}`
-    : null;
+  const hasCoords = call.pickupLat != null && call.pickupLng != null;
+  const [navOpen, setNavOpen] = useState(false);
   return (
     <DriverBottomSheet
       snapPoints={[0.55, 0.85]}
@@ -212,7 +213,8 @@ export function TripSheet({
         Call #{call.callNumber} · {call.serviceName}
       </p>
 
-      {/* Row 2: call + navigate (Google Maps, needs pickup coords) */}
+      {/* Row 2: call + navigate (in-app navigation DEFAULT + maps menu —
+          feature batch 6, owner-directed 2026-08-12) */}
       <div className="mt-3 flex gap-2">
         {phoneDigits ? (
           <a
@@ -223,23 +225,29 @@ export function TripSheet({
             <Phone className="size-5 text-brand-600" /> Call {call.customerName || "customer"}
           </a>
         ) : null}
-        {mapsUrl ? (
-          <a
-            href={mapsUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            title="Open directions in Google Maps"
-            className="flex h-12 flex-1 items-center justify-center gap-2 rounded-xl border border-ink-200 bg-surface text-sm font-semibold text-ink-700 transition-colors hover:bg-hover active:scale-[0.98]"
+        {hasCoords ? (
+          <button
+            type="button"
+            onClick={() => setNavOpen(true)}
+            title="Start navigation"
+            className="flex h-12 flex-1 items-center justify-center gap-2 rounded-xl bg-ink-950 text-sm font-semibold text-white transition-colors hover:bg-ink-800 active:scale-[0.98]"
           >
-            <Navigation className="size-5 text-brand-600" /> Navigate
-          </a>
+            <Navigation className="size-5 text-brand-400" /> Navigate
+          </button>
         ) : null}
-        {!phoneDigits && !mapsUrl && (
+        {!phoneDigits && !hasCoords && (
           <p className="flex h-12 flex-1 items-center justify-center gap-2 rounded-xl border border-dashed border-ink-200 bg-ink-50 px-3 text-xs text-ink-400">
             Contact + directions weren&apos;t provided on this call.
           </p>
         )}
       </div>
+      <NavigateMenu
+        open={navOpen}
+        onClose={() => setNavOpen(false)}
+        lat={call.pickupLat ?? 0}
+        lng={call.pickupLng ?? 0}
+        address={address}
+      />
 
       {/* Row 3: lifecycle rail */}
       <div className="mt-4">

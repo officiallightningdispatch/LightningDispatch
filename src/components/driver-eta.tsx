@@ -7,6 +7,8 @@
  * fallback line. Also exports etaCountdown + useRequoteFlash for the pages.
  */
 import { useEffect, useReducer, useRef, useState } from "react";
+import { Navigation } from "lucide-react";
+import { NavigateMenu } from "~/components/nav-sheet";
 import type { DriverCall } from "~/data/driver-auth";
 
 /** mm:ss remaining until arrivalETA; "--:--" when the ETA is missing/unparseable. */
@@ -61,6 +63,7 @@ export function useRequoteFlash(call: Pick<DriverCall, "arrivalETA"> | null): st
 
 export function EtaHero({ call }: { call: DriverCall }) {
   const [, force] = useReducer((x: number) => x + 1, 0);
+  const [navOpen, setNavOpen] = useState(false);
   useEffect(() => {
     const t = setInterval(force, 1000);
     return () => clearInterval(t);
@@ -72,6 +75,7 @@ export function EtaHero({ call }: { call: DriverCall }) {
 
   const statusId = call.statusId;
   const eta = call.arrivalETA;
+  const hasCoords = call.pickupLat != null && call.pickupLng != null;
 
   /* Offered (1): static line from arrivalETA — no countdown yet. */
   if (statusId === 1) {
@@ -92,7 +96,9 @@ export function EtaHero({ call }: { call: DriverCall }) {
       </div>
     );
   }
-  /* Accepted (2) / En route (3): big mm:ss countdown + progress bar. */
+  /* Accepted (2) / En route (3): big mm:ss countdown + progress bar + a
+   * navigation shortcut (feature batch 6 — in-app navigation DEFAULT with a
+   * maps menu, owner-directed 2026-08-12). */
   const nowMs = Date.now();
   const arrivalMs = eta ? new Date(eta).getTime() : Number.NaN;
   const hasEta = Number.isFinite(arrivalMs) && arrivalMs > nowMs;
@@ -109,9 +115,29 @@ export function EtaHero({ call }: { call: DriverCall }) {
   return (
     <div className="pointer-events-auto w-fit max-w-[92vw] rounded-2xl bg-surface/95 px-4 py-3 shadow-card backdrop-blur">
       <p className="text-[10px] font-bold uppercase tracking-[.16em] text-ink-400">Arrive in</p>
-      <p className="mt-0.5 text-3xl font-black tabular-nums leading-none text-ink-950">
-        {crossed ? "Arriving now" : hasEta ? etaCountdown(call) : "--:--"}
-      </p>
+      <div className="mt-0.5 flex items-center gap-3">
+        <p className="text-3xl font-black tabular-nums leading-none text-ink-950">
+          {crossed ? "Arriving now" : hasEta ? etaCountdown(call) : "--:--"}
+        </p>
+        {hasCoords && (
+          <button
+            type="button"
+            onClick={() => setNavOpen(true)}
+            aria-label="Start navigation to the customer"
+            title="Start navigation"
+            className="grid size-11 shrink-0 place-items-center rounded-full bg-ink-950 text-white shadow-md transition-transform active:scale-95"
+          >
+            <Navigation className="size-5 text-brand-400" strokeWidth={2} aria-hidden="true" />
+          </button>
+        )}
+      </div>
+      <NavigateMenu
+        open={navOpen}
+        onClose={() => setNavOpen(false)}
+        lat={call.pickupLat ?? 0}
+        lng={call.pickupLng ?? 0}
+        address={[call.pickupAddress, call.zip].filter(Boolean).join(", ")}
+      />
       {hasEta && (
         <div className="mt-2 h-1.5 w-36 overflow-hidden rounded-full bg-ink-100">
           <div className="h-full rounded-full bg-brand-500 transition-[width] duration-1000 ease-linear" style={{ width: `${pct * 100}%` }} />

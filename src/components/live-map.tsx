@@ -130,6 +130,13 @@ export function LiveMap({
   const [data, setData] = useState<LiveMapData | null>(null);
   const [error, setError] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  // Feature batch 5 (owner-directed 2026-08-12): when the driver-portal map
+  // has NO stored self pin (no active job / no recent ping), fall back to the
+  // browser's own geolocation so the blue dot + "You are here" ALWAYS renders
+  // on the driver's map — no dead/empty screen with no job. One-shot: we take
+  // the fix, render the dot, and never nag for permissions repeatedly.
+  const [browserSelf, setBrowserSelf] = useState<{ lat: number; lng: number } | null>(null);
+  const [browserSelfDenied, setBrowserSelfDenied] = useState(false);
   // Default view: the org's operating area (Bridgeport CT / 06606) so the
   // street map is always visible even before any pings arrive.
   const [center, setCenter] = useState<{ lat: number; lng: number }>({ lat: 41.19, lng: -73.2 });
@@ -171,6 +178,30 @@ export function LiveMap({
     const t = setInterval(() => void load(true), pollMs);
     return () => clearInterval(t);
   }, [load, pollMs]);
+
+  /* Feature 5 — browser self-location fallback (driver-scoped maps only):
+   * when the feed has no self pin, ask the browser once for a fix. A granted
+   * fix renders the blue dot; a denial shows the honest location chip. */
+  useEffect(() => {
+    if (!driverScope || browserSelf || browserSelfDenied) return;
+    if (data && data.self) return; // server already knows where we are
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      setBrowserSelfDenied(true);
+      return;
+    }
+    let stopped = false;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        if (stopped) return;
+        const lat = Number(pos.coords.latitude);
+        const lng = Number(pos.coords.longitude);
+        if (Number.isFinite(lat) && Number.isFinite(lng)) setBrowserSelf({ lat, lng });
+      },
+      () => { if (!stopped) setBrowserSelfDenied(true); },
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 },
+    );
+    return () => { stopped = true; };
+  }, [driverScope, browserSelf, browserSelfDenied, data]);
 
   /* -------------------------------- viewport -------------------------------- */
   // The viewport div does NOT exist on first mount: while data is null a loading
@@ -218,10 +249,16 @@ export function LiveMap({
 
   /* ---------------------------------- pins ---------------------------------- */
   const pins = useMemo<MapPin[]>(() => {
-    if (!data) return [];
     const list: MapPin[] = [];
-    if (data.self) list.push({ id: "self", kind: "self", lat: data.self.lat, lng: data.self.lng, title: "You", sub: null, fresh: true });
-    for (const d of data.drivers) {
+    // Feature 5: the blue dot comes from the feed's self pin when the server
+    // knows our position; otherwise (no active job / no recent ping) from the
+    // browser geolocation fallback so the map NEVER renders without "you".
+    if (data?.self) {
+      list.push({ id: "self", kind: "self", lat: data.self.lat, lng: data.self.lng, title: "You", sub: null, fresh: true });
+    } else if (driverScope && browserSelf) {
+      list.push({ id: "self-browser", kind: "self", lat: browserSelf.lat, lng: browserSelf.lng, title: "You", sub: null, fresh: true });
+    }
+    for (const d of data?.drivers ?? []) {
       list.push({
         id: `d-${d.driverId}`,
         kind: "driver",
@@ -245,7 +282,7 @@ export function LiveMap({
       });
     }
     return list;
-  }, [data]);
+  }, [data, driverScope, browserSelf]);
 
   /* --------------------------- fit to pins (once) --------------------------- */
   const fit = useCallback((pts: MapPin[], vw: number, vh: number) => {
@@ -498,13 +535,17 @@ export function LiveMap({
         )}
 
         {/* honest empty note — the street map still renders; only the pins are
-            missing (owner 2026-08-11: no more empty-state card over the map) */}
+            missing (owner 2026-08-11). Feature 5: with a browser self fix the
+            map shows "You are here" — the note yields to the real dot; a
+            denied/unsupported location shows the honest location chip. */}
         {(data === null || pins.length === 0) && (
           <p className="absolute left-1/2 top-3 z-20 flex w-max max-w-[92vw] -translate-x-1/2 items-center gap-1.5 rounded-full border border-ink-200 bg-surface/95 px-3 py-1.5 text-[11px] font-semibold text-ink-600 shadow-card backdrop-blur">
             <Radar className="size-3.5 shrink-0 text-amber-600" />
             {data === null
               ? `${emptyTitle} — ${emptyBody}`
-              : "No live driver positions yet — positions appear when drivers' phones ping"}
+              : driverScope && browserSelfDenied
+                ? "Location is off — allow location in your browser to show you on the map"
+                : "No live driver positions yet — positions appear when drivers' phones ping"}
           </p>
         )}
 
@@ -596,7 +637,7 @@ function MapMarker({ pin, px, py, zoom }: { pin: MapPin; px: number; py: number;
           <span className="absolute size-9 animate-ping rounded-full bg-blue-400/30" style={{ animationDuration: "2.4s" }} />
           <span className="size-4 rounded-full border-[3px] border-white bg-blue-600 shadow-md" />
         </span>
-        <span className="absolute left-1/2 top-full mt-0.5 -translate-x-1/2 rounded-md bg-blue-600 px-1.5 py-0.5 text-[10px] font-bold text-white shadow-sm">You</span>
+        <span className="absolute left-1/2 top-full mt-0.5 -translate-x-1/2 whitespace-nowrap rounded-md bg-blue-600 px-1.5 py-0.5 text-[10px] font-bold text-white shadow-sm">You are here</span>
       </div>
     );
   }
