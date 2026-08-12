@@ -20,7 +20,6 @@ const q = neon(process.env.DATABASE_URL);
 const {
   buildTowbookSample,
   trimRawCall,
-  persistSyncResult,
   upsertPulledJobs,
   normalizeJsonCall,
   extractTowbookStatusId,
@@ -29,6 +28,7 @@ const {
   TOWBOOK_STATUS_ID_TO_LIFECYCLE,
   TOWBOOK_STATUS_ID_UNMAPPED,
 } = await import("./src/data/server.ts");
+const { persistSyncResult } = await import("./src/data/sync-engine.ts");
 
 const { assertQaOrg } = await import("./src/data/db-guard.ts");
 const checks = [];

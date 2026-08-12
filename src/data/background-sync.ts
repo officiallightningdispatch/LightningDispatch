@@ -26,7 +26,8 @@
  */
 import { sqlWithTimeout } from "~/db";
 import { runAutoDispatch } from "./ai-dispatcher";
-import { resolveOrgActor, syncForOrg, SYNC_TICK_TIMEOUT_MS, withHardTimeout } from "./server";
+import { resolveOrgActor, SYNC_TICK_TIMEOUT_MS } from "./server";
+import { syncForOrg, withHardTimeout } from "./sync-engine";
 import type { AuthUser } from "./auth-server";
 
 /** Process-global dedupe marker: shared across the serve.ts-loaded SOURCE
