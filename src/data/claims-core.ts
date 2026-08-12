@@ -717,6 +717,9 @@ export type SendClaimOptions = {
   connectImpl?: () => Promise<unknown>;
   stableDir?: string;
   dryRun?: boolean;
+  /** Injectable fetch for the signature read (hermetic tests pin the mock
+   *  B2 transport; production leaves it undefined → globalThis.fetch). */
+  fetchImpl?: typeof fetch;
 };
 
 /** The ONE audited send path. Refuses unless: owner/admin actor, status
@@ -749,8 +752,8 @@ export async function sendClaimCore(actor: ClaimActor, claimId: unknown, opts: S
   let signatureB64: string | null = null;
   try {
     const config = await loadB2Config(undefined, { stableDir: opts.stableDir });
-    const auth = await authorizeAccount({ keyId: config.keyId, applicationKey: config.applicationKey });
-    const got = await getObject({ config, s3ApiUrl: auth.s3ApiUrl, key: claim.signatureStorageKey });
+    const auth = await authorizeAccount({ keyId: config.keyId, applicationKey: config.applicationKey, fetchImpl: opts.fetchImpl });
+    const got = await getObject({ config, s3ApiUrl: auth.s3ApiUrl, key: claim.signatureStorageKey, fetchImpl: opts.fetchImpl });
     if (got.ok && got.bytes) signatureB64 = Buffer.from(got.bytes).toString("base64");
   } catch { signatureB64 = null; }
   if (!signatureB64) return err("b2_failed", "Could not read the signed form from storage — nothing was sent.");

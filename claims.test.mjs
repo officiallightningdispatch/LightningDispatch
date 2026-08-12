@@ -15,6 +15,12 @@ const SAVED_B2 = { k: process.env.B2_KEY_ID, a: process.env.B2_APPLICATION_KEY, 
 process.env.B2_KEY_ID = "004qadockeyid";
 process.env.B2_APPLICATION_KEY = "004qaappkey";
 process.env.B2_BUCKET_NAME = "qa-bucket";
+// Hermetic Gmail config too: scan/send resolve loadGmailConfig env-first, so
+// the suite never reads the real .secrets files (connectImpl/sendImpl replace
+// the actual IMAP/SMTP transport).
+const SAVED_GMAIL = { a: process.env.GMAIL_ADDRESS, p: process.env.GMAIL_APP_PASSWORD };
+process.env.GMAIL_ADDRESS = "qa-claims@qa.local";
+process.env.GMAIL_APP_PASSWORD = "qa-gmail-app-password";
 const {
   detectDamageClaimEmail, researchResolvedSignals, prepareClaimForm,
   scanClaimsCore, researchClaimCore, prepareClaimFormCore, signClaimCore,
@@ -44,6 +50,23 @@ const WRONG_ORG_ACTOR = { orgId: ORG2, id: OTHER2, role: "owner" };
 const DISPATCHER = { orgId: ORG, id: `qa-cl-disp-${randomUUID()}`, role: "dispatcher" };
 const JOB_ID = `qa-cl-job-${randomUUID()}`;
 
+/* ---- cleanup (guarded, ALWAYS runs — even when a mid-suite check fails) ---- */
+const cleanup = async () => {
+  await q`DELETE FROM audit_log WHERE org_id IN (${ORG}, ${ORG2}) OR actor_user_id IN (${OWNER}, ${ADMIN}, ${DRIVER}, ${OTHER}, ${OTHER2})`;
+  await q`DELETE FROM status_events WHERE org_id IN (${ORG}, ${ORG2})`;
+  await q`DELETE FROM job_completions WHERE org_id IN (${ORG}, ${ORG2})`;
+  await q`DELETE FROM completion_tips WHERE org_id IN (${ORG}, ${ORG2})`;
+  await q`DELETE FROM damage_claims WHERE org_id IN (${ORG}, ${ORG2})`;
+  await q`DELETE FROM dispatch_jobs WHERE org_id IN (${ORG}, ${ORG2})`;
+  await q`DELETE FROM organization_memberships WHERE org_id IN (${ORG}, ${ORG2})`;
+  await q`DELETE FROM users WHERE id IN (${OWNER}, ${ADMIN}, ${DRIVER}, ${OTHER}, ${OTHER2})`;
+  assertQaOrg(ORG); assertQaOrg(ORG2);
+  await q`DELETE FROM organizations WHERE id IN (${ORG}, ${ORG2})`;
+  process.env.B2_KEY_ID = SAVED_B2.k; process.env.B2_APPLICATION_KEY = SAVED_B2.a; process.env.B2_BUCKET_NAME = SAVED_B2.b;
+  process.env.GMAIL_ADDRESS = SAVED_GMAIL.a; process.env.GMAIL_APP_PASSWORD = SAVED_GMAIL.p;
+};
+
+try {
 /* ---- fixtures: users, memberships, a completed dispatch job ---- */
 await q`INSERT INTO organizations(id, name) VALUES(${ORG}, ${"qa claims"}), (${ORG2}, ${"qa claims 2"})`;
 await q`INSERT INTO users(id, name, email, password_hash, towbook_driver_id) VALUES
@@ -188,7 +211,20 @@ const signWrong = await signClaimCore(OTHER_DRIVER_ACTOR, { claimId: ageroId, si
 check("sign: other driver refused", !signWrong.ok && signWrong.code === "unauthorized");
 const sign = await signClaimCore(DRIVER_ACTOR, { claimId: ageroId, signatureDataUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" }, { fetchImpl: b2.fetch });
 check("sign: assigned driver signs → pending_approval", sign.ok && sign.data.status === "pending_approval", JSON.stringify(sign));
-check("sign: signature stored in B2", sign.ok && sign.data.signatureStorageKey != null && b2.objects.has(sign.data.signatureStorageKey));
+// The mock B2 keys objects under the bucket-qualified path (URL pathname =
+// /<bucket>/<key>), matching driver-photos.test.mjs — the DB stores the bare key.
+check("sign: signature stored in B2", sign.ok && sign.data.signatureStorageKey != null && b2.objects.has(`qa-bucket/${sign.data.signatureStorageKey}`));
+// Sixt has no linked job/driver — the owner may sign on behalf (core allows
+// owner/admin when no driver is assigned) so the admin-approve check below has
+// a valid pending_approval claim to approve.
+const signSixt = await signClaimCore(ACTOR, { claimId: sixtId, signatureDataUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==" }, { fetchImpl: b2.fetch });
+check("sign: owner signs unassigned Sixt claim on behalf", signSixt.ok && signSixt.data.status === "pending_approval", JSON.stringify(signSixt));
+/* Driver feed verified HERE (both claims pending_approval; ageroId assigned to
+ * DRIVER, sixtId unassigned) — after approve/send/reject the feed is
+ * legitimately empty, so this check must run before those transitions. */
+const feedMine = await listMyClaimSignRequestsCore(DRIVER_ACTOR);
+const feedOthers = await listMyClaimSignRequestsCore(OTHER_DRIVER_ACTOR);
+check("driver feed: only assigned driver sees sign requests", feedMine.ok && feedOthers.ok && feedMine.data.length > 0 && feedOthers.data.length === 0, JSON.stringify({ mine: feedMine.data?.length, others: feedOthers.data?.length }));
 
 /* ================= APPROVAL GATE ================= */
 const sendNoApprove = await sendClaimCore(ACTOR, ageroId, { sendImpl: async (m) => { throw new Error("must not send before approval: " + m.subject); } });
@@ -200,21 +236,24 @@ check("approve: dispatcher refused", !(await approveClaimCore(DISPATCHER, ageroI
 
 /* ================= SEND (mocked transport) ================= */
 let sentMessages = [];
-const send = await sendClaimCore(ACTOR, ageroId, { sendImpl: async (m) => { sentMessages.push(m); return { ok: true, response: "250 OK" }; } });
+const dryRun = await sendClaimCore(ACTOR, ageroId, { sendImpl: async () => { throw new Error("dryRun must not send"); }, dryRun: true, fetchImpl: b2.fetch });
+check("send: dryRun does not send or change status", dryRun.ok && dryRun.data.preview.to === "DamageTeam@Agero.com", JSON.stringify(dryRun));
+const send = await sendClaimCore(ACTOR, ageroId, { sendImpl: async (m) => { sentMessages.push(m); return { ok: true, response: "250 OK" }; }, fetchImpl: b2.fetch });
 check("send: approved + email method → sent", send.ok && send.data.status === "sent", JSON.stringify(send));
 check("send: one audited message to company", sentMessages.length === 1 && sentMessages[0].to[0] === "DamageTeam@Agero.com");
 check("send: signature attached", sentMessages[0].attachments?.length === 1 && sentMessages[0].attachments[0].base64 !== "PENDING");
 const sentRow = (await listClaimsCore(ACTOR)).data.find((c) => c.id === ageroId);
 check("send: sent_at + send_to recorded", sentRow.sentAt != null && sentRow.sendTo === "DamageTeam@Agero.com");
-check("send: web_form (Sixt) NEVER emails", (async () => { let called = false; const r = await sendClaimCore(ACTOR, sixtId, { sendImpl: async () => { called = true; return { ok: true }; } }); return !r.ok && r.code === "send_unsupported" && !called; })());
+let wfCalled = false;
+const wfRes = await sendClaimCore(ACTOR, sixtId, { sendImpl: async () => { wfCalled = true; return { ok: true }; } });
+check("send: web_form (Sixt) NEVER emails", !wfRes.ok && wfRes.code === "send_unsupported" && !wfCalled, JSON.stringify(wfRes));
 check("send: repeat send refused", !(await sendClaimCore(ACTOR, ageroId, { sendImpl: async () => ({ ok: true }) })).ok);
-check("send: dryRun does not send or change status", (async () => { let called = false; const r = await sendClaimCore(ACTOR, sixtId, { sendImpl: async () => { called = true; return { ok: true }; }, dryRun: true }); return r.ok && !called && r.data.preview.to != null; })());
 
-/* ================= ROLE + DRIVER-FEED GATES ================= */
+/* ================= ROLE + GATES ================= */
 check("listClaims: wrong org isolated", (await listClaimsCore(WRONG_ORG_ACTOR)).ok && (await listClaimsCore(WRONG_ORG_ACTOR)).data.length === 0);
-check("driver feed: only assigned driver sees sign requests", (async () => { const mine = await listMyClaimSignRequestsCore(DRIVER_ACTOR); const others = await listMyClaimSignRequestsCore(OTHER_DRIVER_ACTOR); return mine.ok && others.ok && mine.data.length > 0 && others.data.length === 0; })());
 check("send: wrong-org owner refused", !(await sendClaimCore(WRONG_ORG_ACTOR, ageroId, { sendImpl: async () => ({ ok: true }) })).ok);
-check("reject: closes claim", (async () => { const r = await rejectClaimCore(ACTOR, { claimId: sixtId, reason: "owner review" }); return r.ok && r.data.status === "closed"; })());
+const rejected = await rejectClaimCore(ACTOR, { claimId: sixtId, reason: "owner review" });
+check("reject: closes claim", rejected.ok && rejected.data.status === "closed", JSON.stringify(rejected));
 
 /* ================= EMAIL COMPOSITION (pure) ================= */
 const email = buildClaimEmail({ from: "lightroad29@gmail.com", to: "DamageTeam@Agero.com", claim: sentRow });
@@ -227,20 +266,20 @@ const actions = auditRows.map((r) => r.action);
 for (const want of ["damage_claim_detected", "damage_claim_researched", "damage_claim_form_prepared", "damage_claim_signed", "damage_claim_approved", "damage_claim_sent"]) {
   check(`audit: ${want} recorded`, actions.includes(want), actions.join(","));
 }
+} finally {
+  await cleanup();
+}
 
-/* ================= CLEANUP (zero rows, guarded) ================= */
-await q`DELETE FROM audit_log WHERE org_id=${ORG}`;
-await q`DELETE FROM status_events WHERE org_id=${ORG}`;
-await q`DELETE FROM job_completions WHERE org_id=${ORG}`;
-await q`DELETE FROM completion_tips WHERE org_id=${ORG}`;
-await q`DELETE FROM damage_claims WHERE org_id=${ORG}`;
-await q`DELETE FROM dispatch_jobs WHERE org_id=${ORG}`;
-await q`DELETE FROM organization_memberships WHERE org_id IN (${ORG}, ${ORG2})`;
-await q`DELETE FROM users WHERE id IN (${OWNER}, ${ADMIN}, ${DRIVER}, ${OTHER}, ${OTHER2})`;
-assertQaOrg(ORG); assertQaOrg(ORG2);
-await q`DELETE FROM organizations WHERE id IN (${ORG}, ${ORG2})`;
-const leftover = await q`SELECT (SELECT count(*) FROM damage_claims WHERE org_id LIKE 'qa-%') AS claims, (SELECT count(*) FROM audit_log WHERE org_id LIKE 'qa-%') AS audit, (SELECT count(*) FROM organizations WHERE id LIKE 'qa-%') AS orgs`;
-check("cleanup: zero QA rows", Number(leftover[0].claims) === 0 && Number(leftover[0].audit) === 0 && Number(leftover[0].orgs) === 0, JSON.stringify(leftover[0]));
+/* ================= POST-CLEANUP VERIFICATION (zero QA rows) ================= */
+const leftover = await q`SELECT
+  (SELECT count(*) FROM damage_claims WHERE org_id LIKE 'qa-claims%') AS claims,
+  (SELECT count(*) FROM audit_log WHERE org_id LIKE 'qa-claims%') AS audit,
+  (SELECT count(*) FROM organizations WHERE id LIKE 'qa-claims%') AS orgs,
+  (SELECT count(*) FROM users WHERE id LIKE 'qa-cl-%') AS users,
+  (SELECT count(*) FROM organization_memberships WHERE org_id LIKE 'qa-claims%') AS mems,
+  (SELECT count(*) FROM dispatch_jobs WHERE org_id LIKE 'qa-claims%') AS jobs,
+  (SELECT count(*) FROM status_events WHERE org_id LIKE 'qa-claims%') AS events,
+  (SELECT count(*) FROM completion_tips WHERE org_id LIKE 'qa-claims%') AS tips`;
+check("cleanup: zero QA rows", Number(leftover[0].claims) === 0 && Number(leftover[0].audit) === 0 && Number(leftover[0].orgs) === 0 && Number(leftover[0].users) === 0 && Number(leftover[0].mems) === 0 && Number(leftover[0].jobs) === 0 && Number(leftover[0].events) === 0 && Number(leftover[0].tips) === 0, JSON.stringify(leftover[0]));
 console.log(`\nclaims.test.mjs: ${checks.length}/${checks.length} passed`);
 console.log(`cleanup: ${JSON.stringify(leftover[0])}`);
-process.env.B2_KEY_ID = SAVED_B2.k; process.env.B2_APPLICATION_KEY = SAVED_B2.a; process.env.B2_BUCKET_NAME = SAVED_B2.b;

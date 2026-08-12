@@ -1,5 +1,5 @@
 import { Link, useLocation } from "@tanstack/react-router";
-import { CarFront, Home, Inbox, Briefcase, DollarSign, LayoutDashboard, List, LogOut, Settings, User, UserRound, Users, History, BarChart3, Wallet, Bot, Map, UserCog, Zap } from "lucide-react";
+import { CarFront, Home, Inbox, Briefcase, DollarSign, LayoutDashboard, List, LogOut, Settings, User, UserRound, Users, History, BarChart3, Wallet, Bot, Map, UserCog, Zap, FileWarning } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { authStatus, type AuthUser } from "~/data/auth";
 import { getMyProfilePhoto } from "~/data/driver-profile-photo";
@@ -52,6 +52,7 @@ const NAV: Record<Portal, { links: NavItem[]; mobile: NavItem[] }> = {
       { to: "/owner/contractors", label: "Contractors", icon: UserCog },
       { to: "/owner/history", label: "History", icon: History },
       { to: "/owner/metrics", label: "Metrics", icon: BarChart3 },
+      { to: "/owner/claims", label: "Claims", icon: FileWarning },
       { to: "/owner/money", label: "Money", icon: Wallet },
       { to: "/owner/ai-dispatcher", label: "AI Dispatcher", icon: Bot },
       { to: "/owner/settings", label: "Settings", icon: Settings },
@@ -67,6 +68,7 @@ const NAV: Record<Portal, { links: NavItem[]; mobile: NavItem[] }> = {
       { to: "/owner/active", label: "Active", icon: Briefcase },
       { to: "/owner/contractors", label: "Contractors", icon: UserCog },
       { to: "/owner/metrics", label: "Metrics", icon: BarChart3 },
+      { to: "/owner/claims", label: "Claims", icon: FileWarning },
       { to: "/owner/money", label: "Money", icon: Wallet },
       { to: "/owner/ai-dispatcher", label: "AI", icon: Bot },
       { to: "/owner/settings", label: "Settings", icon: Settings },

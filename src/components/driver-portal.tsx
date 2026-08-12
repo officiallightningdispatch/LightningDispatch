@@ -13,6 +13,7 @@ import { CircleHelp, FileText } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { AppShell } from "~/components/app-shell";
+import { DriverClaimReviewCard } from "~/components/claims-ui";
 import { AvailabilityPill, useAvailability } from "~/components/driver-availability";
 import { useRequoteFlash } from "~/components/driver-eta";
 import { HomeSheet, MapChips, type HomeEarnings } from "~/components/driver-sheets";
@@ -143,6 +144,7 @@ export function RealDriverPortal() {
           </p>
         )}
         <ComplianceHomeChip />
+        <DriverClaimReviewCard />
         <MapChips chips={chips} gps={gpsState} />
       </div>
 

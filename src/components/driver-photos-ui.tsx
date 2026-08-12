@@ -434,8 +434,10 @@ function loadSquareScript(): Promise<void> {
 }
 
 /** Mobile-friendly signature pad (canvas + pointer events — works by touch and
- *  mouse). Produces a PNG data URL once there is ink; "Clear" resets it. */
-function SignaturePad({ onChange }: { onChange: (dataUrl: string | null) => void }) {
+ *  mouse). Produces a PNG data URL once there is ink; "Clear" resets it.
+ *  Reused by the damage-claims driver sign screen (label stays "customer" for
+ *  the completion flow; claims pass their own prompt). */
+export function SignaturePad({ onChange, label = "Have the customer sign here" }: { onChange: (dataUrl: string | null) => void; label?: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const drawingRef = useRef(false);
   const inkRef = useRef(false);
@@ -515,7 +517,7 @@ function SignaturePad({ onChange }: { onChange: (dataUrl: string | null) => void
         />
         {!hasInk && (
           <span className="pointer-events-none absolute inset-0 flex items-center justify-center gap-1.5 text-xs font-medium text-ink-400">
-            <PenLine className="size-3.5" /> Have the customer sign here
+            <PenLine className="size-3.5" /> {label}
           </span>
         )}
       </div>
