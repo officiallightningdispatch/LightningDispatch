@@ -9,9 +9,19 @@
  * before).
  */
 import { createServerFn } from "@tanstack/react-start";
-import type { MyPayoutMethod, OwnerPayoutMethod, PayoutRail, PayoutResult, PayoutStatus } from "./payouts-core";
+import type { MyPayoutMethod, OwnerPayoutMethod, PayoutResult, PayoutRail } from "./payouts-core";
 export type { MyPayoutMethod, OwnerPayoutMethod, PayoutRail, PayoutStatus } from "./payouts-core";
-export { PAYOUT_RAIL_LABELS } from "./payouts-core";
+
+/** UI labels for the payout rails — kept HERE (client-safe facade), never
+ *  re-exported from the server-only core: a value re-export of the core pulls
+ *  its exported *Core functions (which dynamic-import auth-server/db) into the
+ *  client bundle (client-graph rule — broke the build once already). */
+export const PAYOUT_RAIL_LABELS: Record<PayoutRail, string> = {
+  cash_app: "Cash App",
+  venmo: "Venmo",
+  zelle: "Zelle",
+  bank: "Bank account",
+};
 
 const passthrough = (x: unknown) => x;
 
@@ -42,7 +52,7 @@ export const setMyPayoutMethod = createServerFn({ method: "POST" }).validator(pa
 });
 
 /** Remove the contractor's payout method (row deleted = NOT_SET). */
-export const removeMyPayoutMethod = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<PayoutResult<{ removed: boolean }>> => {
+export const removeMyPayoutMethod = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data: _data }): Promise<PayoutResult<{ removed: boolean }>> => {
   const core = await import("./payouts-core");
   const { currentUser, effectiveDriverIdentity } = await import("./auth-server");
   const u = await currentUser();

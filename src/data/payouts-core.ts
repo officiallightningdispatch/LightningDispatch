@@ -58,12 +58,6 @@ const ok = <T>(data: T): PayoutResult<T> => ({ ok: true, data });
 /* ----------------------------------- domain ----------------------------------- */
 export const PAYOUT_RAILS = ["cash_app", "venmo", "zelle", "bank"] as const;
 export type PayoutRail = (typeof PAYOUT_RAILS)[number];
-export const PAYOUT_RAIL_LABELS: Record<PayoutRail, string> = {
-  cash_app: "Cash App",
-  venmo: "Venmo",
-  zelle: "Zelle",
-  bank: "Bank account",
-};
 export const PAYOUT_STATUSES = ["connected_unverified", "verified", "rejected"] as const;
 export type PayoutStatus = (typeof PAYOUT_STATUSES)[number];
 const isRail = (s: string): s is PayoutRail => (PAYOUT_RAILS as readonly string[]).includes(s);
@@ -151,7 +145,7 @@ export function validatePayoutInput(d: {
     const last4 = (d.bankLast4 ?? "").trim();
     if (!inst || inst.length > 40) return err("invalid_input", "Enter the bank name (up to 40 characters).");
     if (!/^\d{4}$/.test(last4)) return err("invalid_input", "Enter the last 4 digits of the account number.");
-    return ok({ rail: d.rail, handle: null, bankInstitutionName: inst, bankLast4 });
+    return ok({ rail: d.rail, handle: null, bankInstitutionName: inst, bankLast4: last4 });
   }
   const handle = (d.handle ?? "").trim();
   if (!handle) return err("invalid_input", "Enter your handle.");
@@ -204,7 +198,12 @@ export async function getMyPayoutMethodCore(user: { orgId: string; id: string })
 export async function setMyPayoutMethodCore(user: { orgId: string; id: string; actorUserId: string; actorRole: string }, data: unknown): Promise<PayoutResult<MyPayoutMethod>> {
   const v = SET_SCHEMA.safeParse(data);
   if (!v.success) return err("invalid_input", v.error.issues[0]?.message ?? "Invalid payout method.");
-  const validated = validatePayoutInput(v.data);
+  const validated = validatePayoutInput({
+    rail: v.data.rail,
+    handle: v.data.handle ?? null,
+    bankInstitutionName: v.data.bankInstitutionName ?? null,
+    bankLast4: v.data.bankLast4 ?? null,
+  });
   if (!validated.ok) return validated;
   const d = validated.data;
   try {

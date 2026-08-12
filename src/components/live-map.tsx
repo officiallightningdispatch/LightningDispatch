@@ -269,7 +269,7 @@ export function LiveMap({
         fresh: d.fresh,
       });
     }
-    for (const j of data.jobs) {
+    for (const j of data?.jobs ?? []) {
       list.push({
         id: `j-${j.jobId}`,
         kind: "job",

@@ -8,7 +8,7 @@
  * state. White-label: Lightning Dispatch copy only, no Towbook mention.
  */
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { Banknote, ChevronLeft, Landmark, Mail, Phone, Plus, Smartphone, Wallet } from "lucide-react";
+import { Banknote, ChevronLeft, Landmark, Mail, Plus, Smartphone, Wallet } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AppShell } from "~/components/app-shell";
 import { DriverToolbar } from "~/components/driver-queue";

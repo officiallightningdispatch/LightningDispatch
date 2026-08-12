@@ -150,7 +150,7 @@ export function useDriverQueue() {
 }
 
 /** Refresh + sound + sign-out row shared by every driver page. */
-export function DriverToolbar({ loading, onRefresh, onSignOut }: { loading: boolean; onRefresh: () => void; onSignOut: () => void }) {
+export function DriverToolbar({ loading, onRefresh, onSignOut }: { loading: boolean; onRefresh: () => void; onSignOut?: () => void }) {
   return (
     <div className="mb-4 flex items-center justify-between gap-2">
       <div className="flex items-center gap-2">
