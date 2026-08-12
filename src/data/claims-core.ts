@@ -167,8 +167,10 @@ export type ClaimDetection = {
 };
 
 /** Strong damage-claim phrases (real evidence): Agero "Notification of Damage
- *  Complaint on Case #", Sixt "New damages discovered … damage number". */
-const CLAIM_PHRASES = [
+ *  Complaint on Case #", Sixt "New damages discovered … damage number".
+ *  EXPORTED so the shared Gmail scan (club-mail.ts) can reuse the same language
+ *  for its liberal full-fetch pre-filter — single source of truth. */
+export const CLAIM_PHRASES = [
   /notification of damage complaint/i,
   /damage[s]?\s+(?:number|notice|discovered|found|complaint|claim|report|assessment)/i,
   /new damages? (?:discovered|found|identified)/i,

@@ -33,6 +33,12 @@
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { findSiteRoot } from "./towbook-key";
+// Claim-language + company-keyword pre-filter (two-phase scan). Importing
+// claims-core here is cycle-safe: claims-core imports club-mail ONLY as a type
+// (`import type`) and via lazy `await import()` inside function bodies, so the
+// runtime graph is one-directional (club-mail -> claims-core). CLAIM_PHRASES /
+// CLAIM_COMPANIES stay the single source of truth for what a claim looks like.
+import { CLAIM_COMPANIES, CLAIM_PHRASES } from "./claims-core";
 
 const SITE_ROOT = findSiteRoot(import.meta.url);
 /** Stable, publish-proof key path: sibling of the site root, outside the repo. */
@@ -268,13 +274,27 @@ export type ClubChargeCandidate = ParsedClubCharge & {
 };
 
 /** The minimal imapflow surface the scan needs — injectable so hermetic tests
- *  never open a socket. Mirrors ImapFlow's mailboxOpen/search/fetchOne/logout. */
+ *  never open a socket. Mirrors ImapFlow's mailboxOpen/search/fetchOne/logout
+ *  plus the optional batched fetch (the two-phase envelope-first scan uses it
+ *  to pull every envelope in ONE round trip; a mailbox without `fetch` falls
+ *  back to per-UID fetchOne — hermetic fakes may omit it). */
 export type MailboxLike = {
   connect: () => Promise<void>;
   mailboxOpen: (mailbox: string) => Promise<unknown>;
   search: (criteria: unknown, options?: { uid?: boolean }) => Promise<number[]>;
-  fetchOne: (uid: number, query: unknown, options?: { uid?: boolean }) => Promise<{ envelope?: { messageId?: string; date?: Date; from?: Array<{ address?: string }>; subject?: string }; source?: Buffer | Uint8Array } | null>;
+  fetchOne: (uid: number, query: unknown, options?: { uid?: boolean }) => Promise<{ envelope?: MailEnvelopeLike; source?: Buffer | Uint8Array } | null>;
+  /** Optional batched fetch (imapflow's async-generator `fetch`). Yields one
+   *  item per message with `.uid` plus whatever the query asked for. */
+  fetch?: (range: number[], query: unknown, options?: { uid?: boolean }) => AsyncIterable<{ uid?: number; envelope?: MailEnvelopeLike; source?: Buffer | Uint8Array }>;
   logout: () => Promise<void>;
+};
+
+/** The ENVELOPE structure the scan reads (imapflow parses RFC3501 ENVELOPE). */
+export type MailEnvelopeLike = {
+  messageId?: string;
+  date?: Date;
+  from?: Array<{ address?: string }>;
+  subject?: string;
 };
 
 export type FetchClubMailOptions = {
@@ -365,9 +385,11 @@ export async function scanGmail(opts: { sinceDays?: number; maxMessages?: number
  *  engine and the damage-claims agent both build on (owner mandate 2026-08-12:
  *  "the same Gmail scan infrastructure" — build it ONCE, share it). */
 export type MailEnvelopeWithSource = MailEnvelope & {
-  /** Best-effort raw headers (joined, for reply-to/return-path lookups). */
+  /** Best-effort raw headers (joined, for reply-to/return-path lookups). Empty
+   *  when the message's full source was NOT fetched (filtered policy non-hit). */
   rawHeaders: string;
-  /** Best-effort raw body bytes (MIME). */
+  /** Best-effort raw body bytes (MIME). Null when the message's full source
+   *  was NOT fetched (filtered policy non-hit). */
   rawSource: Buffer | null;
 };
 
@@ -376,6 +398,12 @@ export type FetchMailEnvelopesOptions = {
   sinceDays?: number;
   maxMessages?: number;
   connectImpl?: () => Promise<MailboxLike>;
+  /** "filtered" (default): TWO-PHASE scan — fetch envelopes ONLY for every UID
+   *  in one batched call, then fetch the full source ONLY for messages that
+   *  pass the liberal claim/club pre-filter (mailNeedsFullSource). Non-hits
+   *  come back with bodyText:"" and no rawSource. "all": fetch full source for
+   *  every message (the pre-optimization behavior — escape hatch). */
+  bodyPolicy?: "all" | "filtered";
 };
 
 export type FetchMailEnvelopesResult = {
@@ -385,16 +413,92 @@ export type FetchMailEnvelopesResult = {
   error?: string;
 };
 
+/* ------------------------- two-phase pre-filter ------------------------- */
+
+/** LIBERAL pre-filter for the two-phase scan — decides whether a message's
+ *  FULL SOURCE is worth fetching. Union of:
+ *   - claim signals: claim-company domains/keywords (Agero, Sixt, … from
+ *     CLAIM_COMPANIES) + damage-claim language on the subject (CLAIM_PHRASES)
+ *   - club signals: MOTOR_CLUBS (Allied/Honk/Allstate) — the payment engine
+ *     consumes club mail for card info, so club mail MUST stay in the
+ *     full-fetch set.
+ *  Tested against from-domain + subject ONLY (no body yet — body keywords
+ *  would defeat the purpose of the fast phase). Deliberately liberal: a few
+ *  extra full fetches are cheap; a MISSED claim/club email is not. */
+export function mailNeedsFullSource(from: string, subject: string): boolean {
+  const hay = `${from} ${subject}`.toLowerCase();
+  for (const club of MOTOR_CLUBS) {
+    if (club.keywords.some((k) => hay.includes(k))) return true;
+  }
+  for (const c of CLAIM_COMPANIES) {
+    if (c.keywords.some((k) => hay.includes(k))) return true;
+  }
+  return CLAIM_PHRASES.some((re) => re.test(subject));
+}
+
+/** Decode RFC2047 encoded-words ("=?utf-8?B?...?=" / "=?utf-8?Q?...?=") —
+ *  best-effort; malformed words are left as-is. Only used when a mailbox
+ *  returns no ENVELOPE and we must parse headers from raw source. */
+function decodeRfc2047(s: string): string {
+  return s.replace(/=\?([^?]+)\?([bBqQ])\?([^?]*)\?=/g, (_m, _cs, enc, body: string) => {
+    try {
+      if (enc.toLowerCase() === "b") return Buffer.from(body, "base64").toString("utf8");
+      const qp = body.replace(/_/g, " ").replace(/=([0-9A-Fa-f]{2})/g, (_, h: string) => String.fromCharCode(parseInt(h, 16)));
+      return Buffer.from(qp, "latin1").toString("utf8");
+    } catch {
+      return body;
+    }
+  });
+}
+
+/** Fallback envelope extraction from raw RFC822 source (for mailboxes that
+ *  ignore the envelope fetch query and always return the full message). */
+function parseEnvelopeFromSource(source: Buffer | Uint8Array): { messageId?: string; date?: Date; from?: string; subject?: string } | null {
+  try {
+    const buf = Buffer.isBuffer(source) ? source : Buffer.from(source);
+    const headerEnd = buf.indexOf("\r\n\r\n");
+    if (headerEnd < 0) return null;
+    const headers = buf.subarray(0, headerEnd).toString("latin1");
+    const get = (name: string): string | null => {
+      const m = headers.match(new RegExp(`^${name}:\\s*(.*)$`, "im"));
+      if (!m) return null;
+      return m[1].replace(/\r?\n\s+/g, " ").trim();
+    };
+    const fromRaw = get("From");
+    const from = fromRaw ? (fromRaw.match(/<([^>]+)>/)?.[1] ?? fromRaw) : undefined;
+    const subjectRaw = get("Subject");
+    const dateRaw = get("Date");
+    return {
+      messageId: get("Message-ID") ?? undefined,
+      date: dateRaw ? new Date(dateRaw) : undefined,
+      from,
+      subject: subjectRaw ? decodeRfc2047(subjectRaw) : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** Pull the last `sinceDays` days of mail from the owner's Gmail as raw
  *  envelopes (from/subject/date/bodyText/rawHeaders/rawSource). Read-only
  *  (BODY.PEEK semantics — nothing is ever marked read/deleted). Returns the
  *  NEWEST `maxMessages` messages. This is the generic scan; parsing/filtering
  *  is client-side (the claim agent and the payment engine each run their own
  *  pure detectors over the result). A connection-level failure surfaces as
- *  ok:false — never a fake success. */
+ *  ok:false — never a fake success.
+ *
+ *  TWO-PHASE (default "filtered" policy): phase 1 fetches envelopes ONLY for
+ *  every UID in ONE batched call (the expensive part — ~300 full-body
+ *  downloads — is removed); phase 2 fetches the full source ONLY for
+ *  pre-filter hits. Non-hits keep their envelope but get bodyText:"" and
+ *  rawSource:null, so detectors that only need from/subject still see every
+ *  scanned message. A mailbox that lacks a batched `fetch` (or that always
+ *  returns full fetches from fetchOne) is tolerated: per-UID envelope fetches,
+ *  and header parsing from whatever source comes back. */
 export async function fetchMailEnvelopes(opts: FetchMailEnvelopesOptions): Promise<FetchMailEnvelopesResult> {
   const sinceDays = opts.sinceDays ?? 14;
   const maxMessages = opts.maxMessages ?? 300;
+  const bodyPolicy = opts.bodyPolicy ?? "filtered";
   let client: MailboxLike | null = null;
   try {
     if (opts.connectImpl) {
@@ -414,19 +518,73 @@ export async function fetchMailEnvelopes(opts: FetchMailEnvelopesOptions): Promi
     const since = new Date(Date.now() - sinceDays * 86_400_000);
     const uids = await client.search({ since }, { uid: true });
     const slice = uids.slice(-maxMessages);
+    /* PHASE 1 — envelopes ONLY, batched: from/subject/date for every UID in
+     * one round trip (no source -> no body download). */
+    const envelopes = new Map<number, { from: string; subject: string; date: Date | null; messageId: string }>();
+    if (slice.length && typeof client.fetch === "function") {
+      for await (const item of client.fetch(slice, { envelope: true }, { uid: true })) {
+        if (!item || item.uid == null) continue;
+        const env = item.envelope ?? {};
+        const fromAddr = (env.from && env.from[0] && env.from[0].address) || "";
+        const subject = env.subject ?? "";
+        const messageId = env.messageId && env.messageId !== "" ? env.messageId : `uid-${item.uid}`;
+        envelopes.set(item.uid, { from: fromAddr, subject, date: env.date ?? null, messageId });
+      }
+    } else {
+      for (const uid of slice) {
+        // NOTE: imapflow's fetchOne takes `{ uid: true }` as the THIRD options
+        // arg — passing the UID without it fetches by SEQUENCE number (imapflow
+        // quirk burned the first survey; verified 2026-08-12 against the live
+        // mailbox).
+        const raw = await client.fetchOne(uid, { envelope: true }, { uid: true });
+        if (!raw) continue;
+        const env = raw.envelope ?? {};
+        const fromAddr = (env.from && env.from[0] && env.from[0].address) || "";
+        const subject = env.subject ?? "";
+        const messageId = env.messageId && env.messageId !== "" ? env.messageId : `uid-${uid}`;
+        envelopes.set(uid, { from: fromAddr, subject, date: env.date ?? null, messageId });
+      }
+    }
+    // Tolerate a mailbox that always returns full fetches / ignores the
+    // envelope query: recover the envelope from whatever fetchOne returned.
+    if (envelopes.size < slice.length) {
+      for (const uid of slice) {
+        if (envelopes.has(uid)) continue;
+        const raw = await client.fetchOne(uid, { envelope: true }, { uid: true });
+        if (!raw) continue;
+        const env = raw.envelope ?? {};
+        if (env.subject != null || env.messageId != null || env.date != null) {
+          const fromAddr = (env.from && env.from[0] && env.from[0].address) || "";
+          envelopes.set(uid, { from: fromAddr, subject: env.subject ?? "", date: env.date ?? null, messageId: env.messageId && env.messageId !== "" ? env.messageId : `uid-${uid}` });
+          continue;
+        }
+        if (raw.source) {
+          const parsed = parseEnvelopeFromSource(raw.source);
+          if (parsed) {
+            envelopes.set(uid, { from: parsed.from ?? "", subject: parsed.subject ?? "", date: parsed.date ?? null, messageId: parsed.messageId && parsed.messageId !== "" ? parsed.messageId : `uid-${uid}` });
+          }
+        }
+      }
+    }
+    /* PHASE 2 — full source ONLY for pre-filter hits. */
     const messages: MailEnvelopeWithSource[] = [];
     for (const uid of slice) {
-      const raw = await client.fetchOne(uid, { envelope: true, source: true }, { uid: true });
-      if (!raw) continue;
-      const env = raw.envelope ?? {};
-      const fromAddr = (env.from && env.from[0] && env.from[0].address) || "";
-      const subject = env.subject ?? "";
-      const rawSource = raw.source ? Buffer.from(raw.source) : null;
-      const headerEnd = rawSource ? rawSource.indexOf("\r\n\r\n") : -1;
-      const rawHeaders = rawSource && headerEnd >= 0 ? rawSource.subarray(0, headerEnd).toString("utf8") : "";
-      const bodyText = rawSource ? extractPlainText(rawSource) : "";
-      const messageId = env.messageId && env.messageId !== "" ? env.messageId : `uid-${uid}`;
-      messages.push({ messageId, receivedAt: env.date ?? new Date(), from: fromAddr, subject, bodyText, rawHeaders, rawSource });
+      const e = envelopes.get(uid);
+      if (!e) continue;
+      const needsSource = bodyPolicy === "all" || mailNeedsFullSource(e.from, e.subject);
+      let bodyText = "";
+      let rawHeaders = "";
+      let rawSource: Buffer | null = null;
+      if (needsSource) {
+        const raw = await client.fetchOne(uid, { envelope: true, source: true }, { uid: true });
+        if (raw?.source) {
+          rawSource = Buffer.from(raw.source);
+          const headerEnd = rawSource.indexOf("\r\n\r\n");
+          rawHeaders = headerEnd >= 0 ? rawSource.subarray(0, headerEnd).toString("utf8") : "";
+          bodyText = extractPlainText(rawSource);
+        }
+      }
+      messages.push({ messageId: e.messageId, receivedAt: e.date ?? new Date(), from: e.from, subject: e.subject, bodyText, rawHeaders, rawSource });
     }
     return { ok: true, scanned: slice.length, messages };
   } catch (err) {
@@ -439,7 +597,7 @@ export async function fetchMailEnvelopes(opts: FetchMailEnvelopesOptions): Promi
 }
 
 /** Convenience: resolve config + generic scan in one call. */
-export async function scanMailEnvelopes(opts: { sinceDays?: number; maxMessages?: number; connectImpl?: () => Promise<MailboxLike>; stableDir?: string } = {}): Promise<FetchMailEnvelopesResult> {
+export async function scanMailEnvelopes(opts: { sinceDays?: number; maxMessages?: number; connectImpl?: () => Promise<MailboxLike>; stableDir?: string; bodyPolicy?: "all" | "filtered" } = {}): Promise<FetchMailEnvelopesResult> {
   const config = await loadGmailConfig(process.env, { stableDir: opts.stableDir });
-  return fetchMailEnvelopes({ config, sinceDays: opts.sinceDays, maxMessages: opts.maxMessages, connectImpl: opts.connectImpl });
+  return fetchMailEnvelopes({ config, sinceDays: opts.sinceDays, maxMessages: opts.maxMessages, connectImpl: opts.connectImpl, bodyPolicy: opts.bodyPolicy });
 }
