@@ -359,7 +359,23 @@ function rosterDriver(raw: unknown): { driverId: string; name: string; phone: st
 }
 
 /** Upsert one roster driver into the org's contractor list. Returns the row's
- *  disposition: 'imported' | 'updated' | a skip reason. */
+ *  disposition: 'imported' | 'updated' | a skip reason.
+ *
+ *  The towbook_driver_id unique index is GLOBAL, not org-scoped — a users row
+ *  anywhere (an orphaned row with no membership, another org's member, a
+ *  deactivated leftover) that already holds the driver id used to make the
+ *  blind INSERT die with 23505 and abort the ENTIRE import with no audit row
+ *  (owner-reported 2026-08-12). So before INSERT we pre-check ACROSS ALL USERS
+ *  (no org filter) and heal-or-skip instead of crashing:
+ *    - row exists with no membership in this org → HEAL: add the contractor
+ *      membership, refresh name/email from the roster, count as imported;
+ *    - row exists and is deactivated anywhere → skip (driver_deactivated);
+ *    - row exists and is already a member of this org under another role →
+ *      skip (member_role_conflict — a second membership would violate the
+ *      (org_id, user_id) PK);
+ *    - no row → normal insert with the login_handle/email pre-checks as today.
+ *  The caller ALSO wraps this in a per-row try/catch so any residual conflict
+ *  (e.g. a concurrent import race) becomes a skip — never an aborted import. */
 type Q = Awaited<ReturnType<typeof db>>;
 async function upsertRosterDriver(
   q: Q,
@@ -388,6 +404,45 @@ async function upsertRosterDriver(
     }
     return "updated";
   }
+  // NEW to this org — but towbook_driver_id is GLOBALLY unique, so check EVERY
+  // users row (no org filter) before INSERT (fix 2026-08-12). This is what
+  // turns the old raw 23505 crash into a heal or a clean skip.
+  const global = await q`SELECT u.id, u.name, u.email, u.login_handle, u.deactivated_at
+    FROM users u WHERE u.towbook_driver_id = ${driverId} LIMIT 1`;
+  if (global.length) {
+    const g = global[0] as Record<string, unknown>;
+    // A deactivated users row ANYWHERE (soft-removed in this org or another) is
+    // never resurrected by re-import.
+    if (g.deactivated_at != null) return { skip: "driver_deactivated" };
+    // Already a member of this org under a non-contractor role (e.g. the
+    // owner's own driver identity) — a contractor membership would violate the
+    // (org_id, user_id) PK; skip rather than crash.
+    const inOrg = await q`SELECT 1 FROM organization_memberships WHERE org_id=${actor.orgId} AND user_id=${g.id} LIMIT 1`;
+    if (inOrg.length) return { skip: "member_role_conflict" };
+    // HEAL: the users row exists but has no membership in this org — adopt it.
+    // Refresh the name (and the email when it is a derived @towbook.driver
+    // address and the refreshed address is free — never clobber a real email
+    // the owner typed). Count as imported; the next import sees it as an
+    // existing org contractor and updates instead.
+    if (name && name !== String(g.name ?? "")) {
+      await q`UPDATE users SET name=${name} WHERE id=${g.id}`;
+    }
+    const currentEmail = String(g.email ?? "");
+    if (currentEmail.endsWith("@towbook.driver")) {
+      const refreshedEmail = deriveEmail(deriveLoginHandle(name || String(g.name ?? ""), driverId));
+      if (refreshedEmail !== currentEmail) {
+        const clash = await q`SELECT id FROM users WHERE email=${refreshedEmail} LIMIT 1`;
+        if (!clash.length) await q`UPDATE users SET email=${refreshedEmail} WHERE id=${g.id}`;
+      }
+    }
+    await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${actor.orgId}, ${g.id}, 'contractor')`;
+    if (phone) {
+      await q`INSERT INTO contractor_profiles(org_id, user_id, payrate_cents, phone, updated_at)
+        VALUES(${actor.orgId}, ${g.id}, NULL, ${phone}, NOW())
+        ON CONFLICT (org_id, user_id) DO UPDATE SET phone=COALESCE(contractor_profiles.phone, EXCLUDED.phone), updated_at=NOW()`;
+    }
+    return "imported";
+  }
   const handle = deriveLoginHandle(name, driverId);
   // The login_handle unique index is global — a collision with a DIFFERENT
   // user's row means the handle is taken; skip rather than crash.
@@ -413,6 +468,11 @@ async function upsertRosterDriver(
  *  uses, with the same session-decrypt path as the AI dispatcher) and upsert:
  *  existing towbook_driver_id rows update their name; new rows insert. Inactive
  *  drivers (endDate present) and malformed rows are skipped with reasons.
+ *  Since users_towbook_driver_id_idx is GLOBAL (not org-scoped), a users row
+ *  anywhere already holding a roster driver id is healed (adopted with a
+ *  contractor membership when it has none here) or skipped (deactivated /
+ *  member-role conflict) — a conflict can never abort the import, and the
+ *  summary + audit row are always produced (fix 2026-08-12).
  *  GET-only against Towbook — never a write. */
 export async function importContractorsCore(actor: ContractorMgmtActor, opts: { fetchImpl?: typeof fetch } = {}): Promise<ContractorManagementResult<ImportSummary>> {
   if (!canManage(actor)) return { ok: false, code: "unauthorized", message: "Owner access required." };
@@ -447,7 +507,18 @@ export async function importContractorsCore(actor: ContractorMgmtActor, opts: { 
       if (!driver) { summary.skipped.push({ towbookDriverId: "?", name: null, reason: "missing_driver_id" }); continue; }
       if (!driver.active) { summary.skipped.push({ towbookDriverId: driver.driverId, name: driver.name, reason: "inactive_in_towbook" }); continue; }
       if (!driver.name) { summary.skipped.push({ towbookDriverId: driver.driverId, name: null, reason: "missing_name" }); continue; }
-      const disposition = await upsertRosterDriver(q, actor, driver, orgContractors);
+      // Per-row try/catch (fix 2026-08-12): any conflict that slips past the
+      // pre-checks (e.g. a concurrent import race on the GLOBAL unique index)
+      // becomes a skip with a reason — the import always completes and the
+      // audit row is always written.
+      let disposition: "imported" | "updated" | { skip: string };
+      try {
+        disposition = await upsertRosterDriver(q, actor, driver, orgContractors);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        summary.skipped.push({ towbookDriverId: driver.driverId, name: driver.name, reason: /duplicate key|23505/i.test(msg) ? "driver_id_conflict" : "db_error" });
+        continue;
+      }
       if (disposition === "imported") summary.imported++;
       else if (disposition === "updated") summary.updated++;
       else summary.skipped.push({ towbookDriverId: driver.driverId, name: driver.name, reason: disposition.skip });

@@ -337,6 +337,68 @@ await setup();
   check("BUG3: performance roster count = listContractorsCore length (active only)", list.ok === true && !list.data.some((c) => c.removedAt), JSON.stringify(list.ok ? list.data.map((c) => c.towbookDriverId) : list));
 }
 
+/* ========= 10) GLOBAL driver-id conflict: heal / skip / idempotent re-import (owner-reported 2026-08-12) ========= */
+{
+  // users_towbook_driver_id_idx is GLOBAL, not org-scoped: a users row ANYWHERE
+  // holding a roster driver id used to kill the whole import with a raw 23505
+  // (and no audit row ever written). Fixtures: '910300' belongs to a member of
+  // ANOTHER org (ORG2); '910301' is an ORPHAN users row with no membership
+  // anywhere; '910302' is a DEACTIVATED users row with no membership. All four
+  // roster drivers below must import without crashing: 2 healed, 1 new, and
+  // the deactivated one skipped with reason 'driver_deactivated'.
+  const foreignId = `qa-contractor-foreign-${randomUUID()}`;
+  const orphanId = `qa-contractor-orphan-${randomUUID()}`;
+  const deactId = `qa-contractor-deact-${randomUUID()}`;
+  await q`INSERT INTO users(id, name, email, password_hash, towbook_driver_id) VALUES(${foreignId}, 'QA Foreign Org Driver', ${`qa-contractor-foreign-${randomUUID()}@lightning.test`}, 'x', '910300')`;
+  await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${ORG2}, ${foreignId}, 'contractor')`;
+  await q`INSERT INTO users(id, name, email, password_hash, towbook_driver_id) VALUES(${orphanId}, 'QA Orphan Old Name', ${`qa-contractor-orphan-${randomUUID()}@lightning.test`}, 'x', '910301')`;
+  await q`INSERT INTO users(id, name, email, password_hash, towbook_driver_id, deactivated_at) VALUES(${deactId}, 'QA Deactivated Driver', ${`qa-contractor-deact-${randomUUID()}@lightning.test`}, 'x', '910302', NOW())`;
+
+  const roster = [
+    { id: 910300, name: "QA Foreign Org Driver" },
+    { id: 910301, name: "QA Orphan Driver" },
+    { id: 910302, name: "QA Deactivated Driver" },
+    { id: 910303, name: "QA Brand New Import" },
+  ];
+  const r = await importContractorsCore(ACTOR, { fetchImpl: makeFetch(roster).fetchImpl });
+  check("global-conflict import ok (no 23505 crash)", r.ok === true, JSON.stringify(r));
+  const s = r.ok ? r.data : null;
+  check("global-conflict counts: 3 imported (2 healed + 1 new), 1 skipped", s && s.imported === 3 && s.updated === 0 && s.skipped.length === 1, JSON.stringify(s));
+  check("deactivated conflict skipped with reason driver_deactivated", s && s.skipped[0] && String(s.skipped[0].towbookDriverId) === "910302" && s.skipped[0].reason === "driver_deactivated", JSON.stringify(s?.skipped));
+
+  // Healed: foreign + orphan users rows now have a contractor membership in ORG.
+  const healedMembers = await q`SELECT m.user_id, m.role FROM organization_memberships m JOIN users u ON u.id=m.user_id WHERE u.towbook_driver_id IN ('910300','910301') AND m.org_id=${ORG}`;
+  check("healed rows: contractor membership added in ORG", healedMembers.length === 2 && healedMembers.every((m) => String(m.role) === "contractor"), JSON.stringify(healedMembers));
+  const foreignStill = await q`SELECT COUNT(*)::int AS n FROM organization_memberships WHERE org_id=${ORG2} AND user_id=${foreignId}`;
+  check("healed foreign row: original other-org membership untouched", Number(foreignStill[0].n) === 1, JSON.stringify(foreignStill));
+  const orphanName = await q`SELECT name FROM users WHERE id=${orphanId}`;
+  check("healed row: name refreshed from roster", orphanName.length === 1 && String(orphanName[0].name) === "QA Orphan Driver", JSON.stringify(orphanName));
+  const deactRow = await q`SELECT deactivated_at FROM users WHERE id=${deactId}`;
+  check("deactivated row untouched (never re-activated)", deactRow.length === 1 && deactRow[0].deactivated_at != null, JSON.stringify(deactRow));
+
+  // The audit row is written even though the import healed/skipped rows.
+  const aud10 = await q`SELECT detail FROM audit_log WHERE org_id=${ORG} AND action='contractor_imported'`;
+  const last10 = aud10[aud10.length - 1]?.detail;
+  check("audit written after heal/skip import", last10 && last10.imported === 3 && last10.skipped?.length === 1 && last10.skipped[0].reason === "driver_deactivated", JSON.stringify(last10));
+
+  // Re-import the SAME roster → idempotent: 3 updated (all in-org now), the
+  // deactivated one skipped again, no crash, no duplicate users rows.
+  const re = await importContractorsCore(ACTOR, { fetchImpl: makeFetch(roster).fetchImpl });
+  const rs = re.ok ? re.data : null;
+  check("re-import idempotent: 3 updated, 1 skipped, no crash", rs && rs.imported === 0 && rs.updated === 3 && rs.skipped.length === 1 && rs.skipped[0].reason === "driver_deactivated", JSON.stringify(rs));
+  const totalRows10 = await q`SELECT COUNT(*)::int AS n FROM users WHERE towbook_driver_id IN ('910300','910301','910302','910303')`;
+  check("no duplicate users rows created by re-import", Number(totalRows10[0].n) === 4, JSON.stringify(totalRows10));
+
+  // Structurally-conflicting roster (the SAME driver id twice) must also
+  // complete: first occurrence imports, the duplicate heals into an existing
+  // membership and is skipped cleanly — never a crash, never a dup row.
+  const dup = await importContractorsCore(ACTOR, { fetchImpl: makeFetch([{ id: 910304, name: "QA Dup Driver" }, { id: 910304, name: "QA Dup Driver" }]).fetchImpl });
+  const ds = dup.ok ? dup.data : null;
+  check("duplicate roster entries: import ok, one imported one skipped", dup.ok === true && ds && ds.imported === 1 && ds.updated === 0 && ds.skipped.some((x) => String(x.towbookDriverId) === "910304" && x.reason === "member_role_conflict"), JSON.stringify(ds));
+  const dupCount = await q`SELECT COUNT(*)::int AS n FROM users WHERE towbook_driver_id='910304'`;
+  check("duplicate roster entries: exactly one users row", Number(dupCount[0].n) === 1, JSON.stringify(dupCount));
+}
+
 /* ================================ summary + cleanup ================================ */
 const failed = checks.filter(([, ok]) => !ok);
 console.log(`contractor-management.test.mjs: ${checks.length - failed.length}/${checks.length} passed`);
