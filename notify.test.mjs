@@ -7,6 +7,7 @@
 import {
   ESCALATION_PREFIX,
   SEEN_CAP,
+  diffCancelledJobIds,
   diffEscalatedDecisionIds,
   diffNewJobIds,
   isEscalationDecision,
@@ -105,6 +106,55 @@ const D = (id, decision, reason = "") => ({ id, decision, reason });
   const fired = diffEscalatedDecisionIds([], [D("a", "auto_accept_no_driver"), D("b", "accepted_manual")]);
   check("non-escalated decisions never fire even when unseen", fired.length === 0);
 }
+
+/* --------------------------- cancelled-job detection --------------------------- */
+// The driver queue diff (owner-directed 2026-08-12, "like Uber — notify the
+// driver and move it to history"): a call that was LIVE (offered → towing) in
+// the previous poll and is now cancelled (255) — or gone from the queue — is
+// the cancellation signal. The PREVIOUS row comes back so the banner can carry
+// pickup/vehicle context.
+{
+  const live = (id, extra = {}) => ({ id, statusId: 2, serviceName: "Jump Start", pickupAddress: "14 Elm St", zip: "06606", ...extra });
+  const next = [live("job-a"), live("job-b")];
+  check("stable live queue → no cancellations", diffCancelledJobIds(next, next).length === 0);
+}
+{
+  const prev = [C("1", { statusId: 2, serviceName: "Jump Start", pickupAddress: "14 Elm St", zip: "06606" }), C("2", { statusId: 3, serviceName: "Tow", vehicle: "Honda" })];
+  const next = [C("1", { statusId: 255 }), C("2", { statusId: 5 })];
+  const fired = diffCancelledJobIds(prev, next);
+  check("live→255 fires once with context", fired.length === 1 && fired[0].id === "1" && fired[0].serviceName === "Jump Start" && fired[0].pickupAddress === "14 Elm St" && fired[0].zip === "06606", JSON.stringify(fired));
+  check("live→completed (5) never fires", fired.every((c) => c.id !== "2"));
+}
+{
+  // A live call that VANISHED from the queue counts as cancelled (Towbook
+  // removes voided calls); a completed call that vanished does not.
+  const prev = [C("vanish", { statusId: 2, serviceName: "Lockout" }), C("done", { statusId: 5 })];
+  const fired = diffCancelledJobIds(prev, [C("done", { statusId: 5 })]);
+  check("live→gone fires", fired.length === 1 && fired[0].id === "vanish" && fired[0].serviceName === "Lockout", JSON.stringify(fired));
+}
+{
+  // Already-cancelled (255) or already-finished calls in the PREVIOUS snapshot
+  // never fire; first-load (prev === first snapshot) fires nothing.
+  const prev = [C("x", { statusId: 255 }), C("y", { statusId: 5 }), C("z", { statusId: 2 })];
+  const next = [C("x", { statusId: 255 }), C("y", { statusId: 5 }), C("z", { statusId: 2 })];
+  check("first snapshot (prev===next) → nothing fires", diffCancelledJobIds(prev, next).length === 0);
+}
+{
+  // Offers (statusId 1) count as live — an offered job cancelled fires too.
+  const prev = [C("off", { statusId: 1, serviceName: "Tire Change" })];
+  const fired = diffCancelledJobIds(prev, [C("off", { statusId: 255 })]);
+  check("offered→255 fires", fired.length === 1 && fired[0].id === "off");
+}
+{
+  // Batch dedupe + malformed rows are tolerated.
+  const prev = [C("a", { statusId: 2 }), C("a", { statusId: 2 }), C("b", { statusId: 2 })];
+  const fired = diffCancelledJobIds(prev, [C("a", { statusId: 255 }), C("b", { statusId: 255 })]);
+  check("batch dedupe: one per id", fired.length === 2 && fired.map((c) => c.id).join() === "a,b");
+  check("null-ish prev rows skipped", diffCancelledJobIds([null, undefined, {}, { id: "" }, { id: 42, statusId: 2 }], []).length === 0);
+  check("null/empty inputs → empty", diffCancelledJobIds(null, []).length === 0 && diffCancelledJobIds([], null).length === 0);
+}
+
+function C(id, extra = {}) { return { id, ...extra }; }
 
 /* --------------------------- parseSeen (persisted set) --------------------------- */
 {

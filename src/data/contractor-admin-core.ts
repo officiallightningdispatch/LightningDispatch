@@ -131,6 +131,10 @@ export type ContractorComplianceRow = {
   name: string;
   requiredDocCount: number;
   onFileDocCount: number;
+  /** Required types VERIFIED by the owner (approved) — the roster badge reads
+   *  "{approved}/{required} approved"; submitted-but-unapproved shows as the
+   *  "N to review" pill. */
+  approvedDocCount: number;
 };
 
 /* --------------------------- derived status (read time) --------------------------- */
@@ -501,7 +505,15 @@ export async function listContractorComplianceCore(actor: ContractorAdminActor):
              AND (d.expires_on IS NULL OR d.expires_on >= CURRENT_DATE)
              AND (t.requires_facial_verification = FALSE OR EXISTS (
                SELECT 1 FROM contractor_doc_selfies s
-               WHERE s.org_id = d.org_id AND s.contractor_id = d.contractor_id AND s.doc_type_id = d.doc_type_id))) AS on_file_doc_count
+               WHERE s.org_id = d.org_id AND s.contractor_id = d.contractor_id AND s.doc_type_id = d.doc_type_id))) AS on_file_doc_count,
+        (SELECT COUNT(*)::int FROM contractor_documents d
+           JOIN contractor_doc_types t ON t.id = d.doc_type_id AND t.active
+           WHERE d.org_id=${actor.orgId} AND d.contractor_id = u.id
+             AND d.status = 'verified'
+             AND (d.expires_on IS NULL OR d.expires_on >= CURRENT_DATE)
+             AND (t.requires_facial_verification = FALSE OR EXISTS (
+               SELECT 1 FROM contractor_doc_selfies s
+               WHERE s.org_id = d.org_id AND s.contractor_id = d.contractor_id AND s.doc_type_id = d.doc_type_id))) AS approved_doc_count
       FROM users u
       JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND m.role = 'contractor'
       WHERE u.deactivated_at IS NULL
@@ -511,6 +523,7 @@ export async function listContractorComplianceCore(actor: ContractorAdminActor):
       name: String(r.name ?? ""),
       requiredDocCount: r.required_doc_count != null ? Number(r.required_doc_count) : 0,
       onFileDocCount: r.on_file_doc_count != null ? Number(r.on_file_doc_count) : 0,
+      approvedDocCount: r.approved_doc_count != null ? Number(r.approved_doc_count) : 0,
     }));
     return ok(out);
   } catch (e) {

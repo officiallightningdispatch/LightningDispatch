@@ -58,3 +58,17 @@ for (let attempt = 1; ; attempt++) {
 }
 
 console.log(`team-site serving on http://${HOST}:${String(PORT)}`);
+
+// Owner-directed 2026-08-12 (resilience): start the 3s Towbook sync +
+// auto-dispatch loop at server boot so a restart never leaves the dispatcher
+// dead (it used to start only on the first authenticated request). Best-effort:
+// when DATABASE_URL is absent at boot the loop simply doesn't start here and
+// server.ts's first-prepare path starts it on the first authenticated request
+// instead. startBackgroundSync is idempotent per process (global marker), so
+// the dist bundle's own copy never starts a second loop.
+try {
+  const { startBackgroundSync } = await import("./src/data/background-sync.ts");
+  startBackgroundSync();
+} catch {
+  /* best-effort — the first-prepare fallback still covers this */
+}

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { sql, sqlWithTimeout } from "~/db";
 import { decryptSession, encryptSession } from "./towbook-key";
 import { towbookBrowserHeaders, towbookDetail, towbookLogin, TOWBOOK_ORIGIN, type TowbookFacts } from "./towbook-login";
-import { runAutoDispatch, getOrgSettings, etaProviderStatus } from "./ai-dispatcher";
+import { getOrgSettings, etaProviderStatus } from "./ai-dispatcher";
 import { contractors as seedContractors, jobs as seedJobs } from "./seed";
 import type { AuthUser } from "./auth-server";
 import type { LiveMapData } from "./live-map-core";
@@ -30,7 +30,12 @@ function prepare() {
     await ensureAuthSchema();
     const { ensureSchema } = await import("./migrations");
     await ensureSchema();
-    startBackgroundSync();
+    // The 3s background loop (Towbook sync + auto-dispatch) is NOT started here
+    // on purpose: it lives in the server-only src/data/background-sync.ts and is
+    // started at server boot by serve.ts. A dynamic import here would pull that
+    // module into the client bundle (its chain: ai-dispatcher → node:crypto,
+    // syncForOrg → towbook-recovery → node:fs) — client-graph leak. Boot start
+    // covers the running system; tests call the loop's pieces directly.
   })();
   return schemaInit;
 }
@@ -980,16 +985,30 @@ export function normalizeRawJob(rec: RawJob, sourceUrl: string): NormalizedJob |
 
 /* ------------------------------ self-discovering fetch ------------------------------ */
 
+/** Whole-discovery hard budget (resilience, owner-directed 2026-08-12): a slow
+ *  Towbook period must never let discovery walk all ~45 paths (worst case
+ *  45×12s — this wedged the 3s loop on 2026-08-12). With a valid session the
+ *  FIRST working primary path already returns the job page, so discovery stops
+ *  there and the entire walk is capped at DISCOVERY_TIMEOUT_MS. */
+const DISCOVERY_TIMEOUT_MS = 10_000;
+const PER_PATH_TIMEOUT_MS = 12_000;
 async function discoverJobPages(cookieJar: string, baseUrl: string): Promise<{ diagnostics: TowbookSyncDiag[]; pages: { url: string; body: string; contentType: string | null }[]; sessionExpired: boolean }> {
   const diagnostics: TowbookSyncDiag[] = [];
   const pages: { url: string; body: string; contentType: string | null }[] = [];
   let sessionExpired = false;
   const origin = new URL(baseUrl).origin;
+  const deadline = Date.now() + DISCOVERY_TIMEOUT_MS;
   for (const path of TOWBOOK_JOB_PATHS) {
     if (sessionExpired) break; // don't hammer a dead session
+    if (pages.length > 0) break; // first working primary path is enough (owner-directed 2026-08-12)
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 250) {
+      diagnostics.push({ url: "<discovery-cap>", status: null, contentType: null, hint: `discovery stopped at the ${Math.round(DISCOVERY_TIMEOUT_MS / 1000)}s budget` });
+      break;
+    }
     const url = origin + path;
     try {
-      const res = await fetch(url, { headers: towbookBrowserHeaders(cookieJar), redirect: "manual", signal: AbortSignal.timeout(12000) });
+      const res = await fetch(url, { headers: towbookBrowserHeaders(cookieJar), redirect: "manual", signal: AbortSignal.timeout(Math.min(PER_PATH_TIMEOUT_MS, remainingMs)) });
       const text = await res.text();
       const ct = res.headers.get("content-type");
       diagnostics.push({ url, status: res.status, contentType: ct, hint: pageHint(text, ct) });
@@ -998,7 +1017,7 @@ async function discoverJobPages(cookieJar: string, baseUrl: string): Promise<{ d
         if (loc) {
           const target = new URL(loc, origin);
           if (target.origin === origin) {
-            const r2 = await fetch(target.toString(), { headers: towbookBrowserHeaders(cookieJar), redirect: "manual", signal: AbortSignal.timeout(12000) });
+            const r2 = await fetch(target.toString(), { headers: towbookBrowserHeaders(cookieJar), redirect: "manual", signal: AbortSignal.timeout(Math.min(PER_PATH_TIMEOUT_MS, remainingMs)) });
             const t2 = await r2.text();
             const ct2 = r2.headers.get("content-type");
             diagnostics.push({ url: target.toString(), status: r2.status, contentType: ct2, hint: pageHint(t2, ct2) });
@@ -1348,14 +1367,14 @@ const syncInFlight = new Map<string, Promise<TowbookSyncResult>>();
  *  30s is a generous cap that still guarantees a hung DB call cannot wedge the
  *  loop forever: the race below ALWAYS clears the in-flight guard (via .finally
  *  on a timeout that rejects), so the next interval fire starts a fresh tick. */
-const SYNC_TICK_TIMEOUT_MS = 30_000;
+export const SYNC_TICK_TIMEOUT_MS = 30_000;
 /** Diagnostic-write deadline: persisting a sync result must itself be
  *  time-bounded, or the wedge could hide behind its own diagnostic write. */
 const SYNC_DIAG_TIMEOUT_MS = 10_000;
 /** Race `p` against a timer that rejects after `ms`; always clears the timer
  *  when either side settles, so timers never linger. The timed-out side becomes
  *  an ordinary error for the caller to persist + rethrow. */
-function withHardTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+export function withHardTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
@@ -1389,7 +1408,7 @@ export async function persistSyncResult(orgId: string, r: TowbookSyncResult): Pr
   } catch { /* never mask the sync result with a diagnostics-write failure */ }
 }
 
-function syncForOrg(orgId: string, trigger: string, actor?: { id: string; role: AuthUser["role"] }): Promise<TowbookSyncResult> {
+export function syncForOrg(orgId: string, trigger: string, actor?: { id: string; role: AuthUser["role"] }): Promise<TowbookSyncResult> {
   const running = syncInFlight.get(orgId);
   if (running) return running;
   const tick = doSyncForOrg(orgId, trigger, actor).then(async (r) => { await persistSyncResult(orgId, r); return r; });
@@ -1429,56 +1448,6 @@ async function maybeAutoSync(orgId: string): Promise<void> {
     const last = rows[0].last_sync_at ? new Date(String(rows[0].last_sync_at)).getTime() : 0;
     if (Date.now() - last > 3_000) void syncForOrg(orgId, "sync:pull-on-read");
   } catch { /* best-effort — never fail the read */ }
-}
-
-/** Background interval (lives inside the served bundle's process, which is the same
- *  process that hosts the port-3000 server — serve.ts only wraps the built handler).
- *  Every 3s (tightened from 30s per owner direction 2026-08-11), sync every
- *  connected org whose last sync is stale, then run the AI dispatcher for that
- *  org (auto-accept in-zone offers; gated on ai_dispatcher_enabled in the engine
- *  itself); the per-org in-flight guard prevents overlap (a slow tick never
- *  queues: setInterval skips a new fire while the previous one is still running). */
-let backgroundSyncStarted = false;
-function startBackgroundSync() {
-  if (backgroundSyncStarted) return;
-  backgroundSyncStarted = true;
-  const timer = globalThis.setInterval(() => {
-    void (async () => {
-      try {
-        if (!configured()) return;
-        const rows = await sqlWithTimeout(SYNC_TICK_TIMEOUT_MS)`SELECT org_id FROM towbook_sessions WHERE session_kind='owner' AND status='connected' AND encrypted_session <> '' AND (last_sync_at IS NULL OR last_sync_at < NOW() - INTERVAL '3 seconds')`;
-        for (const r of rows) {
-          const orgId = String(r.org_id);
-          void (async () => {
-            try {
-              // Per-org tick body (sync + auto-dispatch) is hard-timeout-wrapped:
-              // a hung DB call inside either half can never hold this async chain
-              // forever — the next interval fire starts a fresh tick. The sync's
-              // own in-flight guard is also cleared on timeout (syncForOrg), so
-              // the loop keeps firing even when one tick is stuck.
-              await withHardTimeout(
-                (async () => {
-                  await syncForOrg(orgId, "sync:interval");
-                  // Adapter: AI-dispatcher deps type the actor role loosely (string);
-                  // syncForOrg expects the narrow AuthUser role union — cast is safe
-                  // because every actor passed here comes from resolveOrgActor.
-                  await runAutoDispatch(orgId, {
-                    syncForOrg: (oid: string, trigger: string, actor?: { id: string; role: string }) =>
-                      syncForOrg(oid, trigger, actor as { id: string; role: AuthUser["role"] } | undefined),
-                    resolveOrgActor,
-                  });
-                })(),
-                SYNC_TICK_TIMEOUT_MS,
-                `background tick ${orgId}`,
-              );
-            } catch { /* best-effort — one org's failure never stops the loop */ }
-          })();
-        }
-      } catch { /* best-effort */ }
-    })();
-  }, 3_000);
-  const t = timer as unknown as { unref?: () => void };
-  if (typeof t.unref === "function") t.unref();
 }
 
 export const towbookSyncNow = createServerFn({ method: "POST" }).handler(async () => {

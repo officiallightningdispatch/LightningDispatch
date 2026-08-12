@@ -102,6 +102,11 @@ export function RealDriverPortal() {
 
   const active = calls?.filter((c) => ACTIVE_STATUSES.includes(c.statusId)) ?? [];
   const offers = calls?.filter((c) => c.statusId === 1) ?? [];
+  // History (owner-directed 2026-08-12): completed (5/6/252) + cancelled (255)
+  // calls leave Active/Offers and render as the expanded HomeSheet History
+  // list with a distinct Cancelled badge — Uber-style.
+  const history =
+    calls?.filter((c) => c.statusId === 5 || c.statusId === 6 || c.statusId === 252 || c.statusId === 255) ?? [];
   const primary = active[0] ?? offers[0] ?? null;
   const moreOffers = primary ? offers.filter((c) => c.id !== primary.id) : offers;
   const flash = useRequoteFlash(primary);
@@ -144,6 +149,7 @@ export function RealDriverPortal() {
       <HomeSheet
         primary={primary}
         offers={moreOffers}
+        history={history}
         acting={acting}
         onAct={act}
         onQueueChanged={() => void load(true)}

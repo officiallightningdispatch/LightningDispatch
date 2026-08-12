@@ -569,7 +569,18 @@ function ContractorRowView({ c, last, onChanged, onPayrate, onEdit }: {
             </p>
             {!removed && (
               <p className="mt-1.5 flex flex-wrap items-center gap-2">
-                <ComplianceBadge onFile={c.onFileDocCount} required={c.requiredDocCount} />
+                <ComplianceBadge approved={c.approvedDocCount} required={c.requiredDocCount} />
+                {c.onFileDocCount > c.approvedDocCount && (
+                  <Link
+                    to="/owner/contractors/$id"
+                    params={{ id: c.id }}
+                    title={`${c.onFileDocCount - c.approvedDocCount} document${c.onFileDocCount - c.approvedDocCount === 1 ? "" : "s"} submitted and waiting for your approval`}
+                    className="inline-flex items-center gap-1 rounded-full bg-accent-50 px-2 py-0.5 text-[11px] font-bold text-accent-700 transition-colors hover:bg-accent-100"
+                  >
+                    <AlertTriangle className="size-3" aria-hidden="true" />
+                    {c.onFileDocCount - c.approvedDocCount} to review
+                  </Link>
+                )}
                 <PayRateField valueCents={c.payrateCents} onSave={onPayrate} />
                 {c.expiringSoonCount > 0 && (
                   <span className="inline-flex items-center gap-1 rounded-full bg-accent-50 px-2 py-0.5 text-[11px] font-bold text-accent-700" title="A required document expires within 14 days">

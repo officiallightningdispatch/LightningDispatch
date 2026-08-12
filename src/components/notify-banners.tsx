@@ -25,16 +25,16 @@
  */
 
 import { useNavigate } from "@tanstack/react-router";
-import { AlertTriangle, Volume2, VolumeX, X, Zap } from "lucide-react";
+import { AlertTriangle, Volume2, VolumeX, X, XCircle, Zap } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SERVICE_LABELS } from "~/lib/job-ui";
-import { diffEscalatedDecisionIds, diffNewJobIds, mergeSeen } from "~/lib/notify";
+import { diffCancelledJobIds, diffEscalatedDecisionIds, diffNewJobIds, mergeSeen, type NotifyCall } from "~/lib/notify";
 import { getSeenIds, seenKey, setSeenIds } from "~/lib/notify-seen";
 import { playLightning, primeAudio, soundMuted, toggleSoundMuted, type SoundRole } from "~/lib/sound";
 import { useDispatchStore } from "~/lib/store";
 import { listAiDispatcherDecisions } from "~/data/server";
 
-export type BannerKind = "job" | "escalation";
+export type BannerKind = "job" | "escalation" | "cancelled";
 
 /** Routes banners can navigate to (typed so navigate() typechecks). */
 export type BannerTarget = "/owner/queue" | "/owner/ai-dispatcher" | "/driver";
@@ -135,7 +135,7 @@ function BannerStack({
           key={b.id}
           role="status"
           className={`pointer-events-auto w-full max-w-md animate-[notify-in_0.25s_ease-out] overflow-hidden rounded-2xl border shadow-card ${
-            b.kind === "escalation" ? "border-danger-200 bg-danger-50" : "border-brand-200 bg-surface"
+            b.kind === "escalation" ? "border-danger-200 bg-danger-50" : b.kind === "cancelled" ? "border-accent-200 bg-accent-50" : "border-brand-200 bg-surface"
           }`}
         >
           <div className="flex items-stretch">
@@ -146,20 +146,22 @@ function BannerStack({
             >
               <span
                 className={`mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg ${
-                  b.kind === "escalation" ? "bg-danger-100 text-danger-600" : "bg-brand-50 text-brand-600"
+                  b.kind === "escalation" ? "bg-danger-100 text-danger-600" : b.kind === "cancelled" ? "bg-accent-100 text-accent-700" : "bg-brand-50 text-brand-600"
                 }`}
               >
                 {b.kind === "escalation" ? (
                   <AlertTriangle className="size-4" aria-hidden="true" />
+                ) : b.kind === "cancelled" ? (
+                  <XCircle className="size-4" aria-hidden="true" />
                 ) : (
                   <Zap className="size-4" fill="currentColor" strokeWidth={0} aria-hidden="true" />
                 )}
               </span>
               <span className="min-w-0 flex-1">
-                <span className={`block text-sm font-bold ${b.kind === "escalation" ? "text-danger-700" : "text-ink-900"}`}>
+                <span className={`block text-sm font-bold ${b.kind === "escalation" ? "text-danger-700" : b.kind === "cancelled" ? "text-accent-800" : "text-ink-900"}`}>
                   {b.title}
                 </span>
-                <span className={`mt-0.5 block text-xs leading-snug ${b.kind === "escalation" ? "text-danger-700/90" : "text-ink-500"}`}>
+                <span className={`mt-0.5 block text-xs leading-snug ${b.kind === "escalation" ? "text-danger-700/90" : b.kind === "cancelled" ? "text-accent-800/90" : "text-ink-500"}`}>
                   {b.body}
                 </span>
               </span>
@@ -288,8 +290,11 @@ export function OwnerNotificationLayer() {
 export function DriverNotificationBanners({ calls }: { calls: readonly { id: string }[] | null }) {
   const { banners, push, dismiss } = useBannerStack("driver");
   const booted = useRef(false);
+  // Previous queue snapshot — used to spot live→cancelled transitions.
+  const prevCalls = useRef<readonly { id: string }[] | null>(null);
   useAudioPrimer();
   const key = seenKey("driver", "jobs");
+  const cancelledKey = seenKey("driver", "cancelled");
 
   useEffect(() => {
     // `calls` starts null (not loaded yet). The FIRST successful response —
@@ -299,30 +304,63 @@ export function DriverNotificationBanners({ calls }: { calls: readonly { id: str
     if (!booted.current) {
       booted.current = true;
       setSeenIds(key, mergeSeen(getSeenIds(key), calls.map((c) => c.id)));
+      prevCalls.current = calls;
       return;
     }
+    const prev = prevCalls.current;
+    prevCalls.current = calls;
+
     const added = diffNewJobIds(getSeenIds(key), calls.map((c) => ({ id: c.id })));
-    if (!added.length) return;
-    setSeenIds(key, mergeSeen(getSeenIds(key), added.map((j) => j.id)));
-    const byId = new Map(calls.map((c) => [c.id, c]));
-    push(
-      added.map((j) => {
-        const call = byId.get(j.id) as
-          | { serviceName?: string; pickupAddress?: string; zip?: string }
-          | undefined;
-        const body = [call?.serviceName, [call?.pickupAddress, call?.zip].filter(Boolean).join(", ")]
-          .filter(Boolean)
-          .join(" · ");
-        return {
-          id: `driverjob:${j.id}`,
-          kind: "job",
-          title: "New job assigned",
-          body: body || "A new job landed in your queue.",
-          to: "/driver",
-        };
-      }),
-    );
-  }, [calls, key, push]);
+    if (added.length) {
+      setSeenIds(key, mergeSeen(getSeenIds(key), added.map((j) => j.id)));
+      const byId = new Map(calls.map((c) => [c.id, c]));
+      push(
+        added.map((j) => {
+          const call = byId.get(j.id) as
+            | { serviceName?: string; pickupAddress?: string; zip?: string }
+            | undefined;
+          const body = [call?.serviceName, [call?.pickupAddress, call?.zip].filter(Boolean).join(", ")]
+            .filter(Boolean)
+            .join(" · ");
+          return {
+            id: `driverjob:${j.id}`,
+            kind: "job",
+            title: "New job assigned",
+            body: body || "A new job landed in your queue.",
+            to: "/driver",
+          };
+        }),
+      );
+    }
+
+    // Cancellation notice (owner-directed 2026-08-12, "like Uber — notify the
+    // driver and move it to history"): a job the driver was live on (offered →
+    // towing) that is now cancelled (255) or gone from the queue fires once per
+    // call id. The banner carries the pickup/vehicle context from the previous
+    // snapshot.
+    const cancelled = prev ? diffCancelledJobIds(prev as NotifyCall[], calls as NotifyCall[]) : [];
+    if (cancelled.length) {
+      const already = new Set(getSeenIds(cancelledKey));
+      const unseen = cancelled.filter((c) => !already.has(c.id));
+      if (unseen.length) {
+        setSeenIds(cancelledKey, mergeSeen(getSeenIds(cancelledKey), unseen.map((c) => c.id)));
+        push(
+          unseen.map((c) => {
+            const body = [c.serviceName, [c.pickupAddress, c.zip].filter(Boolean).join(", "), c.vehicle]
+              .filter(Boolean)
+              .join(" · ");
+            return {
+              id: `drivercancelled:${c.id}`,
+              kind: "cancelled",
+              title: "This job was cancelled",
+              body: body || "The job was cancelled before you got there.",
+              to: "/driver",
+            };
+          }),
+        );
+      }
+    }
+  }, [calls, key, cancelledKey, push]);
 
   return <BannerStack role="driver" banners={banners} onDismiss={dismiss} />;
 }

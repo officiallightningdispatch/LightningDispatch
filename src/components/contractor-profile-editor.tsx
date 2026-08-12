@@ -369,9 +369,11 @@ export function ContractorProfileEditor({ contractorId, initialSection = "profil
   };
   const removed = detail?.removedAt != null;
   const onFileCount = (docs ?? []).filter((d) => d.status === "uploaded" || d.status === "verified").length;
+  const approvedCount = (docs ?? []).filter((d) => d.status === "verified").length;
   const missingNames = (docs ?? []).filter((d) => d.status !== "uploaded" && d.status !== "verified").map((d) => d.docTypeName);
+  const actionNames = (docs ?? []).filter((d) => d.status !== "verified" && d.status !== "missing").map((d) => d.docTypeName);
   const docsBadge = detail && detail.requiredDocCount > 0
-    ? { complete: onFileCount >= detail.requiredDocCount, missing: detail.requiredDocCount - onFileCount }
+    ? { complete: approvedCount >= detail.requiredDocCount, missing: detail.requiredDocCount - approvedCount }
     : null;
   /* -------- save handlers -------- */
   const saveIdentity = async (name: string, email: string): Promise<{ kind: "ok" | "warn"; text: string }> => {
@@ -440,7 +442,7 @@ export function ContractorProfileEditor({ contractorId, initialSection = "profil
           <Avatar name={detail?.name ?? "?"} className="size-10" />
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-bold text-ink-900">{detail ? detail.name : "Loading…"}</p>
-            {detail && <ComplianceBadge onFile={onFileCount} required={detail.requiredDocCount} />}
+            {detail && <ComplianceBadge approved={approvedCount} required={detail.requiredDocCount} />}
           </div>
           <Button size="sm" variant="secondary" className="!px-2.5" onClick={onClose} aria-label="Close contractor editor">
             <X className="size-4" aria-hidden="true" />
@@ -479,7 +481,7 @@ export function ContractorProfileEditor({ contractorId, initialSection = "profil
             <div className="space-y-8 p-4 pb-6">
               {/* ---- compliance overview (top) ---- */}
               <section id="cm-sec-compliance" className="scroll-mt-2">
-                <ComplianceCard detail={detail} docs={docs ?? []} onFileCount={onFileCount} missingNames={missingNames} />
+                <ComplianceCard detail={detail} docs={docs ?? []} approvedCount={approvedCount} actionNames={actionNames} />
               </section>
               {/* ---- profile ---- */}
               <section id="cm-sec-profile" className="scroll-mt-2">
@@ -577,17 +579,17 @@ function DetailRow({ label, value, mono, sub }: { label: string; value: string; 
 const INPUT_CLS = "h-11 w-full rounded-xl border border-ink-200 bg-surface px-3 text-sm outline-none placeholder:text-ink-300 focus:border-brand-500 focus:ring-2 focus:ring-brand-100";
 
 /* ------------------------------ compliance overview ------------------------------ */
-function ComplianceCard({ detail, docs, onFileCount, missingNames }: {
-  detail: ContractorDetailRow; docs: ContractorDocumentRow[]; onFileCount: number; missingNames: string[];
+function ComplianceCard({ detail, docs, approvedCount, actionNames }: {
+  detail: ContractorDetailRow; docs: ContractorDocumentRow[]; approvedCount: number; actionNames: string[];
 }) {
   return (
     <Card className="p-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm font-bold">Compliance</p>
-        <ComplianceBadge onFile={onFileCount} required={detail.requiredDocCount} size="lg" />
+        <ComplianceBadge approved={approvedCount} required={detail.requiredDocCount} size="lg" />
       </div>
       <div className="mt-3">
-        <ComplianceSummary onFile={onFileCount} required={detail.requiredDocCount} missingNames={missingNames} />
+        <ComplianceSummary approved={approvedCount} required={detail.requiredDocCount} actionNames={actionNames} />
       </div>
       {detail.docsExpiringSoon.length > 0 && (
         <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-accent-200 bg-accent-50 px-3 py-2.5">
@@ -864,7 +866,7 @@ function DocumentsSection({ docs, removed, onVerify, onReject, onSetExpiry, onCo
             onSetExpiry={onSetExpiry}
             onView={() => Promise.resolve()}
             onViewSelfie={doc.requiresFacialVerification && doc.selfieStatus === "uploaded" ? () => Promise.resolve() : undefined}
-            onReviewPair={doc.requiresFacialVerification && doc.selfieStatus === "uploaded" ? () => onCompare(doc) : undefined}
+            onReviewPair={doc.requiresFacialVerification && doc.selfieStatus === "uploaded" ? async () => { onCompare(doc); } : undefined}
           />
         ))
       )}

@@ -138,10 +138,14 @@ function OwnerContractorDetail() {
       void refresh();
     } else setRemoveError(r.message);
   };
-  const missingNames = (docs ?? [])
-    .filter((d) => d.status !== "uploaded" && d.status !== "verified")
+  // Approved-vs-submitted (owner-directed 2026-08-12): the docs card summary
+  // reads "{approved} of {required} approved — needs review: …" where the
+  // action list is the owner-actionable docs not yet verified (uploaded /
+  // rejected / expired — NOT "missing": those need the contractor to upload).
+  const approvedCount = (docs ?? []).filter((d) => d.status === "verified").length;
+  const actionNames = (docs ?? [])
+    .filter((d) => d.status !== "verified" && d.status !== "missing")
     .map((d) => d.docTypeName);
-  const onFileCount = (docs ?? []).filter((d) => d.status === "uploaded" || d.status === "verified").length;
   return (
     <AppShell
       portal="owner"
@@ -307,7 +311,7 @@ function OwnerContractorDetail() {
                     </Button>
                   )}
                 </div>
-                {!removed && <div className="mt-1"><ComplianceSummary onFile={onFileCount} required={detail.requiredDocCount} missingNames={missingNames} /></div>}
+                {!removed && <div className="mt-1"><ComplianceSummary approved={approvedCount} required={detail.requiredDocCount} actionNames={actionNames} /></div>}
               </div>
               {docsError ? (
                 <div className="p-4"><InlineError message={docsError} /></div>
@@ -335,7 +339,7 @@ function OwnerContractorDetail() {
                     onSetExpiry={actSetExpiry}
                     onView={() => openViewer(doc)}
                     onViewSelfie={doc.requiresFacialVerification && doc.selfieStatus === "uploaded" ? () => openSelfieViewer(doc) : undefined}
-                    onReviewPair={doc.requiresFacialVerification && doc.selfieStatus === "uploaded" ? () => setCompare(doc) : undefined}
+                    onReviewPair={doc.requiresFacialVerification && doc.selfieStatus === "uploaded" ? async () => { setCompare(doc); } : undefined}
                   />
                 ))
               )}

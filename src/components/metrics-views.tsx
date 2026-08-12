@@ -271,8 +271,8 @@ export function OwnerDriverMetricsView({ driverId }: { driverId: string }) {
               <p className="mt-0.5 text-xs text-ink-400">Driver #{d.towbookDriverId}</p>
               {d.compliance && (
                 <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <ComplianceBadge onFile={d.compliance.onFile} required={d.compliance.required} size="lg" />
-                  <ComplianceSummary onFile={d.compliance.onFile} required={d.compliance.required} missingNames={[]} />
+                  <ComplianceBadge approved={d.compliance.approved ?? d.compliance.onFile} required={d.compliance.required} size="lg" />
+                  <ComplianceSummary approved={d.compliance.approved ?? d.compliance.onFile} required={d.compliance.required} actionNames={[]} />
                 </div>
               )}
               <Link to={`/owner/contractors/${d.userId}` as any} className="mt-3 inline-flex h-9 items-center gap-1.5 rounded-lg border border-ink-200 px-3 text-xs font-bold text-ink-600 transition-colors hover:bg-ink-50">

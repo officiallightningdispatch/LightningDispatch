@@ -76,6 +76,7 @@ export type HomeEarnings = { completed: number; tipsCents: number } | null;
 export function HomeSheet({
   primary,
   offers,
+  history,
   acting,
   onAct,
   onQueueChanged,
@@ -92,6 +93,9 @@ export function HomeSheet({
   /** Remaining offers for the expanded "More offers" list (excludes primary
    *  when primary IS an offer). */
   offers: DriverCall[];
+  /** Past jobs — completed (5/6/252) + cancelled (255) — rendered as the
+   *  expanded "History" list (Uber-style; owner-directed 2026-08-12). */
+  history: DriverCall[];
   acting: string | null;
   onAct: (id: string, a: "accept" | "en_route") => Promise<void>;
   onQueueChanged: () => void;
@@ -173,9 +177,42 @@ export function HomeSheet({
               No other offers right now — this is the only one in your queue.
             </p>
           )}
+          {history.length > 0 && (
+            <div className="mt-3 border-t border-ink-100">
+              <p className="pb-1 pt-3 text-xs font-bold uppercase tracking-[.14em] text-ink-400">
+                History ({history.length})
+              </p>
+              {history.map((c) => (
+                <HistoryRow key={c.id} call={c} />
+              ))}
+            </div>
+          )}
         </>
       )}
     </DriverBottomSheet>
+  );
+}
+
+/* -------------------------------- History row -------------------------------- */
+
+/** Uber-style past-job row: completed (5/6/252) or cancelled (255) with a
+ *  distinct badge — cancelled jobs leave Active/Offers and live here
+ *  (owner-directed 2026-08-12). */
+function HistoryRow({ call }: { call: DriverCall }) {
+  const cancelled = call.statusId === 255;
+  const meta = cancelled ? STATUS_META[255] : STATUS_META[5];
+  const address = addressOf(call);
+  return (
+    <div className="flex items-start gap-3 py-2.5">
+      <div className="min-w-0 flex-1">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-400">Call #{call.callNumber}</p>
+        <p className="truncate text-sm font-semibold text-ink-800">{call.serviceName}</p>
+        {address && <p className="truncate text-xs text-ink-500">{address}</p>}
+      </div>
+      <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide ${meta.badge}`}>
+        <span className={`size-1.5 rounded-full ${meta.dot}`} /> {meta.label}
+      </span>
+    </div>
   );
 }
 

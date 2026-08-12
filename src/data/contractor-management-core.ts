@@ -81,6 +81,10 @@ export type ContractorRow = {
   payrateCents: number | null;
   requiredDocCount: number;
   onFileDocCount: number;
+  /** Active required doc types VERIFIED by the owner (approved — the roster
+   *  badge reads "{approved}/{required} approved"; submitted-but-unapproved
+   *  docs surface as the "N to review" pill). */
+  approvedDocCount: number;
   /** Docs expiring within 14 days (expires_on in [today, today+14]) — drives
    *  the roster "Expiring soon" filter pill + per-row ExpiryChip (v2). */
   expiringSoonCount: number;
@@ -171,6 +175,11 @@ export async function listContractorsCore(actor: ContractorMgmtActor, opts: { in
         (SELECT COUNT(*)::int FROM contractor_documents d
            JOIN contractor_doc_types t ON t.id = d.doc_type_id AND t.active
            WHERE d.org_id = ${actor.orgId} AND d.contractor_id = u.id
+             AND d.status = 'verified'
+             AND (d.expires_on IS NULL OR d.expires_on >= CURRENT_DATE)) AS approved_doc_count,
+        (SELECT COUNT(*)::int FROM contractor_documents d
+           JOIN contractor_doc_types t ON t.id = d.doc_type_id AND t.active
+           WHERE d.org_id = ${actor.orgId} AND d.contractor_id = u.id
              AND d.expires_on >= CURRENT_DATE AND d.expires_on <= CURRENT_DATE + INTERVAL '14 days') AS expiring_soon_count
       FROM users u
       JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND m.role = 'contractor'
@@ -214,6 +223,7 @@ export async function listContractorsCore(actor: ContractorMgmtActor, opts: { in
         payrateCents: r.payrate_cents != null ? Number(r.payrate_cents) : null,
         requiredDocCount: r.required_doc_count != null ? Number(r.required_doc_count) : 0,
         onFileDocCount: r.on_file_doc_count != null ? Number(r.on_file_doc_count) : 0,
+        approvedDocCount: r.approved_doc_count != null ? Number(r.approved_doc_count) : 0,
         expiringSoonCount: r.expiring_soon_count != null ? Number(r.expiring_soon_count) : 0,
         vehicleType: r.vehicle_type != null ? String(r.vehicle_type) : null,
       };
@@ -280,7 +290,7 @@ export async function addContractorCore(actor: ContractorMgmtActor, data: unknow
     const contractor: ContractorRow = {
       id: userId, name, email, loginHandle: handle, towbookDriverId: driverId, towbookUserId: null,
       status: "not_signed_in", lastActivityAt: null, createdAt: new Date().toISOString(), removedAt: null,
-      payrateCents: null, requiredDocCount: 0, onFileDocCount: 0, expiringSoonCount: 0, vehicleType: null,
+      payrateCents: null, requiredDocCount: 0, onFileDocCount: 0, approvedDocCount: 0, expiringSoonCount: 0, vehicleType: null,
     };
     return { ok: true, data: contractor };
   } catch (err) {
@@ -744,7 +754,7 @@ export async function editContractorCore(actor: ContractorMgmtActor, data: unkno
       towbookDriverId: row.towbook_driver_id != null ? String(row.towbook_driver_id) : null,
       towbookUserId: row.towbook_user_id != null ? String(row.towbook_user_id) : null,
       status: "not_signed_in", lastActivityAt: null, createdAt: toIso(row.created_at), removedAt: null,
-      payrateCents: null, requiredDocCount: 0, onFileDocCount: 0, expiringSoonCount: 0, vehicleType: null,
+      payrateCents: null, requiredDocCount: 0, onFileDocCount: 0, approvedDocCount: 0, expiringSoonCount: 0, vehicleType: null,
     };
     return { ok: true, data: { contractor, towbook } };
   } catch (err) {
@@ -830,7 +840,7 @@ export async function removeContractorCore(actor: ContractorMgmtActor, data: unk
       towbookUserId: row.towbook_user_id != null ? String(row.towbook_user_id) : null,
       status: "not_signed_in", lastActivityAt: null, createdAt: toIso(row.created_at),
       removedAt: new Date().toISOString(),
-      payrateCents: null, requiredDocCount: 0, onFileDocCount: 0, expiringSoonCount: 0, vehicleType: null,
+      payrateCents: null, requiredDocCount: 0, onFileDocCount: 0, approvedDocCount: 0, expiringSoonCount: 0, vehicleType: null,
     };
     return { ok: true, data: { contractor, towbook, sessionsInvalidated: sessions.length } };
   } catch (err) {

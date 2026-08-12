@@ -40,6 +40,49 @@ export const SEEN_CAP = 200;
  *  does) — verified against AI_DECISION_META in ai-dispatcher-views.tsx. */
 export const ESCALATION_PREFIX = "escalated_";
 
+/** A call in the driver's live queue, with enough context to render a banner
+ *  (id + optional statusId + pickup/vehicle fields for the cancelled notice). */
+export type NotifyCall = NotifyJob & {
+  statusId?: number | null;
+  serviceName?: string | null;
+  pickupAddress?: string | null;
+  zip?: string | null;
+  vehicle?: string | null;
+};
+
+/** Towbook statuses that mean "the driver was actively working this job":
+ *  1 Dispatched (offered) · 2 En Route · 3 On Scene · 4 Towing. A call in one
+ *  of these states that is later cancelled (255) — or vanishes from the queue
+ *  — is the Uber-style "this job was cancelled" signal. */
+const LIVE_STATUS_IDS = new Set([1, 2, 3, 4]);
+
+/** Calls that were LIVE in the previous queue snapshot and are now cancelled
+ *  (statusId 255) or GONE from the current snapshot — the cancellation signal
+ *  for the driver banner. Returns the PREVIOUS snapshot rows so the caller has
+ *  the pickup/vehicle context for the notice. Never fires for calls that were
+ *  already cancelled (255) or finished (completed) in the previous snapshot.
+ *  Pure + stateless; the caller owns once-per-call dedupe via its seen-set. */
+export function diffCancelledJobIds(prev: readonly NotifyCall[], next: readonly NotifyCall[]): NotifyCall[] {
+  if (!Array.isArray(prev) || prev.length === 0 || !Array.isArray(next)) return [];
+  const nextById = new Map<string, NotifyCall>();
+  for (const c of next) {
+    if (c && typeof c.id === "string" && c.id !== "" && !nextById.has(c.id)) nextById.set(c.id, c);
+  }
+  const out: NotifyCall[] = [];
+  const seenInBatch = new Set<string>();
+  for (const c of prev) {
+    if (!c || typeof c.id !== "string" || c.id === "") continue;
+    if (seenInBatch.has(c.id)) continue;
+    if (!LIVE_STATUS_IDS.has(c.statusId ?? -1)) continue; // only previously live jobs cancel
+    const n = nextById.get(c.id);
+    if (!n || n.statusId === 255) {
+      seenInBatch.add(c.id);
+      out.push(c);
+    }
+  }
+  return out;
+}
+
 /** True when a decision type is an escalation (e.g. escalated_expired,
  *  escalated_contractor_push_failed). Non-string / empty input → false. */
 export function isEscalationDecision(decision: string): boolean {

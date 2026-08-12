@@ -12,21 +12,29 @@ import { Button } from "./ui";
 import type { ContractorDocumentRow, DocStatus, DocTypeRow } from "~/data/contractor-admin";
 
 /* ------------------------------ ComplianceBadge ------------------------------ */
-/** "{onFile}/{required}" pill — green ✓ when complete, danger tint when not;
- *  hidden entirely when the org requires no document types. */
-export function ComplianceBadge({ onFile, required, size = "sm" }: { onFile: number; required: number; size?: "sm" | "lg" }) {
+/** "{approved}/{required} approved" pill — green ✓ when every required doc is
+ *  owner-approved, danger tint when some are still pending; hidden entirely
+ *  when the org requires no document types. "Approved" = owner-verified
+ *  (owner-directed 2026-08-12: the chip must reflect approved vs submitted —
+ *  "shows 4/4 submitted but no option to approve"). */
+export function ComplianceBadge({ approved, required, size = "sm" }: { approved: number; required: number; size?: "sm" | "lg" }) {
   if (required <= 0) return null;
-  const complete = onFile >= required;
+  const complete = approved >= required;
+  const pending = required - approved;
   const cls = size === "lg" ? "text-xs px-3 py-1.5" : "text-[11px] px-2.5 py-1";
   return (
     <span
       className={`inline-flex min-h-[22px] items-center gap-1.5 rounded-full font-bold uppercase tracking-wide tabular-nums ${cls} ${
         complete ? "bg-success-50 text-success-700" : "bg-danger-50 text-danger-700"
       }`}
-      title={complete ? "All required documents on file" : `${required - onFile} required document${required - onFile === 1 ? "" : "s"} missing`}
+      title={
+        complete
+          ? "All required documents approved"
+          : `${pending} required document${pending === 1 ? "" : "s"} not approved yet — open the contractor to review`
+      }
     >
       <span aria-hidden="true" className={`size-1.5 rounded-full bg-current opacity-80 ${complete ? "bg-success-500" : "bg-danger-500"}`} />
-      {onFile}/{required}
+      {approved}/{required} approved
       {complete ? " ✓" : ""}
     </span>
   );
@@ -341,25 +349,27 @@ export function DocStatusBadge({ status, className }: { status: DocStatus; class
 }
 
 /* ------------------------------ ComplianceSummary ------------------------------ */
-/** "3 of 5 required docs on file — missing: W-9, Insurance Cert" (names come
- *  from the caller's doc rows); "all on file ✓" when complete. Hidden when the
- *  org requires no document types. */
-export function ComplianceSummary({ onFile, required, missingNames = [] }: { onFile: number; required: number; missingNames?: string[] }) {
+/** "{approved} of {required} approved — needs review: W-9, Insurance Cert"
+ *  (names come from the caller's doc rows — the owner-actionable docs that are
+ *  not yet verified); "all approved ✓" when complete. Hidden when the org
+ *  requires no document types. Owner-directed 2026-08-12: approved vs
+ *  submitted, so a "4/4 on file" row can't masquerade as approved. */
+export function ComplianceSummary({ approved, required, actionNames = [] }: { approved: number; required: number; actionNames?: string[] }) {
   if (required <= 0) return null;
-  const missing = required - onFile;
+  const pending = required - approved;
   return (
     <p className="text-xs leading-relaxed">
-      <span className="font-bold tabular-nums text-ink-900">{onFile} of {required}</span>{" "}
-      <span className="text-ink-500">required docs on file</span>
-      {missing > 0 ? (
+      <span className="font-bold tabular-nums text-ink-900">{approved} of {required}</span>{" "}
+      <span className="text-ink-500">approved</span>
+      {pending > 0 ? (
         <>
-          {" — missing: "}
-          <span className="font-semibold text-danger-600">{missingNames.length ? missingNames.join(", ") : `${missing} more`}</span>
+          {" — needs review: "}
+          <span className="font-semibold text-accent-600">{actionNames.length ? actionNames.join(", ") : `${pending} more`}</span>
         </>
       ) : (
         <>
           {" — "}
-          <span className="font-semibold text-success-600">all on file ✓</span>
+          <span className="font-semibold text-success-600">all approved ✓</span>
         </>
       )}
     </p>

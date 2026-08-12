@@ -287,6 +287,24 @@ const b2 = makeFetch();
     w9v && w9v.status === "verified" && insR && insR.status === "rejected" && insR.reviewNote === "Blurry — please retake", JSON.stringify([w9v, insR]));
   check("audit contractor_doc_verified + contractor_doc_rejected",
     (await q`SELECT action FROM audit_log WHERE org_id=${ORG} AND action IN ('contractor_doc_verified','contractor_doc_rejected')`).length === 2);
+  // Approved-vs-submitted projections (owner-directed 2026-08-12): the badge
+  // reads "{approved}/{required} approved" — a submitted-but-unapproved doc
+  // must count toward onFile but NOT toward approved.
+  const comp = await listContractorComplianceCore(ACTOR);
+  const compRow = comp.ok ? comp.data.find((c) => c.contractorId === DRIVER) : null;
+  check("compliance row: approved=1 (verified W-9), onFile=1 (rejected ins excluded)",
+    compRow && compRow.approvedDocCount === 1 && compRow.onFileDocCount === 1 && compRow.requiredDocCount >= 2, JSON.stringify(compRow));
+  const roster = await listContractorsCore(ACTOR, {});
+  const rosterRow = roster.ok ? roster.data.find((c) => c.id === DRIVER) : null;
+  check("roster row: approvedDocCount follows owner verification (1)",
+    rosterRow && rosterRow.approvedDocCount === 1 && rosterRow.onFileDocCount === 1, JSON.stringify(rosterRow));
+  // Rejecting a VERIFIED doc drops it out of approved (re-verify required).
+  await setDocumentStatusCore(ACTOR, { docId: w9row.docId, status: "rejected", reviewNote: "Wrong file" });
+  const comp2 = await listContractorComplianceCore(ACTOR);
+  const compRow2 = comp2.ok ? comp2.data.find((c) => c.contractorId === DRIVER) : null;
+  check("compliance row after rejecting the verified doc: approved=0",
+    compRow2 && compRow2.approvedDocCount === 0 && compRow2.onFileDocCount === 0, JSON.stringify(compRow2));
+  await setDocumentStatusCore(ACTOR, { docId: w9row.docId, status: "verified" });
 
   // Date wins: push the VERIFIED W-9's expiry into the past → derived EXPIRED.
   const exp = await setDocumentExpiryCore(ACTOR, { docId: w9row.docId, expiresOn: "2020-06-15" });
