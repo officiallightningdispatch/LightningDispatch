@@ -111,12 +111,16 @@ const jsonResponse = (status, body) => ({
 /** Mock Towbook fetch. Records every call; routes GET /api/callRequests/,
  *  GET /api/nearestDrivers, POST /api/callRequests/{id}/accept, plus the
  *  post-accept verification surface: GET /api/calls/{id},
- *  GET /api/calls?status=N and POST /api/calls/{id}/assignDrivers. Throws on
- *  any URL outside the documented surface — a stray call fails the test.
- *  The created call mirrors the accept body's driverId in assets[].driver.id
+ *  GET /api/calls?status=N and PUT /api/calls/{id} (the VERIFIED dispatch
+ *  mechanism — the Map app's own payload; the old guessed POST
+ *  /api/calls/{id}/assignDrivers is NOT in the mock surface and 404s the test).
+ *  Throws on any URL outside the documented surface — a stray call fails the
+ *  test. The created call mirrors the accept body's driverId in assets[].driver.id
  *  (so verification passes by default) unless `callDriverId` overrides it
- *  (simulating the 2026-08-10 incident: accepted driver ≠ driver on the call). */
-function makeFetch({ offers, drivers, offersStatus = 200, offersBody = null, acceptStatus = 200, acceptBody = null, acceptFails = 0, nearestDriversStatus = 200, callDriverId = null, assignSucceeds = true, acceptResponseId = null, callsFailures = 0 }) {
+ *  (simulating the 2026-08-10 incident: accepted driver ≠ driver on the call).
+ *  `acceptedCallStatus` sets the status the fresh accept's call lands in
+ *  (real world: 0 = Received — the 2026-08-12 dispatch gap). */
+function makeFetch({ offers, drivers, offersStatus = 200, offersBody = null, acceptStatus = 200, acceptBody = null, acceptFails = 0, nearestDriversStatus = 200, callDriverId = null, assignSucceeds = true, acceptResponseId = null, callsFailures = 0, acceptedCallStatus = 2, assetId = 424242, statusListExtra = {}, suppressCreatedFromStatusLists = false }) {
   const calls = [];
   let call = null; // the call created by the accept POST
   let callsFailuresLeft = callsFailures;
@@ -141,30 +145,38 @@ function makeFetch({ offers, drivers, offersStatus = 200, offersBody = null, acc
       call = {
         id: bodyId,
         callNumber: 25000,
-        status: { id: 2 },
+        status: { id: acceptedCallStatus },
         version: 1,
         purchaseOrderNumber: offerFor ? offerFor.purchaseOrderNumber : null,
         assets: parsedBody && Number(parsedBody.driverId) > 0
-          ? [{ driver: { id: callDriverId ?? Number(parsedBody.driverId), name: callDriverId != null ? "Someone Else" : "Assigned" } }]
+          ? [{ id: assetId, driver: { id: callDriverId ?? Number(parsedBody.driverId), name: callDriverId != null ? "Someone Else" : "Assigned" } }]
           : [],
       };
-      return jsonResponse(200, acceptBody ?? { id: bodyId, callNumber: 25000, status: { id: 2 }, version: 1 });
+      return jsonResponse(200, acceptBody ?? { id: bodyId, callNumber: 25000, status: { id: acceptedCallStatus }, version: 1 });
     }
-    if (u.includes("/api/calls/") && u.endsWith("/assignDrivers") && method === "POST") {
+    if (u.includes("/api/calls/") && method === "PUT") {
+      // VERIFIED dispatch payload (map-actions.js useDispatchCall):
+      // {id, status:{id:1}, assets:[{id, drivers:[{driver:{id}}]}]}
       if (!assignSucceeds) return jsonResponse(500, { error: "assign boom" });
-      if (call && parsedBody && Number(parsedBody.driverId) > 0) {
-        call.assets = [{ driver: { id: Number(parsedBody.driverId), name: "Assigned" } }];
+      const m2 = u.match(/\/api\/calls\/(\d+)$/);
+      if (call && m2 && String(call.id) === m2[1]) {
+        const driverId = parsedBody?.assets?.[0]?.drivers?.[0]?.driver?.id;
+        if (driverId != null) {
+          call.status = { id: 1 };
+          call.assets = [{ id: parsedBody.assets[0].id ?? assetId, drivers: [{ driver: { id: driverId, name: "Assigned" } }] }];
+        }
       }
       return jsonResponse(200, { ok: true });
     }
-    if (u.includes("/api/calls/")) {
+    if (u.includes("/api/calls")) {
       if (callsFailuresLeft > 0) { callsFailuresLeft--; return jsonResponse(500, { error: "call list boom" }); }
       const m = u.match(/\/api\/calls\/(\d+)$/);
       if (m) return call && String(call.id) === m[1] ? jsonResponse(200, call) : jsonResponse(404, { error: "not found" });
       const sm = u.match(/status=(\d+)/);
       if (sm) {
         const status = Number(sm[1]);
-        return jsonResponse(200, call && call.status.id === status ? [call] : []);
+        const created = call && call.status.id === status && !suppressCreatedFromStatusLists ? [call] : [];
+        return jsonResponse(200, [...created, ...(statusListExtra[status] ?? [])]);
       }
     }
     throw new Error(`mock fetch hit an unexpected URL: ${method} ${u}`);
@@ -683,7 +695,8 @@ try {
     const r = await runAutoDispatch(ORG, deps);
     const p = posts(m.calls);
     check("verif assign-retry: decision auto_accept_with_driver + VERIFIED reason", r.decisions[0]?.decision === "auto_accept_with_driver" && String(r.decisions[0]?.reason).includes("VERIFIED"), String(r.decisions[0]?.reason));
-    check("verif assign-retry: exactly TWO POSTs — accept THEN /assignDrivers {driverId, callId}", p.length === 2 && p[1]?.url.endsWith("/assignDrivers") && p[1]?.body?.driverId === 703785 && p[1]?.body?.callId === "279999999", JSON.stringify(p));
+    const w = m.calls.filter((c) => c.method === "POST" || c.method === "PUT");
+    check("verif assign-retry: exactly TWO writes — accept POST then PUT /api/calls/279999999 {id, status:{id:1}, assets:[{id:424242, drivers:[{driver:{id:703785}}]}]}", w.length === 2 && w[1]?.method === "PUT" && w[1]?.url.endsWith("/api/calls/279999999") && w[1]?.body?.id === 279999999 && w[1]?.body?.status?.id === 1 && w[1]?.body?.assets?.[0]?.id === 424242 && w[1]?.body?.assets?.[0]?.drivers?.[0]?.driver?.id === 703785, JSON.stringify(w));
     const rows2 = await decisions();
     const v2 = rows2.find((x) => String(x.call_request_id) === "8012");
     check("verif assign-retry: verification.assignedAfterRetry true + driverOnCall 703785", v2 && v2.raw_response?.verification?.assignedAfterRetry === true && v2.raw_response?.verification?.driverOnCall === "703785", JSON.stringify(v2?.raw_response?.verification));
@@ -708,6 +721,65 @@ try {
     const rows4 = await decisions();
     const v4 = rows4.find((x) => String(x.call_request_id) === "8014");
     check("verif race: verification ok after retry", v4 && v4.raw_response?.verification?.ok === true, JSON.stringify(v4?.raw_response?.verification));
+  }
+  /* ============ 26e) fresh accept lands at status 0 → PO match on the status-0 list ============ */
+  {
+    // THE 2026-08-12 GAP: the accept reply carries NO call id (real replies are
+    // a plain message) and the created call sits at status 0 (Received) — the
+    // old [2,1]-only search could never see it, so 4/8 offers escalated "call
+    // not found after accept". Now: the status-0 list is searched FIRST, the PO
+    // ties the call, the driver is already on it (accept-with-driver) →
+    // VERIFIED with exactly ONE POST (accept only).
+    const m = makeFetch({ offers: [offer(8016)], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })], acceptBody: { ok: true }, acceptedCallStatus: 0 });
+    const { deps } = makeDeps(m.fetchImpl);
+    const r = await runAutoDispatch(ORG, deps);
+    check("status0-match: decision auto_accept_with_driver + reason says VERIFIED on call 279999999", r.decisions[0]?.decision === "auto_accept_with_driver" && String(r.decisions[0]?.reason).includes("VERIFIED on call 279999999"), String(r.decisions[0]?.reason));
+    check("status0-match: exactly ONE POST (accept) — PO match needs no assign", posts(m.calls).length === 1, JSON.stringify(m.calls));
+    const rows6 = await decisions();
+    const v6 = rows6.find((x) => String(x.call_request_id) === "8016");
+    check("status0-match: verification source=purchaseOrder, statusId=0, driverOnCall=703785", v6 && v6.raw_response?.verification?.source === "purchaseOrder" && v6.raw_response?.verification?.statusId === 0 && v6.raw_response?.verification?.driverOnCall === "703785", JSON.stringify(v6?.raw_response?.verification));
+    check("status0-match: verification attempted the status-0 list FIRST", v6 && v6.raw_response?.verification?.attempts?.[0]?.url?.includes("status=0"), JSON.stringify(v6?.raw_response?.verification?.attempts));
+  }
+  /* ============ 26f) status-0 call, driver NOT on it → PUT assign (status 1 + asset) ============ */
+  {
+    // The 2026-08-12 failure mode: accept-with-driverId does NOT attach the
+    // driver; the call sits at status 0 with no driver. allowAssign must PUT
+    // the VERIFIED dispatch payload {id, status:{id:1}, assets:[{id, drivers:
+    // [{driver:{id}}]}]} (map-actions.js useDispatchCall) and re-verify. The
+    // old guessed endpoint (POST /api/calls/{id}/assignDrivers) 404s live —
+    // proven on FIVE offers 2026-08-12 — so the assign path NEVER worked.
+    const m = makeFetch({ offers: [offer(8017)], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })], acceptBody: { ok: true }, acceptedCallStatus: 0, callDriverId: 999999, assignSucceeds: true });
+    const { deps } = makeDeps(m.fetchImpl);
+    const r = await runAutoDispatch(ORG, deps);
+    check("status0-assign: decision auto_accept_with_driver + VERIFIED after assign", r.decisions[0]?.decision === "auto_accept_with_driver" && String(r.decisions[0]?.reason).includes("VERIFIED"), String(r.decisions[0]?.reason));
+    const all7 = m.calls;
+    const put = all7.find((c) => c.method === "PUT");
+    check("status0-assign: PUT /api/calls/279999999 {id, status:{id:1}, assets:[{id:424242, drivers:[{driver:{id:703785}}]}]}", put && put.url.endsWith("/api/calls/279999999") && put.body?.id === 279999999 && put.body?.status?.id === 1 && put.body?.assets?.[0]?.id === 424242 && put.body?.assets?.[0]?.drivers?.[0]?.driver?.id === 703785, JSON.stringify(put));
+    const rows7 = await decisions();
+    const v7 = rows7.find((x) => String(x.call_request_id) === "8017");
+    check("status0-assign: assignedAfterRetry true + assetId recorded + driverOnCall 703785", v7 && v7.raw_response?.verification?.assignedAfterRetry === true && v7.raw_response?.verification?.assetId === "424242" && v7.raw_response?.verification?.driverOnCall === "703785", JSON.stringify(v7?.raw_response?.verification));
+    check("status0-assign: no /assignDrivers URL anywhere (old guess is gone)", !all7.some((c) => c.url.includes("/assignDrivers")), JSON.stringify(all7.map((c) => `${c.method} ${c.url}`)));
+  }
+  /* ============ 26g) stale-newest guard: only older calls in the lists → escalate ============ */
+  {
+    // The 2026-08-12 stale-match incidents (326760451→279860306; 326762556 &
+    // 326762868→both 279865368): the bare "newest in list" fallback matched
+    // calls that do NOT belong to this offer — one offer even "verified" a call
+    // the OWNER had manually dispatched (326773655→279878088). Now: when the
+    // status-0/1/2 lists contain ONLY older calls with different POs (the fresh
+    // call is not yet visible), verification must NOT match, must NOT assign,
+    // and must escalate — never claim a call it cannot tie to the offer.
+    const stale2 = [{ id: 279860306, callNumber: 24610, status: { id: 2 }, purchaseOrderNumber: "111111111" }];
+    const stale1 = [{ id: 279865368, callNumber: 24612, status: { id: 1 }, purchaseOrderNumber: "222222222" }];
+    const m = makeFetch({ offers: [offer(8018)], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })], acceptBody: { ok: true }, acceptedCallStatus: 0, suppressCreatedFromStatusLists: true, statusListExtra: { 0: [], 1: stale1, 2: stale2 } });
+    const { deps } = makeDeps(m.fetchImpl);
+    const r = await runAutoDispatch(ORG, deps);
+    check("stale-guard: escalated_dispatch_failed + call not found after accept", r.decisions[0]?.decision === "escalated_dispatch_failed" && String(r.decisions[0]?.reason).includes("call not found after accept"), JSON.stringify(r.decisions));
+    check("stale-guard: NO assign attempted (one POST = accept only)", m.calls.filter((c) => c.method !== "GET").length === 1, JSON.stringify(m.calls.map((c) => `${c.method} ${c.url}`)));
+    const rows8 = await decisions();
+    const v8 = rows8.find((x) => String(x.call_request_id) === "8018");
+    check("stale-guard: verification source=none, no callId claimed", v8 && v8.raw_response?.verification?.source === "none" && v8.raw_response?.verification?.callId === null && v8.call_id === null, JSON.stringify(v8?.raw_response?.verification));
+    check("stale-guard: both attempts searched status 0,2,1 and NEVER matched", v8 && v8.raw_response?.verification?.attempts?.length === 6 && v8.raw_response?.verification?.attempts?.every((t) => t.matched === false), JSON.stringify(v8?.raw_response?.verification?.attempts?.length));
   }
   {
     // eligibility rail: offer.drivers[] EXCLUDES the only free driver → engine must

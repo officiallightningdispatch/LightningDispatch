@@ -59,7 +59,7 @@ import type { RecoveryResult } from "./towbook-recovery";
  *      dropdown is built from it — an ineligible driverId is silently ignored).
  *   6. VERIFY the dispatch: GET the created call and confirm the chosen driver
  *      is actually on it (assets[].driver.id / assets[].drivers[].driver.id).
- *      Not verified → ONE assign attempt (POST /api/calls/{id}/assignDrivers,
+ *      Not verified → ONE assign attempt (PUT /api/calls/{id} with status 1 +
  *      best-guess endpoint — not statically discoverable) → re-verify → still
  *      not assigned → escalated_dispatch_failed with the evidence. The engine
  *      NEVER reports "dispatched" without verification.
@@ -704,6 +704,13 @@ type OfferShape = {
   startLocationLongitude: number;
   expirationDateUtc: string;
   maxEta: number | null;
+  /** Motor-club purchase order number — the field that TIES the created call
+   *  to this offer (every observed call record carries `purchaseOrderNumber`;
+   *  the offer carries it as the "Dispatch #"). Captured so post-accept
+   *  verification can locate the call by PO instead of the unsafe "newest in
+   *  list" guess (2026-08-12: the PO was never captured, the PO-match branch
+   *  was dead code, and the newest fallback re-matched stale calls). */
+  purchaseOrderNumber: string | null;
   /** Eligible driver ids carried by the offer (UI dropdown is built from this
    *  list — accept-with-driverId is only honored for ids in it; absent/empty
    *  means "any company driver" per the UI fallback). Captured so the engine
@@ -747,6 +754,14 @@ export function validateOfferShape(raw: unknown): { ok: true; offer: OfferShape 
   const drivers = Array.isArray(o.drivers)
     ? o.drivers.map((d) => numeric(d)).filter((d): d is number => d != null && d > 0)
     : null;
+  // Purchase order: the offer's "Dispatch #" that the created call mirrors —
+  // the ONLY reliable tie between offer and call (calls carry no callRequestId).
+  const purchaseOrderNumber =
+    typeof o.purchaseOrderNumber === "string" && o.purchaseOrderNumber.trim() !== ""
+      ? o.purchaseOrderNumber.trim()
+      : o.purchaseOrderNumber != null && typeof o.purchaseOrderNumber !== "object"
+        ? String(o.purchaseOrderNumber)
+        : null;
   return {
     ok: true,
     offer: {
@@ -756,6 +771,7 @@ export function validateOfferShape(raw: unknown): { ok: true; offer: OfferShape 
       startLocationLongitude: lng as number,
       expirationDateUtc: expirationDateUtc as string,
       maxEta: maxEta != null && maxEta > 0 ? maxEta : null,
+      purchaseOrderNumber,
       drivers,
     },
   };
@@ -1296,22 +1312,64 @@ function acceptIsLostRace(accept: { raw: unknown; attempts: FetchResult[] }): bo
  *  fetched bundle). Best-guess candidate following the `/api/calls/{id}/<verb>`
  *  convention; a wrong guess fails harmlessly (404/400 → no state change) and
  *  the engine escalates with evidence instead of claiming a dispatch. */
-export const ASSIGN_DRIVER_ENDPOINT = "assignDrivers";
-/** POST /api/calls/{id}/assignDrivers {driverId, callId} — one attempt, never
- *  retried: if the first guess fails we escalate with evidence, we do not spam
- *  the live API. */
+/** The assign endpoint for EXISTING calls, VERIFIED against the app's own
+ *  code (2026-08-11 recon, map-actions.js useDispatchCall): dispatch = PUT
+ *  /api/calls/{id} with {id, status:{id:1}, assets:[{id: assetId,
+ *  drivers:[{driver:{id: driverId}}]}]} — status 1 (Dispatched) is what makes
+ *  the driver app see the offer. The old guess (POST /api/calls/{id}/
+ *  assignDrivers) 404s live (proven 2026-08-12 on five offers) — that is why
+ *  the assign path never worked. One attempt, never retried: if the PUT fails
+ *  we escalate with evidence, we do not spam the live API. */
 async function postAssignDriver(
   fetchImpl: typeof fetch,
   baseUrl: string,
   cookie: string,
   callId: string,
   driverId: number,
+  assetId: string | null,
 ): Promise<FetchResult> {
-  const url = `${baseUrl}/api/calls/${callId}/${ASSIGN_DRIVER_ENDPOINT}`;
+  const url = `${baseUrl}/api/calls/${callId}`;
+  const body: Record<string, unknown> = { id: Number(callId) || callId, status: { id: 1 } };
+  // Attach the driver to the call's asset exactly like the Map SPA does; when
+  // the call carries NO asset the driver cannot be attached — the caller
+  // escalates instead of fabricating a "dispatched" status (no asset ⇒ no PUT).
+  if (assetId != null) {
+    body.assets = [{ id: Number(assetId), drivers: [{ driver: { id: driverId } }] }];
+  }
   return towbookFetch(fetchImpl, url, cookie, {
-    method: "POST",
-    body: JSON.stringify({ driverId, callId }),
+    method: "PUT",
+    body: JSON.stringify(body),
   });
+}
+/** First asset (vehicle) id on a call — the Map app's dispatch payload
+ *  requires it (assets[0].id). */
+function firstAssetIdOnCall(call: Record<string, unknown>): string | null {
+  const assets = call.assets;
+  if (!Array.isArray(assets) || !assets.length) return null;
+  const a = assets[0];
+  if (!a || typeof a !== "object" || Array.isArray(a)) return null;
+  const id = (a as Record<string, unknown>).id;
+  return id != null ? String(id) : null;
+}
+/** True when a call record carries the offer's callRequestId (any of the
+ *  observed shapes: flat, nested {id}, or {callRequestId}). Calls fetched so
+ *  far do NOT carry it (the PO is the tie), but if a shape ever does, prefer
+ *  it — it is the strongest possible tie. */
+function callCarriesRequestId(call: Record<string, unknown>, want: string): boolean {
+  for (const k of ["callRequestId", "requestId", "offerId", "callRequest"]) {
+    const v = call[k];
+    if (v == null) continue;
+    if (typeof v === "string" || typeof v === "number") {
+      if (String(v) === want) return true;
+      continue;
+    }
+    if (typeof v === "object" && !Array.isArray(v)) {
+      const o = v as Record<string, unknown>;
+      if (o.id != null && String(o.id) === want) return true;
+      if (o.callRequestId != null && String(o.callRequestId) === want) return true;
+    }
+  }
+  return false;
 }
 export type DispatchVerification = {
   /** True only when the chosen driver is actually on the fetched call. */
@@ -1319,8 +1377,13 @@ export type DispatchVerification = {
   callId: string | null;
   statusId: number | null;
   driverOnCall: string | null;
-  /** How the call was located: "acceptResponse", "purchaseOrder", "newest". */
+  /** How the call was located: "acceptResponse", "purchaseOrder",
+   *  "callRequestId", or "none" (no tie found — escalated, never guessed). */
   source: string;
+  /** The call asset (vehicle) id the driver was attached to on the assign PUT
+   *  (the Map app's dispatch payload requires assets[0].id); null when the
+   *  call carried no asset (assign then cannot attach a driver). */
+  assetId: string | null;
   assignedAfterRetry: boolean;
   found: boolean;
   attempts: Array<{ url: string; status: number | null; error: string | null; matched: boolean }>;
@@ -1353,6 +1416,7 @@ export async function findAcceptedCall(
   cookie: string,
   acceptResponseId: string | null,
   purchaseOrderNumber: unknown,
+  callRequestId: string | null,
 ): Promise<{ call: Record<string, unknown> | null; source: string; fetches: Array<{ url: string; status: number | null; error: string | null; matched: boolean }> }> {
   const fetches: Array<{ url: string; status: number | null; error: string | null; matched: boolean }> = [];
   if (acceptResponseId) {
@@ -1364,27 +1428,39 @@ export async function findAcceptedCall(
       return { call: res.body as Record<string, unknown>, source: "acceptResponse", fetches };
     }
   }
-  // status 2 (accepted) then 1 (offered) — the accept may land in either.
-  for (const statusId of [2, 1]) {
-    const res = await towbookFetch(fetchImpl, `${baseUrl}/api/calls?status=${statusId}`, cookie);
-    fetches.push({ url: `${baseUrl}/api/calls?status=${statusId}`, status: res.status, error: res.error, matched: false });
-    if (res.ok && Array.isArray(res.body) && res.body.length) {
-      const list = res.body as Array<Record<string, unknown>>;
-      // PO match first (the offer carries purchaseOrderNumber; the call mirrors it)
-      const po = purchaseOrderNumber != null ? String(purchaseOrderNumber) : null;
-      const byPo = po ? list.find((c) => String((c as Record<string, unknown>).purchaseOrderNumber ?? "") === po) : undefined;
+  // Status 0 FIRST — a freshly accepted callRequest creates the call at
+  // Received (0). The old [2,1]-only search could never see it: the 2026-08-12
+  // evidence shows 4/8 offers escalated "call not found after accept" for
+  // exactly that reason. Then 2 (En Route — already dispatched by the club /
+  // owner) and 1 (Dispatched) for calls that move fast.
+  const po = purchaseOrderNumber != null ? String(purchaseOrderNumber) : null;
+  const wantRequestId = callRequestId != null ? String(callRequestId) : null;
+  for (const statusId of [0, 2, 1]) {
+    const url = `${baseUrl}/api/calls?status=${statusId}`;
+    const res = await towbookFetch(fetchImpl, url, cookie);
+    fetches.push({ url, status: res.status, error: res.error, matched: false });
+    if (!res.ok || !Array.isArray(res.body) || !res.body.length) continue;
+    const list = res.body as Array<Record<string, unknown>>;
+    // Tie the call to THIS offer — never guess. PO first (every observed call
+    // carries purchaseOrderNumber, the offer's "Dispatch #"); then callRequestId
+    // for call shapes that carry it. The bare "newest in list" fallback is GONE
+    // (2026-08-12): it demonstrably re-matched stale calls (326760451→
+    // 279860306; 326762556 & 326762868→both 279865368) and one offer even
+    // "verified" a call the OWNER had manually dispatched (326773655→279878088
+    // — a false auto_accept_with_driver). If no call can be tied, the caller
+    // escalates: verification NEVER claims or assigns a call it cannot tie.
+    if (po) {
+      const byPo = list.find((c) => String((c as Record<string, unknown>).purchaseOrderNumber ?? "") === po);
       if (byPo) {
         fetches[fetches.length - 1].matched = true;
         return { call: byPo, source: "purchaseOrder", fetches };
       }
-      // else newest id (accept just created the call — it is the newest)
-      const newest = list.reduce<Record<string, unknown> | null>((acc, c) => {
-        const id = Number((c as Record<string, unknown>).id) || 0;
-        return acc === null || id > (Number((acc as Record<string, unknown>).id) || 0) ? c : acc;
-      }, null);
-      if (newest) {
+    }
+    if (wantRequestId) {
+      const byRequest = list.find((c) => callCarriesRequestId(c, wantRequestId));
+      if (byRequest) {
         fetches[fetches.length - 1].matched = true;
-        return { call: newest, source: "newest", fetches };
+        return { call: byRequest, source: "callRequestId", fetches };
       }
     }
   }
@@ -1407,12 +1483,12 @@ export async function verifyDispatch(
 ): Promise<DispatchVerification> {
   const delay = opts.retryDelayMs ?? 5000;
   const attempt = async (): Promise<DispatchVerification> => {
-    const { call, source, fetches } = await findAcceptedCall(fetchImpl, baseUrl, cookie, acceptResponseId, (offer as unknown as Record<string, unknown>).purchaseOrderNumber);
+    const { call, source, fetches } = await findAcceptedCall(fetchImpl, baseUrl, cookie, acceptResponseId, offer.purchaseOrderNumber, offer.callRequestId);
     const base: DispatchVerification = {
       ok: false, callId: call ? String((call as Record<string, unknown>).id ?? "") : null,
       statusId: call && (call as Record<string, unknown>).status && typeof (call as Record<string, unknown>).status === "object"
         ? Number((((call as Record<string, unknown>).status) as Record<string, unknown>).id) ?? null : null,
-      driverOnCall: null, source, assignedAfterRetry: false, found: !!call, attempts: fetches, error: null,
+      driverOnCall: null, source, assetId: call ? firstAssetIdOnCall(call) : null, assignedAfterRetry: false, found: !!call, attempts: fetches, error: null,
     };
     if (!call) return { ...base, error: "call not found after accept" };
     if (callHasDriver(call, driverId)) {
@@ -1430,8 +1506,15 @@ export async function verifyDispatch(
   }
   if (v.ok || !opts.allowAssign || !v.callId) return v;
   // Chosen driver not verified on the call → one assign attempt → re-verify.
-  const assignUrl = `${baseUrl}/api/calls/${v.callId}/${ASSIGN_DRIVER_ENDPOINT}`;
-  const assignRes = await postAssignDriver(fetchImpl, baseUrl, cookie, v.callId, driverId);
+  // Assign = PUT /api/calls/{id} {id, status:{id:1}, assets:[{id, drivers:
+  // [{driver:{id}}]}]} — the Map app's own dispatch payload (the old
+  // POST /assignDrivers guess 404s live). A call with NO asset cannot attach
+  // the driver: escalate with evidence, never fabricate a dispatched status.
+  if (v.assetId == null) {
+    return { ...v, error: `call ${v.callId} has no asset to attach the driver to — ${v.error}` };
+  }
+  const assignUrl = `${baseUrl}/api/calls/${v.callId}`;
+  const assignRes = await postAssignDriver(fetchImpl, baseUrl, cookie, v.callId, driverId, v.assetId);
   v.attempts.push({ url: assignUrl, status: assignRes.status, error: assignRes.error, matched: false });
   if (!assignRes.ok) {
     return { ...v, error: `assign attempt failed (${assignRes.error ?? `HTTP ${assignRes.status}`}) — ${v.error}` };

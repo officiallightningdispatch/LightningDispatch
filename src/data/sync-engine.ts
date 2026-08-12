@@ -39,7 +39,21 @@ const configured = () => Boolean(process.env.DATABASE_URL);
 const syncResult = (code: TowbookSyncCode, message: string, extra?: Partial<TowbookSyncResult>): TowbookSyncResult => ({ ok: code === "ok", code, message, added: 0, updated: 0, failed: 0, diagnostics: [], ranAt: new Date().toISOString(), ...extra });
 
 const TOWBOOK_JOB_PATHS = [
-  // HTML/MVC surfaces (server-rendered grids)
+  // Service-Platform API (JSON) FIRST — the authoritative, status-complete
+  // surface. The ?status=N variants guarantee every bucket is pulled even
+  // when a bucket is empty (a 200-empty array is NOT a stop): 0 = Received
+  // (where a freshly accepted offer's call lands — the 2026-08-12 dispatch
+  // gap), 1 = Dispatched, 2 = En Route; the base list is the complete surface
+  // (3/4/5/252/255 included). (2026-08-12: the old list started with the HTML
+  // home page, discovery stopped at its 200 dashboard, and the queue imported
+  // NOTHING from 14:52 on — the sync only ever saw the home page.)
+  "/api/calls?status=0", "/api/calls?status=1", "/api/calls?status=2",
+  "/api/calls", "/api/callRequests/",
+  "/api/jobs", "/api/orders", "/api/dispatch", "/api/dispatches",
+  "/api/jobs/current", "/api/jobs/open", "/api/jobs/active", "/api/jobs/completed",
+  "/api/Calls", "/api/Job/Get", "/api/jobs/list",
+  // HTML/MVC surfaces (server-rendered grids) — FALLBACK only: walked only
+  // when the JSON surface produced no jobs (see discoverJobPages).
   "", "/Dispatch", "/Dispatch/Index", "/Dispatch/Active", "/Dispatch/History",
   "/Dispatch/Completed", "/Dispatch/Board", "/DispatchBoard", "/Board",
   "/Jobs", "/Jobs/Index", "/Job", "/Job/Index",
@@ -49,11 +63,6 @@ const TOWBOOK_JOB_PATHS = [
   "/Orders", "/Order", "/Orders/Index", "/Agero", "/Agero/Index",
   "/MotorClub", "/MotorClubs", "/MotorClub/Index", "/Incoming", "/History",
   "/Completed", "/CompletedJobs", "/Today", "/TodaysJobs", "/Dashboard",
-  // Service-Platform API (JSON). 401-with-cookie in diagnostics tells us the
-  // session cookie is NOT the API token; 200/JSON is the jackpot.
-  "/api/jobs", "/api/calls", "/api/orders", "/api/dispatch", "/api/dispatches",
-  "/api/jobs/current", "/api/jobs/open", "/api/jobs/active", "/api/jobs/completed",
-  "/api/Calls", "/api/Job/Get", "/api/jobs/list",
 ];
 
 const pageHint = (html: string, ct: string | null) => {
@@ -86,9 +95,18 @@ async function discoverJobPages(cookieJar: string, baseUrl: string): Promise<{ d
   let sessionExpired = false;
   const origin = new URL(baseUrl).origin;
   const deadline = Date.now() + DISCOVERY_TIMEOUT_MS;
+  let jsonGotJobs = false; // a JSON page yielded ≥1 job (authoritative pull covered the queue)
   for (const path of TOWBOOK_JOB_PATHS) {
     if (sessionExpired) break; // don't hammer a dead session
-    if (pages.length > 0) break; // first working primary path is enough (owner-directed 2026-08-12)
+    const isJsonPath = path.startsWith("/api/");
+    // JSON API section: walked EVERY tick — a 200-empty array (e.g. no status-0
+    // calls right now) is NOT a stop; every status bucket + the base list must
+    // be pulled so the queue always mirrors Towbook. HTML/MVC section: FALLBACK
+    // only — walked when the JSON surface produced no jobs, and then stopped at
+    // the first page that actually carries jobs (a 200 dashboard with no
+    // parseable table is NOT a stop — 2026-08-12: the home page 200 stopped
+    // discovery and the queue imported nothing for hours).
+    if (!isJsonPath && jsonGotJobs) break;
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 250) {
       diagnostics.push({ url: "<discovery-cap>", status: null, contentType: null, hint: `discovery stopped at the ${Math.round(DISCOVERY_TIMEOUT_MS / 1000)}s budget` });
@@ -100,6 +118,8 @@ async function discoverJobPages(cookieJar: string, baseUrl: string): Promise<{ d
       const text = await res.text();
       const ct = res.headers.get("content-type");
       diagnostics.push({ url, status: res.status, contentType: ct, hint: pageHint(text, ct) });
+      let pushedBody: string | null = null;
+      let pushedCt: string | null = null;
       if (res.status >= 300 && res.status < 400) {
         const loc = res.headers.get("location");
         if (loc) {
@@ -110,12 +130,27 @@ async function discoverJobPages(cookieJar: string, baseUrl: string): Promise<{ d
             const ct2 = r2.headers.get("content-type");
             diagnostics.push({ url: target.toString(), status: r2.status, contentType: ct2, hint: pageHint(t2, ct2) });
             if (isLoginPage(t2) || isLoginRedirect(r2.headers.get("location"))) { sessionExpired = true; break; }
-            if (r2.status === 200) pages.push({ url: target.toString(), body: t2, contentType: ct2 });
+            if (r2.status === 200) { pages.push({ url: target.toString(), body: t2, contentType: ct2 }); pushedBody = t2; pushedCt = ct2; }
           }
         }
       } else if (res.status === 200) {
         if (isLoginPage(text)) { sessionExpired = true; break; }
         pages.push({ url, body: text, contentType: ct });
+        pushedBody = text; pushedCt = ct;
+      }
+      // Cheap "does this page carry jobs" check — decides whether discovery may
+      // stop early. JSON: a non-empty array. HTML: a <table> (parseTables only
+      // reads tables; the 200 dashboard has none).
+      if (pushedBody != null) {
+        const looksJson = isJsonPath || (pushedCt != null && pushedCt.includes("json"));
+        if (looksJson) {
+          try {
+            const arr = JSON.parse(pushedBody);
+            if (Array.isArray(arr) && arr.length) jsonGotJobs = true;
+          } catch { /* not a JSON array — keep walking */ }
+        } else if (!isJsonPath && /<table/i.test(pushedBody)) {
+          break; // HTML grid page found — parseTables will read it
+        }
       }
     } catch (err) {
       diagnostics.push({ url, status: null, contentType: null, hint: String(err).slice(0, 80) });
