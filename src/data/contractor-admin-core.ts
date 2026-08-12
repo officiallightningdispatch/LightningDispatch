@@ -210,9 +210,9 @@ export async function listRequiredDocTypesCore(actor: ContractorAdminActor): Pro
   }
 }
 
-async function nextSortOrder(actor: ContractorAdminActor): Promise<number> {
+async function nextSortOrder(orgId: string): Promise<number> {
   const q = await db();
-  const rows = await q`SELECT COALESCE(MAX(sort_order), -1)::int + 1 AS n FROM contractor_doc_types WHERE org_id=${actor.orgId}`;
+  const rows = await q`SELECT COALESCE(MAX(sort_order), -1)::int + 1 AS n FROM contractor_doc_types WHERE org_id=${orgId}`;
   return Number(rows[0]?.n ?? 0);
 }
 
@@ -231,7 +231,7 @@ export async function addDocTypeCore(actor: ContractorAdminActor, data: unknown)
     const dup = await q`SELECT name FROM contractor_doc_types WHERE org_id=${actor.orgId} AND LOWER(name)=${name.toLowerCase()} LIMIT 1`;
     if (dup.length) return err("duplicate", `"${String(dup[0].name)}" is already a required type.`);
     const id = `dt-${cryptoRandomId()}`;
-    const sortOrder = await nextSortOrder(actor);
+    const sortOrder = await nextSortOrder(actor.orgId);
     await q`INSERT INTO contractor_doc_types(id, org_id, name, requires_expiry, requires_facial_verification, sort_order) VALUES(${id}, ${actor.orgId}, ${name}, ${requiresExpiry}, ${requiresFacialVerification}, ${sortOrder})`;
     await recordAudit(actor, "contractor_doc_type_added", id, { name, requiresExpiry, requiresFacialVerification, sortOrder });
     return ok({ id, name, requiresExpiry, requiresFacialVerification, sortOrder, active: true, createdAt: new Date().toISOString() });
@@ -1319,32 +1319,79 @@ export async function getComplianceGateCore(actor: ContractorAdminActor): Promis
 
 /** The owner-mandated required doc set (2026-08-12): W-9, I-9, Driver's license
  *  with facial verification (license photo + live selfie pair, both required),
- *  and Insurance information. Idempotent — existing types (case-insensitive)
- *  are left untouched; missing ones are appended. Owner/admin only; audited
- *  per added type. The owner triggers this from the Required-documents editor —
- *  nothing is auto-seeded on the live site. */
+ *  and Insurance information. This SUPERSEDES the spec's original "suggestions,
+ *  never auto-seeded" stance: the set is auto-seeded for the PRODUCTION org at
+ *  server boot (serve.ts) so the owner's real drivers see the mandated types on
+ *  day one, and owner/admin can seed any org on demand from the Required-
+ *  documents editor ("Add standard set"). Idempotent — existing types
+ *  (case-insensitive) are left untouched; missing ones are appended. */
+export const MANDATED_DOC_TYPES: Array<{ name: string; requiresExpiry: boolean; requiresFacialVerification: boolean }> = [
+  { name: "W-9", requiresExpiry: false, requiresFacialVerification: false },
+  { name: "I-9", requiresExpiry: false, requiresFacialVerification: false },
+  { name: "Driver's License", requiresExpiry: true, requiresFacialVerification: true },
+  { name: "Insurance information", requiresExpiry: true, requiresFacialVerification: false },
+];
+
+/** Core seeding logic — throws on failure so callers decide how to surface it.
+ *  Returns the newly ADDED rows (empty when everything already existed).
+ *  Audit rows are written per ADDED type (best-effort, never masks the seed):
+ *  under auditActor when seeded from the portal, or the org's first owner/admin
+ *  member when seeded system-side (boot); no member row → audit rows skipped. */
+async function seedMandatedDocTypesUnsafe(orgId: string, auditActor?: ContractorAdminActor | null): Promise<DocTypeRow[]> {
+  await ensure();
+  const q = await db();
+  const existing = await q`SELECT LOWER(name) AS n FROM contractor_doc_types WHERE org_id=${orgId}`;
+  const have = new Set((existing as Record<string, unknown>[]).map((r) => String(r.n)));
+  const added: DocTypeRow[] = [];
+  let sortOrder = await nextSortOrder(orgId);
+  for (const m of MANDATED_DOC_TYPES) {
+    if (have.has(m.name.toLowerCase())) continue;
+    const id = `dt-${cryptoRandomId()}`;
+    await q`INSERT INTO contractor_doc_types(id, org_id, name, requires_expiry, requires_facial_verification, sort_order)
+      VALUES(${id}, ${orgId}, ${m.name}, ${m.requiresExpiry}, ${m.requiresFacialVerification}, ${sortOrder})`;
+    added.push({ id, name: m.name, requiresExpiry: m.requiresExpiry, requiresFacialVerification: m.requiresFacialVerification, sortOrder, active: true, createdAt: new Date().toISOString() });
+    sortOrder += 1;
+  }
+  if (added.length) {
+    const actor = auditActor ?? (await firstManagerActor(orgId));
+    if (actor) {
+      for (const r of added) {
+        await recordAudit(actor, "contractor_doc_type_added", r.id, { name: r.name, requiresExpiry: r.requiresExpiry, requiresFacialVerification: r.requiresFacialVerification, sortOrder: r.sortOrder });
+      }
+    }
+  }
+  return added;
+}
+
+/** Idempotent mandated-set seed for ANY org (server boot + tests). Best-effort:
+ *  a DB failure returns [] — the boot path must never take the server down. */
+export async function ensureMandatedDocTypesForOrg(orgId: string, auditActor?: ContractorAdminActor | null): Promise<DocTypeRow[]> {
+  try {
+    return await seedMandatedDocTypesUnsafe(orgId, auditActor);
+  } catch {
+    return [];
+  }
+}
+
+/** The org's first owner/admin member (system-side audit attribution). */
+async function firstManagerActor(orgId: string): Promise<ContractorAdminActor | null> {
+  try {
+    const q = await db();
+    const rows = await q`SELECT m.user_id AS id, m.role FROM organization_memberships m
+      WHERE m.org_id=${orgId} AND m.role IN ('owner','admin')
+      ORDER BY (m.role = 'owner') DESC, m.user_id ASC LIMIT 1`;
+    return rows.length ? { orgId, id: String(rows[0].id), role: String(rows[0].role) } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Owner/admin portal entry point ("Add standard set" button): seeds the
+ *  mandated types for the acting owner's org (idempotent), audited under them. */
 export async function seedMandatedDocTypesCore(actor: ContractorAdminActor): Promise<ContractorAdminResult<DocTypeRow[]>> {
   if (!canManage(actor)) return err("unauthorized", "Owner access required.");
-  const MANDATED: Array<{ name: string; requiresExpiry: boolean; requiresFacialVerification: boolean }> = [
-    { name: "W-9", requiresExpiry: false, requiresFacialVerification: false },
-    { name: "I-9", requiresExpiry: false, requiresFacialVerification: false },
-    { name: "Driver's License", requiresExpiry: true, requiresFacialVerification: true },
-    { name: "Insurance information", requiresExpiry: true, requiresFacialVerification: false },
-  ];
   try {
-    await ensure();
-    const q = await db();
-    const existing = await q`SELECT LOWER(name) AS n FROM contractor_doc_types WHERE org_id=${actor.orgId}`;
-    const have = new Set((existing as Record<string, unknown>[]).map((r) => String(r.n)));
-    const added: DocTypeRow[] = [];
-    let sortOrder = await nextSortOrder(actor);
-    for (const m of MANDATED) {
-      if (have.has(m.name.toLowerCase())) continue;
-      const r = await addDocTypeCore(actor, m);
-      if (r.ok) added.push(r.data);
-      sortOrder += 1;
-    }
-    return ok(added);
+    return ok(await seedMandatedDocTypesUnsafe(actor.orgId, actor));
   } catch (e) {
     return err("database_error", e instanceof Error ? e.message : "Unable to add the standard document set.");
   }

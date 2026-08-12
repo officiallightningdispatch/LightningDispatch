@@ -72,3 +72,18 @@ try {
 } catch {
   /* best-effort — the first-prepare fallback still covers this */
 }
+// Owner-directed 2026-08-12 (contractor-admin): the MANDATED required-doc set
+// (W-9, I-9, Driver's license + facial verification, Insurance information) is
+// auto-seeded for the PRODUCTION org at boot — idempotent, so every publish
+// re-checks and adds nothing once present. This SUPERSEDES the spec's original
+// "suggestions, never auto-seeded" stance (owner mandate 2026-08-12). Audit
+// rows are attributed to the org's first owner/admin member (best-effort).
+// Best-effort like the sync loop: a DB outage at boot must not take the server
+// down — the owner button and per-org on-demand paths still cover it.
+try {
+  const { ensureMandatedDocTypesForOrg } = await import("./src/data/contractor-admin-core.ts");
+  const { PRODUCTION_ORG_ID } = await import("./src/data/db-guard.ts");
+  await ensureMandatedDocTypesForOrg(PRODUCTION_ORG_ID);
+} catch {
+  /* best-effort — retried on every boot */
+}

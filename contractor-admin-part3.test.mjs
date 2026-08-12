@@ -14,9 +14,10 @@ const {
   seedMandatedDocTypesCore, listRequiredDocTypesCore,
   getMyDocumentsCore, getDocumentFileCore, uploadMyDocumentCore, uploadMySelfieCore, getSelfieFileCore,
   getMyComplianceCore, getComplianceGateCore, setDocumentStatusCore, deriveDocStatus,
+  ensureMandatedDocTypesForOrg, MANDATED_DOC_TYPES,
 } = await import("./src/data/contractor-admin-core.ts");
 const { ensureSchema } = await import("./src/data/migrations.ts");
-const { assertQaOrg } = await import("./src/data/db-guard.ts");
+const { assertQaOrg, PRODUCTION_ORG_ID } = await import("./src/data/db-guard.ts");
 const checks = [];
 const check = (name, cond, extra = "") => { checks.push([name, Boolean(cond), extra]); if (!cond) throw new Error(`FAIL: ${name} ${extra}`); };
 /** The upload result carries storageKey/status, not the doc id — per the spec
@@ -113,6 +114,40 @@ let w9, i9, lic, ins;
   check("seed: no audit rows (idempotent re-seed = nothing to record)", true);
   const aud = await q`SELECT action FROM audit_log WHERE org_id=${ORG} AND action='contractor_doc_type_added'`;
   check("seed: 4 doc-type-added audit rows", aud.length === 4, JSON.stringify(aud));
+}
+/* ==================== 1b) auto-seed for ANY org (owner mandate 2026-08-12): ====================
+ * the PRODUCTION org is seeded at server boot via ensureMandatedDocTypesForOrg
+ * (serve.ts, idempotent) — the same fn must work for any org id without an
+ * actor, audit rows attributed to the org's first owner/admin member, and a
+ * member-less org must seed cleanly with zero audit rows (no crash). */
+const ORG2 = `qa-ca-p3b-${randomUUID()}`;
+const ORG2_OWNER = `qa-p3b-owner-${randomUUID()}`;
+const ORG3 = `qa-ca-p3c-${randomUUID()}`; // deliberately member-less
+{
+  await q`INSERT INTO organizations(id, name) VALUES(${ORG2}, 'qa contractor-admin-part3 auto-seed')`;
+  await q`INSERT INTO organizations(id, name) VALUES(${ORG3}, 'qa contractor-admin-part3 auto-seed nomembers')`;
+  await q`INSERT INTO users(id, name, email, password_hash) VALUES(${ORG2_OWNER}, 'QA P3B Owner', ${`qa-p3-${ORG2_OWNER}@lightning.test`}, 'x')`;
+  await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${ORG2}, ${ORG2_OWNER}, 'owner')`;
+  check("auto-seed: test orgs are never the production org (guard)", ORG !== PRODUCTION_ORG_ID && ORG2 !== PRODUCTION_ORG_ID && ORG3 !== PRODUCTION_ORG_ID);
+  check("auto-seed: mandated constant is the owner's exact set (W-9, I-9, License+facial, Insurance)",
+    MANDATED_DOC_TYPES.length === 4 &&
+    MANDATED_DOC_TYPES.map((m) => `${m.name}${m.requiresFacialVerification ? "*" : ""}`).join("|") === "W-9|I-9|Driver's License*|Insurance information");
+  const a1 = await ensureMandatedDocTypesForOrg(ORG2);
+  check("auto-seed: fresh org gets all 4 types (no actor needed)", a1.length === 4, JSON.stringify(a1));
+  check("auto-seed: exact mandated names + license flagged facial",
+    a1.map((t) => `${t.name}${t.requiresFacialVerification ? "*" : ""}`).join("|") === "W-9|I-9|Driver's License*|Insurance information", JSON.stringify(a1));
+  const a2 = await ensureMandatedDocTypesForOrg(ORG2);
+  check("auto-seed: idempotent — second call adds nothing", a2.length === 0, JSON.stringify(a2));
+  const a3 = await ensureMandatedDocTypesForOrg(ORG3);
+  check("auto-seed: member-less org seeds all 4 without crashing", a3.length === 4, JSON.stringify(a3));
+  const a4 = await ensureMandatedDocTypesForOrg(ORG3);
+  check("auto-seed: member-less org idempotent too", a4.length === 0, JSON.stringify(a4));
+  const aud2 = await q`SELECT actor_user_id FROM audit_log WHERE org_id=${ORG2} AND action='contractor_doc_type_added'`;
+  check("auto-seed: audit rows attributed to the org's owner member", aud2.length === 4 && aud2.every((r) => String(r.actor_user_id) === ORG2_OWNER), JSON.stringify(aud2));
+  const aud3 = await q`SELECT COUNT(*)::int AS n FROM audit_log WHERE org_id=${ORG3} AND action='contractor_doc_type_added'`;
+  check("auto-seed: no members → zero audit rows, seed still succeeded", Number(aud3[0].n) === 0, JSON.stringify(aud3));
+  const names = await q`SELECT name FROM contractor_doc_types WHERE org_id=${ORG2} ORDER BY sort_order`;
+  check("auto-seed: DB rows exist for ORG2 in mandated order", names.map((r) => String(r.name)).join("|") === "W-9|I-9|Driver's License|Insurance information", JSON.stringify(names));
 }
 /* ==================== 2) upload → pending → approve → approved lifecycle ==================== */
 let docId;
