@@ -639,6 +639,51 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     )`;
     await q`CREATE INDEX IF NOT EXISTS job_feedback_org_job_idx ON job_feedback(org_id, job_id)`;
   }],
+  [31, async (q) => {
+    // Damage-claims agent (owner-directed 2026-08-12, build order #6, PHASE 1):
+    // claim records scanned from the owner's Gmail (motor clubs/companies —
+    // e.g. the Sixt damage-notice email 2026-08-10), researched, turned into a
+    // prepared form, signed by the assigned driver, approved by the owner, then
+    // sent to the company. ONE table — the audit_log rows (entity_type
+    // 'damage_claim') carry the full transition history, so no second table.
+    // Lifecycle: new → researched → form_ready → pending_approval → approved →
+    // sent, plus terminal resolved (research found it already resolved) and
+    // closed (owner rejected/closed it). job_id links to dispatch_jobs when the
+    // email references a job/PO we can match; driver_user_id is the driver who
+    // must review + sign. signature_storage_key = B2 key of the signed form
+    // image (canvas → B2, same pattern as the completion signature).
+    await q`CREATE TABLE IF NOT EXISTS damage_claims (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      claim_number TEXT,
+      company TEXT NOT NULL DEFAULT '',
+      job_id TEXT,
+      driver_user_id TEXT,
+      email_message_id TEXT,
+      email_from TEXT NOT NULL DEFAULT '',
+      email_subject TEXT NOT NULL DEFAULT '',
+      email_received_at TIMESTAMPTZ,
+      status TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new','researched','form_ready','pending_approval','approved','sent','resolved','closed')),
+      research JSONB NOT NULL DEFAULT '{}'::jsonb,
+      form JSONB NOT NULL DEFAULT '{}'::jsonb,
+      signature_storage_key TEXT,
+      signed_by_user_id TEXT,
+      signed_at TIMESTAMPTZ,
+      approved_by_user_id TEXT,
+      approved_at TIMESTAMPTZ,
+      sent_at TIMESTAMPTZ,
+      send_to TEXT,
+      send_method TEXT,
+      resolved_reason TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    // One claim per (org, email) — the Gmail scan upserts on this key, so a
+    // re-scan never duplicates.
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS damage_claims_org_message_idx ON damage_claims(org_id, email_message_id) WHERE email_message_id IS NOT NULL`;
+    await q`CREATE INDEX IF NOT EXISTS damage_claims_org_status_idx ON damage_claims(org_id, status)`;
+    await q`CREATE INDEX IF NOT EXISTS damage_claims_driver_idx ON damage_claims(driver_user_id, status)`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

@@ -273,7 +273,7 @@ export type MailboxLike = {
   connect: () => Promise<void>;
   mailboxOpen: (mailbox: string) => Promise<unknown>;
   search: (criteria: unknown, options?: { uid?: boolean }) => Promise<number[]>;
-  fetchOne: (uid: number, query: unknown) => Promise<{ envelope?: { messageId?: string; date?: Date; from?: Array<{ address?: string }>; subject?: string }; source?: Buffer | Uint8Array } | null>;
+  fetchOne: (uid: number, query: unknown, options?: { uid?: boolean }) => Promise<{ envelope?: { messageId?: string; date?: Date; from?: Array<{ address?: string }>; subject?: string }; source?: Buffer | Uint8Array } | null>;
   logout: () => Promise<void>;
 };
 
@@ -325,7 +325,10 @@ export async function fetchClubMail(opts: FetchClubMailOptions): Promise<FetchCl
     const candidates: ClubChargeCandidate[] = [];
     const skipped: FetchClubMailResult["skipped"] = [];
     for (const uid of slice) {
-      const raw = await client.fetchOne(uid, { envelope: true, source: true });
+      // NOTE: imapflow's fetchOne takes `{ uid: true }` as the THIRD options arg —
+      // passing the UID without it fetches by SEQUENCE number (imapflow quirk
+      // burned the first survey; verified 2026-08-12 against the live mailbox).
+      const raw = await client.fetchOne(uid, { envelope: true, source: true }, { uid: true });
       if (!raw) continue;
       const env = raw.envelope ?? {};
       const fromAddr = (env.from && env.from[0] && env.from[0].address) || "";
@@ -354,4 +357,89 @@ export async function fetchClubMail(opts: FetchClubMailOptions): Promise<FetchCl
 export async function scanGmail(opts: { sinceDays?: number; maxMessages?: number; connectImpl?: () => Promise<MailboxLike>; stableDir?: string } = {}): Promise<FetchClubMailResult> {
   const config = await loadGmailConfig(process.env, { stableDir: opts.stableDir });
   return fetchClubMail({ config, sinceDays: opts.sinceDays, maxMessages: opts.maxMessages, connectImpl: opts.connectImpl });
+}
+
+/* ------------------------- generic envelope fetch ------------------------- */
+
+/** A fetched message's raw parts — the SHARED Gmail scan surface the payment
+ *  engine and the damage-claims agent both build on (owner mandate 2026-08-12:
+ *  "the same Gmail scan infrastructure" — build it ONCE, share it). */
+export type MailEnvelopeWithSource = MailEnvelope & {
+  /** Best-effort raw headers (joined, for reply-to/return-path lookups). */
+  rawHeaders: string;
+  /** Best-effort raw body bytes (MIME). */
+  rawSource: Buffer | null;
+};
+
+export type FetchMailEnvelopesOptions = {
+  config: GmailConfig;
+  sinceDays?: number;
+  maxMessages?: number;
+  connectImpl?: () => Promise<MailboxLike>;
+};
+
+export type FetchMailEnvelopesResult = {
+  ok: boolean;
+  scanned: number;
+  messages: MailEnvelopeWithSource[];
+  error?: string;
+};
+
+/** Pull the last `sinceDays` days of mail from the owner's Gmail as raw
+ *  envelopes (from/subject/date/bodyText/rawHeaders/rawSource). Read-only
+ *  (BODY.PEEK semantics — nothing is ever marked read/deleted). Returns the
+ *  NEWEST `maxMessages` messages. This is the generic scan; parsing/filtering
+ *  is client-side (the claim agent and the payment engine each run their own
+ *  pure detectors over the result). A connection-level failure surfaces as
+ *  ok:false — never a fake success. */
+export async function fetchMailEnvelopes(opts: FetchMailEnvelopesOptions): Promise<FetchMailEnvelopesResult> {
+  const sinceDays = opts.sinceDays ?? 14;
+  const maxMessages = opts.maxMessages ?? 300;
+  let client: MailboxLike | null = null;
+  try {
+    if (opts.connectImpl) {
+      client = await opts.connectImpl();
+    } else {
+      const { ImapFlow } = await import("imapflow");
+      client = new ImapFlow({
+        host: "imap.gmail.com",
+        port: 993,
+        secure: true,
+        auth: { user: opts.config.address, pass: opts.config.appPassword },
+        logger: false,
+      }) as unknown as MailboxLike;
+    }
+    await client.connect();
+    await client.mailboxOpen("INBOX");
+    const since = new Date(Date.now() - sinceDays * 86_400_000);
+    const uids = await client.search({ since }, { uid: true });
+    const slice = uids.slice(-maxMessages);
+    const messages: MailEnvelopeWithSource[] = [];
+    for (const uid of slice) {
+      const raw = await client.fetchOne(uid, { envelope: true, source: true }, { uid: true });
+      if (!raw) continue;
+      const env = raw.envelope ?? {};
+      const fromAddr = (env.from && env.from[0] && env.from[0].address) || "";
+      const subject = env.subject ?? "";
+      const rawSource = raw.source ? Buffer.from(raw.source) : null;
+      const headerEnd = rawSource ? rawSource.indexOf("\r\n\r\n") : -1;
+      const rawHeaders = rawSource && headerEnd >= 0 ? rawSource.subarray(0, headerEnd).toString("utf8") : "";
+      const bodyText = rawSource ? extractPlainText(rawSource) : "";
+      const messageId = env.messageId && env.messageId !== "" ? env.messageId : `uid-${uid}`;
+      messages.push({ messageId, receivedAt: env.date ?? new Date(), from: fromAddr, subject, bodyText, rawHeaders, rawSource });
+    }
+    return { ok: true, scanned: slice.length, messages };
+  } catch (err) {
+    return { ok: false, scanned: 0, messages: [], error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    if (client) {
+      try { await client.logout(); } catch { /* best-effort close */ }
+    }
+  }
+}
+
+/** Convenience: resolve config + generic scan in one call. */
+export async function scanMailEnvelopes(opts: { sinceDays?: number; maxMessages?: number; connectImpl?: () => Promise<MailboxLike>; stableDir?: string } = {}): Promise<FetchMailEnvelopesResult> {
+  const config = await loadGmailConfig(process.env, { stableDir: opts.stableDir });
+  return fetchMailEnvelopes({ config, sinceDays: opts.sinceDays, maxMessages: opts.maxMessages, connectImpl: opts.connectImpl });
 }
