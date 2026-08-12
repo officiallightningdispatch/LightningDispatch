@@ -1,3 +1,4 @@
+// DB safety (2026-08-12): org deletes guarded by assertQaOrg — see src/data/db-guard.ts + /home/team/shared/db-safety-rules.md.
 // Hermetic tests for the contractor-administration core (parts 1/3 + 2/3):
 //   part 1 — required doc-type CRUD (add/rename/reorder/toggle/soft-remove),
 //   per-contractor documents with READ-TIME derived status (MISSING/UPLOADED/
@@ -37,6 +38,7 @@ const {
 const { listContractorsCore } = await import("./src/data/contractor-management-core.ts");
 const { ensureSchema } = await import("./src/data/migrations.ts");
 
+const { assertQaOrg } = await import("./src/data/db-guard.ts");
 const checks = [];
 const check = (name, cond, extra = "") => {
   checks.push([name, Boolean(cond), extra]);
@@ -508,7 +510,8 @@ console.log(`contractor-admin.test.mjs: ${checks.length - failed.length}/${check
 if (failed.length) { console.error(failed.map(([n, , e]) => `  ${n} ${e}`).join("\n")); process.exit(1); }
 process.env.B2_KEY_ID = SAVED_B2.k; process.env.B2_APPLICATION_KEY = SAVED_B2.a; process.env.B2_BUCKET_NAME = SAVED_B2.b;
 const memberIds = await q`SELECT DISTINCT m.user_id FROM organization_memberships m JOIN organizations o ON o.id=m.org_id WHERE o.name LIKE 'qa contractor-admin%'`;
-for (const org of await q`SELECT id FROM organizations WHERE name LIKE 'qa contractor-admin%'`) {
+for (const org of await q`SELECT id, name FROM organizations WHERE name LIKE 'qa contractor-admin%'`) {
+  assertQaOrg(org.id, org.name);
   await q`DELETE FROM organizations WHERE id=${org.id}`.catch(() => {});
 }
 for (const m of memberIds) await q`DELETE FROM users WHERE id=${m.user_id}`.catch(() => {});

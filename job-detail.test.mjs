@@ -1,3 +1,4 @@
+// DB safety (2026-08-12): org deletes guarded by assertQaOrg — see src/data/db-guard.ts + /home/team/shared/db-safety-rules.md.
 // Hermetic job-detail-expansion tests (2026-08-11, backlog #2). The collapsible
 // job cards' lazy fetch: getJobDetailCore (full detail + photo metadata, role
 // gated) and getJobPhotoCore (photo bytes via the EXISTING B2 path — mocked).
@@ -18,6 +19,7 @@ process.env.B2_BUCKET_NAME = "qa-bucket";
 const { getJobDetailCore, getJobPhotoCore } = await import("./src/data/job-detail-core.ts");
 const { ensureSchema } = await import("./src/data/migrations.ts");
 
+const { assertQaOrg } = await import("./src/data/db-guard.ts");
 const checks = [];
 const check = (name, cond, extra = "") => {
   checks.push([name, Boolean(cond), extra]);
@@ -239,7 +241,8 @@ if (failed.length) { console.error(failed.map(([n, , e]) => `  ${n} ${e}`).join(
 // Prove cleanup: deleting the QA org cascades every row it created; users that
 // were members are deleted explicitly (users has no org FK).
 const memberIds = await q`SELECT DISTINCT m.user_id FROM organization_memberships m JOIN organizations o ON o.id=m.org_id WHERE o.name LIKE 'qa job-detail%'`;
-for (const org of await q`SELECT id FROM organizations WHERE name LIKE 'qa job-detail%'`) {
+for (const org of await q`SELECT id, name FROM organizations WHERE name LIKE 'qa job-detail%'`) {
+  assertQaOrg(org.id, org.name);
   await q`DELETE FROM organizations WHERE id=${org.id}`.catch(() => {});
 }
 for (const m of memberIds) await q`DELETE FROM users WHERE id=${m.user_id}`.catch(() => {});

@@ -1,3 +1,4 @@
+// DB safety (2026-08-12): org deletes guarded by assertQaOrg — see src/data/db-guard.ts + /home/team/shared/db-safety-rules.md.
 // Fixture verification for the Towbook status-capture path and the numeric
 // status-id lifecycle mapping (decisions 2026-08-10): status 255 imports as the
 // terminal 'cancelled' state, and status 252 imports as the terminal 'completed'
@@ -29,6 +30,7 @@ const {
   TOWBOOK_STATUS_ID_UNMAPPED,
 } = await import("./src/data/server.ts");
 
+const { assertQaOrg } = await import("./src/data/db-guard.ts");
 const checks = [];
 const check = (name, cond, extra = "") => {
   checks.push([name, Boolean(cond), extra]);
@@ -431,6 +433,7 @@ try {
 } finally {
   // ---- cleanup: QA org cascades jobs/events/audit/session/membership; delete the user
   if (created) {
+    assertQaOrg(ORG);
     await q`DELETE FROM organizations WHERE id=${ORG}`.catch(() => {});
     await q`DELETE FROM users WHERE id=${USER}`.catch(() => {});
   }

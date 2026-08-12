@@ -1,3 +1,4 @@
+// DB safety (2026-08-12): org deletes guarded by assertQaOrg — see src/data/db-guard.ts + /home/team/shared/db-safety-rules.md.
 // Hermetic driver-gps tests (2026-08-11, milestone #3): ping storage + pruning,
 // geofence auto-arrive inside/outside radius, the on-platform + Towbook write +
 // verification path (mocked fetch), escalation on Towbook write failure, and
@@ -23,6 +24,7 @@ const {
 } = await import("./src/data/driver-gps-core.ts");
 const { encryptSession } = await import("./src/data/towbook-key.ts");
 const { ensureSchema } = await import("./src/data/migrations.ts");
+const { assertQaOrg } = await import("./src/data/db-guard.ts");
 const checks = [];
 const check = (name, cond, extra = "") => {
   checks.push([name, Boolean(cond), extra]);
@@ -133,6 +135,7 @@ await setup();
   await q`INSERT INTO organizations(id, name) VALUES(${freshOrg}, 'qa driver-gps')`;
   const fresh = await getGeofenceSettings(freshOrg);
   check("photos gate default ON (milestone #4)", fresh.photosRequired === true, JSON.stringify(fresh));
+  assertQaOrg(freshOrg);
   await q`DELETE FROM organizations WHERE id=${freshOrg}`;
 }
 
@@ -285,9 +288,9 @@ const failed = checks.filter(([, ok]) => !ok);
 console.log(`driver-gps.test.mjs: ${checks.length - failed.length}/${checks.length} passed`);
 if (failed.length) { console.error(failed.map(([n, , e]) => `  ${n} ${e}`).join("\n")); process.exit(1); }
 // Prove cleanup: deleting the QA orgs cascades every row they created.
-await q`DELETE FROM organizations WHERE id=${ORG}`.catch(() => {});
-await q`DELETE FROM organizations WHERE id=${ORG2}`.catch(() => {});
-await q`DELETE FROM organizations WHERE id=${ORG3}`.catch(() => {});
+assertQaOrg(ORG); await q`DELETE FROM organizations WHERE id=${ORG}`.catch(() => {});
+assertQaOrg(ORG2); await q`DELETE FROM organizations WHERE id=${ORG2}`.catch(() => {});
+assertQaOrg(ORG3); await q`DELETE FROM organizations WHERE id=${ORG3}`.catch(() => {});
 await q`DELETE FROM users WHERE id=${OWNER}`.catch(() => {});
 await q`DELETE FROM users WHERE id=${OWNER2}`.catch(() => {});
 await q`DELETE FROM users WHERE id=${OWNER3}`.catch(() => {});

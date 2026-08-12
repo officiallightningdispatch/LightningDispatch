@@ -1,3 +1,4 @@
+// DB safety (2026-08-12): org deletes guarded by assertQaOrg — see src/data/db-guard.ts + /home/team/shared/db-safety-rules.md.
 // Hermetic contractor edit/remove tests (2026-08-11, owner-directed "Contractor
 // edit/remove with Towbook propagation"): owner edits a contractor's name/email
 // (LD users row + audit 'contractor_updated' + Towbook push via the driver
@@ -24,6 +25,7 @@ const {
 const { isDriverDeactivated } = await import("./src/data/driver-gps-core.ts");
 const { encryptSession } = await import("./src/data/towbook-key.ts");
 const { ensureSchema } = await import("./src/data/migrations.ts");
+const { assertQaOrg } = await import("./src/data/db-guard.ts");
 const checks = [];
 const check = (name, cond, extra = "") => {
   checks.push([name, Boolean(cond), extra]);
@@ -376,7 +378,8 @@ if (failed.length) { console.error(failed.map(([n, , e]) => `  ${n} ${e}`).join(
 
 // Cleanup: delete the QA orgs (cascades) + their member users + fixtures.
 const memberIds = await q`SELECT DISTINCT m.user_id FROM organization_memberships m JOIN organizations o ON o.id=m.org_id WHERE o.name LIKE 'qa edit-remove%'`;
-for (const org of await q`SELECT id FROM organizations WHERE name LIKE 'qa edit-remove%'`) {
+for (const org of await q`SELECT id, name FROM organizations WHERE name LIKE 'qa edit-remove%'`) {
+  assertQaOrg(org.id, org.name);
   await q`DELETE FROM organizations WHERE id=${org.id}`.catch(() => {});
 }
 for (const m of memberIds) await q`DELETE FROM users WHERE id=${m.user_id}`.catch(() => {});

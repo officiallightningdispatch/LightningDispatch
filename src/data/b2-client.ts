@@ -293,6 +293,102 @@ export async function getObject(opts: {
   return { ok: true, status: res.status, bytes };
 }
 
+/* ------------------------------ object listing / delete ------------------------------ */
+
+export type B2ListResult = { ok: boolean; status: number | null; keys: string[] };
+
+/** SigV4 GET of the bucket's object listing (ListObjectsV2). Returns the
+ *  object keys under the given prefix (first page, max 1000 keys). Added
+ *  2026-08-12 for the nightly DB-snapshot retention (scripts/db-snapshot.ts).
+ *  Injectable fetchImpl for tests.
+ *
+ *  B2 quirk (found 2026-08-12): B2's S3-compatible endpoint recomputes the
+ *  SigV4 canonical query by decoding + re-encoding parameter values, so ANY
+ *  query parameter carrying a reserved character (e.g. prefix with '/') fails
+ *  signature validation (SignatureDoesNotMatch). Listing is therefore done
+ *  WITHOUT a prefix parameter (proven to sign correctly) and the prefix filter
+ *  is applied client-side. The backups prefix sorts lexicographically first,
+ *  so the (small) backups set is always inside the first page. */
+export async function listObjects(opts: {
+  config: B2Config;
+  s3ApiUrl: string;
+  prefix: string;
+  fetchImpl?: typeof fetch;
+  now?: Date;
+}): Promise<B2ListResult> {
+  const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
+  const region = regionFromS3Url(opts.s3ApiUrl);
+  const query = "list-type=2&max-keys=1000";
+  const u = new URL(`${opts.s3ApiUrl}/${encodeBucketPath(opts.config.bucketName)}?${query}`);
+  const signed = signV4({
+    accessKeyId: opts.config.keyId,
+    secretAccessKey: opts.config.applicationKey,
+    region,
+    method: "GET",
+    host: u.host,
+    path: u.pathname,
+    query,
+    payloadHash: sha256Hex(""),
+    now: opts.now,
+  });
+  const res = await fetchImpl(u.toString(), {
+    method: "GET",
+    headers: {
+      authorization: signed.authorization,
+      "x-amz-date": signed.xAmzDate,
+      "x-amz-content-sha256": signed.xAmzContentSha256,
+    },
+    signal: AbortSignal.timeout(30000),
+  });
+  if (!res.ok) return { ok: false, status: res.status, keys: [] };
+  const text = await res.text();
+  const keys: string[] = [];
+  const re = /<Key>([^<]+)<\/Key>/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) keys.push(m[1]);
+  const truncated = /<IsTruncated>true<\/IsTruncated>/.test(text);
+  if (truncated) {
+    console.error(`b2 listObjects: WARN listing truncated at 1000 keys — retention is approximate for prefix ${opts.prefix}`);
+  }
+  return { ok: true, status: res.status, keys: keys.filter((k) => k.startsWith(opts.prefix)) };
+}
+
+export type B2DeleteResult = { ok: boolean; status: number | null };
+
+/** SigV4 DELETE of one object (snapshot retention). Injectable fetchImpl for
+ *  tests. */
+export async function deleteObject(opts: {
+  config: B2Config;
+  s3ApiUrl: string;
+  key: string;
+  fetchImpl?: typeof fetch;
+  now?: Date;
+}): Promise<B2DeleteResult> {
+  const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
+  const region = regionFromS3Url(opts.s3ApiUrl);
+  const u = new URL(`${opts.s3ApiUrl}/${encodeBucketPath(opts.config.bucketName)}/${encodeKey(opts.key)}`);
+  const signed = signV4({
+    accessKeyId: opts.config.keyId,
+    secretAccessKey: opts.config.applicationKey,
+    region,
+    method: "DELETE",
+    host: u.host,
+    path: u.pathname,
+    payloadHash: sha256Hex(""),
+    now: opts.now,
+  });
+  const res = await fetchImpl(u.toString(), {
+    method: "DELETE",
+    headers: {
+      authorization: signed.authorization,
+      "x-amz-date": signed.xAmzDate,
+      "x-amz-content-sha256": signed.xAmzContentSha256,
+    },
+    signal: AbortSignal.timeout(30000),
+  });
+  return { ok: res.status >= 200 && res.status < 300, status: res.status };
+}
+
 /* ----------------------------------- helpers ----------------------------------- */
 
 /** Bucket names are plain S3 path segments. */

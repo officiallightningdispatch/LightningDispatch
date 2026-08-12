@@ -1,10 +1,13 @@
+// DB safety (2026-08-12): org deletes guarded by assertQaOrg — see src/data/db-guard.ts + /home/team/shared/db-safety-rules.md.
 // Hermetic roster-source tests (2026-08-11, owner-reported bug batch — BUG 1/2/3/5).
 // The dispatch surface's contractor roster MUST come from users × memberships
-// (role='contractor', deactivated excluded) — the SAME source the Contractors
-// tab uses — never the legacy dispatch_contractors table, which is empty for
-// every real org (it was the root cause of "Contractors online 0/0", the
-// Performance tab showing 0 contractors, and the dispatch-console crash on an
-// undefined recommendation).
+// (role 'contractor' OR any role WITH a Towbook driver id — owner-directed
+// 2026-08-12: owner/admin/dispatcher users that carry towbook_driver_id appear
+// on the dispatch surface too; pure owner/admin logins without a driver id
+// never do; deactivated excluded) — never the legacy dispatch_contractors
+// table, which is empty for every real org (it was the root cause of
+// "Contractors online 0/0", the Performance tab showing 0 contractors, and the
+// dispatch-console crash on an undefined recommendation).
 // DB-backed against a throwaway QA org deleted at the end (zero rows left).
 //   DATABASE_URL=... bun roster-source.test.mjs
 import { randomUUID } from "node:crypto";
@@ -14,6 +17,7 @@ const q = neon(process.env.DATABASE_URL);
 const { ensureSchema } = await import("./src/data/migrations.ts");
 const { ensureAuthSchema } = await import("./src/data/auth-server.ts");
 const { listRosterContractors } = await import("./src/data/server.ts");
+const { assertQaOrg } = await import("./src/data/db-guard.ts");
 const checks = [];
 const check = (name, cond, extra = "") => {
   checks.push([name, Boolean(cond), extra]);
@@ -25,6 +29,7 @@ const OWNER = `qa-roster-owner-${randomUUID()}`;
 const DRIVER_TB = `qa-roster-driver-tb-${randomUUID()}`;    // Towbook session (driver kind) + owner-kind session + ping → online
 const DRIVER_LD = `qa-roster-driver-ld-${randomUUID()}`;    // live portal session only → online
 const DRIVER_NONE = `qa-roster-driver-none-${randomUUID()}`; // no signals → offline
+const DRIVER_OWNER = `qa-roster-driver-owner-${randomUUID()}`; // OWNER role WITH towbook_driver_id → MUST appear (2026-08-12 owner direction)
 const DRIVER_DEACT = `qa-roster-driver-deact-${randomUUID()}`; // has a session but deactivated → must NOT appear
 const JOB_DONE = `qa-roster-job-done-${randomUUID()}`;       // completed for DRIVER_TB (by Towbook id)
 const JOB_OTHER = `qa-roster-job-other-${randomUUID()}`;     // completed for a different driver
@@ -40,12 +45,14 @@ try {
     (${DRIVER_TB}, ${"Adam Towbook"}, ${`tb-${ORG}@qa.test`}, ${"x"}, ${"9001"}),
     (${DRIVER_LD}, ${"Beth Portal"}, ${`ld-${ORG}@qa.test`}, ${"x"}, NULL),
     (${DRIVER_NONE}, ${"Casey None"}, ${`none-${ORG}@qa.test`}, ${"x"}, NULL),
+    (${DRIVER_OWNER}, ${"Eve Owner"}, ${`owner-d-${ORG}@qa.test`}, ${"x"}, ${"9003"}),
     (${DRIVER_DEACT}, ${"Dana Gone"}, ${`gone-${ORG}@qa.test`}, ${"x"}, ${"9002"})`;
   await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES
     (${ORG}, ${OWNER}, ${"owner"}),
     (${ORG}, ${DRIVER_TB}, ${"contractor"}),
     (${ORG}, ${DRIVER_LD}, ${"contractor"}),
     (${ORG}, ${DRIVER_NONE}, ${"contractor"}),
+    (${ORG}, ${DRIVER_OWNER}, ${"owner"}),
     (${ORG}, ${DRIVER_DEACT}, ${"contractor"})`;
   // Dana is deactivated (the soft-delete the remove flow uses) — excluded from the roster.
   await q`UPDATE users SET deactivated_at = NOW() WHERE id = ${DRIVER_DEACT}`;
@@ -75,9 +82,11 @@ try {
 
   /* ============================ assertions ============================ */
   const roster = await listRosterContractors(ORG);
-  check("BUG1: roster has only the 3 ACTIVE contractors (deactivated excluded)", roster.length === 3, JSON.stringify(roster.map((c) => c.name)));
+  check("BUG1: roster has the 4 ACTIVE drivers (deactivated excluded, owner-with-driver-id included)", roster.length === 4, JSON.stringify(roster.map((c) => c.name)));
   const byName = Object.fromEntries(roster.map((c) => [c.name, c]));
-  check("BUG1: sorted by name", roster[0].name === "Adam Towbook" && roster[1].name === "Beth Portal" && roster[2].name === "Casey None", JSON.stringify(roster.map((c) => c.name)));
+  check("BUG1: sorted by name", roster[0].name === "Adam Towbook" && roster[1].name === "Beth Portal" && roster[2].name === "Casey None" && roster[3].name === "Eve Owner", JSON.stringify(roster.map((c) => c.name)));
+  check("ROSTER-2026-08-12: owner-role user WITH towbook_driver_id appears on the dispatch roster", Boolean(byName["Eve Owner"]) && byName["Eve Owner"].id === DRIVER_OWNER, JSON.stringify(roster.map((c) => c.name)));
+  check("ROSTER-2026-08-12: owner-role user WITHOUT towbook_driver_id NEVER appears (pure owner login)", !("Roster QA Owner" in byName), JSON.stringify(roster.map((c) => c.name)));
 
   const adam = byName["Adam Towbook"];
   check("BUG2: driver with owner-kind Towbook session linked to their id → online", adam.status === "online", JSON.stringify(adam));
@@ -94,6 +103,8 @@ try {
 
   const filtered = await listRosterContractors(ORG, DRIVER_NONE);
   check("BUG1: contractorId filter returns exactly that contractor", filtered.length === 1 && filtered[0].id === DRIVER_NONE, JSON.stringify(filtered.map((c) => c.id)));
+  const filteredOwner = await listRosterContractors(ORG, DRIVER_OWNER);
+  check("ROSTER-2026-08-12: contractorId filter works for the owner-with-driver-id row too", filteredOwner.length === 1 && filteredOwner[0].id === DRIVER_OWNER, JSON.stringify(filteredOwner.map((c) => c.id)));
 
   /* ============ source-level guards (the safety rails) ============ */
   const server = readFileSync(new URL("./src/data/server.ts", import.meta.url), "utf8");
@@ -125,6 +136,7 @@ try {
   await q`DELETE FROM driver_locations WHERE org_id = ${ORG}`;
   await q`DELETE FROM dispatch_jobs WHERE org_id = ${ORG}`;
   await q`DELETE FROM organization_memberships WHERE org_id = ${ORG}`;
-  await q`DELETE FROM users WHERE id IN (${OWNER}, ${DRIVER_TB}, ${DRIVER_LD}, ${DRIVER_NONE}, ${DRIVER_DEACT})`;
+  await q`DELETE FROM users WHERE id IN (${OWNER}, ${DRIVER_TB}, ${DRIVER_LD}, ${DRIVER_NONE}, ${DRIVER_OWNER}, ${DRIVER_DEACT})`;
+  assertQaOrg(ORG);
   await q`DELETE FROM organizations WHERE id = ${ORG}`;
 }

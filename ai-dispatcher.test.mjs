@@ -1,3 +1,4 @@
+// DB safety (2026-08-12): org deletes guarded by assertQaOrg — see src/data/db-guard.ts + /home/team/shared/db-safety-rules.md.
 // Hermetic AI-dispatcher test suite (decisions 2026-08-10/11): the owner-directed
 // auto-accept engine — zone math (haversine vs the 06606 centroid), ROAD-AWARE
 // driver selection + ETA (OSRM router is mocked; fallback factor model; buffer /
@@ -52,6 +53,7 @@ const {
 const { encryptSession } = await import("./src/data/towbook-key.ts");
 const { ensureSchema } = await import("./src/data/migrations.ts");
 
+const { assertQaOrg } = await import("./src/data/db-guard.ts");
 const checks = [];
 const check = (name, cond, extra = "") => {
   checks.push([name, Boolean(cond), extra]);
@@ -1179,11 +1181,11 @@ try {
 } finally {
   // ---- cleanup: QA orgs cascade decisions/settings/jobs/events/audit/session/membership
   if (created) {
-    await q`DELETE FROM organizations WHERE id=${ORG}`.catch(() => {});
-    await q`DELETE FROM organizations WHERE id=${ORG2}`.catch(() => {});
-    await q`DELETE FROM organizations WHERE id=${ORG3}`.catch(() => {});
-    await q`DELETE FROM organizations WHERE id=${ORG4}`.catch(() => {});
-    await q`DELETE FROM organizations WHERE id=${ORG5}`.catch(() => {});
+    assertQaOrg(ORG); await q`DELETE FROM organizations WHERE id=${ORG}`.catch(() => {});
+    assertQaOrg(ORG2); await q`DELETE FROM organizations WHERE id=${ORG2}`.catch(() => {});
+    assertQaOrg(ORG3); await q`DELETE FROM organizations WHERE id=${ORG3}`.catch(() => {});
+    assertQaOrg(ORG4); await q`DELETE FROM organizations WHERE id=${ORG4}`.catch(() => {});
+    assertQaOrg(ORG5); await q`DELETE FROM organizations WHERE id=${ORG5}`.catch(() => {});
     await q`DELETE FROM users WHERE id=${USER}`.catch(() => {});
   }
   const leftover = await q`SELECT

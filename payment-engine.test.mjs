@@ -1,3 +1,4 @@
+// DB safety (2026-08-12): org deletes guarded by assertQaOrg — see src/data/db-guard.ts + /home/team/shared/db-safety-rules.md.
 // Hermetic payment-engine tests (2026-08-11, backlog #1 first slice — owner
 // spec "an agent scans lightroad29@gmail.com for motor-club credit-card
 // information and processes those cards via the Square API without ever
@@ -35,6 +36,7 @@ const {
   scanClubMailCore,
   mirrorTipCore,
 } = await import("./src/data/payment-engine-core.ts");
+const { assertQaOrg } = await import("./src/data/db-guard.ts");
 const checks = [];
 const check = (name, cond, extra = "") => {
   checks.push([name, Boolean(cond), extra]);
@@ -389,7 +391,8 @@ if (failed.length) { console.error(failed.map(([n, , e]) => `  ${n} ${e}`).join(
 // explicitly (users has no org FK). Org NAME is 'qa payment' — the hyphenated
 // ids are the QA org ids.
 const memberIds = await q`SELECT DISTINCT m.user_id FROM organization_memberships m JOIN organizations o ON o.id=m.org_id WHERE o.name LIKE 'qa payment%'`;
-for (const org of await q`SELECT id FROM organizations WHERE name LIKE 'qa payment%'`) {
+for (const org of await q`SELECT id, name FROM organizations WHERE name LIKE 'qa payment%'`) {
+  assertQaOrg(org.id, org.name);
   await q`DELETE FROM organizations WHERE id=${org.id}`.catch(() => {});
 }
 for (const u of memberIds) {

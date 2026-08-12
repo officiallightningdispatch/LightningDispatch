@@ -6,6 +6,7 @@
 // Real network calls never happen; every Towbook/B2-facing path takes an
 // injectable fetchImpl. DB-backed against throwaway QA orgs deleted at the end.
 //   DATABASE_URL=... bun driver-photos.test.mjs
+// DB safety (2026-08-12): org deletes guarded by assertQaOrg — see src/data/db-guard.ts + /home/team/shared/db-safety-rules.md.
 import { randomUUID } from "node:crypto";
 const { neon } = await import("@neondatabase/serverless");
 const q = neon(process.env.DATABASE_URL);
@@ -34,6 +35,7 @@ const { captureCompletionCore } = await import("./src/data/completion-core.ts");
 const { photosCompleteForJob, evaluateGeofence, getGeofenceSettings } = await import("./src/data/driver-gps-core.ts");
 const { encryptSession } = await import("./src/data/towbook-key.ts");
 const { ensureSchema } = await import("./src/data/migrations.ts");
+const { assertQaOrg } = await import("./src/data/db-guard.ts");
 const checks = [];
 const check = (name, cond, extra = "") => {
   checks.push([name, Boolean(cond), extra]);
@@ -362,7 +364,7 @@ const failed = checks.filter(([, ok]) => !ok);
 console.log(`driver-photos.test.mjs: ${checks.length - failed.length}/${checks.length} passed`);
 if (failed.length) { console.error(failed.map(([n, , e]) => `  ${n} ${e}`).join("\n")); process.exit(1); }
 // Prove cleanup: deleting the QA orgs cascades every row they created.
-for (const org of [ORG, ORG2, ORG3, ORG4]) await q`DELETE FROM organizations WHERE id=${org}`.catch(() => {});
+for (const org of [ORG, ORG2, ORG3, ORG4]) { assertQaOrg(org); await q`DELETE FROM organizations WHERE id=${org}`.catch(() => {}); }
 for (const u of [OWNER, OWNER2, OWNER3, OWNER4, DRIVER, DRIVER2, DRIVER3, DRIVER4, OTHER]) await q`DELETE FROM users WHERE id=${u}`.catch(() => {});
 const leftover = await q`SELECT
   (SELECT COUNT(*)::int FROM job_photos p JOIN organizations o ON o.id=p.org_id WHERE o.name='qa driver-photos') AS photos,

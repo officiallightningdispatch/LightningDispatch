@@ -9,7 +9,8 @@
     "start": "bun run serve.ts",
     "publish": "bash ./publish.sh",
     "go-live": "bash ./go-live.sh",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "db:snapshot": "bun scripts/db-snapshot.ts"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.3.0",

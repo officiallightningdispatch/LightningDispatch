@@ -1,3 +1,4 @@
+// DB safety (2026-08-12): org deletes guarded by assertQaOrg — see src/data/db-guard.ts + /home/team/shared/db-safety-rules.md.
 // Hermetic bidirectional status-sync tests (2026-08-11, owner bug: "the job
 // status does not change on Towbook when I change it on the portal and vice
 // versa"). The pull side (Towbook → portal, server.ts syncForOrg / 30s loop +
@@ -37,6 +38,7 @@ const { pushJobStatusToTowbook, LIFECYCLE_TO_TOWBOOK_STATUS_ID } = await import(
 const { upsertPulledJobs } = await import("./src/data/server.ts");
 const { encryptSession } = await import("./src/data/towbook-key.ts");
 const { ensureSchema } = await import("./src/data/migrations.ts");
+const { assertQaOrg } = await import("./src/data/db-guard.ts");
 const checks = [];
 const check = (name, cond, extra = "") => {
   checks.push([name, Boolean(cond), extra]);
@@ -46,6 +48,7 @@ const check = (name, cond, extra = "") => {
 const ORG = `qa-status-${randomUUID()}`;      // connected owner session → push flows
 const ORG2 = `qa-status2-${randomUUID()}`;    // NO owner session → skip gate
 const OWNER = `qa-status-owner-${randomUUID()}`;
+const OWNER2 = `qa-status2-owner-${randomUUID()}`; // ORG2's owner — hoisted so cleanup deletes it too (2026-08-12: it was inlined at setup and orphaned)
 const ADMIN = `qa-status-admin-${randomUUID()}`;
 const DISPATCHER = `qa-status-dispatch-${randomUUID()}`;
 const JOB_ACCEPT = `qa-status-accept-${randomUUID()}`;   // offered→accepted push (2)
@@ -102,7 +105,7 @@ async function setup() {
   await ensureSchema();
   for (const [org, owner, admin, dispatcher] of [
     [ORG, OWNER, ADMIN, DISPATCHER],
-    [ORG2, `qa-status2-owner-${randomUUID()}`, null, null],
+    [ORG2, OWNER2, null, null],
   ]) {
     await q`INSERT INTO organizations(id, name) VALUES(${org}, 'qa status-sync')`;
     await q`INSERT INTO users(id, name, email, password_hash) VALUES(${owner}, 'QA Status Owner', ${`qa-status-owner-${randomUUID()}@lightning.test`}, 'x')`;
@@ -452,8 +455,8 @@ await setup();
 const failed = checks.filter(([, ok]) => !ok);
 console.log(`status-sync.test.mjs: ${checks.length - failed.length}/${checks.length} passed`);
 if (failed.length) { console.error(failed.map(([n, , e]) => `  ${n} ${e}`).join("\n")); process.exit(1); }
-for (const org of [ORG, ORG2]) await q`DELETE FROM organizations WHERE id=${org}`.catch(() => {});
-for (const u of [OWNER, ADMIN, DISPATCHER]) await q`DELETE FROM users WHERE id=${u}`.catch(() => {});
+for (const org of [ORG, ORG2]) { assertQaOrg(org); await q`DELETE FROM organizations WHERE id=${org}`.catch(() => {}); }
+for (const u of [OWNER, ADMIN, DISPATCHER, OWNER2]) await q`DELETE FROM users WHERE id=${u}`.catch(() => {});
 const leftover = await q`SELECT
   (SELECT COUNT(*)::int FROM dispatch_jobs j JOIN organizations o ON o.id=j.org_id WHERE o.name='qa status-sync') AS jobs,
   (SELECT COUNT(*)::int FROM status_events e JOIN organizations o ON o.id=e.org_id WHERE o.name='qa status-sync') AS events,
@@ -461,7 +464,8 @@ const leftover = await q`SELECT
   (SELECT COUNT(*)::int FROM ai_dispatcher_decisions d JOIN organizations o ON o.id=d.org_id WHERE o.name='qa status-sync') AS decisions,
   (SELECT COUNT(*)::int FROM towbook_sessions s JOIN organizations o ON o.id=s.org_id WHERE o.name='qa status-sync') AS sessions,
   (SELECT COUNT(*)::int FROM organization_memberships m JOIN organizations o ON o.id=m.org_id WHERE o.name='qa status-sync') AS members,
-  (SELECT COUNT(*)::int FROM users u WHERE u.id IN (${OWNER}, ${ADMIN}, ${DISPATCHER})) AS users`;
+  (SELECT COUNT(*)::int FROM users u WHERE u.id IN (${OWNER}, ${ADMIN}, ${DISPATCHER}, ${OWNER2})) AS users,
+  (SELECT COUNT(*)::int FROM users u WHERE u.email LIKE 'qa-status-owner-%@lightning.test' OR u.email LIKE 'qa-status-admin-%@lightning.test' OR u.email LIKE 'qa-status-dispatch-%@lightning.test') AS qa_users`;
 const z = Object.values(leftover[0]).every((n) => Number(n) === 0);
 console.log(`cleanup: ${JSON.stringify(leftover[0])}`);
 if (!z) { console.error("FAIL: QA cleanup left rows behind"); process.exit(1); }

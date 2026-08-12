@@ -1,3 +1,4 @@
+// DB safety (2026-08-12): org deletes guarded by assertQaOrg — see src/data/db-guard.ts + /home/team/shared/db-safety-rules.md.
 // Towbook session self-healing (backlog #1, owner-directed 2026-08-11: "set up
 // Towbook and forget"). Covers the 2026-08-11 13:10Z incident: a real
 // motor-club offer arrived while the stored Towbook session had expired; the
@@ -37,6 +38,7 @@ const { runAutoDispatch } = await import("./src/data/ai-dispatcher.ts");
 const { recoverTowbookSession, readOwnerCreds, RECOVERY_THROTTLE_MS } = await import("./src/data/towbook-recovery.ts");
 const { encryptSession, decryptSession } = await import("./src/data/towbook-key.ts");
 const { ensureSchema } = await import("./src/data/migrations.ts");
+const { assertQaOrg } = await import("./src/data/db-guard.ts");
 const checks = [];
 const check = (name, cond, extra = "") => {
   checks.push([name, Boolean(cond), extra]);
@@ -303,6 +305,7 @@ try {
   // ---- cleanup: QA orgs cascade decisions/settings/jobs/events/audit/session/membership
   if (created) {
     for (const org of [ORG_PUSH, ORG_BAD, ORG_NOCREDS, ORG_INFLIGHT, ORG_SYNC]) {
+      assertQaOrg(org);
       await q`DELETE FROM organizations WHERE id=${org}`.catch(() => {});
     }
     await q`DELETE FROM users WHERE id=${USER}`.catch(() => {});

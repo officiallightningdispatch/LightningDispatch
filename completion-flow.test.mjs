@@ -1,3 +1,4 @@
+// DB safety (2026-08-12): org deletes guarded by assertQaOrg — see src/data/db-guard.ts + /home/team/shared/db-safety-rules.md.
 // Hermetic completion-flow tests (2026-08-11, milestone "completion flow",
 // owner-directed Web Payments design): the "Finish up" gate — customer
 // signature (PNG → B2) + survey REQUIRED before final-complete (photos stay a
@@ -35,6 +36,7 @@ const {
 const { uploadJobPhotoCore, setVehicleMatchCore, completeJobCore } = await import("./src/data/driver-photos-core.ts");
 const { encryptSession } = await import("./src/data/towbook-key.ts");
 const { ensureSchema } = await import("./src/data/migrations.ts");
+const { assertQaOrg } = await import("./src/data/db-guard.ts");
 const checks = [];
 const check = (name, cond, extra = "") => {
   checks.push([name, Boolean(cond), extra]);
@@ -381,7 +383,7 @@ const failed = checks.filter(([, ok]) => !ok);
 console.log(`completion-flow.test.mjs: ${checks.length - failed.length}/${checks.length} passed`);
 if (failed.length) { console.error(failed.map(([n, , e]) => `  ${n} ${e}`).join("\n")); process.exit(1); }
 // Prove cleanup: deleting the QA orgs cascades every row they created.
-for (const org of [ORG, ORG2, ORG3]) await q`DELETE FROM organizations WHERE id=${org}`.catch(() => {});
+for (const org of [ORG, ORG2, ORG3]) { assertQaOrg(org); await q`DELETE FROM organizations WHERE id=${org}`.catch(() => {}); }
 for (const u of [OWNER, OWNER2, OWNER3, DRIVER, DRIVER2, DRIVER3, OTHER]) await q`DELETE FROM users WHERE id=${u}`.catch(() => {});
 const leftover = await q`SELECT
   (SELECT COUNT(*)::int FROM completion_tips t JOIN organizations o ON o.id=t.org_id WHERE o.name='qa completion-flow wp') AS tips,

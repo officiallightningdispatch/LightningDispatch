@@ -41,13 +41,19 @@ function prepare() {
 
 function mapJob(r: Record<string,unknown>): Job { return {id:String(r.id),customerName:String(r.customer_name),phone:String(r.phone),location:{lat:Number(r.lat),lng:Number(r.lng),area:String(r.area)},serviceType:r.service_type as Job["serviceType"],status:r.status as JobStatus,createdAt:new Date(String(r.created_at)).toISOString(),assignedAt:r.assigned_at?new Date(String(r.assigned_at)).toISOString():undefined,arrivedAt:r.arrived_at?new Date(String(r.arrived_at)).toISOString():undefined,completedAt:r.completed_at?new Date(String(r.completed_at)).toISOString():undefined,assignedContractorId:r.assigned_contractor_id?String(r.assigned_contractor_id):undefined,assignedDriverName:r.assigned_driver_name?String(r.assigned_driver_name):undefined,assignedDriverTowbookId:r.assigned_driver_towbook_id?String(r.assigned_driver_towbook_id):undefined,note:String(r.note||"")}; }
 
-/** The org's ACTIVE contractor roster for the dispatch surface — users rows in
- *  the org with role 'contractor', deactivated excluded — the SAME source as
- *  the Contractors tab (listContractorsCore). The legacy dispatch_contractors
- *  table is NEVER read: it is empty for every real org (BUG 1 root cause
- *  2026-08-11 — it made the owner dashboard read "Contractors online 0/0", the
- *  Performance tab show 0 contractors, and the dispatch console crash on an
- *  undefined recommendation).
+/** The org's ACTIVE roster for the dispatch surface — ANY active org user
+ *  (deactivated_at IS NULL) with a non-null towbook_driver_id, regardless of
+ *  membership role: role 'contractor' always qualifies; owner/admin/dispatcher
+ *  roles qualify ONLY when they carry a Towbook driver id (so the owner's own
+ *  driver-linked account — e.g. "Ai Dispatch GB", owner-directed 2026-08-12 —
+ *  appears on the map / drivers list / dispatch console / AI-dispatcher
+ *  candidate pool, while pure owner/admin logins like lightroad29@gmail.com
+ *  NEVER appear). The Contractors tab (listContractorsCore) stays
+ *  contractors-only. The legacy dispatch_contractors table is NEVER read: it
+ *  is empty for every real org (BUG 1 root cause 2026-08-11 — it made the
+ *  owner dashboard read "Contractors online 0/0", the Performance tab show 0
+ *  contractors, and the dispatch console crash on an undefined
+ *  recommendation).
  *
  *  Derived fields (one query, real data only):
  *  - status: 'online' when the contractor has ANY live signal — a stored
@@ -71,7 +77,6 @@ export async function listRosterContractors(orgId: string, contractorId?: string
           AND ((u.towbook_driver_id IS NOT NULL AND j.assigned_driver_towbook_id = u.towbook_driver_id)
                OR j.assigned_contractor_id = u.id)) AS completed_job_count
     FROM users u
-    JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${orgId} AND m.role = 'contractor'
     LEFT JOIN LATERAL (
       SELECT MAX(updated_at) AS session_updated_at FROM towbook_sessions ts
       WHERE ts.org_id = ${orgId} AND ts.towbook_driver_id = u.towbook_driver_id
@@ -86,6 +91,11 @@ export async function listRosterContractors(orgId: string, contractorId?: string
       ORDER BY captured_at DESC LIMIT 1
     ) dl ON TRUE
     WHERE u.deactivated_at IS NULL
+      AND EXISTS (
+        SELECT 1 FROM organization_memberships m
+        WHERE m.user_id = u.id AND m.org_id = ${orgId}
+          AND (m.role = 'contractor' OR (m.role IN ('owner','admin','dispatcher') AND u.towbook_driver_id IS NOT NULL))
+      )
     ${contractorId ? q`AND u.id = ${contractorId}` : q``}
     ORDER BY LOWER(u.name), u.created_at`;
   return (rows as Record<string, unknown>[]).map((r) => {
