@@ -14,7 +14,7 @@ const q = neon(process.env.DATABASE_URL);
 const {
   periodBoundariesFor, listPayPeriodsCore, getPayPeriodDetailCore, computePaydayCore,
   markPayoutPaidCore, markPaydayPeriodPaidCore, verifyPayoutMethodCore, rejectPayoutMethodCore,
-  getMoneyOverviewCore, setMyPayoutMethodCore, maskHandle,
+  editPayoutMethodCore, getContractorPayoutMethodCore, getMyPayoutMethodCore, getMoneyOverviewCore, setMyPayoutMethodCore, maskHandle,
 } = await import("./src/data/payouts-core.ts");
 const { ensureSchema } = await import("./src/data/migrations.ts");
 const { assertQaOrg } = await import("./src/data/db-guard.ts");
@@ -250,6 +250,71 @@ let detail;
 {
   const none = await getPayPeriodDetailCore(ACTOR, `pay-${ORG}-never`);
   check("detail: unknown period → null", none.ok && none.data === null, JSON.stringify(none));
+}
+
+/* ----------- OWNER VERIFY / REJECT / EDIT LIFECYCLE (Phase A 2026-08-13) ----------- */
+{
+  // M1 (D1's venmo @jane) is REJECTED with note "wrong handle" from the
+  // earlier block. 1) The CONTRACTOR sees the reason (reject → reason visible).
+  const d1View = await getMyPayoutMethodCore({ orgId: ORG, id: D1 });
+  check("reject: contractor sees status + reject note", d1View.ok && d1View.data && d1View.data.status === "rejected" && d1View.data.rejectNote === "wrong handle", JSON.stringify(d1View));
+  check("reject: contractor sees masked handle only (never full)", d1View.ok && d1View.data && d1View.data.handleMasked !== "@jane" && d1View.data.handleMasked.includes("••"), JSON.stringify(d1View));
+
+  // 2) Owner EDIT fixes the typo'd handle → reflected, status re-set to
+  //    connected_unverified, reject_note cleared.
+  const edited = await editPayoutMethodCore(ACTOR, { methodId: M1, rail: "venmo", handle: "@jane-fixed" });
+  check("edit: reflected (new handle, owner-only full)", edited.ok && edited.data && edited.data.handleFull === "@jane-fixed" && edited.data.handleMasked === "@ja••••", JSON.stringify(edited));
+  check("edit: change re-triggers verification + clears reject note", edited.ok && edited.data && edited.data.status === "connected_unverified" && edited.data.rejectNote === null, JSON.stringify(edited));
+  const d1View2 = await getMyPayoutMethodCore({ orgId: ORG, id: D1 });
+  check("edit: contractor sees the corrected masked handle + pending", d1View2.ok && d1View2.data && d1View2.data.status === "connected_unverified" && d1View2.data.handleMasked === "@ja••••", JSON.stringify(d1View2));
+
+  // 3) Verify → approved; then SAME-VALUE edit keeps status (idempotent).
+  const vres = await verifyPayoutMethodCore(ACTOR, M1);
+  check("edit-lifecycle: verify after edit → approved", vres.ok && vres.data && vres.data.status === "verified", JSON.stringify(vres));
+  const noopEdit = await editPayoutMethodCore(ACTOR, { methodId: M1, rail: "venmo", handle: "@jane-fixed" });
+  check("edit: same values are idempotent (verified stays verified)", noopEdit.ok && noopEdit.data && noopEdit.data.status === "verified" && noopEdit.data.handleFull === "@jane-fixed", JSON.stringify(noopEdit));
+  const changedAgain = await editPayoutMethodCore(ACTOR, { methodId: M1, rail: "venmo", handle: "@jane-fixed-2" });
+  check("edit: verified → change → back to awaiting verification", changedAgain.ok && changedAgain.data && changedAgain.data.status === "connected_unverified" && changedAgain.data.handleFull === "@jane-fixed-2", JSON.stringify(changedAgain));
+  const reverify = await verifyPayoutMethodCore(ACTOR, M1);
+  check("edit-lifecycle: owner re-approves after edit", reverify.ok && reverify.data && reverify.data.status === "verified", JSON.stringify(reverify));
+
+  // 4) Role/org gates on edit.
+  const deniedEdit = await editPayoutMethodCore(DRIVER_ACTOR, { methodId: M1, rail: "venmo", handle: "@hacker" });
+  check("edit: contractor cannot edit", deniedEdit.ok === false && deniedEdit.code === "unauthorized", JSON.stringify(deniedEdit));
+  const wrongOrgEdit = await editPayoutMethodCore(WRONG_ORG, { methodId: M1, rail: "venmo", handle: "@other" });
+  check("edit: other-org owner cannot touch the method (null)", wrongOrgEdit.ok && wrongOrgEdit.data === null, JSON.stringify(wrongOrgEdit));
+  const badInput = await editPayoutMethodCore(ACTOR, { methodId: M1, rail: "cash_app", handle: "no-cashtag" });
+  check("edit: invalid rail format rejected", badInput.ok === false && badInput.code === "invalid_input", JSON.stringify(badInput));
+
+  // 5) BANK rail edit: contractor adds a bank method, owner edits institution,
+  //    full numbers decrypt owner-only; same-value edit idempotent.
+  const bankSet = await setMyPayoutMethodCore(
+    { orgId: ORG, id: D2, actorUserId: D2, actorRole: "contractor" },
+    { rail: "bank", bankInstitutionName: "Chase", bankLast4: "0123", bankRoutingNumber: "021000021", bankAccountNumber: "1234567890123" },
+  );
+  check("bank: contractor adds unverified bank method", bankSet.ok && bankSet.data && bankSet.data.status === "connected_unverified" && bankSet.data.rail === "bank", JSON.stringify(bankSet));
+  const bankRow = await q`SELECT id, bank_routing_encrypted, bank_account_encrypted FROM payout_methods WHERE org_id=${ORG} AND contractor_id=${D2} LIMIT 1`;
+  check("bank: numbers stored ENCRYPTED at rest", bankRow.length === 1 && bankRow[0].bank_routing_encrypted != null && bankRow[0].bank_routing_encrypted !== "021000021" && bankRow[0].bank_account_encrypted !== "1234567890123", JSON.stringify(bankRow));
+  const bankEdit = await editPayoutMethodCore(ACTOR, { methodId: bankRow[0].id, rail: "bank", bankInstitutionName: "Chase Bank", bankLast4: "0123", bankRoutingNumber: "021000021", bankAccountNumber: "1234567890123" });
+  check("bank edit: institution reflected, owner sees FULL numbers (decrypt)", bankEdit.ok && bankEdit.data && bankEdit.data.bankInstitutionName === "Chase Bank" && bankEdit.data.bankRoutingNumberFull === "021000021" && bankEdit.data.bankAccountNumberFull === "1234567890123" && bankEdit.data.bankLast4 === "0123", JSON.stringify(bankEdit));
+  const bankNoop = await editPayoutMethodCore(ACTOR, { methodId: bankRow[0].id, rail: "bank", bankInstitutionName: "Chase Bank", bankLast4: "0123", bankRoutingNumber: "021000021", bankAccountNumber: "1234567890123" });
+  check("bank edit: same values idempotent (status kept)", bankNoop.ok && bankNoop.data && bankNoop.data.status === "connected_unverified", JSON.stringify(bankNoop));
+  const bankAudit = await q`SELECT detail FROM audit_log WHERE org_id=${ORG} AND action='payout_method_edited' AND entity_id=${D2}`;
+  check("bank edit: audit carries masked only (never routing/account)", bankAudit.every((a) => !JSON.stringify(a.detail).includes("021000021") && !JSON.stringify(a.detail).includes("1234567890123")), JSON.stringify(bankAudit));
+
+  // 6) AUDIT trail for every action — verified / rejected / edited present,
+  //    and no audit detail ever carries the full app-rail handle (@jane).
+  const audRows = await q`SELECT action, detail FROM audit_log WHERE org_id=${ORG} AND action IN ('payout_method_verified','payout_method_rejected','payout_method_edited')`;
+  check("audit: all three lifecycle actions recorded", audRows.some((a) => a.action === "payout_method_verified") && audRows.some((a) => a.action === "payout_method_rejected") && audRows.some((a) => a.action === "payout_method_edited"), JSON.stringify(audRows.map((a) => a.action)));
+  check("audit: PII rule — no audit detail contains the full handle", audRows.every((a) => !JSON.stringify(a.detail).includes("@jane")), JSON.stringify(audRows));
+
+  // 7) PAID ROWS IMMUTABLE — D1's paid record snapshot (rail/handle/amount)
+  //    survives the method edits; recompute still leaves it untouched.
+  const afterEdits = await computePaydayCore(ACTOR, PERIOD);
+  const d1Paid = afterEdits.ok ? afterEdits.data.records.find((r) => r.contractorId === D1) : null;
+  check("immutable: paid record snapshot unchanged after method edits", d1Paid && d1Paid.status === "paid" && d1Paid.rail === "venmo" && d1Paid.handleFull === "@jane" && d1Paid.totalCents === 22500, JSON.stringify(d1Paid));
+  const perRows = await q`SELECT COUNT(*)::int AS c FROM payout_records WHERE org_id=${ORG} AND period_id=${PERIOD} AND status='paid'`;
+  check("immutable: exactly the original paid rows remain (1)", Number(perRows[0].c) === 1, JSON.stringify(perRows));
 }
 } finally {
   await cleanup();

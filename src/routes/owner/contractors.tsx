@@ -1,10 +1,11 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { AlertTriangle, ChevronRight, CloudDownload, FileText, Loader2, Pencil, Plus, Trash2, UserCog, Users, X } from "lucide-react";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useCallback, useState, type FormEvent } from "react";
 import { AppShell } from "~/components/app-shell";
 import { ComplianceBadge, DocumentTypeEditorRow, PayRateField, formatCents } from "~/components/contractor-admin";
 import { ContractorProfileEditor, type EditorSection } from "~/components/contractor-profile-editor";
 import { InlineError } from "~/components/mutation-status";
+import { OwnerPayoutMethodStrip } from "~/components/owner-payout-method";
 import { Avatar, Button, Card, EmptyState, StatusBadge, useToast } from "~/components/ui";
 import {
   addContractor,
@@ -27,6 +28,7 @@ import {
   type DocTypeRow,
 } from "~/data/contractor-admin";
 import { timeAgo } from "~/lib/job-ui";
+import { listPayoutMethods, type OwnerPayoutMethod } from "~/data/payouts";
 
 export const Route = createFileRoute("/owner/contractors")({ component: OwnerContractors });
 
@@ -77,6 +79,14 @@ function OwnerContractors() {
     if (r.ok) { setRows(r.data); setListError(""); } else setListError(r.message);
   };
   useEffect(() => { void refresh(); }, [includeRemoved]);
+
+  /* ---- payout methods (owner verify/reject/edit — Phase A 2026-08-13) ---- */
+  const [payoutMethods, setPayoutMethods] = useState<Record<string, OwnerPayoutMethod> | null>(null);
+  const loadPayoutMethods = useCallback(async () => {
+    const r = await listPayoutMethods();
+    if (r.ok) setPayoutMethods(Object.fromEntries(r.data.map((m) => [m.contractorId, m])));
+  }, []);
+  useEffect(() => { void loadPayoutMethods(); }, [loadPayoutMethods]);
 
   const loadDocTypes = async () => {
     const r = await listRequiredDocTypes();
@@ -459,7 +469,16 @@ function OwnerContractors() {
                     </div>
                   ) : (
                     visibleRows.map((c, i) => (
-                      <ContractorRowView key={c.id} c={c} last={i === visibleRows.length - 1} onChanged={() => void refresh()} onPayrate={(cents) => savePayrate(c, cents)} onEdit={() => setEditing({ id: c.id, section: "profile" })} />
+                      <ContractorRowView
+                        key={c.id}
+                        c={c}
+                        last={i === visibleRows.length - 1}
+                        onChanged={() => void refresh()}
+                        onPayrate={(cents) => savePayrate(c, cents)}
+                        onEdit={() => setEditing({ id: c.id, section: "profile" })}
+                        payoutMethod={payoutMethods ? (payoutMethods[c.id] ?? null) : undefined}
+                        onPayoutMethodChanged={() => void loadPayoutMethods()}
+                      />
                     ))
                   )}
                 </Card>
@@ -507,12 +526,16 @@ function OwnerContractors() {
 
 /* ------------------------------ roster row ------------------------------ */
 
-function ContractorRowView({ c, last, onChanged, onPayrate, onEdit }: {
+function ContractorRowView({ c, last, onChanged, onPayrate, onEdit, payoutMethod, onPayoutMethodChanged }: {
   c: ContractorRow;
   last: boolean;
   onChanged: () => void;
   onPayrate: (cents: number | null) => Promise<void>;
   onEdit: () => void;
+  /** The contractor's payout method (owner-only FULL handle) — undefined while
+   *  the method list is still loading, null when they have none on file. */
+  payoutMethod?: OwnerPayoutMethod | null;
+  onPayoutMethodChanged: () => void;
 }) {
   const removed = Boolean(c.removedAt);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
@@ -635,6 +658,12 @@ function ContractorRowView({ c, last, onChanged, onPayrate, onEdit }: {
           )}
         </div>
       </div>
+
+      {payoutMethod && (
+        <div className="mt-2.5 border-t border-ink-100 pt-2.5">
+          <OwnerPayoutMethodStrip method={payoutMethod} onChanged={onPayoutMethodChanged} compact />
+        </div>
+      )}
 
       {error && <div className="mt-3"><InlineError message={error} /></div>}
       {notice && (

@@ -986,6 +986,78 @@ export async function rejectPayoutMethodCore(actor: PayoutActor, data: unknown):
   }
 }
 
+/** Owner/admin: EDIT a contractor's payout method (owner-directed 2026-08-13
+ *  — the owner may need to correct a typo'd handle before approving). Any
+ *  change to rail/handle/bank details RE-TRIGGERS verification (status →
+ *  connected_unverified, reject_note cleared — matching the contractor
+ *  self-edit semantics); saving the SAME values keeps the current status
+ *  (idempotent, no audit row). Bank routing/account are re-encrypted under the
+ *  dedicated key; full numbers never land in audit/log text (masked only). */
+export async function editPayoutMethodCore(actor: PayoutActor, data: unknown): Promise<PayoutResult<OwnerPayoutMethod | null>> {
+  if (!canManage(actor)) return err("unauthorized", "Owner access required.");
+  const v = z.object({ methodId: z.string().min(1) }).merge(SET_SCHEMA).safeParse(data);
+  if (!v.success) return err("invalid_input", v.error.issues[0]?.message ?? "Invalid payout method.");
+  const validated = validatePayoutInput({
+    rail: v.data.rail,
+    handle: v.data.handle ?? null,
+    bankInstitutionName: v.data.bankInstitutionName ?? null,
+    bankLast4: v.data.bankLast4 ?? null,
+    bankRoutingNumber: v.data.bankRoutingNumber ?? null,
+    bankAccountNumber: v.data.bankAccountNumber ?? null,
+  });
+  if (!validated.ok) return validated;
+  const d = validated.data;
+  try {
+    await ensure();
+    const q = await db();
+    const rows = await q`SELECT id, contractor_id, rail, handle, bank_institution_name, bank_last4,
+        bank_routing_encrypted, bank_account_encrypted, status, reject_note
+      FROM payout_methods WHERE org_id=${actor.orgId} AND id=${v.data.methodId} LIMIT 1`;
+    if (!rows.length) return ok(null);
+    const existing = rows[0] as Record<string, unknown>;
+    const contractorId = String(existing.contractor_id ?? "");
+    let routingEnc: string | null = null;
+    let accountEnc: string | null = null;
+    if (d.rail === "bank") {
+      const { encryptBankValue } = await import("./bank-key");
+      routingEnc = await encryptBankValue(d.bankRoutingNumber!);
+      accountEnc = await encryptBankValue(d.bankAccountNumber!);
+    }
+    let prevRouting = "";
+    let prevAccount = "";
+    if (existing && d.rail === "bank") {
+      try {
+        const { decryptBankValue } = await import("./bank-key");
+        prevRouting = existing.bank_routing_encrypted != null ? await decryptBankValue(String(existing.bank_routing_encrypted)) : "";
+        prevAccount = existing.bank_account_encrypted != null ? await decryptBankValue(String(existing.bank_account_encrypted)) : "";
+      } catch { /* decrypt failure → treated as different values */ }
+    }
+    const sameValues =
+      String(existing.rail) === d.rail &&
+      (d.rail === "bank"
+        ? String(existing.bank_institution_name ?? "") === d.bankInstitutionName && String(existing.bank_last4 ?? "") === d.bankLast4 && prevRouting === d.bankRoutingNumber && prevAccount === d.bankAccountNumber
+        : String(existing.handle ?? "") === d.handle);
+    const prevStatus = String(existing.status ?? "connected_unverified") as PayoutStatus;
+    const status: PayoutStatus = sameValues ? prevStatus : "connected_unverified";
+    await q`UPDATE payout_methods SET
+        rail=${d.rail}, handle=${d.handle}, bank_institution_name=${d.bankInstitutionName}, bank_last4=${d.bankLast4},
+        bank_routing_encrypted=${routingEnc}, bank_account_encrypted=${accountEnc},
+        status=${status}, reject_note=${sameValues ? existing.reject_note != null ? String(existing.reject_note) : null : null}, updated_at=NOW()
+      WHERE org_id=${actor.orgId} AND id=${v.data.methodId}`;
+    if (!sameValues) {
+      try {
+        const masked = maskHandle(d.rail, d.handle, d.bankInstitutionName, d.bankLast4);
+        await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
+          SELECT gen_random_uuid()::text, ${actor.orgId}, ${actor.id}, ${actor.role}, 'payout_method_edited', 'contractor', ${contractorId},
+            jsonb_build_object('methodId', ${v.data.methodId}::text, 'handleMasked', ${masked}::text, 'statusBefore', ${prevStatus}::text, 'statusAfter', ${status}::text), 'owner-contractors'`;
+      } catch { /* best-effort audit */ }
+    }
+    return getContractorPayoutMethodCore(actor, contractorId);
+  } catch (e) {
+    return err("database_error", e instanceof Error ? e.message : "Unable to edit the payout method.");
+  }
+}
+
 /** Owner/admin: the three Money-tab cards (Revenue / Tips / Payouts). Revenue
  *  = charged club_charge rows in the payment ledger; Tips = paid completion_tips
  *  (canonical, driver-attributed); Payouts = Σ records in the just-closed

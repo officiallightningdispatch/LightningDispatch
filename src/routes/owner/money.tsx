@@ -37,10 +37,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "~/components/app-shell";
 import { formatCents } from "~/components/contractor-admin";
 import { Alert, Avatar, BoardSkeleton, Button, Card, DemoChip, EmptyState, StatCard, StatusBadge, useToast } from "~/components/ui";
+import { OwnerPayoutMethodEditor } from "~/components/owner-payout-method";
 import {
-  computePayday, getMoneyOverview, getPayPeriodDetail, listPayPeriods, markPayoutPaid,
+  computePayday, editPayoutMethod, getContractorPayoutMethod, getMoneyOverview, getPayPeriodDetail, listPayPeriods, markPayoutPaid,
   payPeriodLabel, rejectPayoutMethod, setBankDeposit, verifyPayoutMethod,
-  type PayPeriod, type PayPeriodDetail, type PayoutRail, type PayoutRecord,
+  type PayPeriod, type PayPeriodDetail, type PayoutRail, type PayoutRecord, type OwnerPayoutMethod,
 } from "~/data/payouts";
 import {
   listTipCashoutRequests, markTipCashoutPaid,
@@ -93,6 +94,9 @@ function MoneyView() {
   const [rejectBusy, setRejectBusy] = useState<string | null>(null);
   const [rejectOpenFor, setRejectOpenFor] = useState<string | null>(null);
   const [rejectNote, setRejectNote] = useState("");
+  // Owner edit (Phase A 2026-08-13): full method row loaded for the inline editor.
+  const [editMethodFor, setEditMethodFor] = useState<OwnerPayoutMethod | null>(null);
+  const [editSaving, setEditSaving] = useState(false);
   // Tip cash-outs (owner-directed 2026-08-12) — open requests + recently paid.
   const [cashouts, setCashouts] = useState<TipCashoutList | null>(null);
   const [markingCashoutId, setMarkingCashoutId] = useState<string | null>(null);
@@ -145,6 +149,7 @@ function MoneyView() {
     setSelectedId(id);
     setConfirmMarkId(null);
     setRejectOpenFor(null);
+    setEditMethodFor(null);
     void loadDetail(id);
   };
 
@@ -192,6 +197,28 @@ function MoneyView() {
     setRejectNote("");
     if (!res.ok) { setDetailError(res.message); return; }
     toast(`Rejected ${record.contractorName}'s payout method.`);
+    void loadDetail(selectedId ?? "");
+  };
+
+  /** Owner edit (Phase A 2026-08-13): fetch the FULL method row (decrypted
+   *  bank numbers included — owner-only surface) so the owner can correct a
+   *  typo'd handle/account before approving. */
+  const openEdit = async (record: PayoutRecord) => {
+    setDetailError(null);
+    const res = await getContractorPayoutMethod({ data: { contractorId: record.contractorId } });
+    if (!res.ok) { setDetailError(res.message); return; }
+    if (!res.data) { setDetailError("No payout method row on file for this contractor."); return; }
+    setEditMethodFor(res.data);
+  };
+  const saveEdit = async (input: { rail: PayoutRail; handle: string | null; bankInstitutionName: string | null; bankLast4: string | null; bankRoutingNumber: string | null; bankAccountNumber: string | null }) => {
+    if (!editMethodFor) return;
+    setEditSaving(true);
+    const res = await editPayoutMethod({ data: { methodId: editMethodFor.id, ...input } });
+    setEditSaving(false);
+    if (!res.ok) { setDetailError(res.message); return; }
+    const name = editMethodFor.contractorName;
+    setEditMethodFor(null);
+    toast(`${name}'s payout method updated — re-verification required before payday.`);
     void loadDetail(selectedId ?? "");
   };
 
@@ -588,10 +615,19 @@ function MoneyView() {
                         ) : (
                           <Button variant="danger-ghost" size="sm" onClick={() => { setRejectOpenFor(rec.id); setRejectNote(""); }}>Reject</Button>
                         )}
+                        <Button variant="ghost" size="sm" loading={editSaving && editMethodFor?.contractorId === rec.contractorId} disabled={editSaving} onClick={() => void openEdit(rec)}>Edit</Button>
                       </>
                     )}
                     <p className="text-[11px] text-ink-400">Nothing is dropped — this amount waits for a verified method, then recompute moves it into its rail group.</p>
                   </div>
+                  {editMethodFor?.contractorId === rec.contractorId && (
+                    <OwnerPayoutMethodEditor
+                      method={editMethodFor}
+                      saving={editSaving}
+                      onSave={saveEdit}
+                      onCancel={() => setEditMethodFor(null)}
+                    />
+                  )}
                 </div>
               ))}
             </Card>

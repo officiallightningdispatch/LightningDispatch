@@ -159,6 +159,17 @@ export const rejectPayoutMethod = createServerFn({ method: "POST" }).validator(p
   return core.rejectPayoutMethodCore({ orgId: u.orgId, id: u.id, role: u.role }, data);
 });
 
+/** Owner/admin: EDIT a contractor's payout method (owner-directed 2026-08-13 —
+ *  the owner corrects a typo'd handle before approving). Any change re-triggers
+ *  verification (status → connected_unverified); same values are idempotent. */
+export const editPayoutMethod = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<PayoutResult<OwnerPayoutMethod | null>> => {
+  const core = await import("./payouts-core");
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u) return { ok: false as const, code: "unauthorized", message: "Sign in first." };
+  return core.editPayoutMethodCore({ orgId: u.orgId, id: u.id, role: u.role }, data);
+});
+
 /** Contractor: confirm the micro-deposit amount the owner sent (bank rail
  *  verification). Match → the bank method becomes verified. The amount is
  *  compared server-side — it never crossed to the contractor client. */
