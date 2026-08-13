@@ -90,6 +90,25 @@ const gate = await getComplianceGateCore(DRIVER_A);
 check("compliance gate open after verified forms", gate.ok === true, JSON.stringify(gate));
 const comp = await getMyComplianceCore(DRIVER_A);
 check("both forms approved 2/2", comp.ok && comp.data.approved === 2 && comp.data.required === 2, JSON.stringify(comp).slice(0, 200));
+// W-9 taxId area-code validation (owner-hit 2026-08-13): SSNs with leading-zero
+// area codes (001–099 — e.g. Connecticut 040–049) ARE legitimately issued and
+// must be ACCEPTED; only 000 / 666 / 900–999 are invalid for SSNs.
+const W9_BASE = { docTypeId: w9id, name: "QA Driver", taxClassification: "individual", address: "1 Main St", city: "Bridgeport", state: "CT", zip: "06606", signature: "QA Driver" };
+const LEAD_ZERO_SSN = "040123456"; // CT area 040 — valid SSN, starts with "0"
+const w9lead = await submitW9FormCore(DRIVER_A, { ...W9_BASE, taxIdType: "ssn", taxId: LEAD_ZERO_SSN });
+check("w9 leading-zero SSN accepted", w9lead.ok, JSON.stringify(w9lead).slice(0, 200));
+const w9leadRows = await q`SELECT tax_id_encrypted FROM contractor_form_submissions WHERE org_id=${ORG} AND doc_type_id=${w9id}`;
+check("w9 leading-zero SSN encrypted at rest", w9leadRows.length === 1 && typeof w9leadRows[0].tax_id_encrypted === "string" && w9leadRows[0].tax_id_encrypted.length > 20, "no ciphertext");
+const w9leadOwn = await getFormSubmissionCore(OWNER_A, { contractorId: DRIVER, docTypeId: w9id });
+check("w9 leading-zero SSN round-trips to owner", w9leadOwn.ok && w9leadOwn.data.taxId === LEAD_ZERO_SSN, w9leadOwn.ok ? String(w9leadOwn.data.taxId) : w9leadOwn.message);
+const BAD_TAX_MSG = "That tax ID doesn't look valid — check the number.";
+for (const bad of ["000123456", "666123456", "900123456"]) {
+  const r = await submitW9FormCore(DRIVER_A, { ...W9_BASE, taxIdType: "ssn", taxId: bad });
+  check(`w9 SSN area ${bad.slice(0, 3)} rejected`, !r.ok && r.message === BAD_TAX_MSG, JSON.stringify(r).slice(0, 160));
+}
+// EINs are unaffected by the SSN area-code rules (taxIdType scoping)
+const w9ein = await submitW9FormCore(DRIVER_A, { ...W9_BASE, taxIdType: "ein", taxId: "900123456" });
+check("w9 EIN unaffected by SSN area rules", w9ein.ok, JSON.stringify(w9ein).slice(0, 200));
 // zero QA rows after (delete under guard); audit_log references users(id),
 // so it must go before the users delete
 await q`DELETE FROM audit_log WHERE org_id=${ORG}`;

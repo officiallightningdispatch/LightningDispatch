@@ -124,7 +124,11 @@ const W9_SCHEMA = z
     date: z.string().trim().regex(MM_DD_YYYY, "Use mm/dd/yyyy.").optional().or(z.literal("")),
   })
   .refine(
-    (v) => v.taxId !== "000000000" && !(v.taxIdType === "ssn" && (v.taxId.startsWith("9") || v.taxId.startsWith("0") || v.taxId.startsWith("666"))),
+    // SSN area codes 001–099 (e.g. Connecticut 040–049) ARE legitimately
+    // issued — only 000, 666, and 900–999 are invalid for SSNs (owner-hit
+    // 2026-08-13: a valid CT SSN starting "04x" was refused). EINs (taxIdType
+    // "ein") are unaffected by the SSN area-code rules.
+    (v) => v.taxId !== "000000000" && !(v.taxIdType === "ssn" && (v.taxId.slice(0, 3) === "000" || v.taxId.slice(0, 3) === "666" || v.taxId.startsWith("9"))),
     { message: "That tax ID doesn't look valid — check the number.", path: ["taxId"] },
   );
 
