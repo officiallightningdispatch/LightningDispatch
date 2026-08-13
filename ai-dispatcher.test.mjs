@@ -49,6 +49,9 @@ const {
   etaDetailLabel,
   MAX_DRIVER_QUEUE,
   SERVICE_MINUTES_PER_JOB,
+  validateGeocodeResult,
+  tomtomGeocodeLookup,
+  GEOCODE_SCORE_FLOOR,
 } = await import("./src/data/ai-dispatcher.ts");
 const { encryptSession } = await import("./src/data/towbook-key.ts");
 const { ensureSchema } = await import("./src/data/migrations.ts");
@@ -65,6 +68,7 @@ const ORG2 = `qa-ad2-${randomUUID()}`;
 const ORG3 = `qa-ad3-${randomUUID()}`; // ETA v3 traffic-layer engine tests
 const ORG4 = `qa-ad4-${randomUUID()}`; // queue-aware capacity + all-loaded engine tests
 const ORG5 = `qa-ad5-${randomUUID()}`; // lost-race classification tests
+const ORG6 = `qa-ad6-${randomUUID()}`; // coordinate-less offer resolution (owner 2026-08-13)
 const USER = `qa-ad-user-${randomUUID()}`;
 let created = false;
 
@@ -73,7 +77,7 @@ let created = false;
 const ZONE = { lat: 41.208862, lng: -73.207253, radiusMi: 30 };
 const northOf = (dMiles) => ZONE.lat + dMiles / 69.09; // ~1° lat = 69.09 mi
 
-const offer = (id, { lat = 41.2, lng = -73.2, status = 0, expiresInMin = 10, maxEta = null, omitLat = false, past = false } = {}) => {
+const offer = (id, { lat = 41.2, lng = -73.2, status = 0, expiresInMin = 10, maxEta = null, omitLat = false, omitLng = false, startingLocation = null, past = false } = {}) => {
   const o = {
     callRequestId: id,
     masterAccountId: 29,
@@ -91,7 +95,9 @@ const offer = (id, { lat = 41.2, lng = -73.2, status = 0, expiresInMin = 10, max
     availableActions: ["NearestDrivers", "REQUEST_CALL", "ACKNOWLEDGE"],
   };
   if (maxEta) o.maxEta = maxEta;
+  if (startingLocation) o.startingLocation = startingLocation;
   if (omitLat) delete o.startLocationLatitude;
+  if (omitLng) delete o.startLocationLongitude;
   return o;
 };
 
@@ -247,6 +253,7 @@ const makeDeps = (fetchImpl, router, opts = {}) => {
     fetchImpl,
     verifyRetryDelayMs: 0,
     ...(opts.env ? { env: opts.env } : {}),
+    ...(opts.geocodeOverride ? { geocodeOverride: opts.geocodeOverride } : {}),
   };
   // Default: inject a hermetic router so tests never hit real OSRM/TomTom.
   // opts.noRouterOverride exercises the real env-resolution path instead.
@@ -280,6 +287,8 @@ try {
   await q`UPDATE org_settings SET max_eta_minutes=180 WHERE org_id=${ORG4}`;
   await q`INSERT INTO organizations(id, name) VALUES(${ORG5}, 'qa ai-dispatcher lost-race')`;
   await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES(${ORG5}, ${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))}, 'connected')`;
+  await q`INSERT INTO organizations(id, name) VALUES(${ORG6}, 'qa ai-dispatcher coords')`;
+  await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES(${ORG6}, ${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))}, 'connected')`;
   created = true;
   // Owner-org baseline: the REAL incident row (offer 326520203, auto-accepted
   // 2026-08-10 with a 3-min straight-line ETA) lives in the owner org — the
@@ -1145,6 +1154,153 @@ try {
     }
   }
 
+  /* ============ 30) coordinate-less offer resolution (owner-directed 2026-08-13) ============ */
+  // LIVE HIT: offer 326885213 ("Out of Network - Allstate", Georgetown TX)
+  // arrived with NO startLocationLatitude/Longitude and correctly escalated
+  // (decision row shape-68a5a8964714). Owner direction: missing-coords offers
+  // must STILL dispatch when the location is resolvable — DB-first
+  // (dispatch_jobs already imported the call with real waypoint coords), else
+  // a VALIDATED TomTom geocode of startingLocation (score floor + strong-token
+  // overlap; the naive geocode of the Georgetown address resolved to Cotulla TX
+  // ~200 mi away at score 14 — blind geocoding is REJECTED). Unresolvable →
+  // the existing escalation rail, reason noting the resolution failure.
+  {
+    // (a) the pure validation rail against the EXACT live evidence.
+    const liveAddr = "1441 I 35 N FRONTAGE RD, GEORGETOWN TX 78628";
+    const cotulla = validateGeocodeResult(liveAddr, { lat: 29.03, lng: -98.99, score: 14, freeformAddress: "500 Frontage Rd, Cotulla, TX 78014" });
+    check("coords validation: live Cotulla hit rejected on the score floor (14 < 40)", !cotulla.ok && String(cotulla.reason).includes("score 14"), JSON.stringify(cotulla));
+    const cotullaHi = validateGeocodeResult(liveAddr, { lat: 29.03, lng: -98.99, score: 90, freeformAddress: "500 Frontage Rd, Cotulla, TX 78014" });
+    check("coords validation: wrong-city high-score rejected on ZIP mismatch (78014 ≠ 78628)", !cotullaHi.ok && String(cotullaHi.reason).includes("ZIP 78014"), JSON.stringify(cotullaHi));
+    const good = validateGeocodeResult(liveAddr, { lat: 30.6337, lng: -97.6773, score: 95, freeformAddress: "1441 I-35 N Frontage Rd, Georgetown, TX 78628" });
+    check("coords validation: ZIP-matching high-score result accepted", good.ok === true && good.lat === 30.6337 && good.lng === -97.6773, JSON.stringify(good));
+    const zipOnly = validateGeocodeResult("BRIDGEPORT CT 06606", { lat: 41.2, lng: -73.2, score: 80, freeformAddress: "Bridgeport, CT 06606" });
+    check("coords validation: zip-only offer address accepted on the ZIP token", zipOnly.ok === true, JSON.stringify(zipOnly));
+    const cityStreet = validateGeocodeResult("1441 MAIN ST, BRIDGEPORT CT 06606", { lat: 41.19, lng: -73.15, score: 88, freeformAddress: "1441 Main St, Bridgeport, CT 06606" });
+    check("coords validation: city + street-token overlap accepted", cityStreet.ok === true, JSON.stringify(cityStreet));
+    const noOverlap = validateGeocodeResult("1441 MAIN ST, BRIDGEPORT CT 06606", { lat: 41.19, lng: -73.15, score: 88, freeformAddress: "500 Frontage Rd, Cotulla, TX 78014" });
+    check("coords validation: high-score but no ZIP/city/street overlap still rejected", !noOverlap.ok, JSON.stringify(noOverlap));
+    check("coords validation: score floor constant is 40", GEOCODE_SCORE_FLOOR === 40, String(GEOCODE_SCORE_FLOOR));
+  }
+  {
+    // (b) engine, DB-first: the call already sits in dispatch_jobs (the sync
+    // imported it with real waypoint coords) → the coordinate-less offer
+    // resolves from the DB and dispatches NORMALLY — no escalation, decision
+    // records coords.source=db + the PO tie.
+    await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, pickup, raw_json, pickup_lat, pickup_lng)
+      VALUES('qa6-db1', ${ORG6}, 'QA DB Coords', '', 0, 0, 'Bridgeport', 'tow', 'accepted', NOW(), '', '279999001', '1441 MAIN ST, BRIDGEPORT CT 06606', ${JSON.stringify({ purchaseOrderNumber: "11256001", startingLocation: "1441 MAIN ST, BRIDGEPORT CT 06606" })}::jsonb, 41.19, -73.15)`;
+    const m = makeFetch({
+      offers: [offer(6001, { omitLat: true, omitLng: true, startingLocation: "1441 MAIN ST, BRIDGEPORT CT 06606" })],
+      drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })],
+    });
+    const { deps } = makeDeps(m.fetchImpl);
+    const r = await runAutoDispatch(ORG6, deps);
+    check("coords DB: auto_accept_with_driver, NOT escalated, exactly one POST", r.decisions[0]?.decision === "auto_accept_with_driver" && r.decisions[0]?.escalated === false && posts(m.calls).length === 1, JSON.stringify(r.decisions));
+    check("coords DB: nearestDrivers queried at the DB-resolved coords (41.19,-73.15)", m.calls.some((c) => c.url.includes("latitude=41.19") && c.url.includes("longitude=-73.15")), JSON.stringify(m.calls.map((c) => c.url)));
+    const rows = await q`SELECT call_request_id, decision, reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='6001'`;
+    check("coords DB: decision reason + raw_response.offer.coords record source=db + PO detail", rows[0] && String(rows[0].reason).includes("pickup coords: db") && String(rows[0].reason).includes("db PO match") && rows[0].raw_response?.offer?.coords?.source === "db" && rows[0].raw_response?.offer?.startLocationLatitude === 41.19, String(rows[0]?.reason));
+  }
+  {
+    // (c) engine, geocode path: DB has no match, the (mocked) TomTom geocode
+    // returns a VALIDATED result → offer dispatches normally with
+    // coords.source=geocode + score. The override returns the RAW lookup shape
+    // — the engine's own validation still runs on it.
+    const m = makeFetch({
+      offers: [offer(6002, { omitLat: true, omitLng: true, startingLocation: "200 PARK AVE, BRIDGEPORT CT 06604" })],
+      drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })],
+    });
+    const { deps } = makeDeps(m.fetchImpl, null, {
+      geocodeOverride: async () => ({ lat: 41.2, lng: -73.2, score: 95, freeformAddress: "200 Park Ave, Bridgeport, CT 06604" }),
+    });
+    const r = await runAutoDispatch(ORG6, deps);
+    check("coords geocode: auto_accept_with_driver, NOT escalated", r.decisions[0]?.decision === "auto_accept_with_driver" && r.decisions[0]?.escalated === false, JSON.stringify(r.decisions));
+    check("coords geocode: nearestDrivers at the geocoded coords (41.2,-73.2)", m.calls.some((c) => c.url.includes("latitude=41.2") && c.url.includes("longitude=-73.2")), JSON.stringify(m.calls.map((c) => c.url)));
+    const rows = await q`SELECT decision, reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='6002'`;
+    check("coords geocode: decision records source=geocode + score 95", rows[0] && rows[0].decision === "auto_accept_with_driver" && String(rows[0].reason).includes("pickup coords: geocode") && String(rows[0].reason).includes("score 95") && rows[0].raw_response?.offer?.coords?.source === "geocode", String(rows[0]?.reason));
+  }
+  {
+    // (d) engine, geocode FAILS validation (the live Cotulla case) → STILL
+    // escalates exactly as before; the reason names the resolution failure
+    // (score floor), the row stays hash-keyed, the full offer stays in
+    // raw_response. No accept, no driver lookup, no POST.
+    const m = makeFetch({
+      offers: [offer(6003, { omitLat: true, omitLng: true, startingLocation: "1441 I 35 N FRONTAGE RD, GEORGETOWN TX 78628" })],
+      drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })],
+    });
+    const { deps } = makeDeps(m.fetchImpl, null, {
+      geocodeOverride: async () => ({ lat: 29.03, lng: -98.99, score: 14, freeformAddress: "500 Frontage Rd, Cotulla, TX 78014" }),
+    });
+    const r = await runAutoDispatch(ORG6, deps);
+    check("coords cotulla: STILL escalated_unexpected_shape, zero POSTs", r.decisions[0]?.decision === "escalated_unexpected_shape" && r.decisions[0]?.escalated === true && posts(m.calls).length === 0, JSON.stringify(r.decisions));
+    check("coords cotulla: reason notes the resolution failure + score floor", String(r.decisions[0]?.reason).includes("pickup-coords resolution failed") && String(r.decisions[0]?.reason).includes("score 14"), String(r.decisions[0]?.reason));
+    const rows = await q`SELECT call_request_id, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND decision='escalated_unexpected_shape'`;
+    const sr = rows.find((x) => String(x.call_request_id).startsWith("shape-"));
+    check("coords cotulla: escalated row keyed by content hash + full raw offer intact", sr && String(sr.call_request_id).startsWith("shape-") && sr.raw_response?.offer?.accountName === "Agero (Swoop) Bridgeport" && sr.raw_response?.offer?.startLocationLatitude === undefined, JSON.stringify(sr));
+  }
+  {
+    // (e) no startingLocation text at all + no coords → escalates (unchanged
+    // pre-fix behavior for the truly unresolvable offer).
+    const m = makeFetch({ offers: [offer(6004, { omitLat: true, omitLng: true })], drivers: [] });
+    const { deps } = makeDeps(m.fetchImpl);
+    const r = await runAutoDispatch(ORG6, deps);
+    check("coords no-address: escalated_unexpected_shape + reason names no startingLocation, zero POSTs", r.decisions[0]?.decision === "escalated_unexpected_shape" && r.decisions[0]?.escalated === true && posts(m.calls).length === 0 && String(r.decisions[0]?.reason).includes("no startingLocation text"), String(r.decisions[0]?.reason));
+  }
+  {
+    // (f) dedupe stays sane: the DB-resolved offer (6001, same content) is
+    // re-polled → resolution runs but the callRequestId-keyed decision already
+    // exists → silently skipped, never double-dispatched.
+    const m = makeFetch({
+      offers: [offer(6001, { omitLat: true, omitLng: true, startingLocation: "1441 MAIN ST, BRIDGEPORT CT 06606" })],
+      drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })],
+    });
+    const { deps } = makeDeps(m.fetchImpl);
+    const r = await runAutoDispatch(ORG6, deps);
+    check("coords dedupe: re-polled resolved offer skipped silently (seen 1, processed 0, zero POSTs)", r.offersSeen === 1 && r.processed === 0 && r.decisions.length === 0 && posts(m.calls).length === 0, JSON.stringify(r));
+  }
+  {
+    // (g) tomtomGeocodeLookup: real URL shape (search/2/geocode, limit=3,
+    // countrySet=US, adminDistrictSet hint) + raw result parsing; failures →
+    // null (the engine then escalates — never guesses).
+    const geoCalls = [];
+    const geoFetch = async (url) => {
+      const u = String(url);
+      geoCalls.push(u);
+      if (u.includes("api.tomtom.com")) {
+        return jsonResponse(200, { results: [{ score: 96, position: { lat: 41.19, lon: -73.15 }, address: { freeformAddress: "1441 Main St, Bridgeport, CT 06606" } }] });
+      }
+      throw new Error(`geocode mock hit an unexpected URL: ${u}`);
+    };
+    const res = await tomtomGeocodeLookup("1441 MAIN ST, BRIDGEPORT CT 06606", "test-key-not-real", geoFetch);
+    check("tomtomGeocodeLookup: parses raw result (score/position/freeformAddress)", res?.score === 96 && res?.lat === 41.19 && res?.lng === -73.15 && res?.freeformAddress === "1441 Main St, Bridgeport, CT 06606", JSON.stringify(res));
+    check("tomtomGeocodeLookup: URL carries limit=3 + countrySet=US + adminDistrictSet=CT", geoCalls.length === 1 && geoCalls[0].includes("/search/2/geocode/1441%20MAIN%20ST%2C%20BRIDGEPORT%20CT%2006606.json") && geoCalls[0].includes("limit=3") && geoCalls[0].includes("countrySet=US") && geoCalls[0].includes("adminDistrictSet=CT"), geoCalls[0] ?? "");
+    const bad = await tomtomGeocodeLookup("X", "k", async () => jsonResponse(500, { error: "boom" }));
+    check("tomtomGeocodeLookup: HTTP 500 → null (engine escalates, never guesses)", bad === null);
+    const badBody = await tomtomGeocodeLookup("X", "k", async () => jsonResponse(200, { results: "junk" }));
+    check("tomtomGeocodeLookup: malformed body → null", badBody === null);
+  }
+  {
+    // (h) engine end-to-end through the REAL geocode path (no geocodeOverride):
+    // env key present, the router mock serves the TomTom Search geocode shape →
+    // the coordinate-less offer resolves via the validated geocode and
+    // dispatches normally (one TomTom geocode call + one routing call).
+    const m = makeFetch({
+      offers: [offer(6005, { omitLat: true, omitLng: true, startingLocation: "300 PULASKI ST, BRIDGEPORT CT 06604" })],
+      drivers: [driver(703785, "Jayden Fountain", { lat: 41.19, lng: -73.15, etaSec: 604 })],
+    });
+    const rf = makeRouterFetch();
+    const geoTomtomFetch = async (url, init = {}) => {
+      const u = String(url);
+      if (u.includes("/search/2/geocode/")) {
+        return jsonResponse(200, { results: [{ score: 96, position: { lat: 41.19, lon: -73.15 }, address: { freeformAddress: "300 Pulaski St, Bridgeport, CT 06604" } }] });
+      }
+      return rf.fetchImpl(url, init);
+    };
+    const { deps } = makeDeps(withRouter(m.fetchImpl, geoTomtomFetch), null, { noRouterOverride: true, env: { TOMTOM_API_KEY: "test-key-not-real" } });
+    const r = await runAutoDispatch(ORG6, deps);
+    check("coords real-geocode path: auto_accept_with_driver, NOT escalated", r.decisions[0]?.decision === "auto_accept_with_driver" && r.decisions[0]?.escalated === false, JSON.stringify(r.decisions));
+    const rows = await q`SELECT decision, reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='6005'`;
+    check("coords real-geocode path: decision records source=geocode + score 96 + verified dispatch", rows[0] && rows[0].decision === "auto_accept_with_driver" && String(rows[0].reason).includes("pickup coords: geocode") && String(rows[0].reason).includes("score 96") && String(rows[0].reason).includes("VERIFIED"), String(rows[0]?.reason));
+  }
+
   /* ============ 27k) tick observability: ai_dispatcher_runs (backlog #1) ============ */
   {
     // Every tick leaves a run row: gated, every skipped state, empty feed,
@@ -1268,6 +1424,7 @@ try {
     assertQaOrg(ORG3); await q`DELETE FROM organizations WHERE id=${ORG3}`.catch(() => {});
     assertQaOrg(ORG4); await q`DELETE FROM organizations WHERE id=${ORG4}`.catch(() => {});
     assertQaOrg(ORG5); await q`DELETE FROM organizations WHERE id=${ORG5}`.catch(() => {});
+    assertQaOrg(ORG6); await q`DELETE FROM organizations WHERE id=${ORG6}`.catch(() => {});
     await q`DELETE FROM users WHERE id=${USER}`.catch(() => {});
   }
   const leftover = await q`SELECT
@@ -1295,9 +1452,14 @@ try {
     (SELECT count(*) FROM ai_dispatcher_decisions WHERE org_id=${ORG5}) AS ad5,
     (SELECT count(*) FROM org_settings WHERE org_id=${ORG5}) AS os5,
     (SELECT count(*) FROM towbook_sessions WHERE org_id=${ORG5}) AS sess5,
-    (SELECT count(*) FROM ai_dispatcher_runs WHERE org_id=${ORG5}) AS runs5`;
+    (SELECT count(*) FROM ai_dispatcher_runs WHERE org_id=${ORG5}) AS runs5,
+    (SELECT count(*) FROM ai_dispatcher_decisions WHERE org_id=${ORG6}) AS ad6,
+    (SELECT count(*) FROM org_settings WHERE org_id=${ORG6}) AS os6,
+    (SELECT count(*) FROM dispatch_jobs WHERE org_id=${ORG6}) AS jobs6,
+    (SELECT count(*) FROM towbook_sessions WHERE org_id=${ORG6}) AS sess6,
+    (SELECT count(*) FROM ai_dispatcher_runs WHERE org_id=${ORG6}) AS runs6`;
   const l = leftover[0];
-  console.log(`\ncleanup: ai_decisions=${l.ad} settings=${l.os} jobs=${l.jobs} events=${l.ev} audit=${l.audit} sessions=${l.sess} members=${l.members} users=${l.users} runs=${l.runs} ad2=${l.ad2} settings2=${l.os2} runs2=${l.runs2} ad3=${l.ad3} settings3=${l.os3} sess3=${l.sess3} runs3=${l.runs3} ad4=${l.ad4} settings4=${l.os4} jobs4=${l.jobs4} sess4=${l.sess4} runs4=${l.runs4} ad5=${l.ad5} settings5=${l.os5} sess5=${l.sess5} runs5=${l.runs5}`);
+  console.log(`\ncleanup: ai_decisions=${l.ad} settings=${l.os} jobs=${l.jobs} events=${l.ev} audit=${l.audit} sessions=${l.sess} members=${l.members} users=${l.users} runs=${l.runs} ad2=${l.ad2} settings2=${l.os2} runs2=${l.runs2} ad3=${l.ad3} settings3=${l.os3} sess3=${l.sess3} runs3=${l.runs3} ad4=${l.ad4} settings4=${l.os4} jobs4=${l.jobs4} sess4=${l.sess4} runs4=${l.runs4} ad5=${l.ad5} settings5=${l.os5} sess5=${l.sess5} runs5=${l.runs5} ad6=${l.ad6} settings6=${l.os6} jobs6=${l.jobs6} sess6=${l.sess6} runs6=${l.runs6}`);
   if (Object.values(l).some((v) => Number(v) > 0)) {
     console.error("WARNING: QA rows remain!");
     process.exitCode = 1;

@@ -162,6 +162,13 @@ export type AiDispatcherDeps = {
    *  fire-and-forget with its own catch, so push problems can never fail or
    *  slow the dispatch. */
   sendAssignmentPush?: (orgId: string, towbookDriverId: string | number, payload: import("./push-core").AssignmentPushPayload) => Promise<unknown>;
+  /** Coordinate-less offer resolution (owner-directed 2026-08-13): a raw TomTom
+   *  Search geocode result for a startingLocation address. Injected for hermetic
+   *  tests — production defaults to the real tomtomGeocodeLookup (which uses the
+   *  resolved TomTom key + deps.fetchImpl). The ENGINE always runs the
+   *  validation (score floor + token overlap) on whatever this returns — an
+   *  override can never bypass the safety rail. */
+  geocodeOverride?: (address: string) => Promise<GeocodeLookup | null>;
 };
 
 export type OrgAiSettings = {
@@ -628,6 +635,165 @@ export function etaProviderStatus(env: Record<string, string | undefined>): {
   return { etaProvider: r.provider, tomtomKeyConfigured: r.tomtomKeyConfigured };
 }
 
+/* ------------------ coordinate-less offer resolution (2026-08-13) ------------------
+ * Owner-directed: a Towbook offer with NO startLocationLatitude/Longitude must
+ * STILL dispatch when its location is resolvable — first from our own data
+ * (dispatch_jobs: the sync already imported the call with real coords), else
+ * from a VALIDATED TomTom Search geocode of the offer's startingLocation text.
+ * NAIVE geocoding is proven unsafe (live hit 2026-08-13: the Georgetown TX
+ * address resolved to Cotulla TX ~200 mi away at score 14), so any geocode is
+ * accepted ONLY when BOTH rails pass: a score floor AND a strong-token overlap
+ * (ZIP / city / street) between the offer address and the geocoded address.
+ * Unresolvable offers keep the existing escalated_unexpected_shape rail. */
+
+/** Minimum TomTom Search score for a geocode result to be trusted (the proven
+ *  bad hit scored 14; 40 is a conservative floor for street-level US results). */
+export const GEOCODE_SCORE_FLOOR = 40;
+const TOMTOM_GEOCODE_ENDPOINT = "https://api.tomtom.com/search/2/geocode";
+
+/** One raw TomTom Search geocode result (the fields validation acts on). */
+export type GeocodeLookup = {
+  lat: number;
+  lng: number;
+  /** TomTom result confidence (0-100). */
+  score: number;
+  /** The geocoded address as TomTom formatted it (validation compares its
+   *  strong tokens against the offer's startingLocation). */
+  freeformAddress: string;
+};
+
+const normTokens = (value: string): Set<string> =>
+  new Set(String(value ?? "").toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 0));
+/** Whitespace/punctuation-insensitive equality form ("1441 I 35 N FRONTAGE RD,
+ *  GEORGETOWN TX 78628" == "1441I35NFRONTAGERDGEORGETOWNTX78628"). */
+const normText = (value: string): string =>
+  String(value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+
+/** The 5-digit ZIP (first 5 of a ZIP+4) in a US address, or null. */
+const zipOf = (value: string): string | null => {
+  const m = String(value ?? "").match(/\b\d{5}(?:-\d{4})?\b/);
+  return m ? m[0].slice(0, 5) : null;
+};
+
+/** The trailing "CITY ST ZIP" part of a US address, parsed as
+ *  {state: "tx", city: "georgetown"}. City is null when the address has no
+ *  recognizable trailing city/state (validation then falls back to a stricter
+ *  street-token requirement). */
+const stateCityOf = (value: string): { state: string; city: string | null } | null => {
+  const tokens = String(value ?? "").toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 0);
+  if (!tokens.length) return null;
+  // the LAST 5-digit token is the ZIP (a leading 5-digit token can be a street
+  // number — "12345 MAIN ST, BRIDGEPORT CT 06606" — so never take the first).
+  let zipIdx = -1;
+  tokens.forEach((t, i) => { if (/^\d{5}$/.test(t)) zipIdx = i; });
+  let stateIdx: number;
+  if (zipIdx >= 1) stateIdx = zipIdx - 1;
+  else if (/^[a-z]{2}$/.test(tokens[tokens.length - 1] ?? "")) stateIdx = tokens.length - 1;
+  else return null;
+  const state = tokens[stateIdx] ?? "";
+  if (!/^[a-z]{2}$/.test(state)) return null;
+  const cityTok = stateIdx >= 1 ? tokens[stateIdx - 1] : null;
+  const city = cityTok && !/^\d+$/.test(cityTok) && cityTok.length >= 2 ? cityTok : null;
+  return { state, city };
+};
+
+/** Strong street tokens of an address: alphanumeric tokens of length >= 4 that
+ *  are NOT the city/state/ZIP and not a bare number. These are the tokens that
+ *  distinguish one location from another ("frontage" vs "cotulla") — short
+ *  tokens ("n", "rd", "st") and numbers never count. */
+const streetTokensOf = (value: string): Set<string> => {
+  const sc = stateCityOf(value);
+  const drop = new Set<string>([sc?.city, sc?.state, zipOf(value)].filter((t): t is string => Boolean(t)));
+  return new Set([...normTokens(value)].filter((t) => t.length >= 4 && !/^\d+$/.test(t) && !drop.has(t)));
+};
+
+/** The coordinate-less-offer safety rail (2026-08-13): accept a geocode result
+ *  ONLY when (1) its score is at/above the floor, and (2) its strong tokens
+ *  actually overlap the offer address — at minimum the ZIP, else the city AND
+ *  a shared street token (two shared street tokens when the offer has no
+ *  parseable city). The proven-bad Cotulla TX hit fails BOTH rails (score 14,
+ *  ZIP 78014 ≠ 78628). Pure, exported so the suite asserts the exact cases. */
+export function validateGeocodeResult(
+  address: string,
+  lookup: GeocodeLookup,
+): { ok: true; lat: number; lng: number } | { ok: false; reason: string } {
+  if (!lookup || !Number.isFinite(lookup.score)) return { ok: false, reason: "geocode returned no score" };
+  if (lookup.score < GEOCODE_SCORE_FLOOR) {
+    return { ok: false, reason: `geocode score ${lookup.score} < floor ${GEOCODE_SCORE_FLOOR}` };
+  }
+  if (!Number.isFinite(lookup.lat) || !Number.isFinite(lookup.lng) || lookup.lat === 0 || lookup.lng === 0) {
+    return { ok: false, reason: "geocode position unusable" };
+  }
+  const geoTokens = normTokens(lookup.freeformAddress);
+  const offerZIP = zipOf(address);
+  const geoZIP = zipOf(lookup.freeformAddress);
+  if (offerZIP && geoZIP && offerZIP !== geoZIP) {
+    return { ok: false, reason: `geocode ZIP ${geoZIP} ≠ offer ZIP ${offerZIP}` };
+  }
+  if (offerZIP && geoTokens.has(offerZIP)) return { ok: true, lat: lookup.lat, lng: lookup.lng };
+  const offerStreet = streetTokensOf(address);
+  const sharedStreet = [...offerStreet].filter((t) => geoTokens.has(t));
+  const sc = stateCityOf(address);
+  if (sc?.city && geoTokens.has(sc.city) && sharedStreet.length >= 1) {
+    return { ok: true, lat: lookup.lat, lng: lookup.lng };
+  }
+  if (!sc?.city && sharedStreet.length >= 2) {
+    return { ok: true, lat: lookup.lat, lng: lookup.lng };
+  }
+  const why = sc?.city && !geoTokens.has(sc.city)
+    ? `geocode address lacks offer city '${sc.city}'`
+    : sc?.city
+      ? `city '${sc.city}' matches but no street-token overlap`
+      : `no city in offer address; only ${sharedStreet.length} shared street token(s)`;
+  return { ok: false, reason: `no strong token overlap — ${why}` };
+}
+
+/** Real TomTom Search geocode lookup (the production path): best result for a
+ *  full address, limit=3, US-only + the address's state hint when present.
+ *  Returns null on ANY failure (no key is the caller's concern — the caller
+ *  only calls this with a resolved key; 429/5xx/network/timeout/bad shape all
+ *  yield null) so the engine always escalates instead of guessing. The raw
+ *  result is VALIDATED by validateGeocodeResult before any coordinates are
+ *  trusted — this function never decides acceptability. */
+export async function tomtomGeocodeLookup(
+  address: string,
+  apiKey: string,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<GeocodeLookup | null> {
+  try {
+    const params = new URLSearchParams({ key: apiKey, limit: "3", countrySet: "US" });
+    const sc = stateCityOf(address);
+    if (sc?.state) params.set("adminDistrictSet", sc.state.toUpperCase());
+    const url = `${TOMTOM_GEOCODE_ENDPOINT}/${encodeURIComponent(address)}.json?${params.toString()}`;
+    const res = await fetchImpl(url, {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(ROUTER_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    const body: unknown = await res.json().catch(() => null);
+    if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+    const results = (body as Record<string, unknown>).results;
+    if (!Array.isArray(results) || !results.length) return null;
+    const r0 = results[0] as Record<string, unknown> | undefined;
+    if (!r0 || typeof r0 !== "object") return null;
+    const pos = r0.position as Record<string, unknown> | undefined;
+    const addr = r0.address as Record<string, unknown> | undefined;
+    if (!pos || typeof pos !== "object" || !addr || typeof addr !== "object") return null;
+    const lat = Number(pos.lat);
+    const lng = Number(pos.lon);
+    const score = Number(r0.score);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(score)) return null;
+    return {
+      lat,
+      lng,
+      score,
+      freeformAddress: typeof addr.freeformAddress === "string" ? addr.freeformAddress : "",
+    };
+  } catch {
+    return null;
+  }
+}
+
 /* ------------------------------- settings + ledger ------------------------------- */
 
 /** Load the org's AI-dispatcher settings, lazily creating the row with the
@@ -725,6 +891,14 @@ type OfferShape = {
    *  incident: 703785 was accepted but never landed on the call — the engine
    *  bypassed this rail). */
   drivers: number[] | null;
+  /** Pickup-coordinate provenance (owner-directed 2026-08-13, offer 326885213:
+   *  a coordinate-less offer must still dispatch when the location is
+   *  resolvable). Set ONLY on the resolution path: "db" = real coords found in
+   *  dispatch_jobs from a previous import/sync (PO or address tie), "geocode" =
+   *  VALIDATED TomTom geocode of startingLocation (score floor + token
+   *  overlap). The normal offer payload path omits this field entirely — the
+   *  offer's own coords are the trusted default. */
+  coords?: { source: "db" | "geocode"; detail: string };
 };
 
 const numeric = (v: unknown): number | null =>
@@ -740,19 +914,117 @@ export function shapeKeyOf(rawOffer: unknown): string {
   return `shape-${h}`;
 }
 
-/** Returns {ok:true, offer} or {ok:false, missing: string[]} — why the offer
- *  failed the documented-shape rail. Never coerces a missing field. */
-export function validateOfferShape(raw: unknown): { ok: true; offer: OfferShape } | { ok: false; missing: string[] } {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, missing: ["<offer is not an object>"] };
-  const o = raw as Record<string, unknown>;
+/** The offer's usable startingLocation text (the only thing a coordinate-less
+ *  offer can be resolved from), trimmed; null when absent/empty. */
+const startingLocationOf = (o: Record<string, unknown>): string | null => {
+  const v = o.startingLocation;
+  return typeof v === "string" && v.trim() !== "" ? v.trim() : null;
+};
+
+/** The offer's purchase-order ("Dispatch #") as a string, mirroring the
+ *  purchaseOrderNumber extraction in buildOfferShape; null when absent. */
+const purchaseOrderOf = (o: Record<string, unknown>): string | null => {
+  const v = o.purchaseOrderNumber;
+  return typeof v === "string" && v.trim() !== "" ? v.trim()
+    : v != null && typeof v !== "object" ? String(v) : null;
+};
+
+type DbCoordsHit = { lat: number; lng: number; detail: string };
+
+/** DB-first leg of coordinate resolution (owner-directed 2026-08-13): the sync
+ *  already imported this call into dispatch_jobs with real coords (pickup_lat/
+ *  pickup_lng from the call's waypoints). Match 1: the offer's purchase-order
+ *  number — the "Dispatch #" every accepted call record carries (the strongest
+ *  offer↔call tie). Match 2: normalized-equality of the offer's startingLocation
+ *  against the call's pickup / raw startingLocation (the same Towbook address
+ *  string). Only usable (non-zero) coords count. */
+async function lookupDbCoords(orgId: string, o: Record<string, unknown>, addr: string): Promise<DbCoordsHit | null> {
+  const po = purchaseOrderOf(o);
+  if (po) {
+    const byPo = await sql()`SELECT towbook_job_id, pickup_lat, pickup_lng
+      FROM dispatch_jobs
+      WHERE org_id=${orgId} AND pickup_lat IS NOT NULL AND pickup_lng IS NOT NULL
+        AND raw_json->>'purchaseOrderNumber' = ${po}
+      LIMIT 1`;
+    if (byPo.length) {
+      const r = byPo[0] as Record<string, unknown>;
+      const lat = Number(r.pickup_lat);
+      const lng = Number(r.pickup_lng);
+      if (Number.isFinite(lat) && lat !== 0 && Number.isFinite(lng) && lng !== 0) {
+        return { lat, lng, detail: `db PO match (call ${String(r.towbook_job_id ?? "")})` };
+      }
+    }
+  }
+  const addrNorm = normText(addr);
+  const recent = await sql()`SELECT towbook_job_id, pickup_lat, pickup_lng, pickup, raw_json
+    FROM dispatch_jobs
+    WHERE org_id=${orgId} AND pickup_lat IS NOT NULL AND pickup_lng IS NOT NULL
+    ORDER BY created_at DESC LIMIT 100`;
+  for (const row of recent as Array<Record<string, unknown>>) {
+    const lat = Number(row.pickup_lat);
+    const lng = Number(row.pickup_lng);
+    if (!Number.isFinite(lat) || lat === 0 || !Number.isFinite(lng) || lng === 0) continue;
+    const raw = row.raw_json && typeof row.raw_json === "object" ? row.raw_json as Record<string, unknown> : null;
+    const rawStart = raw && typeof raw.startingLocation === "string" ? raw.startingLocation : "";
+    if (normText(String(row.pickup ?? "")) === addrNorm || normText(String(rawStart)) === addrNorm) {
+      return { lat, lng, detail: `db address match (call ${String(row.towbook_job_id ?? "")})` };
+    }
+  }
+  return null;
+}
+
+type CoordsResolution =
+  | { ok: true; lat: number; lng: number; source: "db" | "geocode"; detail: string }
+  | { ok: false; reason: string };
+
+/** Resolve pickup coordinates for a coordinate-less offer (owner-directed
+ *  2026-08-13, offer 326885213): DB-first (dispatch_jobs already has real
+ *  coords from a previous import/sync), else a VALIDATED TomTom geocode of the
+ *  offer's startingLocation text (score floor + strong-token overlap — naive
+ *  geocoding is proven unsafe). NEVER auto-accepts without coordinates from a
+ *  trusted source; unresolvable → {ok:false} so the caller keeps escalating. */
+async function resolveOfferPickupCoords(
+  orgId: string,
+  rawOffer: unknown,
+  deps: AiDispatcherDeps,
+  fetchImpl: typeof fetch,
+): Promise<CoordsResolution> {
+  const o = rawOffer as Record<string, unknown>;
+  const addr = startingLocationOf(o);
+  if (!addr) return { ok: false, reason: "no startingLocation text to resolve coordinates from" };
+  const dbHit = await lookupDbCoords(orgId, o, addr);
+  if (dbHit) return { ok: true, ...dbHit, source: "db" };
+  const key = resolveTomtomKey(deps.env ?? process.env);
+  if (!key) return { ok: false, reason: "geocode unavailable (no TomTom key configured)" };
+  const lookup = await (deps.geocodeOverride ?? ((a: string) => tomtomGeocodeLookup(a, key, fetchImpl)))(addr);
+  if (!lookup) return { ok: false, reason: "TomTom geocode lookup failed (network/HTTP/bad body)" };
+  const validation = validateGeocodeResult(addr, lookup);
+  if (!validation.ok) return { ok: false, reason: `TomTom geocode validated-out: ${validation.reason}` };
+  return {
+    ok: true,
+    lat: validation.lat,
+    lng: validation.lng,
+    source: "geocode",
+    detail: `TomTom geocode '${addr}' → '${lookup.freeformAddress}' (score ${lookup.score})`,
+  };
+}
+
+/** Build the OfferShape from the raw offer record with the given pickup
+ *  coordinates (lat/lng null = missing). Shared by validateOfferShape (coords
+ *  from the payload) and the coordinate-less resolution path (coords from a
+ *  DB hit or a validated geocode — owner-directed 2026-08-13). Never coerces a
+ *  missing field: every missing/mistyped required field is reported. */
+function buildOfferShape(
+  o: Record<string, unknown>,
+  lat: number | null,
+  lng: number | null,
+): { ok: true; offer: OfferShape } | { ok: false; missing: string[] } {
   const missing: string[] = [];
   const callRequestId = numeric(o.callRequestId);
   if (callRequestId == null) missing.push("callRequestId");
   const status = numeric(o.status);
   if (status == null) missing.push("status");
-  const lat = numeric(o.startLocationLatitude);
   if (lat == null) missing.push("startLocationLatitude");
-  const lng = numeric(o.startLocationLongitude);
   if (lng == null) missing.push("startLocationLongitude");
   const expirationDateUtc = typeof o.expirationDateUtc === "string" ? o.expirationDateUtc : null;
   if (!expirationDateUtc || Number.isNaN(Date.parse(expirationDateUtc))) missing.push("expirationDateUtc");
@@ -782,6 +1054,14 @@ export function validateOfferShape(raw: unknown): { ok: true; offer: OfferShape 
       drivers,
     },
   };
+}
+
+/** Returns {ok:true, offer} or {ok:false, missing: string[]} — why the offer
+ *  failed the documented-shape rail. Never coerces a missing field. */
+export function validateOfferShape(raw: unknown): { ok: true; offer: OfferShape } | { ok: false; missing: string[] } {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, missing: ["<offer is not an object>"] };
+  const o = raw as Record<string, unknown>;
+  return buildOfferShape(o, numeric(o.startLocationLatitude), numeric(o.startLocationLongitude));
 }
 
 /* ------------------------------- driver selection ------------------------------- */
@@ -1704,9 +1984,38 @@ async function runAutoDispatchInternal(
     const result: AutoDispatchRunResult = { ...base, offersSeen: offers.length };
 
     for (const rawOffer of offers) {
-      const shape = validateOfferShape(rawOffer);
+      let shape: { ok: true; offer: OfferShape } | { ok: false; missing: string[] } = validateOfferShape(rawOffer);
+      let coordsProvenance: { source: "db" | "geocode"; detail: string } | null = null;
+      let coordsResolutionFailure: string | null = null;
       if (!shape.ok) {
-        const reason = `offer shape unexpected — missing/mistyped: ${shape.missing.join(", ")} (no accept; full offer in raw_response)`;
+        // Coordinate-less offers (owner-directed 2026-08-13, live offer
+        // 326885213 — the first offer ever with NO startLocationLatitude/
+        // Longitude): when the ONLY shape problem is the missing coords and the
+        // offer carries a startingLocation text, resolve REAL coordinates —
+        // DB-first (dispatch_jobs already imported the call with waypoint
+        // coords), else a VALIDATED TomTom geocode (score floor + strong-token
+        // overlap; naive geocoding is proven unsafe). Resolved → the offer
+        // proceeds through the NORMAL dispatch path with the provenance
+        // recorded on the decision; unresolvable → the existing escalation
+        // rail with the resolution failure noted (never auto-accept blind).
+        const coordsOnly = shape.missing.length > 0
+          && shape.missing.every((m) => m === "startLocationLatitude" || m === "startLocationLongitude");
+        if (coordsOnly) {
+          const resolved = await resolveOfferPickupCoords(orgId, rawOffer, deps, fetchImpl);
+          if (resolved.ok) {
+            const rebuilt = buildOfferShape(rawOffer as Record<string, unknown>, resolved.lat, resolved.lng);
+            if (rebuilt.ok) {
+              shape = rebuilt;
+              coordsProvenance = { source: resolved.source, detail: resolved.detail };
+            }
+          } else {
+            coordsResolutionFailure = resolved.reason;
+          }
+        }
+      }
+      if (!shape.ok) {
+        const resolutionNote = coordsResolutionFailure ? `; pickup-coords resolution failed: ${coordsResolutionFailure}` : "";
+        const reason = `offer shape unexpected — missing/mistyped: ${shape.missing.join(", ")}${resolutionNote} (no accept; full offer in raw_response)`;
         const key = shapeKeyOf(rawOffer);
         if (await alreadyProcessed(orgId, key)) continue; // same malformed offer re-polled
         await recordDecision(orgId, actor, {
@@ -1719,6 +2028,7 @@ async function runAutoDispatchInternal(
         continue;
       }
       const { offer } = shape;
+      if (coordsProvenance) offer.coords = coordsProvenance;
       // dedupe: never double-process an offer (SELECT before acting; unique
       // partial index is the hard backstop against races)
       if (await alreadyProcessed(orgId, offer.callRequestId)) continue;
@@ -1733,7 +2043,7 @@ async function runAutoDispatchInternal(
           driverName: d.driverName ?? null,
           etaMinutes: d.etaMinutes ?? null,
           zoneDistanceMiles: d.zoneDistanceMiles ?? null,
-          reason: d.reason ?? "",
+          reason: d.reason ? `${d.reason}${coordsProvenance ? ` (pickup coords: ${coordsProvenance.source} — ${coordsProvenance.detail})` : ""}` : "",
           rawResponse: d.rawResponse ?? null,
         });
 
