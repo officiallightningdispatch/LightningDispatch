@@ -898,7 +898,7 @@ function PaymentsSection() {
                         <StatusBadge className={badge.cls} dot={badge.dot}>{badge.label}</StatusBadge>
                       </div>
                       <p className="mt-0.5 text-xs text-ink-400">
-                        {card ? <span className="font-medium text-ink-600">{card}</span> : <span className="text-ink-300">No card from email — manual entry</span>}
+                        {card ? <span className="font-medium text-ink-600">{card}</span> : t.status === "charged" ? null : <span className="text-ink-300">No card from email — manual entry</span>}
                         {t.poRef ? <> · PO {t.poRef}</> : null}
                         {t.status === "charged" && (
                           <span className={t.chargePath === "outside" ? "text-ink-500" : "text-success-600"}>

@@ -413,6 +413,19 @@ await setup();
   // A charged row can't be charged again.
   const again = await chargeStagedCore(ACTOR, { txnId, sourceId: "cnon:qa_webpayments_nonce_b" }, { fetchImpl });
   check("already charged → invalid_state, no second Square call", again.ok === false && again.code === "invalid_state" && squareCalls.length === 1, JSON.stringify(again));
+  // PER-PO CARD POLISH (owner-confirmed): the PO's card is consumed on charge —
+  // the card metadata was cleared in the SAME update that marked it charged.
+  const cleared = await q`SELECT card_brand, card_last4, card_expiry, card_billing_zip, amount_cents, club_name, po_ref, charge_path, status, source_email_message_id FROM payment_transactions WHERE id=${txnId}`;
+  check("charged row: card columns NULL (card consumed on charge)", cleared[0].card_brand == null && cleared[0].card_last4 == null && cleared[0].card_expiry == null && cleared[0].card_billing_zip == null, JSON.stringify(cleared[0]));
+  check("charged row: amount/club/po/charge_path/status/messageId intact", Number(cleared[0].amount_cents) === 8500 && String(cleared[0].club_name) === "Allied Dispatch" && String(cleared[0].po_ref) === "88231" && String(cleared[0].charge_path) === "square" && String(cleared[0].status) === "charged" && String(cleared[0].source_email_message_id) === MAIL[0].messageId, JSON.stringify(cleared[0]));
+  // Re-scanning the SAME email must NOT resurrect card data onto the charged
+  // row: the unique (org, source_email_message_id) guard reports already_staged
+  // before any INSERT, so the fresh parse never lands.
+  const { mailbox: rescanMailbox } = makeMailboxFor([MAIL[0]]);
+  const rescan = await scanClubMailCore(ACTOR, {}, { connectImpl: async () => rescanMailbox });
+  check("charged-row re-scan: already_staged 1, staged 0 (messageId guard blocks re-stage)", rescan.ok === true && rescan.alreadyStaged === 1 && rescan.staged === 0, JSON.stringify(rescan));
+  const stillCleared = await q`SELECT card_brand, card_last4, card_expiry, card_billing_zip, status FROM payment_transactions WHERE id=${txnId}`;
+  check("charged-row re-scan: card columns STILL NULL (no resurrection)", stillCleared[0].card_brand == null && stillCleared[0].card_last4 == null && stillCleared[0].card_expiry == null && stillCleared[0].card_billing_zip == null && String(stillCleared[0].status) === "charged", JSON.stringify(stillCleared[0]));
 }
 
 /* ============ 7) charge failure: 400 → failed + attempt bumps ============ */
@@ -496,6 +509,11 @@ await setup();
   check("mark outside ok → charged, charge_path outside, NO square payment id", r.ok === true && r.data.status === "charged" && r.data.chargePath === "outside" && r.data.squarePaymentId === null && r.data.attempt === 0 && r.data.idempotencyKey === null, JSON.stringify(r));
   const dbRow = await q`SELECT status, charge_path, square_payment_id, error FROM payment_transactions WHERE id=${staged.data.id}`;
   check("row: charged / outside / square_payment_id NULL", String(dbRow[0].status) === "charged" && String(dbRow[0].charge_path) === "outside" && dbRow[0].square_payment_id == null, JSON.stringify(dbRow));
+  // PER-PO CARD POLISH: mark-outside clears the PO's card metadata in the SAME
+  // update that marks it charged (consumed once, never shown again).
+  const clearedOutside = await q`SELECT card_brand, card_last4, card_expiry, card_billing_zip, amount_cents, club_name, po_ref, charge_path FROM payment_transactions WHERE id=${staged.data.id}`;
+  check("mark-outside: card columns NULL (card consumed)", clearedOutside[0].card_brand == null && clearedOutside[0].card_last4 == null && clearedOutside[0].card_expiry == null && clearedOutside[0].card_billing_zip == null, JSON.stringify(clearedOutside[0]));
+  check("mark-outside: amount/club/po/charge_path intact", Number(clearedOutside[0].amount_cents) === 9999 && String(clearedOutside[0].club_name) === "Honk" && String(clearedOutside[0].po_ref) === "5532" && String(clearedOutside[0].charge_path) === "outside", JSON.stringify(clearedOutside[0]));
   const aud = await q`SELECT action, actor_role, detail FROM audit_log WHERE org_id=${ORG} AND action='payment_charge_marked_outside'`;
   check("audit payment_charge_marked_outside (owner, amount + note)", aud.length === 1 && String(aud[0].actor_role) === "owner" && aud[0].detail.amountCents === 9999 && aud[0].detail.note === "charged in my Square dashboard 8/12", JSON.stringify(aud));
   // Marking twice → invalid_state (never double-recorded); charge after mark → invalid_state.
@@ -544,11 +562,14 @@ await setup();
   const { fetchImpl, squareCalls } = makeSquare({ mode: "ok" });
   const rows = await q`SELECT * FROM payment_transactions WHERE org_id=${ORG} AND status='staged' AND kind='club_charge' AND card_brand='Visa' AND card_expiry='12/27' LIMIT 1`;
   check("per-PO: a staged row with Visa ••4242 exp 12/27 exists", rows.length === 1, JSON.stringify(rows));
+  check("per-PO: card metadata PRESENT while staged (never cleared before charge)", rows.length === 1 && String(rows[0].card_brand) === "Visa" && String(rows[0].card_last4) === "4242" && String(rows[0].card_expiry) === "12/27" && String(rows[0].card_billing_zip) === "06606", JSON.stringify(rows[0]));
   const r = await chargeStagedCore(ACTOR, { txnId: String(rows[0].id), sourceId: "cnon:qa_ppo_nonce" }, { fetchImpl });
   check("per-PO: charge ok → charged via square", r.ok === true && r.data.status === "charged" && r.data.chargePath === "square", JSON.stringify(r));
   check("per-PO: exactly one /v2/payments call with the nonce", squareCalls.length === 1 && squareCalls[0].body.source_id === "cnon:qa_ppo_nonce", JSON.stringify(squareCalls));
   const dbRow = await q`SELECT card_source_id, charge_path FROM payment_transactions WHERE id=${String(rows[0].id)}`;
   check("per-PO: row records the charged nonce + charge_path square", String(dbRow[0].card_source_id) === "cnon:qa_ppo_nonce" && String(dbRow[0].charge_path) === "square", JSON.stringify(dbRow));
+  const clearedPpo = await q`SELECT card_brand, card_last4, card_expiry, card_billing_zip, amount_cents, club_name, po_ref, charge_path, status FROM payment_transactions WHERE id=${String(rows[0].id)}`;
+  check("per-PO charged row: card columns NULL, rest intact (Visa ••4242 consumed on charge)", clearedPpo[0].card_brand == null && clearedPpo[0].card_last4 == null && clearedPpo[0].card_expiry == null && clearedPpo[0].card_billing_zip == null && Number(clearedPpo[0].amount_cents) === 7500 && String(clearedPpo[0].club_name) === "Allied Dispatch" && String(clearedPpo[0].po_ref) === "90001" && String(clearedPpo[0].charge_path) === "square" && String(clearedPpo[0].status) === "charged", JSON.stringify(clearedPpo[0]));
 }
 
 /* ============ 14) motor_club_cards is DEAD: a legacy stored card NEVER auto-charges ============ */

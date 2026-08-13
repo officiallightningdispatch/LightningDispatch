@@ -398,7 +398,11 @@ export async function chargeStagedCore(actor: PaymentEngineActor, data: unknown,
       return { ok: false, code: "square_failed", message, retryable: true };
     }
 
-    await q`UPDATE payment_transactions SET status='charged', charge_path='square', square_payment_id=${payment.paymentId}, card_source_id=${sourceId}, attempt=${attempt}, idempotency_key=${idempotencyKey}, error=NULL, updated_at=NOW() WHERE id=${String(row.id)}`;
+    // PER-PO CARD POLISH (owner-confirmed 2026-08-12): the PO's card is
+    // consumed on charge — clear the display-only card metadata in the SAME
+    // UPDATE that marks it charged so a charged row never shows (or reuses) the
+    // card. The row keeps amount/club/po_ref/charge_path='square'/status.
+    await q`UPDATE payment_transactions SET status='charged', charge_path='square', square_payment_id=${payment.paymentId}, card_source_id=${sourceId}, attempt=${attempt}, idempotency_key=${idempotencyKey}, error=NULL, card_brand=NULL, card_last4=NULL, card_expiry=NULL, card_billing_zip=NULL, updated_at=NOW() WHERE id=${String(row.id)}`;
     try {
       await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
         SELECT gen_random_uuid()::text, ${actor.orgId}, ${actor.id}, ${actor.role}, 'payment_charge_charged', 'payment_transaction', ${String(row.id)},
@@ -440,7 +444,11 @@ export async function markChargedOutsideCore(actor: PaymentEngineActor, data: un
     if (String(row.kind) !== "club_charge") return { ok: false, code: "invalid_state", message: "Only staged club charges can be marked here." };
     const rowStatus = String(row.status);
     if (rowStatus !== "staged" && rowStatus !== "failed") return { ok: false, code: "invalid_state", message: `This charge is already ${rowStatus} — refresh the list.` };
-    await q`UPDATE payment_transactions SET status='charged', charge_path='outside', error=NULL, updated_at=NOW() WHERE id=${String(row.id)}`;
+    // PER-PO CARD POLISH (owner-confirmed 2026-08-12): the PO's card is
+    // consumed when marked paid outside too — clear the display-only card
+    // metadata in the SAME UPDATE that marks it charged (a charged row must
+    // never show or reuse the card, whichever charge path was taken).
+    await q`UPDATE payment_transactions SET status='charged', charge_path='outside', error=NULL, card_brand=NULL, card_last4=NULL, card_expiry=NULL, card_billing_zip=NULL, updated_at=NOW() WHERE id=${String(row.id)}`;
     const amountCents = Number.isFinite(Number(row.amount_cents)) ? Number(row.amount_cents) : 0;
     const note = (v.data.note ?? "").trim();
     try {
