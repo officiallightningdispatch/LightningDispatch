@@ -1061,6 +1061,22 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     // confirmation.
     await q`ALTER TABLE battery_sales ADD COLUMN IF NOT EXISTS vehicle_confirmed BOOLEAN NOT NULL DEFAULT FALSE`;
   }],
+  [44, async (q) => {
+    // OWNER-EDITABLE ASSIGNED DRIVER (owner-directed 2026-08-13): the owner/ops
+    // portal can change which contractor is assigned to a call. The reassign
+    // writes the new driver to Towbook (PUT /api/calls/{id} — the PROVEN assign
+    // path) and to dispatch_jobs, and stamps a manual-reassign marker so the AI
+    // dispatcher treats the HUMAN's latest assignment as authoritative — it must
+    // never re-dispatch to the road-best driver when the owner already chose
+    // (reassign-driver.test.mjs + the ai-dispatcher guard prove it). The sync's
+    // upsert uses COALESCE for the driver columns, so a manual assignment is
+    // preserved until Towbook itself reflects the new driver; the marker column
+    // is never written by the sync. `manually_reassigned_by` = the acting LD
+    // user id (audit attribution, mirrored in the audit_log row).
+    await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS manually_reassigned_at TIMESTAMPTZ`;
+    await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS manually_reassigned_by TEXT`;
+    await q`CREATE INDEX IF NOT EXISTS dispatch_jobs_org_reassigned_idx ON dispatch_jobs(org_id, manually_reassigned_at) WHERE manually_reassigned_at IS NOT NULL`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

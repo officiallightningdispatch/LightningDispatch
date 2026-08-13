@@ -222,7 +222,7 @@ export function QueueView() {
         ) : (
           <div className="space-y-4">
             {active.map((job) => (
-              <ActiveJobCard key={job.id} job={job} contractors={state.contractors} />
+              <ActiveJobCard key={job.id} job={job} contractors={state.contractors} role={role} />
             ))}
           </div>
         )}
@@ -257,6 +257,8 @@ export function QueueView() {
  *  assigned contractor, service, and real timestamps. */
 export function ActiveJobsView() {
   const { state, loading } = useDispatchStore();
+  const [role, setRole] = useState<Role>("dispatcher");
+  useEffect(() => { void authStatus().then((s) => { if (s.user) setRole(s.user.role); }); }, []);
   const active = useMemo(
     () =>
       state.jobs
@@ -276,7 +278,7 @@ export function ActiveJobsView() {
           body="Jobs between offered and arrived appear here with their assigned contractor and live timestamps."
         />
       ) : (
-        active.map((job) => <ActiveJobCard key={job.id} job={job} contractors={state.contractors} />)
+        active.map((job) => <ActiveJobCard key={job.id} job={job} contractors={state.contractors} role={role} />)
       )}
     </div>
   );
@@ -800,7 +802,77 @@ function OverridePicker({ job, rec, contractors, onAssign }: { job: Job; rec: Di
 
 /* -------------------------------- active job ------------------------------- */
 
-function ActiveJobCard({ job, contractors }: { job: Job; contractors: Contractor[] }) {
+/* --------------------------- change driver (owner/admin) ---------------------------
+ * OWNER-EDITABLE ASSIGNED DRIVER (owner-directed 2026-08-13): the owner/ops
+ * portal can change which contractor is on a call. Role-gated to owner/admin —
+ * the contractor portal must NEVER see this (the server fn refuses too). The
+ * picker lists the ACTIVE roster (any org member with a Towbook driver id,
+ * offline included — the reassign push reaches offline phones); tapping a
+ * contractor confirms through the store → reassignJobServer → reassign-core:
+ * Towbook PUT (proven assign path, status preserved) + dispatch_jobs update +
+ * manual-reassign marker (the AI dispatcher respects it) + audit + push to the
+ * NEW driver. Terminal jobs cannot be reassigned. */
+function ReassignDriverControl({ job, contractors, role }: { job: Job; contractors: Contractor[]; role?: Role }) {
+  const { reassignJob, isPending, getError } = useDispatchStore();
+  const toast = useToast();
+  const [open, setOpen] = useState(false);
+  if (role !== "owner" && role !== "admin") return null;
+  if (job.status === "completed" || job.status === "cancelled") return null;
+  const key = mutationKey.reassign(job.id);
+  const pending = isPending(key);
+  const error = getError(key);
+  // The current driver on the job: demo/legacy jobs carry the LD user id;
+  // synced jobs carry the Towbook driver id + display name. Exclude by either.
+  const currentName = job.assignedDriverName ?? "";
+  const choices = contractors.filter(
+    (c) => c.id !== job.assignedContractorId && c.name !== currentName,
+  );
+  const confirm = async (contractorId: string, name: string) => {
+    const ok = await reassignJob(job.id, contractorId);
+    if (ok) { toast(`${job.customerName}: driver changed to ${name}`); setOpen(false); }
+  };
+  return (
+    <div className="mt-3 border-t border-ink-100 pt-3">
+      {error && <InlineError message={error} className="mb-2 w-full" />}
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        disabled={pending}
+        className={`inline-flex h-10 items-center gap-1.5 rounded-xl border px-3 text-xs font-bold transition ${
+          open
+            ? "border-brand-300 bg-brand-50 text-brand-700"
+            : "border-ink-200 text-ink-600 hover:bg-ink-50"
+        } ${pending ? "opacity-60" : ""}`}
+      >
+        <Users className="size-3.5" aria-hidden="true" /> Change driver
+        <span className="tabular-nums">· {pending ? "…" : ""}</span>
+      </button>
+      {open && (
+        <div className="mt-2 space-y-1.5">
+          {choices.length === 0 && (
+            <p className="text-xs text-ink-400">No other contractors on the active roster to assign to.</p>
+          )}
+          {choices.map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              disabled={pending}
+              onClick={() => void confirm(c.id, c.name)}
+              className="flex min-h-11 w-full items-center gap-2 rounded-xl border border-ink-100 bg-surface px-3 text-left text-sm font-semibold text-ink-700 transition hover:bg-ink-50 disabled:opacity-60"
+            >
+              <span className={`inline-block size-2 shrink-0 rounded-full ${c.status === "online" ? "bg-success-500" : "bg-ink-300"}`} aria-hidden="true" />
+              <span className="min-w-0 flex-1 truncate">{c.name}</span>
+              <span className="text-[11px] font-bold uppercase tracking-wide text-ink-400">{c.status}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ActiveJobCard({ job, contractors, role }: { job: Job; contractors: Contractor[]; role?: Role }) {
   const { setJobStatus, isPending, getError, getPushResult } = useDispatchStore();
   const toast = useToast();
   const contractor = contractorById(contractors, job.assignedContractorId);
@@ -855,6 +927,8 @@ function ActiveJobCard({ job, contractors }: { job: Job; contractors: Contractor
           )}
         </div>
       </div>
+
+      <ReassignDriverControl job={job} contractors={contractors} role={role} />
 
       <div className="mt-4">
         <JobStatusStepper status={job.status} />

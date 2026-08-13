@@ -239,7 +239,7 @@ check("fireAssignmentPush: unknown job → clean skip", missingJob.skipped === t
 // top priority). Prove the seam is wired in the source AND that the payload
 // the engine builds round-trips through the real crypto (spec-compliant).
 const file = await (await import("node:fs/promises")).readFile("./src/data/ai-dispatcher.ts", "utf8");
-check("ai: fireDispatchAssignmentPush called in verification.ok branch", file.includes("await fireDispatchAssignmentPush(orgId, driver, verification, offer, etaMinutes, deps)"));
+check("ai: fireDispatchAssignmentPush called in verification.ok branch", file.includes("await fireDispatchAssignmentPush(orgId, { driverId: dispatchDriverId, driverName: dispatchDriverName }, verification, offer, etaMinutes, deps)"));
 check("ai: production path uses push-core by towbook driver", file.includes('const { sendAssignmentPushByTowbookDriver } = await import("./push-core")'));
 const enginePayload = { callId: "279999005", callRequestId: "326999005", jobType: "Tow job", location: "41.218621,-73.187522", etaMinutes: 9, jobUrl: "/driver" };
 const engineJson = buildPushNotificationJson(enginePayload);

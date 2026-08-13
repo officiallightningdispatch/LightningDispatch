@@ -16,6 +16,7 @@ import {
   canSetJobStatus,
   declineJob as declineJobServer,
   getDispatchData,
+  reassignJob as reassignJobServer,
   resetDemo as resetDemoServer,
   setContractorStatus as setContractorStatusServer,
   setJobStatus as setJobStatusServer,
@@ -55,6 +56,7 @@ export interface DispatchState {
 type DispatchAction =
   | { type: "hydrate"; payload: DispatchState }
   | { type: "assignJob"; jobId: string; contractorId: string }
+  | { type: "reassignJob"; jobId: string; contractorId: string }
   | { type: "advanceJob"; jobId: string }
   | { type: "setJobStatus"; jobId: string; status: JobStatus }
   | { type: "declineJob"; jobId: string }
@@ -101,6 +103,18 @@ function reducer(state: DispatchState, action: DispatchAction): DispatchState {
                 assignedContractorId: action.contractorId,
                 assignedAt: nowIso(),
               }
+            : j,
+        ),
+      };
+    case "reassignJob":
+      // Owner/admin changes WHO is on the job (owner-directed 2026-08-13).
+      // The STATUS does not change — only the assignment. Demo mode has no
+      // driver-name column; assignedContractorId is the visible marker.
+      return {
+        ...state,
+        jobs: state.jobs.map((j) =>
+          j.id === action.jobId
+            ? { ...j, assignedContractorId: action.contractorId, assignedAt: nowIso() }
             : j,
         ),
       };
@@ -162,6 +176,7 @@ function reducer(state: DispatchState, action: DispatchAction): DispatchState {
 
 export const mutationKey = {
   assign: (jobId: string) => `assign:${jobId}`,
+  reassign: (jobId: string) => `reassign:${jobId}`,
   advance: (jobId: string) => `advance:${jobId}`,
   setStatus: (jobId: string) => `set-status:${jobId}`,
   decline: (jobId: string) => `decline:${jobId}`,
@@ -203,6 +218,21 @@ function demoDeclineError(state: DispatchState, jobId: string): string | null {
   return null;
 }
 
+/** Demo-mode mirror of the server's reassign guard: the job must exist and be
+ *  non-terminal, the contractor must be on the roster, and it must not already
+ *  be the assigned driver. Role gating is enforced by the UI (owner/admin
+ *  only) + the server fn. */
+function demoReassignError(state: DispatchState, jobId: string, contractorId: string): string | null {
+  const job = state.jobs.find((j) => j.id === jobId);
+  if (!job) return "Job not found — refresh to resync.";
+  if (job.status === "completed" || job.status === "cancelled") {
+    return `This job is ${job.status} — a finished call cannot be reassigned.`;
+  }
+  if (job.assignedContractorId === contractorId) return "This contractor is already the assigned driver for this job.";
+  if (!state.contractors.some((c) => c.id === contractorId)) return "Contractor not found on the roster.";
+  return null;
+}
+
 /* --------------------------------- store --------------------------------- */
 
 export interface DispatchStoreValue {
@@ -222,6 +252,10 @@ export interface DispatchStoreValue {
   clearError: (key: string) => void;
   /** Assign a job to a contractor: status -> offered, assignedContractorId set. */
   assignJob: (jobId: string, contractorId: string) => Promise<boolean>;
+  /** Owner/admin: change which contractor is on a job (owner-directed
+   *  2026-08-13). The status is unchanged — only the assignment moves; the
+   *  server writes Towbook + DB + audit and pushes the NEW driver. */
+  reassignJob: (jobId: string, contractorId: string) => Promise<boolean>;
   /** Move a job to the next lifecycle status (offered → accepted → en_route → arrived → completed). */
   advanceJob: (jobId: string) => Promise<boolean>;
   /** Set a job to an EXACT lifecycle status (owner/admin/dispatcher) — the
@@ -356,6 +390,23 @@ export function DispatchStoreProvider({ children }: { children: ReactNode }) {
         const demoErr = demoAssignError(stateRef.current, jobId, contractorId);
         if (demoErr) { fail(mutationKey.assign(jobId), demoErr); return false; }
         dispatch({ type: "assignJob", jobId, contractorId });
+        return true;
+      }),
+    [run, hydrateFromServer, fail],
+  );
+
+  const reassignJob = useCallback(
+    (jobId: string, contractorId: string) =>
+      run(mutationKey.reassign(jobId), async () => {
+        if (dbMode.current) {
+          const res: CommandResult = await reassignJobServer({ data: { jobId, contractorId } });
+          if (!res.ok) { fail(mutationKey.reassign(jobId), res.error.message); return false; }
+          hydrateFromServer(res.data);
+          return true;
+        }
+        const demoErr = demoReassignError(stateRef.current, jobId, contractorId);
+        if (demoErr) { fail(mutationKey.reassign(jobId), demoErr); return false; }
+        dispatch({ type: "reassignJob", jobId, contractorId });
         return true;
       }),
     [run, hydrateFromServer, fail],
@@ -504,6 +555,7 @@ export function DispatchStoreProvider({ children }: { children: ReactNode }) {
       getError: (key: string) => errors[key] ?? null,
       clearError,
       assignJob,
+      reassignJob,
       advanceJob,
       setJobStatus,
       getPushResult,
@@ -512,7 +564,7 @@ export function DispatchStoreProvider({ children }: { children: ReactNode }) {
       resetDemo,
       refresh,
     }),
-    [state, loading, isDemoMode, pending, errors, clearError, assignJob, advanceJob, setJobStatus, getPushResult, declineJob, setContractorStatus, resetDemo, refresh],
+    [state, loading, isDemoMode, pending, errors, clearError, assignJob, reassignJob, advanceJob, setJobStatus, getPushResult, declineJob, setContractorStatus, resetDemo, refresh],
   );
 
   return <DispatchStoreContext.Provider value={value}>{children}</DispatchStoreContext.Provider>;

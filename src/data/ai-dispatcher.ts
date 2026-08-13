@@ -977,6 +977,86 @@ type CoordsResolution =
   | { ok: true; lat: number; lng: number; source: "db" | "geocode"; detail: string }
   | { ok: false; reason: string };
 
+/* ------------------ manual reassign guard (owner-directed 2026-08-13) ------------------
+ * The owner/ops portal can reassign a call's driver (reassign-core). When an
+ * offer lands for a call a HUMAN already reassigned, the engine must treat the
+ * latest assignment as AUTHORITATIVE — it must never overwrite/re-dispatch to
+ * the road-best driver. The guard: a dispatch_jobs row tied to this offer
+ * (purchase-order match first — the "Dispatch #" every accepted call mirrors —
+ * then normalized startingLocation equality) that carries the manual-reassign
+ * marker (manually_reassigned_at, migration 44) and a non-terminal status
+ * yields the human-chosen driver. The engine then dispatches ONLY that driver:
+ * the accept carries their driverId (even when they are offline — offline
+ * dispatch is owner-approved and the reassign push reaches offline phones),
+ * and the decision ledger records the human's choice as respected. */
+
+export type HumanReassignedDriver = {
+  /** Towbook driver id of the human-chosen driver (dispatch_jobs.assigned_driver_towbook_id). */
+  driverTowbookId: string;
+  /** Human-readable driver name (assigned_driver_name), when captured. */
+  driverName: string | null;
+  /** The LD dispatch_jobs row id (jobId) the marker lives on. */
+  jobId: string;
+  /** When the human reassigned (manually_reassigned_at, ISO). */
+  reassignedAt: string;
+  /** Which tie found the row: "purchaseOrder" | "address". */
+  source: "purchaseOrder" | "address";
+};
+
+/** Find the human-reassigned driver for an offer, or null. The offer ties to
+ *  the existing call via its purchaseOrderNumber (the "Dispatch #") or the
+ *  normalized startingLocation text; the row must carry the manual-reassign
+ *  marker, a still-assigned driver, and a non-terminal status. Latest marker
+ *  wins when multiple rows tie. Never throws — DB errors return null and the
+ *  engine falls through to its normal path (a lookup failure must never crash
+ *  or invent a reassignment). */
+export async function lookupHumanReassignedDriver(
+  orgId: string,
+  offer: OfferShape,
+): Promise<HumanReassignedDriver | null> {
+  try {
+    const po = offer.purchaseOrderNumber;
+    const addr = startingLocationOf(offer as unknown as Record<string, unknown>) ?? "";
+    const addrNorm = addr ? normText(addr) : "";
+    const rows = await sql()`SELECT id, assigned_driver_towbook_id, assigned_driver_name, manually_reassigned_at, raw_json, pickup
+      FROM dispatch_jobs
+      WHERE org_id=${orgId}
+        AND manually_reassigned_at IS NOT NULL
+        AND assigned_driver_towbook_id IS NOT NULL
+        AND status NOT IN ('completed','cancelled')
+      ORDER BY manually_reassigned_at DESC`;
+    for (const row of rows as Array<Record<string, unknown>>) {
+      const raw = row.raw_json && typeof row.raw_json === "object" ? row.raw_json as Record<string, unknown> : null;
+      const rowPo = raw && typeof raw.purchaseOrderNumber === "string" ? raw.purchaseOrderNumber : null;
+      if (po && rowPo && rowPo === po) {
+        return {
+          driverTowbookId: String(row.assigned_driver_towbook_id),
+          driverName: row.assigned_driver_name != null && String(row.assigned_driver_name) !== "" ? String(row.assigned_driver_name) : null,
+          jobId: String(row.id),
+          reassignedAt: new Date(String(row.manually_reassigned_at)).toISOString(),
+          source: "purchaseOrder",
+        };
+      }
+      if (addrNorm) {
+        const rowPickup = row.pickup != null ? String(row.pickup) : "";
+        const rowStart = raw && typeof raw.startingLocation === "string" ? raw.startingLocation : "";
+        if (normText(rowPickup) === addrNorm || normText(rowStart) === addrNorm) {
+          return {
+            driverTowbookId: String(row.assigned_driver_towbook_id),
+            driverName: row.assigned_driver_name != null && String(row.assigned_driver_name) !== "" ? String(row.assigned_driver_name) : null,
+            jobId: String(row.id),
+            reassignedAt: new Date(String(row.manually_reassigned_at)).toISOString(),
+            source: "address",
+          };
+        }
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /** Resolve pickup coordinates for a coordinate-less offer (owner-directed
  *  2026-08-13, offer 326885213): DB-first (dispatch_jobs already has real
  *  coords from a previous import/sync), else a VALIDATED TomTom geocode of the
@@ -2090,12 +2170,37 @@ async function runAutoDispatchInternal(
       // ONLY those ids may be dispatched — accept-with-driverId for an
       // ineligible driver is silently ignored by Towbook. ---
       const eligibleIds = offer.drivers && offer.drivers.length ? new Set(offer.drivers) : null;
-      const candidates = eligibleIds
-        ? (nd.body as unknown[]).filter((d) => {
-            const id = Number((d as Record<string, unknown>).driverId);
-            return Number.isFinite(id) && eligibleIds.has(id);
-          })
-        : (nd.body as unknown[]);
+      // MANUAL-REASSIGN GUARD (owner-directed 2026-08-13): when a HUMAN already
+      // reassigned a call tied to this offer (purchase-order / address match on
+      // a dispatch_jobs row carrying the manual-reassign marker), the human's
+      // latest assignment is AUTHORITATIVE — the engine must NOT re-dispatch to
+      // the road-best driver. The candidate pool is narrowed to the human-chosen
+      // driver ONLY (when they are also in the offer's eligible list; an
+      // ineligible human-chosen driver cannot be accepted with their id, so the
+      // offer is accepted WITHOUT dispatch and escalated — never silently
+      // overwritten with a different driver). Offline human-chosen drivers are
+      // still dispatched (the accept carries their driverId and the verification
+      // PUT attaches them — offline dispatch is owner-approved, and the reassign
+      // push reaches offline phones). The ledger reason records the respect.
+      const humanReassigned = await lookupHumanReassignedDriver(orgId, offer);
+      const manualDriverId = humanReassigned ? Number(humanReassigned.driverTowbookId) || 0 : 0;
+      const manualEligible = manualDriverId > 0 && (!eligibleIds || eligibleIds.has(manualDriverId));
+      const manualNote = humanReassigned
+        ? `manual reassignment respected — human-chosen driver ${humanReassigned.driverName ?? humanReassigned.driverTowbookId} (reassigned ${humanReassigned.reassignedAt} on job ${humanReassigned.jobId}) kept as authoritative; NOT re-dispatched to the road-best driver`
+        : null;
+      const candidates = humanReassigned
+        ? manualEligible
+          ? (nd.body as unknown[]).filter((d) => {
+              const id = Number((d as Record<string, unknown>).driverId);
+              return Number.isFinite(id) && id === manualDriverId;
+            })
+          : []
+        : eligibleIds
+          ? (nd.body as unknown[]).filter((d) => {
+              const id = Number((d as Record<string, unknown>).driverId);
+              return Number.isFinite(id) && eligibleIds.has(id);
+            })
+          : (nd.body as unknown[]);
       // ETA v3 provider resolution: TomTom when TOMTOM_API_KEY is set (with
       // automatic fall-through to OSRM on any TomTom failure), else OSRM static,
       // else null (ETA_ROUTER=off → factor model only). Tests inject
@@ -2115,17 +2220,23 @@ async function runAutoDispatchInternal(
       );
       const driver = chosen?.driver ?? null;
       const effectiveMaxEta = Math.min(settings.maxEtaMinutes, offer.maxEta ?? settings.maxEtaMinutes);
-      const driverId = driver ? Number(driver.driverId) || 0 : 0;
+      // The driver the accept POST carries: the human-chosen driver when a
+      // manual reassignment was respected (even offline — their driverId IS the
+      // assignment), else the road-aware choice. Zero = no driver.
+      const dispatchDriverId = (manualDriverId > 0 && manualEligible) ? manualDriverId : (driver ? Number(driver.driverId) || 0 : 0);
+      const dispatchDriverName = humanReassigned
+        ? (humanReassigned.driverName ?? String(manualDriverId))
+        : driver ? String(driver.driverName ?? "") : null;
       // Final quoted ETA: ceil(road minutes) + buffer, clamped to [floor, ceiling].
-      // NO driver → no ETA is computed (nothing is being dispatched); the accept
-      // body still needs the field — quote the club's SLA ceiling (an honest
-      // "not yet assigned" worst case, never a fabricated 1-minute promise).
+      // NO road-ETA candidate → no ETA is computed (the accept body still needs
+      // the field — quote the club's SLA ceiling, an honest "not yet assigned"
+      // worst case, never a fabricated 1-minute promise).
       const etaMinutes = driver && chosen
         ? finalEtaMinutes(chosen.baseMinutes, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta)
         : null;
       const postEta = etaMinutes ?? effectiveMaxEta;
-      const postNotes = driver
-        ? "auto-accept by Lightning Dispatch"
+      const postNotes = dispatchDriverId
+        ? (humanReassigned ? "auto-accept by Lightning Dispatch; keeping the human-assigned driver" : "auto-accept by Lightning Dispatch")
         : "auto-accept by Lightning Dispatch; awaiting driver assignment";
       const etaFacts = chosen ? {
         finalMinutes: etaMinutes,
@@ -2158,14 +2269,18 @@ async function runAutoDispatchInternal(
       const allLoadedNote: string | null = null;
       const noDriverReason = driver
         ? null
-        : eligibleIds
-          ? `no ELIGIBLE checked-in driver with real GPS to quote an honest workload ETA (offer eligible list [${offer.drivers!.join(", ")}]${allLoadedNote ?? ""}; accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually, ETA quoted at the ${effectiveMaxEta}-min ceiling — no ETA recorded)`
-          : `no checked-in driver with real GPS to quote an honest workload ETA${allLoadedNote ?? ""} — accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually (ETA quoted at the SLA ceiling — no ETA recorded)`;
+        : humanReassigned
+          ? (manualEligible
+              ? `human-chosen driver ${dispatchDriverName} (${manualDriverId}) is not in the live nearestDrivers payload (offline or no GPS) — accepted WITH that driver (their id IS the assignment; ETA quoted at the ${effectiveMaxEta}-min ceiling — no road ETA fabricated)${manualNote ? `; ${manualNote}` : ""}`
+              : `human-chosen driver ${dispatchDriverName} (${manualDriverId}) is NOT in the offer's eligible list [${offer.drivers!.join(", ")}] — Towbook would silently drop their id, so the offer is accepted WITHOUT dispatch (never overwrite a human's choice with a different driver); assign manually on Towbook${manualNote ? `; ${manualNote}` : ""}`)
+          : eligibleIds
+            ? `no ELIGIBLE checked-in driver with real GPS to quote an honest workload ETA (offer eligible list [${offer.drivers!.join(", ")}]${allLoadedNote ?? ""}; accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually, ETA quoted at the ${effectiveMaxEta}-min ceiling — no ETA recorded)`
+            : `no checked-in driver with real GPS to quote an honest workload ETA${allLoadedNote ?? ""} — accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually (ETA quoted at the SLA ceiling — no ETA recorded)`;
       // --- accept (the ONE state-changing call) — with a self-healing retry:
       // an expired session mid-offer (401/403/login-page on the POST) triggers
       // recovery, and the accept is retried once with the recovered session.
       // Only if recovery or the retry fails is the escalation recorded.
-      let accept = await postAccept(fetchImpl, baseUrl, cookies, offer.callRequestId, postEta, driverId, postNotes);
+      let accept = await postAccept(fetchImpl, baseUrl, cookies, offer.callRequestId, postEta, dispatchDriverId, postNotes);
       let acceptRecoveryNote: string | null = null;
       if (!accept.ok && hasSessionExpiredAttempt(accept.attempts)) {
         const recovery = await recoverSession(orgId);
@@ -2174,7 +2289,7 @@ async function runAutoDispatchInternal(
           if (fresh) {
             cookies = fresh.cookie;
             baseUrl = fresh.baseUrl;
-            const retried = await postAccept(fetchImpl, baseUrl, cookies, offer.callRequestId, postEta, driverId, postNotes);
+            const retried = await postAccept(fetchImpl, baseUrl, cookies, offer.callRequestId, postEta, dispatchDriverId, postNotes);
             accept = retried;
             acceptRecoveryNote = "session recovered; accept retried";
           } else {
@@ -2219,16 +2334,16 @@ async function runAutoDispatchInternal(
         result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_accept_failed", escalated: true, reason });
         continue;
       }
-      if (driver && chosen && etaMinutes != null) {
+      if (dispatchDriverId > 0) {
         // --- post-accept verification loop: NEVER claim "dispatched" without
-        // seeing the chosen driver on the fetched call (assets[].driver.id /
+        // seeing the dispatched driver on the fetched call (assets[].driver.id /
         // assets[].drivers[].driver.id). Not verified → one assign attempt →
         // re-verify → still not assigned → escalated_dispatch_failed. ---
         // Self-healing: when the assignDrivers push (or a verification fetch)
         // hits an expired session (the 2026-08-11 13:10Z incident), recover the
         // session and RETRY the push once with the fresh session — the owner's
         // alert fires only if recovery or the retry fails.
-        let verification = await verifyDispatch(fetchImpl, baseUrl, cookies, offer, callIdFromAcceptResponse(accept.raw), driverId, {
+        let verification = await verifyDispatch(fetchImpl, baseUrl, cookies, offer, callIdFromAcceptResponse(accept.raw), dispatchDriverId, {
           retryDelayMs: deps.verifyRetryDelayMs ?? 5000,
           allowAssign: true,
         });
@@ -2238,7 +2353,7 @@ async function runAutoDispatchInternal(
           if (recovery.recovered) {
             const fresh = await loadOwnerSession(orgId);
             if (fresh) {
-              const retried = await verifyDispatch(fetchImpl, fresh.baseUrl, fresh.cookie, offer, callIdFromAcceptResponse(accept.raw), driverId, {
+              const retried = await verifyDispatch(fetchImpl, fresh.baseUrl, fresh.cookie, offer, callIdFromAcceptResponse(accept.raw), dispatchDriverId, {
                 retryDelayMs: deps.verifyRetryDelayMs ?? 5000,
                 allowAssign: true,
               });
@@ -2252,33 +2367,38 @@ async function runAutoDispatchInternal(
           }
         }
         if (verification.ok) {
-          const reason = `accepted and dispatched to ${String(driver.driverName ?? driver.driverId)} (driver ${driver.driverId}, VERIFIED on call ${verification.callId})${verificationRecoveryNote ? `; ${verificationRecoveryNote}` : ""} — ${etaDetailLabel(chosen, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta, etaMinutes)}`;
+          const etaLabel = etaMinutes != null && chosen
+            ? ` — ${etaDetailLabel(chosen, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta, etaMinutes)}`
+            : " — no road ETA quoted (driver not in the live nearestDrivers payload; ETA at the SLA ceiling)";
+          const reason = `accepted and dispatched to ${dispatchDriverName ?? dispatchDriverId} (driver ${dispatchDriverId}, VERIFIED on call ${verification.callId})${verificationRecoveryNote ? `; ${verificationRecoveryNote}` : ""}${manualNote ? `; ${manualNote}` : ""}${etaLabel}`;
           await record({
             decision: "auto_accept_with_driver",
             callId: verification.callId,
-            driverId: String(driver.driverId), driverName: String(driver.driverName ?? ""),
+            driverId: String(dispatchDriverId), driverName: dispatchDriverName ?? null,
             etaMinutes, zoneDistanceMiles: zoneDistance, reason,
             rawResponse: { offer, eta: etaFacts, accept: accept.raw, verification },
           });
           // Assigned-offer push: notify the contractor's phone (single-strike
           // sound) — fire-and-forget, never fails the dispatch.
-          await fireDispatchAssignmentPush(orgId, driver, verification, offer, etaMinutes, deps);
+          await fireDispatchAssignmentPush(orgId, { driverId: dispatchDriverId, driverName: dispatchDriverName }, verification, offer, etaMinutes, deps);
           result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "auto_accept_with_driver", escalated: false, reason });
         } else {
-          const reason = `accepted (call ${verification.callId ?? "unknown"}) but dispatch NOT verified for ${String(driver.driverName ?? driver.driverId)} (driver ${driver.driverId}) — ${verification.error}${verificationRecoveryNote ? `; ${verificationRecoveryNote}` : ""}; needs a human to assign on Towbook (ETA ${etaMinutes} min quoted)`;
+          const reason = `accepted (call ${verification.callId ?? "unknown"}) but dispatch NOT verified for ${dispatchDriverName ?? dispatchDriverId} (driver ${dispatchDriverId}) — ${verification.error}${verificationRecoveryNote ? `; ${verificationRecoveryNote}` : ""}${manualNote ? `; ${manualNote}` : ""}; needs a human to assign on Towbook (ETA ${etaMinutes ?? effectiveMaxEta} min quoted)`;
           await record({
             decision: "escalated_dispatch_failed",
             callId: verification.callId,
-            driverId: String(driver.driverId), driverName: String(driver.driverName ?? ""),
+            driverId: String(dispatchDriverId), driverName: dispatchDriverName ?? null,
             etaMinutes, zoneDistanceMiles: zoneDistance, reason,
             rawResponse: { offer, eta: etaFacts, accept: accept.raw, verification },
           });
           result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_dispatch_failed", escalated: true, reason });
         }
       } else {
-        // No checked-in free (eligible) driver with GPS (no-GPS drivers are
-        // never auto-dispatched, and no ETA is fabricated for them): accept
-        // WITHOUT dispatch so the motor-club offer cannot expire or be missed.
+        // No dispatcheable driver (no checked-in free eligible driver with GPS
+        // in the normal path; human-chosen driver ineligible/offline in the
+        // manual-reassign path): accept WITHOUT dispatch so the motor-club
+        // offer cannot expire or be missed — never overwrite a human's choice
+        // with a different driver.
         await record({
           decision: "auto_accept_no_driver",
           driverId: null, driverName: null,
