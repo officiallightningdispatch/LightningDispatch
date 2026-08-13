@@ -222,13 +222,13 @@ await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, j
   const v26 = await q`SELECT COUNT(*)::int AS n FROM schema_migrations WHERE version=26`;
   check("migration 26: recorded exactly once after double ensureSchema", v26[0].n === 1, JSON.stringify(v26[0]));
   const lessons = await q`SELECT id, slug, title, metric_key, sort_order FROM academy_lessons WHERE active=TRUE ORDER BY sort_order`;
-  check("academy seed: exactly 10 active lessons (no dupes from the second run)", lessons.length === 10, JSON.stringify(lessons.map((l) => l.slug)));
+  check("academy seed: exactly 11 active lessons (no dupes from the second run)", lessons.length === 11, JSON.stringify(lessons.map((l) => l.slug)));
   const slugs = lessons.map((l) => String(l.slug));
-  check("academy seed: all 10 expected slugs present",
-    JSON.stringify(slugs) === JSON.stringify(["pre-trip-readiness", "eta-honesty", "twelve-photo-routine", "first-impressions", "turning-service-into-tips", "acceptance-discipline", "stay-visible", "go-offline-planning", "finish-strong", "paperwork-done-right"]), JSON.stringify(slugs));
+  check("academy seed: all 11 expected slugs present",
+    JSON.stringify(slugs) === JSON.stringify(["pre-trip-readiness", "eta-honesty", "twelve-photo-routine", "first-impressions", "turning-service-into-tips", "acceptance-discipline", "stay-visible", "go-offline-planning", "finish-strong", "paperwork-done-right", "on-time-service-standards"]), JSON.stringify(slugs));
   const keys = lessons.map((l) => String(l.metric_key)).sort().join(",");
   check("academy seed: one lesson per metric_key",
-    keys === "accept_rate,accept_time,availability,completion_rate,customer_rating,documents,eta_accuracy,gps_coverage,photos_compliance,tips", keys);
+    keys === "accept_rate,accept_time,availability,completion_rate,customer_rating,documents,eta_accuracy,gps_coverage,photos_compliance,service_time,tips", keys);
   const pw = lessons.find((l) => l.slug === "paperwork-done-right");
   check("academy seed: paperwork lesson maps to documents metric", pw && String(pw.metric_key) === "documents" && Number(pw.sort_order) === 10, JSON.stringify(pw));
 }
@@ -393,8 +393,8 @@ await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, j
     cleanRec.ok === true && cleanRec.recommendations.length === 1 &&
     cleanRec.recommendations[0].lessonId === "lesson-go-offline-planning", JSON.stringify(cleanRec));
   const prog0 = await withSession(sessions.get(BAD), () => getLessonProgressHandler());
-  check("lesson progress: 10 lessons, all not_started before marking",
-    prog0.ok === true && prog0.lessons.length === 10 && prog0.lessons.every((l) => l.status === "not_started") && prog0.lessons[0].lessonId === "lesson-pre-trip-readiness", JSON.stringify(prog0.lessons?.[0]));
+  check("lesson progress: 11 lessons, all not_started before marking",
+    prog0.ok === true && prog0.lessons.length === 11 && prog0.lessons.every((l) => l.status === "not_started") && prog0.lessons[0].lessonId === "lesson-pre-trip-readiness", JSON.stringify(prog0.lessons?.[0]));
   const mark1 = await withSession(sessions.get(BAD), () => markLessonCompleteHandler("lesson-paperwork-done-right"));
   check("mark complete: ok", mark1.ok === true && mark1.status === "completed", JSON.stringify(mark1));
   const dbRow1 = await q`SELECT completed_at FROM academy_progress WHERE org_id=${ORG} AND user_id=${BAD} AND lesson_id='lesson-paperwork-done-right'`;
