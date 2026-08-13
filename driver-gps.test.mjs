@@ -74,9 +74,10 @@ const jsonResponse = (status, body) => ({
 
 /** Mock Towbook fetch for the geofence write+verify path. Records every call.
  *  PUT /api/calls/{id} returns putStatus; the verification GET returns the call
- *  with status id getStatusId (default 4 = arrived). Throws on any URL outside
+ *  with status id getStatusId (default 3 = On Scene/arrived; the core PUTs 3 and
+ *  verifies 3 since 2026-08-12 — 4 is Towing). Throws on any URL outside
  *  the documented surface — a stray call fails the test. */
-function makeFetch({ callId, putStatus = 200, getStatusId = 4 } = {}) {
+function makeFetch({ callId, putStatus = 200, getStatusId = 3 } = {}) {
   const calls = [];
   const fetchImpl = async (url, init = {}) => {
     const u = String(url);
@@ -161,10 +162,10 @@ await setup();
 /* --------------------------- geofence: inside radius --------------------------- */
 {
   const c = CONF[ORG];
-  const { fetchImpl, calls } = makeFetch({ callId: c.call });
+  const { fetchImpl, calls } = makeFetch({ callId: c.call, getStatusId: 3 });
   const out = await evaluateGeofence({ orgId: ORG, userId: c.userId, towbookDriverId: c.tbDriver, lat: northMeters(100), lng: PICKUP.lng, fetchImpl });
   check("inside radius → arrived", out.action === "arrived" && out.jobId === c.job && out.towbookJobId === c.call && out.towbookOk && out.verified, JSON.stringify(out));
-  check("Towbook PUT + verify GET happened (driver session)", calls.length === 2 && calls[0].method === "PUT" && calls[1].method === "GET" && calls[0].body.status.id === 4, JSON.stringify(calls));
+  check("Towbook PUT + verify GET happened (driver session)", calls.length === 2 && calls[0].method === "PUT" && calls[1].method === "GET" && calls[0].body.status.id === 3, JSON.stringify(calls));
   const job = await q`SELECT status, arrived_at FROM dispatch_jobs WHERE id=${c.job}`;
   check("platform status arrived + arrived_at set", String(job[0].status) === "arrived" && job[0].arrived_at != null, JSON.stringify(job));
   const ev = await q`SELECT from_status, to_status, actor_user_id, actor_role FROM status_events WHERE org_id=${ORG} AND job_id=${c.job} ORDER BY occurred_at DESC LIMIT 1`;
@@ -213,7 +214,7 @@ await setup();
 /* ---------------------------- photos gate (ORG2) ---------------------------- */
 {
   const c = CONF[ORG2];
-  const { fetchImpl, calls } = makeFetch({ callId: c.call });
+  const { fetchImpl, calls } = makeFetch({ callId: c.call, getStatusId: 3 });
   // photos_required=true with no photos → blocked. (ORG2's org_settings row was
   // created in setup with the gate ON — re-assert and keep it on.)
   const s = await getGeofenceSettings(ORG2);
@@ -252,7 +253,7 @@ await setup();
   const { fetchImpl, calls } = makeFetch({ callId: c.call, putStatus: 500 });
   const out = await evaluateGeofence({ orgId: ORG3, userId: c.userId, towbookDriverId: c.tbDriver, lat: PICKUP.lat, lng: PICKUP.lng, fetchImpl });
   check("PUT failure → arrived outcome with towbookOk=false verified=false", out.action === "arrived" && out.towbookOk === false && out.verified === false && out.detail.includes("failed"), JSON.stringify(out));
-  check("PUT attempted once, no verify GET", calls.length === 1 && calls[0].method === "PUT" && calls[0].body.status.id === 4, JSON.stringify(calls));
+  check("PUT attempted once, no verify GET", calls.length === 1 && calls[0].method === "PUT" && calls[0].body.status.id === 3, JSON.stringify(calls));
   const esc = await q`SELECT decision, escalated, reason FROM ai_dispatcher_decisions WHERE org_id=${ORG3}`;
   check("escalation row recorded", esc.length === 1 && String(esc[0].decision) === "escalated_auto_arrive_failed" && esc[0].escalated === true && String(esc[0].reason).includes("did not land on Towbook"), JSON.stringify(esc));
   const aud = await q`SELECT detail FROM audit_log WHERE org_id=${ORG3} AND action='geofence_auto_arrive' LIMIT 1`;
@@ -267,10 +268,11 @@ await setup();
 /* ---------------------- verification failure → escalation ---------------------- */
 {
   const c = CONF[ORG3];
-  // PUT ok (200) but the verification GET shows status 3 (not arrived) — the
-  // engine must NOT claim arrival. Reset ORG3 job to en_route first.
+  // PUT ok (200) but the verification GET shows status 2 (still en_route — the
+  // arrival did not land on Towbook) — the engine must NOT claim arrival.
+  // Reset ORG3 job to en_route first.
   await q`UPDATE dispatch_jobs SET status='en_route' WHERE id=${c.job}`;
-  const { fetchImpl, calls } = makeFetch({ callId: c.call, putStatus: 200, getStatusId: 3 });
+  const { fetchImpl, calls } = makeFetch({ callId: c.call, putStatus: 200, getStatusId: 2 });
   const out = await evaluateGeofence({ orgId: ORG3, userId: c.userId, towbookDriverId: c.tbDriver, lat: PICKUP.lat, lng: PICKUP.lng, fetchImpl });
   check("verify failure → not verified", out.action === "arrived" && out.towbookOk === false && out.verified === false && out.detail.includes("verification"), JSON.stringify(out));
   check("PUT + GET both happened", calls.length === 2 && calls[0].method === "PUT" && calls[1].method === "GET", JSON.stringify(calls));

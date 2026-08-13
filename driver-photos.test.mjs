@@ -230,7 +230,8 @@ await setup();
   await setVehicleMatchCore(user, { jobId: c.call, confirmed: true });
 
   // Auto-arrive fires once the gate passes (photos_required=true for ORG).
-  const geoFetch = makeFetch({ callId: c.call, getStatusId: 4 });
+  // The core PUTs Towbook status 3 (On Scene) and verifies 3 (4 = Towing).
+  const geoFetch = makeFetch({ callId: c.call, getStatusId: 3 });
   const out = await evaluateGeofence({ orgId: ORG, userId: c.userId, towbookDriverId: c.tbDriver, lat: PICKUP.lat, lng: PICKUP.lng, fetchImpl: geoFetch.fetchImpl });
   check("gate passed → geofence auto-arrives", out.action === "arrived" && out.towbookOk && out.verified, JSON.stringify(out));
   const st = await q`SELECT status FROM dispatch_jobs WHERE id=${c.job}`;
