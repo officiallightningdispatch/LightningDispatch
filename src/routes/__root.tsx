@@ -1,9 +1,10 @@
 import { HeadContent, Outlet, Scripts, createRootRoute, Link } from "@tanstack/react-router";
 import { Route as RouteIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { EmptyState } from "~/components/ui";
 import { ToastProvider } from "~/components/ui";
 import { DispatchStoreProvider } from "~/lib/store";
+import { installPushReceivedListener } from "~/lib/push-received";
 import appCss from "~/styles/app.css?url";
 
 export const Route = createRootRoute({
@@ -66,9 +67,20 @@ function RootDocument({ children }: { children: ReactNode }) {
         <HeadContent />
       </head>
       <body>
+        <PushReceivedSound />
         {children}
         <Scripts />
       </body>
     </html>
   );
+}
+
+/** Mounts the SW push-received bridge once (client only): when the service
+ *  worker delivers a push to an open window it posts LD_PUSH_RECEIVED — this
+ *  is the listener that makes the phone SOUND the owner's exact alert MP3
+ *  (the missing half of the round-trip — see src/lib/push-received.ts).
+ *  Renders nothing. */
+function PushReceivedSound() {
+  useEffect(() => installPushReceivedListener(), []);
+  return null;
 }

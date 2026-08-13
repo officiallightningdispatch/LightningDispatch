@@ -7,11 +7,11 @@
  *          (built by push-core buildPushNotificationJson — spec A1 verbatim).
  *          showNotification with a single-burst vibrate [200]. The OS decides
  *          how much of `sound`/`vibrate` it honours: Android Chrome plays the
- *          sound once per push — the ~5 s THUNDER STORM (owner-directed
- *          2026-08-13: /sounds/lightning-strike.mp3 re-rendered full-scale,
- *          ~-0.5 dBFS, by scripts/generate-strike.mjs — loud in a cab), iOS
- *          Safari ignores custom sound — the in-app WebAudio strike (sound.ts)
- *          is the reliable sound path when the app is open.
+ *          sound once per push — the OWNER'S EXACT alert MP3 (2026-08-13:
+ *          /sounds/alert.mp3, the file the owner supplied, bundled byte-
+ *          identical) — iOS Safari ignores custom sound — the in-app alert
+ *          (client push-received.ts → sound.ts playAlertSound) is the reliable
+ *          audible path when the app is open.
  *          tag 'job-<callId>' replaces stale notifications for the same job.
  *
  *  notificationclick — focus an existing app tab, else open data.url ("/driver"
@@ -53,7 +53,7 @@ self.addEventListener("push", (event) => {
           data: parsed.data && typeof parsed.data === "object" && typeof parsed.data.url === "string" ? { url: parsed.data.url } : { url: "/driver" },
           icon: typeof parsed.icon === "string" ? parsed.icon : "/favicon.svg",
           badge: typeof parsed.badge === "string" ? parsed.badge : "/favicon.svg",
-          sound: typeof parsed.sound === "string" && parsed.sound ? parsed.sound : "/sounds/lightning-strike.mp3",
+          sound: typeof parsed.sound === "string" && parsed.sound ? parsed.sound : "/sounds/alert.mp3",
           renotify: false,
         };
       }

@@ -30,7 +30,7 @@
 //      AI dispatcher) with an injectable fetchImpl that "receives" the POST
 //      instead of a real push service. The body is DECRYPTED with the fake
 //      subscription's own keypair (RFC 8291) and asserted field-by-field,
-//      including the sound metadata (/sounds/lightning-strike.mp3).
+//      including the sound metadata (/sounds/alert.mp3 — the OWNER exact MP3).
 //   4. Missing-subscription path (REPAIRED): an ASSIGNED driver with zero
 //      subscriptions → skipped=true / reason=no_subscriptions / attempted=0
 //      (unchanged) AND an escalation row written by PRODUCTION code with the
@@ -173,7 +173,7 @@ check("payload: body = job type · pickup, area · ETA pending (manual assign qu
 check("payload: tag = job-<towbook call id> (driver's job identity)", notif.tag === `job-${JOB_TB}`, notif.tag);
 check("payload: data.url opens the driver portal", notif.data.url === "/driver", JSON.stringify(notif.data));
 check("payload: icon+badge favicon", notif.icon === "/favicon.svg" && notif.badge === "/favicon.svg");
-check("SOUND METADATA: absolute same-origin strike sound (Android Chrome showNotification)", notif.sound === "/sounds/lightning-strike.mp3", notif.sound);
+check("SOUND METADATA: absolute same-origin strike sound (Android Chrome showNotification)", notif.sound === "/sounds/alert.mp3", notif.sound);
 check("payload: renotify false", notif.renotify === false);
 const jwtPayload = JSON.parse(Buffer.from(wire.init.headers.authorization.split("t=")[1].split(".")[1], "base64url").toString("utf8"));
 check("vapid: JWT audience = push service origin", jwtPayload.aud === "https://push.example.test", jwtPayload.aud);

@@ -3,7 +3,7 @@
 //   · RFC 8291/8292 crypto round-trip WITHOUT any network — encrypt with our
 //     VAPID pair + a fake subscription, decrypt with the subscription's own
 //     private key, assert the notification JSON (spec A1 verbatim: title/body/
-//     tag/data.url/icon/sound/renotify), and verify the VAPID JWT (aud = push
+//     tag/data.url/icon/sound/renotify — sound = the OWNER exact MP3), and verify the VAPID JWT (aud = push
 //     service origin, exp > now, k = the raw public key).
 //   · Migration 35: push_subscriptions table + (org,user) index exist.
 //   · Subscription CRUD + role gates: ONLY contractors save/list/delete their
@@ -126,14 +126,14 @@ const SUB_AUTH = b64urlEncode(randomBytes(16));
 const payload = { callId: "279999001", callRequestId: "326999001", jobType: "Flatbed tow", location: "Main St & 5th Ave, 06606", etaMinutes: 12, jobUrl: "/driver" };
 const notifJson = buildPushNotificationJson(payload);
 check("spec A1: title exact", notifJson.title === "New job — Lightning Dispatch");
-check("sound: absolute same-origin URL (Android Chrome showNotification)", notifJson.sound === "/sounds/lightning-strike.mp3");
+check("sound: absolute same-origin URL (Android Chrome showNotification)", notifJson.sound === "/sounds/alert.mp3");
 check("trigger: notifyAssignedDriver is the single assignment trigger (fireAssignmentPush delegates)", typeof (await import("./src/data/push-core.ts")).notifyAssignedDriver === "function");
 check("spec A1: body = service · location · ETA", notifJson.body === "Flatbed tow · Main St & 5th Ave, 06606 · ETA ~12 min");
 check("spec A1: tag job-<callId>", notifJson.tag === "job-279999001");
 check("selftest: tag override wins (self-test-<ts>)", buildPushNotificationJson({ ...payload, tag: "self-test-1" }).tag === "self-test-1");
 check("spec A1: data.url /driver", notifJson.data.url === "/driver");
 check("spec A1: icon+badge favicon", notifJson.icon === "/favicon.svg" && notifJson.badge === "/favicon.svg");
-check("spec A1: sound field", notifJson.sound === "/sounds/lightning-strike.mp3");
+check("spec A1: sound field", notifJson.sound === "/sounds/alert.mp3");
 check("spec A1: renotify false", notifJson.renotify === false);
 
 const enc = encryptPush({ endpoint: endpoint("crypto"), p256dh: SUB_PUB, auth: SUB_AUTH }, JSON.stringify(notifJson), keys);

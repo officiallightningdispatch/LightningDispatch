@@ -316,11 +316,13 @@ export function buildPushNotificationJson(p: AssignmentPushPayload): Record<stri
     icon: "/favicon.svg",
     badge: "/favicon.svg",
     // ABSOLUTE same-origin URL — the SW's showNotification `sound` option needs
-    // a resolvable static path (public/sounds/lightning-strike.mp3, re-rendered
-    // to 98% FS by scripts/generate-strike.mjs). Android Chrome is the main
-    // beneficiary; iOS Safari ignores custom sound (OS limitation — the in-app
-    // WebAudio strike is the guaranteed-loud path there).
-    sound: "/sounds/lightning-strike.mp3",
+    // a resolvable static path (public/sounds/alert.mp3, the OWNER'S EXACT alert
+    // MP3 bundled 2026-08-13 — owner supplied the source URL; byte-identical
+    // copy, sha256 51b7b8fe…). Android Chrome is the main beneficiary; iOS
+    // Safari ignores custom sound (OS limitation — the in-app alert (push-
+    // received.ts → sound.ts playAlertSound) is the guaranteed-audible path
+    // when the app is open).
+    sound: "/sounds/alert.mp3",
     renotify: false,
   };
 }

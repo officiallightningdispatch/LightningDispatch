@@ -90,6 +90,45 @@ export function toggleSoundMuted(role: SoundRole): boolean {
   return next;
 }
 
+/** The OWNER'S EXACT alert sound (owner-supplied MP3, bundled byte-identical
+ *  at public/sounds/alert.mp3 — the ONLY audible notification cue 2026-08-13:
+ *  the system-banner `sound` on Android, the in-app push-received alert on
+ *  iOS, and the in-app banner strike all play this one file). Cached
+ *  HTMLAudioElement; currentTime is reset so rapid pushes re-trigger. If the
+ *  asset can't play (autoplay blocked / load error), falls back to the
+ *  synthesized playLightning so a blocked browser is still audible when the
+ *  AudioContext is primed. Never throws. */
+let alertAudio: HTMLAudioElement | null = null;
+function getAlertAudio(): HTMLAudioElement | null {
+  if (typeof Audio === "undefined") return null;
+  if (!alertAudio) {
+    try {
+      const a = new Audio("/sounds/alert.mp3");
+      a.preload = "auto";
+      alertAudio = a;
+    } catch {
+      return null;
+    }
+  }
+  return alertAudio;
+}
+
+export function playAlertSound(role: SoundRole): void {
+  if (typeof window === "undefined") return;
+  if (soundMuted(role)) return;
+  const a = getAlertAudio();
+  if (!a) return; // no Audio API — banner-only fallback
+  try {
+    a.currentTime = 0;
+    const p = a.play();
+    if (p && typeof p.catch === "function") {
+      p.catch(() => playLightning(role)); // autoplay blocked — synthesized fallback
+    }
+  } catch {
+    playLightning(role);
+  }
+}
+
 /**
  * Play ONE lightning strike. Silent no-op when muted, when the context is
  * blocked (autoplay policy — banner-only fallback), or when Web Audio is

@@ -30,7 +30,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { SERVICE_LABELS } from "~/lib/job-ui";
 import { diffCancelledJobIds, diffEscalatedDecisionIds, diffNewJobIds, mergeSeen, type NotifyCall } from "~/lib/notify";
 import { getSeenIds, seenKey, setSeenIds } from "~/lib/notify-seen";
-import { playLightning, primeAudio, soundMuted, toggleSoundMuted, type SoundRole } from "~/lib/sound";
+import { playAlertSound, primeAudio, soundMuted, toggleSoundMuted, type SoundRole } from "~/lib/sound";
 import { etaMinutesLabel } from "~/components/driver-eta";
 import { useDispatchStore } from "~/lib/store";
 import { listAiDispatcherDecisions } from "~/data/server";
@@ -91,8 +91,9 @@ function useBannerStack(role: SoundRole) {
   const push = useCallback((items: BannerItem[]) => {
     if (!items.length) return;
     setBanners((prev) => [...prev, ...items].slice(-MAX_STACK));
-    // One strike per notification — never a loop.
-    for (const _ of items) playLightning(role);
+    // One alert per notification — never a loop. The OWNER'S EXACT MP3
+    // (playAlertSound; synthesized fallback if the asset is blocked).
+    for (const _ of items) playAlertSound(role);
     for (const it of items) {
       const t = setTimeout(() => dismiss(it.id), AUTO_DISMISS_MS);
       timeouts.current.set(it.id, t);

@@ -228,23 +228,24 @@ export async function removePushSubscription(): Promise<void> {
   } catch { /* best-effort */ }
 }
 
-/** One-time "new job" confirmation strike via HTMLAudioElement (the rendered
- *  lightning-strike.mp3 asset) — used ONLY to preview the sound after the
- *  driver enables notifications. The in-app strike itself stays on the
- *  WebAudio synthesis (sound.ts) per the design spec. */
+/** One-time "new job" confirmation strike via HTMLAudioElement (the OWNER'S
+ *  EXACT alert MP3 — public/sounds/alert.mp3) — used ONLY to preview the sound
+ *  after the driver enables notifications and as the fallback in-app alert
+ *  (push-received.ts). The in-app strike itself stays on the same asset per
+ *  the owner's 2026-08-13 direction (one sound everywhere). */
 export function playStrikeAsset(): void {
   try {
     if (typeof Audio === "undefined") return;
-    const a = new Audio("/sounds/lightning-strike.mp3");
+    const a = new Audio("/sounds/alert.mp3");
     void a.play().catch(() => { /* muted/blocked — silent */ });
   } catch { /* silent */ }
 }
 
-/** Preload the strike asset so the first play has no fetch latency. */
+/** Preload the alert asset so the first play has no fetch latency. */
 export function preloadStrikeAsset(): void {
   try {
     if (typeof Audio === "undefined") return;
-    const a = new Audio("/sounds/lightning-strike.mp3");
+    const a = new Audio("/sounds/alert.mp3");
     a.preload = "auto";
     a.volume = 0;
     void a.load();
