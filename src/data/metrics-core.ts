@@ -16,6 +16,7 @@
  */
 import { sql } from "~/db";
 import { deriveDocStatus, type DocStatus } from "./contractor-admin-core";
+import { serviceDurationSeconds, goalSecondsFor, normalizeServiceType, SERVICE_TIME_LABELS, formatGoalSeconds } from "./service-time-core";
 
 export type MetricsPeriod = "week" | "month" | "all";
 export const METRICS_PERIODS: MetricsPeriod[] = ["week", "month", "all"];
@@ -51,6 +52,8 @@ export type DriverMetricsRow = {
   compliance: { required: number; approved: number; onFile: number; ok: boolean } | null;
   /** Academy coach output for this driver (top recommendations). */
   academy: CoachRecommendation[];
+  /** Service-time actual-vs-goal per service (completion-goals-spec §3). */
+  serviceTime: ServiceTimeBreakdown;
 };
 
 export type CoachRecommendation = {
@@ -92,6 +95,7 @@ export type DriverDetailRow = {
   availabilityCard: { currentStatus: "online" | "offline"; lastPingAt: string | null; pings24h: number };
   aiDispatch: { autoAccepted: number; avgQuotedEtaMinutes: number | null; escalations: number };
   academy: CoachRecommendation[];
+  serviceTime: ServiceTimeBreakdown;
 };
 export type DriverMetricsDetailResult =
   | { ok: true; period: MetricsPeriod; driver: DriverDetailRow }
@@ -158,8 +162,9 @@ const configured = () => Boolean(process.env.DATABASE_URL);
 type RosterRow = { id: string; name: string; towbookDriverId: string; payrateCents: number | null; online: boolean };
 type JobRow = {
   id: string; towbookJobId: string | null; customerName: string; status: string;
-  createdAt: number; completedAt: number | null; arrivedAt: number | null;
+  createdAt: number; completedAt: number | null; arrivedAt: number | null; assignedAt: number | null;
   assignedDriverTowbookId: string | null; assignedContractorId: string | null;
+  serviceType: string; durationSeconds: number | null;
 };
 type EventRow = { jobId: string; fromStatus: string; toStatus: string; actorRole: string | null; note: string | null; occurredAt: number };
 type PhotoAgg = { jobId: string; phase: string; n: number };
@@ -187,6 +192,11 @@ type OrgData = {
   lessons: { id: string; slug: string; title: string; summary: string; metricKey: string; sortOrder: number }[];
   progress: Map<string, "in_progress" | "completed">; // lessonId → status (for the org+driver scope)
   maxEtaMinutes: number;
+  /** Service-time goals (completion-goals-spec.md): org rows + the Phase-1
+   *  battery install variants (jobId → standard|advanced) so battery_install
+   *  jobs score against the right 1h/2h goal. */
+  serviceTimeGoals: { serviceType: string; variant: string; goalSeconds: number }[];
+  batteryVariantByJobId: Map<string, string>;
   pings24hByDriver: Map<string, number>;
   lastPingAtByDriver: Map<string, string>;
 };
@@ -224,8 +234,8 @@ async function fetchOrgData(orgId: string, period: MetricsPeriod, driverUserId: 
   }));
 
   const completedRows = boundMs == null
-    ? await q`SELECT id, towbook_job_id, customer_name, created_at, completed_at, arrived_at, assigned_driver_towbook_id, assigned_contractor_id FROM dispatch_jobs WHERE org_id=${orgId} AND status='completed' AND completed_at IS NOT NULL`
-    : await q`SELECT id, towbook_job_id, customer_name, created_at, completed_at, arrived_at, assigned_driver_towbook_id, assigned_contractor_id FROM dispatch_jobs WHERE org_id=${orgId} AND status='completed' AND completed_at IS NOT NULL AND completed_at >= ${new Date(boundMs).toISOString()}`;
+    ? await q`SELECT id, towbook_job_id, customer_name, created_at, completed_at, arrived_at, assigned_at, assigned_driver_towbook_id, assigned_contractor_id, service_type, duration_seconds FROM dispatch_jobs WHERE org_id=${orgId} AND status='completed' AND completed_at IS NOT NULL`
+    : await q`SELECT id, towbook_job_id, customer_name, created_at, completed_at, arrived_at, assigned_at, assigned_driver_towbook_id, assigned_contractor_id, service_type, duration_seconds FROM dispatch_jobs WHERE org_id=${orgId} AND status='completed' AND completed_at IS NOT NULL AND completed_at >= ${new Date(boundMs).toISOString()}`;
   const completedJobs: JobRow[] = (completedRows as Record<string, unknown>[]).map((r) => ({
     id: String(r.id),
     towbookJobId: r.towbook_job_id != null ? String(r.towbook_job_id) : null,
@@ -234,8 +244,11 @@ async function fetchOrgData(orgId: string, period: MetricsPeriod, driverUserId: 
     createdAt: new Date(String(r.created_at)).getTime(),
     completedAt: new Date(String(r.completed_at)).getTime(),
     arrivedAt: r.arrived_at != null ? new Date(String(r.arrived_at)).getTime() : null,
+    assignedAt: r.assigned_at != null ? new Date(String(r.assigned_at)).getTime() : null,
     assignedDriverTowbookId: r.assigned_driver_towbook_id != null ? String(r.assigned_driver_towbook_id) : null,
     assignedContractorId: r.assigned_contractor_id != null ? String(r.assigned_contractor_id) : null,
+    serviceType: String(r.service_type ?? ""),
+    durationSeconds: r.duration_seconds != null ? Number(r.duration_seconds) : null,
   }));
 
   const createdRows = boundMs == null
@@ -249,8 +262,11 @@ async function fetchOrgData(orgId: string, period: MetricsPeriod, driverUserId: 
     createdAt: new Date(String(r.created_at)).getTime(),
     completedAt: null,
     arrivedAt: null,
+    assignedAt: null,
     assignedDriverTowbookId: r.assigned_driver_towbook_id != null ? String(r.assigned_driver_towbook_id) : null,
     assignedContractorId: r.assigned_contractor_id != null ? String(r.assigned_contractor_id) : null,
+    serviceType: "",
+    durationSeconds: null,
   }));
 
   const jobIdSet = new Set<string>([...completedJobs.map((j) => j.id), ...createdJobs.map((j) => j.id)]);
@@ -368,6 +384,20 @@ async function fetchOrgData(orgId: string, period: MetricsPeriod, driverUserId: 
 
   const settingsRows = await q`SELECT max_eta_minutes FROM org_settings WHERE org_id=${orgId}`;
   const maxEtaMinutes = settingsRows.length ? Number(settingsRows[0].max_eta_minutes) || 45 : 45;
+  // Service-time goals (completion-goals-spec.md §2/§3): org goal rows + the
+  // Phase-1 battery install variants so battery_install jobs score against
+  // the standard (1h) vs advanced (2h) goal.
+  const goalRows = await q`SELECT service_type, variant, goal_seconds FROM service_time_goals WHERE org_id=${orgId}`;
+  const serviceTimeGoals = (goalRows as Record<string, unknown>[]).map((r) => ({
+    serviceType: String(r.service_type),
+    variant: String(r.variant ?? ""),
+    goalSeconds: Number(r.goal_seconds),
+  }));
+  const batteryVariantRows = await q`SELECT install_job_id, install_type FROM battery_sales WHERE org_id=${orgId} AND install_type IS NOT NULL AND install_job_id IS NOT NULL`;
+  const batteryVariantByJobId = new Map<string, string>();
+  for (const r of batteryVariantRows as Record<string, unknown>[]) {
+    batteryVariantByJobId.set(String(r.install_job_id), String(r.install_type));
+  }
 
   // Availability card extras: pings in the last 24h + last ping per driver.
   const pingRows24 = await q`SELECT driver_id, COUNT(*)::int AS n, MAX(captured_at) AS last_ping FROM driver_locations WHERE org_id=${orgId} AND captured_at >= NOW() - INTERVAL '24 hours' GROUP BY driver_id`;
@@ -379,7 +409,7 @@ async function fetchOrgData(orgId: string, period: MetricsPeriod, driverUserId: 
     if (r.last_ping != null) lastPingAtByDriver.set(did, new Date(String(r.last_ping)).toISOString());
   }
 
-  return { roster, completedJobs, createdJobs, events, photos, decisions, completions, tips, pings, availability, declines, compliance, lessons, progress, maxEtaMinutes, pings24hByDriver, lastPingAtByDriver };
+  return { roster, completedJobs, createdJobs, events, photos, decisions, completions, tips, pings, availability, declines, compliance, lessons, progress, maxEtaMinutes, serviceTimeGoals, batteryVariantByJobId, pings24hByDriver, lastPingAtByDriver };
 }
 
 /* ------------------------------ per-job enrichment ------------------------------ */
@@ -475,8 +505,14 @@ function enrichJobs(completed: JobRow[], data: OrgData, u: RosterRow): Map<strin
       acceptMs, acceptAnchorMs, enRouteMs,
       firstEventAt: firstEvent?.occurredAt ?? null,
       completedEventAt: completedEvt?.occurredAt ?? null,
+      serviceType: j.serviceType,
+      durationSeconds: j.durationSeconds,
+      assignedAt: j.assignedAt,
       quotedEtaMinutes: decision?.etaMinutes ?? null,
       decisionCreatedAt: decision?.createdAt ?? null,
+      serviceType: string;
+      durationSeconds: number | null;
+      assignedAt: number | null;
       arrivalMinutes, targetMinutes, lateBy,
       photos: photosMap,
       photosComplete12,
@@ -536,13 +572,20 @@ function coveragePct(minutes: number, period: MetricsPeriod, minDay: string | nu
 
 /* ------------------------------ the coach (deterministic §4) ------------------------------ */
 function coachRecommendations(
-  m: { avgAcceptMinutes: number | null; avgEnRouteMinutes: number | null; lateJobsPct: number | null; photosPct: number | null; avgCustomerRating: number | null; tipRatePct: number | null; acceptRatePct: number | null; declines: number; gpsCoveragePct: number | null; onlineCoveragePct: number | null; completionRatePct: number | null; complianceOk: boolean; complianceNeeded: number },
+  m: { avgAcceptMinutes: number | null; avgEnRouteMinutes: number | null; lateJobsPct: number | null; photosPct: number | null; avgCustomerRating: number | null; tipRatePct: number | null; acceptRatePct: number | null; declines: number; gpsCoveragePct: number | null; onlineCoveragePct: number | null; completionRatePct: number | null; complianceOk: boolean; complianceNeeded: number; serviceTimeOver: { serviceKey: string; label: string; avgSeconds: number; goalSeconds: number } | null },
   period: MetricsPeriod,
   lessons: OrgData["lessons"],
   progress: Map<string, "in_progress" | "completed">,
 ): CoachRecommendation[] {
   const weak: { metricKey: string; why: string; deviation: number }[] = [];
   const label = PERIOD_LABEL[period];
+  if (m.serviceTimeOver != null) {
+    weak.push({
+      metricKey: "service_time",
+      why: `your average ${m.serviceTimeOver.label.toLowerCase()} time is ${formatGoalSeconds(m.serviceTimeOver.avgSeconds)} — goal is ${formatGoalSeconds(m.serviceTimeOver.goalSeconds)}`,
+      deviation: m.serviceTimeOver.avgSeconds - m.serviceTimeOver.goalSeconds,
+    });
+  }
   if (m.avgAcceptMinutes != null && m.avgAcceptMinutes > 5) {
     weak.push({ metricKey: "accept_time", why: `your average accept time is ${m.avgAcceptMinutes} min — goal is under 5`, deviation: m.avgAcceptMinutes - 5 });
   } else if (m.avgEnRouteMinutes != null && m.avgEnRouteMinutes > 8) {
@@ -596,6 +639,82 @@ function coachRecommendations(
   });
 }
 
+/* ------------------------------ service time (completion-goals-spec §3) ------------------------------ */
+export type ServiceTimeRow = {
+  serviceKey: string;
+  label: string;
+  goalSeconds: number | null;
+  avgSeconds: number | null;
+  pctOfGoal: number | null;
+  jobs: number;
+  overGoal: number;
+  underGoal: number;
+};
+export type ServiceTimeBreakdown = {
+  rows: ServiceTimeRow[];
+  overGoal: number;
+  underGoal: number;
+  /** Canonical service keys where the driver's average EXCEEDS the goal —
+   *  the Academy coach's On-Time Service Standards trigger. */
+  overGoalServices: string[];
+};
+/** Per-driver actual-vs-goal per service type for the period: duration =
+ *  serviceDurationSeconds (stored duration_seconds or completed−arrived,
+ *  fallback assigned); goal = org service_time_goals via goalSecondsFor
+ *  (battery installs use the sale's standard/advanced variant). Jobs with no
+ *  duration or no goal are excluded from the ratio but still counted under
+ *  the service when the goal exists. */
+function computeServiceTime(
+  periodJobs: { id: string; serviceType: string; durationSeconds: number | null; completedAt: number; arrivedAt: number | null; assignedAt: number | null }[],
+  goals: OrgData["serviceTimeGoals"],
+  batteryVariantByJobId: Map<string, string>,
+): ServiceTimeBreakdown {
+  const acc = new Map<string, { seconds: number[]; over: number; under: number }>();
+  for (const j of periodJobs) {
+    const dur = serviceDurationSeconds({ durationSeconds: j.durationSeconds, completedAtMs: j.completedAt, arrivedAtMs: j.arrivedAt, assignedAtMs: j.assignedAt });
+    if (dur == null) continue;
+    const { goalSeconds, serviceKey } = goalSecondsFor(goals, j.serviceType, batteryVariantByJobId.get(j.id) ?? null);
+    if (!serviceKey) continue;
+    let a = acc.get(serviceKey);
+    if (!a) { a = { seconds: [], over: 0, under: 0 }; acc.set(serviceKey, a); }
+    a.seconds.push(dur);
+    if (goalSeconds != null) {
+      if (dur > goalSeconds) a.over += 1;
+      else a.under += 1;
+    }
+  }
+  const rows: ServiceTimeRow[] = [];
+  let overGoal = 0, underGoal = 0;
+  const overGoalServices: string[] = [];
+  for (const [serviceKey, a] of acc) {
+    const avg = a.seconds.length ? Math.round(a.seconds.reduce((s, x) => s + x, 0) / a.seconds.length) : null;
+    const goal = goalSecondsFor(goals, serviceKey, null).goalSeconds;
+    const row: ServiceTimeRow = {
+      serviceKey,
+      label: SERVICE_TIME_LABELS[serviceKey] ?? serviceKey,
+      goalSeconds: goal,
+      avgSeconds: avg,
+      pctOfGoal: avg != null && goal != null && goal > 0 ? Math.round((avg / goal) * 100) : null,
+      jobs: a.seconds.length,
+      overGoal: a.over,
+      underGoal: a.under,
+    };
+    rows.push(row);
+    overGoal += a.over;
+    underGoal += a.under;
+    if (avg != null && goal != null && avg > goal) overGoalServices.push(serviceKey);
+  }
+  rows.sort((x, y) => (x.pctOfGoal ?? 0) - (y.pctOfGoal ?? 0));
+  return { rows, overGoal, underGoal, overGoalServices };
+}
+function serviceTimeOverFor(st: ServiceTimeBreakdown): { serviceKey: string; label: string; avgSeconds: number; goalSeconds: number } | null {
+  if (!st.overGoalServices.length) return null;
+  const key = st.overGoalServices[0];
+  const row = st.rows.find((r) => r.serviceKey === key);
+  if (!row || row.avgSeconds == null || row.goalSeconds == null) return null;
+  return { serviceKey: key, label: row.label, avgSeconds: row.avgSeconds, goalSeconds: row.goalSeconds };
+}
+
 /* ------------------------------ driver row ------------------------------ */
 type DriverComputed = {
   jobsCompleted: number;
@@ -619,6 +738,7 @@ type DriverComputed = {
   surveys: { distribution: number[]; latest: SurveyRow[] };
   photosCard: { pct12: number | null; preArrivalAvg: number | null; serviceAvg: number | null; finalAvg: number | null };
   aiDispatch: { autoAccepted: number; avgQuotedEtaMinutes: number | null; escalations: number };
+  serviceTime: ServiceTimeBreakdown;
 };
 
 function computeDriver(
@@ -659,6 +779,11 @@ function computeDriver(
     if (j.completedEventAt != null && j.firstEventAt != null) timeToComplete.push(j.completedEventAt - j.firstEventAt);
     else timeToComplete.push(j.completedAt - j.createdAt);
   }
+  const serviceTime = computeServiceTime(
+    periodJobs.map((j) => ({ id: j.jobId, serviceType: j.serviceType, durationSeconds: j.durationSeconds, completedAt: j.completedAt, arrivedAt: j.arrivedAt, assignedAt: j.assignedAt })),
+    data.serviceTimeGoals,
+    data.batteryVariantByJobId,
+  );
 
   // GPS coverage: created-in-period assigned jobs with ≥1 ping from this driver.
   const pingsByJob = new Map<string, number>();
@@ -727,6 +852,7 @@ function computeDriver(
       finalAvg: periodJobs.length ? round1(photosAgg.final / periodJobs.length) : null,
     },
     aiDispatch: { autoAccepted, avgQuotedEtaMinutes, escalations },
+    serviceTime,
   };
 }
 
@@ -769,10 +895,11 @@ function toRow(u: RosterRow, c: DriverComputed, period: MetricsPeriod, data: Org
         photosPct: c.photosPct, avgCustomerRating: c.avgCustomerRating, tipRatePct: c.tipRatePct,
         acceptRatePct: c.acceptRatePct, declines: c.declines, gpsCoveragePct: c.gpsCoveragePct,
         onlineCoveragePct: c.onlineCoveragePct, completionRatePct: c.completionRatePct,
-        complianceOk: compliance ? compliance.ok : true, complianceNeeded: compliance ? compliance.required - compliance.approved : 0,
+        complianceOk: compliance ? compliance.ok : true, complianceNeeded: compliance ? compliance.required - compliance.approved : 0, serviceTimeOver: serviceTimeOverFor(c.serviceTime),
       },
       period, data.lessons, data.progress,
     ),
+    serviceTime: c.serviceTime,
   };
 }
 
@@ -970,6 +1097,7 @@ export async function getDriverMetricsHandler(driverUserId: unknown, period: unk
       },
       aiDispatch: c.aiDispatch,
       academy: toRow(u, c, p, data).academy,
+      serviceTime: c.serviceTime,
     };
     return { ok: true, period: p, driver: row };
   } catch (e) {
@@ -1026,6 +1154,7 @@ export async function getMyMetricsHandler(period: unknown): Promise<DriverMetric
       },
       aiDispatch: c.aiDispatch,
       academy: toRow(u, c, p, data).academy,
+      serviceTime: c.serviceTime,
     };
     return { ok: true, period: p, driver: row };
   } catch (e) {
