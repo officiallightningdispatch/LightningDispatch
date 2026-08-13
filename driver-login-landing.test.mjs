@@ -31,7 +31,7 @@ const check = (name, cond, extra = "") => {
   if (!cond) throw new Error(`FAIL: ${name} ${extra}`);
 };
 const PREFIX = "qa-driver-login-landing";
-const uid = (tag) => `qa-${PREFIX}-${tag}-${randomUUID()}`;
+const uid = (tag) => `${PREFIX}-${tag}-${randomUUID()}`; // NO extra qa- (PREFIX carries it)
 const ORG = `qa ${PREFIX} ${randomUUID()}`;
 const ORG2 = `qa ${PREFIX}-b ${randomUUID()}`; // leftover-QA-org shape (contractor membership)
 // LIKE patterns are passed as BIND PARAMETERS (never interpolated into the SQL
@@ -41,6 +41,9 @@ const ORG2 = `qa ${PREFIX}-b ${randomUUID()}`; // leftover-QA-org shape (contrac
 // requires 0" (08P01). Patterns as parameters keep the text literal-free.
 const ORG_PAT = `qa ${PREFIX}%`; // matches both fixture org names
 const USER_PAT = `${PREFIX}-%@lightning.test`;
+// Sweep BOTH legacy shapes: an earlier buggy uid() double-prefixed rows
+// (qa-qa-driver-login-landing-...) and left them undelible via USER_PAT.
+const USER_PAT_LEGACY = `qa-${PREFIX}-%@lightning.test`;
 const OWNER_DRIVER = uid("ownerdrv"); // al0101 shape: owner member + own driver identity
 const ADMIN_DRIVER = uid("admindrv"); // admin member + own driver identity
 const CONTRACTOR_DRIVER = uid("contractordrv"); // contractor member (type-1 driver — stays contractor)
@@ -55,6 +58,7 @@ for (const org of await q`SELECT id, name FROM organizations WHERE name LIKE ${O
   await q`DELETE FROM organizations WHERE id=${org.id}`.catch(() => {});
 }
 await q`DELETE FROM users WHERE email LIKE ${USER_PAT}`.catch(() => {});
+await q`DELETE FROM users WHERE email LIKE ${USER_PAT_LEGACY}`.catch(() => {});
 await q`INSERT INTO organizations(id, name) VALUES(${ORG}, ${ORG})`;
 await q`INSERT INTO organizations(id, name) VALUES(${ORG2}, ${ORG2})`;
 const ins = (id, name) => q`INSERT INTO users(id, name, email, password_hash) VALUES(${id}, ${name}, ${email(id)}, 'x')`;
@@ -70,9 +74,9 @@ await ins(NO_MEMBER, "No Member Driver");
 const tbId = (seed) => String(BigInt("0x" + seed.replace(/-/g, "").slice(-32)) % 900_000_000n + 100_000_000n);
 const OWNER_TB_ID = tbId(uid("td"));
 await q`UPDATE users SET towbook_driver_id=${OWNER_TB_ID}, towbook_user_id=${String(Number(OWNER_TB_ID) + 1)}, login_handle=${uid("ownerdrv-h")} WHERE id=${OWNER_DRIVER}`;
-await q`UPDATE users SET towbook_driver_id=${tbId(uid("ta"))}, towbook_user_id=${tbId(uid("tua"))}, login_handle='admindrv1' WHERE id=${ADMIN_DRIVER}`;
-await q`UPDATE users SET towbook_driver_id=${tbId(uid("tc"))}, towbook_user_id=${tbId(uid("tuc"))}, login_handle='contractordrv1' WHERE id=${CONTRACTOR_DRIVER}`;
-await q`UPDATE users SET towbook_driver_id=${tbId(uid("tdd"))}, towbook_user_id=${tbId(uid("tud"))}, login_handle='dispatchdrv1' WHERE id=${DISPATCHER_DRIVER}`;
+await q`UPDATE users SET towbook_driver_id=${tbId(uid("ta"))}, towbook_user_id=${tbId(uid("tua"))}, login_handle=${uid("ah")} WHERE id=${ADMIN_DRIVER}`;
+await q`UPDATE users SET towbook_driver_id=${tbId(uid("tc"))}, towbook_user_id=${tbId(uid("tuc"))}, login_handle=${uid("ch")} WHERE id=${CONTRACTOR_DRIVER}`;
+await q`UPDATE users SET towbook_driver_id=${tbId(uid("tdd"))}, towbook_user_id=${tbId(uid("tud"))}, login_handle=${uid("dh")} WHERE id=${DISPATCHER_DRIVER}`;
 await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES
   (${ORG}, ${OWNER_DRIVER}, 'owner'),
   (${ORG}, ${ADMIN_DRIVER}, 'admin'),
@@ -128,10 +132,11 @@ for (const org of await q`SELECT id, name FROM organizations WHERE name LIKE ${O
   await q`DELETE FROM organizations WHERE id=${org.id}`.catch(() => {});
 }
 await q`DELETE FROM users WHERE email LIKE ${USER_PAT}`.catch(() => {});
+await q`DELETE FROM users WHERE email LIKE ${USER_PAT_LEGACY}`.catch(() => {});
 const leftover = await q`SELECT
   (SELECT COUNT(*)::int FROM organizations WHERE name LIKE ${ORG_PAT}) AS orgs,
-  (SELECT COUNT(*)::int FROM users WHERE email LIKE ${USER_PAT}) AS users,
-  (SELECT COUNT(*)::int FROM sessions s JOIN users u ON u.id=s.user_id WHERE u.email LIKE ${USER_PAT}) AS sessions,
+  (SELECT COUNT(*)::int FROM users WHERE (email LIKE ${USER_PAT} OR email LIKE ${USER_PAT_LEGACY})) AS users,
+  (SELECT COUNT(*)::int FROM sessions s JOIN users u ON u.id=s.user_id WHERE (u.email LIKE ${USER_PAT} OR u.email LIKE ${USER_PAT_LEGACY})) AS sessions,
   (SELECT COUNT(*)::int FROM organization_memberships m JOIN organizations o ON o.id=m.org_id WHERE o.name LIKE ${ORG_PAT}) AS members`;
 const z = Object.values(leftover[0]).every((n) => Number(n) === 0);
 console.log(`cleanup: ${JSON.stringify(leftover[0])}`);
