@@ -144,7 +144,7 @@ export async function resolveJob(orgId: string, jobId: string): Promise<Resolved
 
 /** Is this LD user the contractor assigned to the job? (contractor-id link, or
  *  the Towbook driver on the call's assets). */
-export async function isAssignedDriver(orgId: string, userId: string, towbookDriverId: string, job: ResolvedJob): Promise<boolean> {
+export async function isAssignedDriver(orgId: string, userId: string, towbookDriverId: string, job: Pick<ResolvedJob, "assignedContractorId" | "assignedDriverTowbookId" | "raw">): Promise<boolean> {
   if (job.assignedContractorId) {
     const q = await db();
     const rows = await q`SELECT contractor_id FROM organization_memberships WHERE org_id=${orgId} AND user_id=${userId} LIMIT 1`;
@@ -456,7 +456,7 @@ async function tbPhotoUpload(fetchImpl: typeof fetch, session: DriverSession, ca
 
 export type CompleteJobResult =
   | { ok: true; photosUploaded: number; towbookCompleted: boolean; changed: boolean }
-  | { ok: false; code: "not_found" | "unauthorized" | "photos_incomplete" | "photo_upload_failed" | "towbook_failed" | "no_session" | "invalid_state" | "completion_capture_required"; message: string; failures?: Array<{ label: string; status: number | null }> };
+  | { ok: false; code: "not_found" | "unauthorized" | "photos_incomplete" | "photo_upload_failed" | "towbook_failed" | "no_session" | "invalid_state" | "completion_capture_required" | "battery_test_required"; message: string; failures?: Array<{ label: string; status: number | null }> };
 
 /** THE completion push (owner spec): the customer completion capture (signature
  *  + survey from the v13 job_completions table) must already be stored, then
@@ -696,15 +696,19 @@ export async function allJobPhotoStatusesCore(orgId: string): Promise<JobPhotoSt
   try {
     await ensure();
     const q = await db();
-    const rows = await q`SELECT id, status, towbook_job_id, raw_json, assigned_contractor_id FROM dispatch_jobs WHERE org_id=${orgId}`;
+    const rows = await q`SELECT id, status, towbook_job_id, raw_json, assigned_contractor_id, assigned_driver_towbook_id, service_type, battery_test_result FROM dispatch_jobs WHERE org_id=${orgId}`;
     const out: JobPhotoStatus[] = [];
     for (const r of rows as Record<string, unknown>[]) {
+      const t = r.battery_test_result != null ? String(r.battery_test_result) : null;
       const job: ResolvedJob = {
         id: String(r.id),
         status: r.status != null ? String(r.status) : null,
         towbookJobId: r.towbook_job_id != null ? String(r.towbook_job_id) : null,
         raw: r.raw_json && typeof r.raw_json === "object" ? (r.raw_json as Record<string, unknown>) : null,
         assignedContractorId: r.assigned_contractor_id != null ? String(r.assigned_contractor_id) : null,
+        assignedDriverTowbookId: r.assigned_driver_towbook_id != null ? String(r.assigned_driver_towbook_id) : null,
+        serviceType: r.service_type != null ? String(r.service_type) : null,
+        batteryTestResult: t === "ok" || t === "faulty" ? t : null,
       };
       out.push(await photoStatusForJob(orgId, job));
     }
