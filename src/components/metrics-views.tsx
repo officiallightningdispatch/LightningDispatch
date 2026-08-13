@@ -164,11 +164,11 @@ export function OwnerMetricsView() {
                   >
                     <Avatar name={m.name} />
                     <div className="min-w-0 flex-1">
-                      <p className="flex items-center gap-1.5 truncate text-sm font-semibold text-ink-900">
+                      <p className="flex flex-wrap items-center gap-1.5 text-sm font-semibold text-ink-900">
                         <span aria-hidden="true" className={`size-2 shrink-0 rounded-full ${m.status === "online" ? "bg-success-500" : "bg-ink-300"}`} />
-                        <span className="truncate">{m.name}</span>
+                        <span className="break-words">{m.name}</span>
                       </p>
-                      <p className="mt-0.5 truncate text-xs text-ink-400">
+                      <p className="mt-0.5 break-words text-xs text-ink-400">
                         {m.jobsCompleted} jobs{m.avgCustomerRating != null ? ` · ${m.avgCustomerRating} ★` : ""}{m.avgAcceptMinutes != null ? ` · ${m.avgAcceptMinutes} min accept` : ""}
                       </p>
                       {(badge || chip) && (
@@ -207,7 +207,7 @@ function MetricDetailCard({ label, detail, value, unit, weak, why, trend, target
         </div>
         {weak && <WeakBadge>needs work</WeakBadge>}
       </div>
-      <p className="mt-1 text-[11px] text-ink-400">{detail}</p>
+      <p className="mt-1 text-xs text-ink-400">{detail}</p>
       {trend.length > 0 && (
         <div className="mt-3">
           <div className="mb-1 flex items-center justify-between text-[10px] font-bold uppercase tracking-wide text-ink-300">
@@ -263,7 +263,7 @@ export function OwnerDriverMetricsView({ driverId }: { driverId: string }) {
           </Link>
           <div className="min-w-0">
             <p className="text-xs font-bold uppercase tracking-[.18em] text-brand-600">Driver metrics</p>
-            <h2 className="truncate text-xl font-bold tracking-tight">{d.name}</h2>
+            <h2 className="break-words text-xl font-bold tracking-tight">{d.name}</h2>
           </div>
         </div>
 
@@ -357,7 +357,7 @@ export function OwnerDriverMetricsView({ driverId }: { driverId: string }) {
                       <p className="flex items-center gap-1 text-xs font-bold text-ink-700">
                         <span className="text-brand-600">{s.rating}★</span> {s.jobLabel}
                       </p>
-                      {s.comment && <p className="mt-0.5 line-clamp-2 text-xs text-ink-500">“{s.comment}”</p>}
+                      {s.comment && <p className="mt-0.5 text-xs text-ink-500 whitespace-pre-wrap break-words">“{s.comment}”</p>}
                     </div>
                   ))}
                 </>
@@ -535,7 +535,7 @@ export function DriverMetricsView() {
                         <div className="flex items-start justify-between gap-2">
                           <div className="min-w-0">
                             <p className="text-sm font-semibold text-ink-900">{r.title}</p>
-                            <p className="mt-0.5 line-clamp-2 text-xs text-ink-400">{lesson?.summary ?? r.summary}</p>
+                            <p className="mt-0.5 text-xs text-ink-400 break-words">{lesson?.summary ?? r.summary}</p>
                           </div>
                           {statusBadge(r.status)}
                         </div>
@@ -572,8 +572,8 @@ export function DriverMetricsView() {
                 {browse.map((l) => (
                   <Link key={l.lessonId} to={`/driver/academy/${l.lessonId}` as any} className="flex items-center gap-3 px-4 py-3.5 transition-colors hover:bg-ink-50">
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-semibold text-ink-800">{l.title}</p>
-                      <p className="truncate text-xs text-ink-400">{l.summary}</p>
+                      <p className="break-words text-sm font-semibold text-ink-800">{l.title}</p>
+                      <p className="break-words text-xs text-ink-400">{l.summary}</p>
                     </div>
                     <span className="shrink-0 rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-bold text-ink-500">{l.durationMinutes} min</span>
                     {statusBadge(l.status)}
@@ -631,7 +631,7 @@ export function AcademyLessonView({ lessonId }: { lessonId: string }) {
         </Link>
         <div className="min-w-0">
           <p className="text-xs font-bold uppercase tracking-[.18em] text-brand-600">Lightning Dispatch Academy</p>
-          <h2 className="truncate text-xl font-bold tracking-tight">{lesson.title}</h2>
+          <h2 className="break-words text-xl font-bold tracking-tight">{lesson.title}</h2>
         </div>
       </div>
 

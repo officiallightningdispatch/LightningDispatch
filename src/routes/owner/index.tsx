@@ -129,7 +129,7 @@ function OwnerDashboard() {
                   ) : null,
                 )}
               </div>
-              <div className="mt-4 grid grid-cols-3 gap-x-3 gap-y-3 sm:grid-cols-6">
+              <div className="mt-4 grid grid-cols-2 gap-x-3 gap-y-3 sm:grid-cols-6">
                 {counts.map(({ status, count }) => (
                   <div key={status} className="flex items-center gap-1.5 text-xs">
                     <span aria-hidden="true" className={`size-2 rounded-full ${JOB_STATUS_META[status].dot}`} />
@@ -225,7 +225,7 @@ function ContractorRow({ contractor: c }: { contractor: Contractor }) {
       <Avatar name={c.name} />
       <div className="min-w-0 flex-1">
         <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm font-semibold">
-          <span className="truncate">{c.name}</span>
+          <span className="break-words">{c.name}</span>
           <span className="flex shrink-0 items-center gap-1 text-[11px] font-semibold">
             <span
               aria-hidden="true"
@@ -234,7 +234,7 @@ function ContractorRow({ contractor: c }: { contractor: Contractor }) {
             <span className={online ? "text-success-600" : "text-ink-400"}>{online ? "online" : "offline"}</span>
           </span>
         </p>
-        <p className="mt-0.5 truncate text-xs text-ink-500">{c.vehicleTypes.join(" · ")}</p>
+        <p className="mt-0.5 break-words text-xs text-ink-500">{c.vehicleTypes.join(" · ")}</p>
       </div>
       <div className="shrink-0 text-right">
         <p className="flex items-center justify-end gap-1 text-sm font-bold tabular-nums text-ink-900">
@@ -259,7 +259,7 @@ function CompletedRow({ job, contractors }: { job: Job; contractors: Contractor[
           <Icon className="size-5" strokeWidth={2} aria-hidden="true" />
         </span>
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold">
+          <p className="break-words text-sm font-semibold">
             {job.customerName} <span className="font-normal text-ink-400">·</span>{" "}
             <span className="font-medium text-ink-500">{SERVICE_LABELS[job.serviceType]}</span>
           </p>

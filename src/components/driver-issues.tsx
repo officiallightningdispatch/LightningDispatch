@@ -77,7 +77,7 @@ export function JobFeedbackPanel({ jobId, callLabel }: { jobId: string; callLabe
             onClick={() => { setRating(n); setError(""); }}
             className="p-0.5 transition-transform active:scale-90"
           >
-            <Star className={`size-7 ${n <= rating ? "fill-accent-400 text-accent-400" : "fill-ink-100 text-ink-100"}`} />
+            <Star className={`size-8 ${n <= rating ? "fill-accent-400 text-accent-400" : "fill-ink-100 text-ink-100"}`} />
           </button>
         ))}
         <span className="ml-2 text-xs font-semibold text-ink-500">{rating > 0 ? `${rating}/5` : ""}</span>

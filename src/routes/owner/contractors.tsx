@@ -296,7 +296,7 @@ function OwnerContractors() {
                       role="tab"
                       aria-selected={rosterFilter === key}
                       onClick={() => setRosterFilter(key)}
-                      className={`h-8 rounded-lg px-3 text-[13px] font-semibold transition-colors ${rosterFilter === key ? "bg-ink-950 text-white" : "text-ink-500 hover:text-ink-700"}`}
+                      className={`h-10 rounded-lg px-3 text-[13px] font-semibold transition-colors ${rosterFilter === key ? "bg-ink-950 text-white" : "text-ink-500 hover:text-ink-700"}`}
                     >
                       {label}
                       {key === "missing" && missingDocs > 0 && <span className="ml-1 tabular-nums text-danger-600">{missingDocs}</span>}
@@ -549,7 +549,7 @@ function ContractorRowView({ c, last, onChanged, onPayrate, onEdit }: {
           </Link>
           <div className="min-w-0">
             <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm font-semibold">
-              <Link to="/owner/contractors/$id" params={{ id: c.id }} className={`truncate hover:underline ${removed ? "text-ink-400 line-through decoration-ink-300" : "hover:text-ink-700"}`}>
+              <Link to="/owner/contractors/$id" params={{ id: c.id }} className={`break-words hover:underline ${removed ? "text-ink-400 line-through decoration-ink-300" : "hover:text-ink-700"}`}>
                 {c.name}
               </Link>
               {removed ? (
@@ -562,7 +562,7 @@ function ContractorRowView({ c, last, onChanged, onPayrate, onEdit }: {
                 </StatusBadge>
               )}
             </p>
-            <p className="mt-0.5 truncate text-xs text-ink-500">
+            <p className="mt-0.5 break-words text-xs text-ink-500">
               {c.email}
               {c.loginHandle ? ` · handle ${c.loginHandle}` : ""}
               {c.vehicleType ? ` · ${c.vehicleType} truck` : ""}
@@ -594,10 +594,12 @@ function ContractorRowView({ c, last, onChanged, onPayrate, onEdit }: {
         </div>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pl-12 text-xs tabular-nums text-ink-500 sm:shrink-0 sm:pl-0 sm:text-right">
           <Link to="/owner/contractors/$id" params={{ id: c.id }} aria-label={`Open ${c.name} details`}
-            className="order-last grid size-9 shrink-0 place-items-center rounded-lg text-ink-300 transition-colors hover:bg-ink-50 hover:text-ink-600 sm:order-first sm:-mr-1">
+            className="order-last grid size-10 shrink-0 place-items-center rounded-lg text-ink-300 transition-colors hover:bg-ink-50 hover:text-ink-600 sm:order-first sm:-mr-1">
             <ChevronRight className="size-4" aria-hidden="true" />
           </Link>
-          <span className="min-w-28">
+          {/* Mobile: Towbook ID and Added live behind the detail link (rework #2);
+              Last activity stays inline. Desktop shows all three columns. */}
+          <span className="hidden min-w-28 sm:block">
             <span className="block text-[10px] font-bold uppercase tracking-wide text-ink-300 sm:hidden">Towbook ID</span>
             {c.towbookDriverId ? <span className="font-mono">{c.towbookDriverId}</span> : "—"}
           </span>
@@ -605,7 +607,7 @@ function ContractorRowView({ c, last, onChanged, onPayrate, onEdit }: {
             <span className="block text-[10px] font-bold uppercase tracking-wide text-ink-300 sm:hidden">Last activity</span>
             {c.lastActivityAt ? `active ${timeAgo(c.lastActivityAt)}` : "never"}
           </span>
-          <span className="min-w-28">
+          <span className="hidden min-w-28 sm:block">
             <span className="block text-[10px] font-bold uppercase tracking-wide text-ink-300 sm:hidden">Added</span>
             {c.createdAt ? timeAgo(c.createdAt) : "—"}
           </span>
@@ -616,7 +618,7 @@ function ContractorRowView({ c, last, onChanged, onPayrate, onEdit }: {
                 title="Edit contractor"
                 aria-label={`Edit ${c.name}`}
                 onClick={() => onEdit()}
-                className="grid size-9 place-items-center rounded-lg border border-ink-200 bg-surface text-ink-500 transition-colors hover:border-brand-300 hover:text-brand-700"
+                className="grid size-10 place-items-center rounded-lg border border-ink-200 bg-surface text-ink-500 transition-colors hover:border-brand-300 hover:text-brand-700"
               >
                 <Pencil className="size-4" aria-hidden="true" />
               </button>
@@ -625,7 +627,7 @@ function ContractorRowView({ c, last, onChanged, onPayrate, onEdit }: {
                 title="Remove contractor"
                 aria-label={`Remove ${c.name}`}
                 onClick={() => { setConfirmingRemove(true); setError(""); setNotice(null); }}
-                className="grid size-9 place-items-center rounded-lg border border-danger-200 bg-danger-50/60 text-danger-600 transition-colors hover:bg-danger-100"
+                className="grid size-10 place-items-center rounded-lg border border-danger-200 bg-danger-50/60 text-danger-600 transition-colors hover:bg-danger-100"
               >
                 <Trash2 className="size-4" aria-hidden="true" />
               </button>

@@ -207,7 +207,7 @@ export function AiEscalationsBanner() {
               <li key={d.id} className="flex items-start gap-2.5 rounded-xl border border-accent-100 bg-surface px-3 py-2.5">
                 <StatusBadge className={`shrink-0 ${m.badge}`}>{m.label}</StatusBadge>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-xs leading-snug text-ink-600">{d.reason}</p>
+                  <p className="line-clamp-2 text-xs leading-snug text-ink-600">{d.reason}</p>
                   <p className="mt-0.5 text-[11px] text-ink-400">
                     {timeAgo(d.createdAt)} · offer <span className="font-mono">{d.callRequestId}</span>
                     {d.driverName ? ` · ${d.driverName}` : ""}

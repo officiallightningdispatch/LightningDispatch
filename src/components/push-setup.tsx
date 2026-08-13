@@ -92,7 +92,7 @@ export function PushPermissionCard() {
         <Button variant="primary" size="md" className="h-11 w-full" loading={busy} onClick={() => void allow()}>
           Allow notifications
         </Button>
-        <Button variant="ghost" size="md" className="h-9 w-full" disabled={busy} onClick={notNow}>
+        <Button variant="ghost" size="md" className="h-10 w-full" disabled={busy} onClick={notNow}>
           Not now
         </Button>
       </div>

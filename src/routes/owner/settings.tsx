@@ -186,7 +186,7 @@ function DriverAccountCard() {
           <div className="rounded-xl bg-ink-50 p-4">
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
-                <p className="truncate font-bold text-ink-800">{linked.name} <span className="ml-1 rounded-full bg-brand-50 px-2 py-0.5 text-[11px] font-semibold text-brand-700">{linked.deactivated ? "Removed from roster" : "Linked"}</span></p>
+                <p className="break-words font-bold text-ink-800">{linked.name} <span className="ml-1 rounded-full bg-brand-50 px-2 py-0.5 text-[11px] font-semibold text-brand-700">{linked.deactivated ? "Removed from roster" : "Linked"}</span></p>
                 <p className="text-xs text-ink-500">Driver ID <span className="font-mono font-semibold">{linked.towbookDriverId}</span>{linked.signedIn ? " · signed in" : " · hasn't signed in yet"}{linked.lastActivityAt ? ` · last active ${new Date(linked.lastActivityAt).toLocaleDateString()}` : ""}</p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
@@ -220,7 +220,7 @@ function DriverAccountCard() {
                 <button key={c.id} type="button" onClick={() => setConfirm({ kind: "link", driverId: c.id, driverName: c.name })} className="flex w-full items-center gap-3 rounded-xl border border-ink-100 p-3 text-left hover:bg-ink-50">
                   <span className="grid size-10 shrink-0 place-items-center rounded-full bg-brand-50 text-sm font-bold text-brand-700">{c.name.trim().slice(0, 1).toUpperCase() || "D"}</span>
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-bold text-ink-800">{c.name}</span>
+                    <span className="block break-words text-sm font-bold text-ink-800">{c.name}</span>
                     <span className="block text-xs text-ink-500">Driver ID {c.towbookDriverId}{c.signedIn ? " · signed in" : ""}</span>
                   </span>
                   <span className="shrink-0 rounded-full bg-ink-950 px-3 py-1 text-xs font-bold text-white">Link</span>

@@ -208,7 +208,7 @@ function DocumentsView() {
                 <div className="p-4 pb-3">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <p className="truncate text-sm font-bold text-ink-900">{row.docTypeName}</p>
+                      <p className="break-words text-sm font-bold text-ink-900">{row.docTypeName}</p>
                       <p className="mt-1"><DocStatusBadge status={row.status} /></p>
                     </div>
                     <div className="flex shrink-0 gap-2">
@@ -323,7 +323,7 @@ function DocumentsView() {
         <div className="fixed inset-0 z-50 grid place-items-center bg-ink-950/40 p-4" role="dialog" aria-modal="true" aria-label={viewer.title}>
           <div className="w-full max-w-lg rounded-2xl bg-surface p-5 shadow-card">
             <div className="mb-3 flex items-center justify-between gap-2">
-              <p className="truncate text-sm font-bold text-ink-900">{viewer.title}</p>
+              <p className="break-words text-sm font-bold text-ink-900">{viewer.title}</p>
               <button type="button" onClick={() => setViewer(null)} aria-label="Close" className="grid size-9 place-items-center rounded-full text-ink-400 hover:bg-ink-50">
                 <X className="size-5" />
               </button>
@@ -447,7 +447,7 @@ function SheetBridge({
                   <FileText className="size-5" aria-hidden="true" />
                 </span>
                 <span className="min-w-0">
-                  <span className="block truncate text-sm font-semibold text-ink-800">{selected.file.name}</span>
+                  <span className="block break-words text-sm font-semibold text-ink-800">{selected.file.name}</span>
                   <span className="block text-xs text-ink-400">PDF</span>
                 </span>
               </div>
@@ -485,7 +485,7 @@ function FormSheetFrame({ title, eyebrow, onClose, children }: { title: string; 
         <div className="flex shrink-0 items-center justify-between gap-2 px-5 pb-3 pt-3">
           <div className="min-w-0">
             <p className="text-[10px] font-bold uppercase tracking-wide text-brand-600">{eyebrow}</p>
-            <p className="truncate text-base font-bold text-ink-900">{title}</p>
+            <p className="break-words text-base font-bold text-ink-900">{title}</p>
           </div>
           <button type="button" onClick={onClose} aria-label="Close" className="grid size-9 shrink-0 place-items-center rounded-full text-ink-400 transition-colors hover:bg-ink-50 hover:text-ink-600">
             <X className="size-5" />
@@ -762,7 +762,7 @@ function IdentityDocField({ doc, onChange, onFileError }: { doc: IdentityDocDraf
                 <FileText className="size-5" aria-hidden="true" />
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-semibold text-ink-800">{doc.file.name}</span>
+                <span className="block break-words text-sm font-semibold text-ink-800">{doc.file.name}</span>
                 <span className="block text-xs text-ink-400">JPG, PNG, WebP or PDF</span>
               </span>
               <Button size="sm" variant="ghost" onClick={() => pickRef.current?.click()}>Change</Button>

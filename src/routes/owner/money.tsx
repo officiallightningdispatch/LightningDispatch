@@ -428,7 +428,7 @@ function MoneyView() {
                 <div className="flex items-center gap-2.5 border-b border-ink-100 bg-ink-50/50 px-4 py-3">
                   <span className="grid size-8 place-items-center rounded-lg bg-ink-100 text-ink-600"><Icon className="size-4" strokeWidth={2} /></span>
                   <span className="text-sm font-bold text-ink-700">{RAIL_LABELS[rail]}</span>
-                  <span className="rounded-full bg-ink-100 px-2 py-0.5 text-[11px] font-bold tabular-nums text-ink-600">{recs.length}</span>
+                  <span className="rounded-full bg-ink-100 px-2 py-0.5 text-xs font-bold tabular-nums text-ink-600">{recs.length}</span>
                   <span className="ml-auto text-sm font-black tabular-nums text-ink-900">— {money(groupTotal)}</span>
                 </div>
                 {recs.map((rec) => (
@@ -447,14 +447,14 @@ function MoneyView() {
                       </div>
                       <div className="text-right">
                         <p className="text-sm font-bold tabular-nums text-ink-900">{money(rec.totalCents)}</p>
-                        <p className="text-[11px] text-ink-400">
+                        <p className="text-xs text-ink-400">
                           {rec.jobCount} job{rec.jobCount === 1 ? "" : "s"}
                           {rec.payrateCents == null ? " · rate not set" : ` · ${money(rec.grossCents)}`}
                           {rec.tipsCents > 0 && <span className="text-success-600"> + {money(rec.tipsCents)} tips</span>}
                           {cashedOutNote(rec)}
                         </p>
                       </div>
-                      <Button variant="primary" size="sm" onClick={() => { setConfirmMarkId(rec.id); setMarkNote(""); }}>Mark paid</Button>
+                      <Button variant="primary" size="md" className="shrink-0" onClick={() => { setConfirmMarkId(rec.id); setMarkNote(""); }}>Mark paid</Button>
                     </div>
 
                     {confirmMarkId === rec.id && (
@@ -530,7 +530,7 @@ function MoneyView() {
                     </div>
                     <div className="text-right">
                       <p className="text-sm font-bold tabular-nums text-ink-900">{money(rec.totalCents)} due</p>
-                      <p className="text-[11px] text-ink-400">
+                      <p className="text-xs text-ink-400">
                         {rec.jobCount} job{rec.jobCount === 1 ? "" : "s"}
                         {rec.payrateCents == null ? " · rate not set" : ` · ${money(rec.grossCents)}`}
                         {rec.tipsCents > 0 && <span className="text-success-600"> + {money(rec.tipsCents)} tips</span>}
@@ -574,7 +574,7 @@ function MoneyView() {
                               value={rejectNote}
                               onChange={(e) => setRejectNote(e.target.value)}
                               placeholder="Reason"
-                              className="h-8 w-36 rounded-lg border border-ink-200 bg-surface px-2 text-xs outline-none focus:border-brand-500"
+                              className="h-10 w-36 rounded-lg border border-ink-200 bg-surface px-2 text-xs outline-none focus:border-brand-500"
                             />
                             <Button variant="danger-ghost" size="sm" loading={rejectBusy === rec.id} onClick={() => void runReject(rec)}>Confirm</Button>
                             <Button variant="ghost" size="sm" onClick={() => { setRejectOpenFor(null); setRejectNote(""); }}>Cancel</Button>

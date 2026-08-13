@@ -199,7 +199,7 @@ export function DocCompareSheet({
           </a>
         </div>
       )}
-      {file?.fileName && <p className="mt-1.5 truncate text-[11px] text-ink-400">{file.fileName}</p>}
+      {file?.fileName && <p className="mt-1.5 break-words text-[11px] text-ink-400">{file.fileName}</p>}
     </div>
   );
   return (
@@ -207,7 +207,7 @@ export function DocCompareSheet({
       <div className="w-full max-w-2xl rounded-2xl bg-surface shadow-card-hover">
         <div className="flex items-center justify-between gap-3 border-b border-ink-100 px-4 py-3">
           <div className="min-w-0">
-            <p className="truncate text-sm font-bold">Verify {doc.docTypeName}</p>
+            <p className="break-words text-sm font-bold">Verify {doc.docTypeName}</p>
             <p className="text-xs text-ink-400">Document &amp; live selfie — approve the pair together</p>
           </div>
           <button type="button" onClick={onClose} aria-label="Close compare" className="grid size-9 shrink-0 place-items-center rounded-lg text-ink-500 hover:bg-ink-50 hover:text-ink-700">
@@ -300,7 +300,7 @@ function ScheduleEditor({ initial, onSave, saving }: {
         <p className="border-b border-ink-100 px-4 py-3 text-xs font-bold uppercase tracking-wide text-ink-400">Days they work</p>
         <ul>
           {rows.map((r, i) => (
-            <li key={r.day} className={`flex items-center gap-3 px-4 py-3 ${i > 0 ? "border-t border-ink-100" : ""}`}>
+            <li key={r.day} className={`flex flex-wrap items-center gap-3 px-4 py-3 ${i > 0 ? "border-t border-ink-100" : ""}`}>
               <button
                 type="button"
                 role="switch"
@@ -312,14 +312,14 @@ function ScheduleEditor({ initial, onSave, saving }: {
                 <span aria-hidden="true" className={`inline-block size-5 transform rounded-full bg-white shadow transition-transform duration-150 ${r.on ? "translate-x-6" : "translate-x-1"}`} />
               </button>
               <span className={`w-24 shrink-0 text-sm font-semibold ${r.on ? "text-ink-900" : "text-ink-300"}`}>{DAY_LABELS[r.day - 1]}</span>
-              <span className={`flex flex-1 items-center gap-2 ${r.on ? "" : "opacity-40"}`}>
+              <span className={`flex w-full min-w-0 flex-1 flex-col gap-2 sm:w-auto sm:flex-row sm:items-center sm:gap-2 ${r.on ? "" : "opacity-40"}`}>
                 <input type="time" value={r.start} disabled={!r.on} onChange={(e) => setTime(r.day, "start", e.target.value)}
                   aria-label={`${DAY_LABELS[r.day - 1]} start time`}
-                  className="h-11 flex-1 rounded-xl border border-ink-200 bg-surface px-2 text-sm tabular-nums text-ink-800 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100 disabled:opacity-60" />
+                  className="h-11 w-full rounded-xl border border-ink-200 bg-surface px-2 text-sm tabular-nums text-ink-800 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100 disabled:opacity-60 sm:flex-1" />
                 <span className="text-xs font-semibold text-ink-400">to</span>
                 <input type="time" value={r.end} disabled={!r.on} onChange={(e) => setTime(r.day, "end", e.target.value)}
                   aria-label={`${DAY_LABELS[r.day - 1]} end time`}
-                  className="h-11 flex-1 rounded-xl border border-ink-200 bg-surface px-2 text-sm tabular-nums text-ink-800 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100 disabled:opacity-60" />
+                  className="h-11 w-full rounded-xl border border-ink-200 bg-surface px-2 text-sm tabular-nums text-ink-800 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100 disabled:opacity-60 sm:flex-1" />
               </span>
             </li>
           ))}
@@ -439,7 +439,7 @@ export function ContractorProfileEditor({ contractorId, initialSection = "profil
         <header className="z-10 flex items-center gap-3 border-b border-ink-100 bg-surface px-4 py-3">
           <Avatar name={detail?.name ?? "?"} className="size-10" />
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-bold text-ink-900">{detail ? detail.name : "Loading…"}</p>
+            <p className="break-words text-sm font-bold text-ink-900">{detail ? detail.name : "Loading…"}</p>
             {detail && <ComplianceBadge approved={approvedCount} required={detail.requiredDocCount} />}
           </div>
           <Button size="sm" variant="secondary" className="!px-2.5" onClick={onClose} aria-label="Close contractor editor">
@@ -568,7 +568,7 @@ function DetailRow({ label, value, mono, sub }: { label: string; value: string; 
   return (
     <div className="px-5 py-3.5">
       <p className="text-[10px] font-bold uppercase tracking-wide text-ink-300">{label}</p>
-      <p className={`mt-0.5 truncate text-sm font-semibold text-ink-900 ${mono ? "font-mono tabular-nums" : ""}`}>{value}</p>
+      <p className={`mt-0.5 break-words text-sm font-semibold text-ink-900 ${mono ? "font-mono tabular-nums" : ""}`}>{value}</p>
       {sub && <p className="mt-0.5 text-xs text-ink-400">{sub}</p>}
     </div>
   );

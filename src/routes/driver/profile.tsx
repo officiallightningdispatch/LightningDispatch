@@ -91,15 +91,15 @@ function ProfileView() {
                 onClick={() => fileRef.current?.click()}
                 disabled={photoBusy}
                 aria-label="Change profile photo"
-                className="absolute -bottom-1 -right-1 grid size-7 place-items-center rounded-full border-2 border-surface bg-ink-950 text-white shadow-sm transition-transform active:scale-90 disabled:opacity-50"
+                className="absolute -bottom-1 -right-1 grid size-9 place-items-center rounded-full border-2 border-surface bg-ink-950 text-white shadow-sm transition-transform active:scale-90 disabled:opacity-50"
               >
                 <Camera className="size-3.5" aria-hidden="true" />
               </button>
               <input ref={fileRef} type="file" accept="image/*" capture="user" className="hidden" onChange={(e) => void onPickPhoto(e)} />
             </div>
             <div className="min-w-0 flex-1">
-              <p className="truncate text-lg font-bold text-ink-800">{name}</p>
-              {email && <p className="truncate text-sm text-ink-500">{email}</p>}
+              <p className="break-words text-lg font-bold text-ink-800">{name}</p>
+              {email && <p className="break-words text-sm text-ink-500">{email}</p>}
               {staffDriverView ? (
                 <p className="mt-1 inline-flex items-center gap-1 rounded-full bg-brand-50 px-2 py-0.5 text-xs font-semibold text-brand-700">
                   <BadgeCheck className="size-3.5" /> Owner (driver view)

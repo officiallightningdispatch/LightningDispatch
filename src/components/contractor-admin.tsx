@@ -128,7 +128,7 @@ export function PayRateField({
           onClick={startEdit}
           disabled={inFlight}
           aria-label="Edit payrate"
-          className="grid size-9 place-items-center rounded-lg text-ink-400 transition-colors hover:bg-ink-50 hover:text-ink-600 disabled:opacity-50"
+          className="grid size-10 place-items-center rounded-lg text-ink-400 transition-colors hover:bg-ink-50 hover:text-ink-600 disabled:opacity-50"
         >
           <Pencil className="size-3.5" aria-hidden="true" />
         </button>
@@ -247,12 +247,12 @@ export function DocumentTypeEditorRow({
         {type.active && (
           <span className="flex flex-col">
             <button type="button" disabled={busy || isFirst} aria-label="Move up" onClick={() => void onMove("up")}
-              className="grid size-6 place-items-center rounded text-ink-400 hover:bg-ink-100 hover:text-ink-700 disabled:opacity-30">
-              <svg viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m18 15-6-6-6 6" /></svg>
+              className="grid size-9 place-items-center rounded text-ink-400 hover:bg-ink-100 hover:text-ink-700 disabled:opacity-30">
+              <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m18 15-6-6-6 6" /></svg>
             </button>
             <button type="button" disabled={busy || isLast} aria-label="Move down" onClick={() => void onMove("down")}
-              className="grid size-6 place-items-center rounded text-ink-400 hover:bg-ink-100 hover:text-ink-700 disabled:opacity-30">
-              <svg viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+              className="grid size-9 place-items-center rounded text-ink-400 hover:bg-ink-100 hover:text-ink-700 disabled:opacity-30">
+              <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
             </button>
           </span>
         )}
@@ -277,7 +277,7 @@ export function DocumentTypeEditorRow({
               </Button>
             </span>
           ) : (
-            <p className={`truncate text-sm font-semibold ${type.active ? "" : "text-ink-400"}`}>
+            <p className={`break-words text-sm font-semibold ${type.active ? "" : "text-ink-400"}`}>
               {type.name}
               {type.requiresExpiry && <span className="ml-2 rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-ink-500">expires</span>}
               {!type.active && <span className="ml-2 text-[11px] font-bold uppercase tracking-wide text-ink-400">paused</span>}
@@ -300,12 +300,12 @@ export function DocumentTypeEditorRow({
         </button>
         {type.active && !renaming && (
           <button type="button" disabled={busy} aria-label={`Rename ${type.name}`} onClick={() => { setDraft(type.name); setError(""); setRenaming(true); }}
-            className="grid size-9 place-items-center rounded-lg text-ink-400 transition-colors hover:bg-ink-50 hover:text-ink-600 disabled:opacity-50">
+            className="grid size-10 place-items-center rounded-lg text-ink-400 transition-colors hover:bg-ink-50 hover:text-ink-600 disabled:opacity-50">
             <Pencil className="size-4" aria-hidden="true" />
           </button>
         )}
         <button type="button" disabled={busy} aria-label={`Remove ${type.name}`} onClick={() => { setError(""); setConfirmingRemove(true); }}
-          className="grid size-9 place-items-center rounded-lg text-danger-600 transition-colors hover:bg-danger-50 disabled:opacity-50">
+          className="grid size-10 place-items-center rounded-lg text-danger-600 transition-colors hover:bg-danger-50 disabled:opacity-50">
           <Trash2 className="size-4" aria-hidden="true" />
         </button>
       </div>
@@ -456,7 +456,7 @@ export function OwnerDocumentRow({
       >
         <span className="min-w-0 flex-1">
           <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-            <span className="truncate text-sm font-semibold text-ink-900">{doc.docTypeName}</span>
+            <span className="break-words text-sm font-semibold text-ink-900">{doc.docTypeName}</span>
             {doc.requiresExpiry && (
               <span className="rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-ink-500">expires</span>
             )}
@@ -474,7 +474,7 @@ export function OwnerDocumentRow({
             <p className="text-xs italic text-ink-400">Awaiting contractor upload — the owner doesn&apos;t upload in v1.</p>
           ) : (
             <>
-              {meta && <p className="mb-2 truncate text-xs text-ink-500">{meta}</p>}
+              {meta && <p className="mb-2 break-words text-xs text-ink-500">{meta}</p>}
 
               {doc.requiresFacialVerification && (
                 <p className="mb-2 flex flex-wrap items-center gap-2">

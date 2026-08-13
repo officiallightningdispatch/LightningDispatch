@@ -205,7 +205,7 @@ function OwnerContractorDetail() {
                       </StatusBadge>
                     )}
                   </p>
-                  <p className="mt-0.5 truncate text-xs text-ink-500">
+                  <p className="mt-0.5 break-words text-xs text-ink-500">
                     {detail.email}
                     {detail.loginHandle ? ` · handle ${detail.loginHandle}` : ""}
                   </p>
@@ -407,7 +407,7 @@ function OwnerContractorDetail() {
           <div className="w-full max-w-lg rounded-2xl bg-surface p-5 shadow-card-hover">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div className="min-w-0">
-                <p className="truncate text-sm font-bold">{viewer.titleOverride ?? viewer.doc.docTypeName}</p>
+                <p className="break-words text-sm font-bold">{viewer.titleOverride ?? viewer.doc.docTypeName}</p>
                 <p className="text-xs text-ink-400">{viewer.file?.fileName ?? viewer.doc.fileName ?? ""}</p>
               </div>
               <button type="button" onClick={() => setViewer(null)} aria-label="Close document" className="grid size-9 shrink-0 place-items-center rounded-lg text-ink-500 hover:bg-ink-50 hover:text-ink-700">
@@ -474,7 +474,7 @@ function DetailRow({ label, value, mono, sub, action }: { label: string; value: 
     <div className="flex items-center gap-2 px-5 py-3.5">
       <div className="min-w-0 flex-1">
         <p className="text-[10px] font-bold uppercase tracking-wide text-ink-300">{label}</p>
-        <p className={`mt-0.5 truncate text-sm font-semibold text-ink-900 ${mono ? "font-mono tabular-nums" : ""}`}>{value}</p>
+        <p className={`mt-0.5 break-words text-sm font-semibold text-ink-900 ${mono ? "font-mono tabular-nums" : ""}`}>{value}</p>
         {sub && <p className="mt-0.5 text-xs text-ink-400">{sub}</p>}
       </div>
       {action}
@@ -587,7 +587,7 @@ function FormReviewSheet({ contractorId, doc, onClose, onDone }: { contractorId:
         <div className="flex shrink-0 items-center justify-between gap-2 px-5 pb-3 pt-3">
           <div className="min-w-0">
             <p className="text-[10px] font-bold uppercase tracking-wide text-brand-600">Official fillable form</p>
-            <p className="truncate text-base font-bold text-ink-900">{isI9 ? "Review I-9" : "Review W-9"}</p>
+            <p className="break-words text-base font-bold text-ink-900">{isI9 ? "Review I-9" : "Review W-9"}</p>
           </div>
           <button type="button" onClick={onClose} aria-label="Close" className="grid size-9 shrink-0 place-items-center rounded-full text-ink-400 transition-colors hover:bg-ink-50 hover:text-ink-600">
             <X className="size-5" />

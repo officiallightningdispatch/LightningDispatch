@@ -223,7 +223,7 @@ function IncomingJobCard({ job, contractors }: { job: Job; contractors: Contract
           <p className="mt-0.5 text-sm text-ink-600">
             {SERVICE_LABELS[job.serviceType]} · {job.location.area}
           </p>
-          <p className="truncate text-xs text-ink-400">{job.note}</p>
+          <p className="whitespace-pre-wrap break-words text-xs text-ink-400">{job.note}</p>
         </div>
       </div>
 
@@ -401,7 +401,7 @@ function OverridePicker({
               } ${offline ? "opacity-60" : ""}`}
             >
               <div className="flex min-w-0 items-center gap-2">
-                <span className={`truncate text-sm font-semibold ${offline ? "text-ink-400" : ""}`}>
+                <span className={`break-words text-sm font-semibold ${offline ? "text-ink-400" : ""}`}>
                   {c.name}
                 </span>
                 {isTop && (
@@ -567,7 +567,7 @@ function CompletedRow({
     <div className={`flex items-center gap-3 px-4 py-3 ${last ? "" : "border-b border-ink-100"}`}>
       <ServiceChip serviceType={job.serviceType} tone="ink" />
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-semibold">
+        <p className="break-words text-sm font-semibold">
           {job.customerName} <span className="font-normal text-ink-400">·</span>{" "}
           <span className="font-medium text-ink-500">{SERVICE_LABELS[job.serviceType]}</span>
         </p>

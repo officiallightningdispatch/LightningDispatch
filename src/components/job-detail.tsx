@@ -332,12 +332,12 @@ function JobPhotoCell({ jobId, photo }: { jobId: string; photo: JobDetailPhoto }
           <div className="absolute inset-0 animate-pulse bg-ink-100" aria-busy="true" />
         )}
         {photo.matchConfirmed && (
-          <span className="absolute right-1 top-1 rounded-full bg-success-600 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white">
+          <span className="absolute right-1 top-1 rounded-full bg-success-600 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
             match ✓
           </span>
         )}
       </div>
-      <figcaption className="mt-1 truncate text-[11px] font-medium text-ink-500">
+      <figcaption className="mt-1 break-words text-[11px] font-medium text-ink-500">
         {sideLabel}
         <span className="text-ink-300"> · {fmtStamp(photo.uploadedAt)}</span>
       </figcaption>

@@ -29,7 +29,7 @@ export function PrimaryJobPeek({ call, acting, onAct, onQueueChanged }: { call: 
           <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-400">
             Call #{call.callNumber}{call.customerName ? ` · ${call.customerName}` : ""}
           </p>
-          <h2 className="mt-0.5 truncate text-lg font-black tracking-tight text-ink-950">{call.serviceName}</h2>
+          <h2 className="mt-0.5 text-lg font-black tracking-tight text-ink-950 text-pretty">{call.serviceName}</h2>
         </div>
         <span className={`inline-flex shrink-0 items-center rounded-full px-2.5 py-1 text-[11px] font-bold ${meta.badge}`}>{meta.label}</span>
       </div>
@@ -44,7 +44,7 @@ export function PrimaryJobPeek({ call, acting, onAct, onQueueChanged }: { call: 
           ETA <strong className="font-semibold tabular-nums text-ink-700">{etaLabel(call.arrivalETA)}</strong>
         </span>
         {call.vehicle && (
-          <span className="flex min-w-0 items-center gap-1"><Truck className="size-3.5 shrink-0" /><span className="truncate">{call.vehicle}</span></span>
+          <span className="flex min-w-0 items-center gap-1"><Truck className="size-3.5 shrink-0" /><span className="break-words">{call.vehicle}</span></span>
         )}
       </div>
       <JobCardActions call={call} acting={acting} onAct={onAct} onQueueChanged={onQueueChanged} />
@@ -58,11 +58,11 @@ export function OfferRow({ call, acting, onAct }: { call: DriverCall; acting: bo
   return (
     <div className="flex items-center gap-3 border-b border-ink-100 py-3 last:border-0">
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-bold text-ink-800">{call.serviceName}</p>
-        <p className="truncate text-xs text-ink-500">{address || `Call #${call.callNumber}`}</p>
+        <p className="break-words text-sm font-bold text-ink-800">{call.serviceName}</p>
+        <p className="break-words text-xs text-ink-500">{address || `Call #${call.callNumber}`}</p>
         <p className="mt-0.5 text-[11px] font-semibold tabular-nums text-brand-700">{etaLabel(call.arrivalETA)}</p>
       </div>
-      <Button size="sm" loading={acting} onClick={() => void onAct(call.id, "accept")} className="shrink-0">
+      <Button size="md" loading={acting} onClick={() => void onAct(call.id, "accept")} className="shrink-0">
         Accept
       </Button>
     </div>
@@ -129,7 +129,7 @@ export function HomeSheet({
             onClick={onRefresh}
             disabled={refreshing}
             aria-label="Refresh jobs"
-            className="grid size-8 place-items-center rounded-lg text-ink-400 transition-colors hover:bg-ink-50 hover:text-ink-600 disabled:opacity-50"
+            className="grid size-10 place-items-center rounded-lg text-ink-400 transition-colors hover:bg-ink-50 hover:text-ink-600 disabled:opacity-50"
           >
             <RefreshCw className={`size-4 ${refreshing ? "animate-spin" : ""}`} />
           </button>
@@ -211,8 +211,8 @@ function HistoryRow({ call }: { call: DriverCall }) {
     <div className="flex items-start gap-3 py-2.5">
       <div className="min-w-0 flex-1">
         <p className="text-[11px] font-semibold uppercase tracking-wide text-ink-400">Call #{call.callNumber}</p>
-        <p className="truncate text-sm font-semibold text-ink-800">{call.serviceName}</p>
-        {address && <p className="truncate text-xs text-ink-500">{address}</p>}
+        <p className="break-words text-sm font-semibold text-ink-800">{call.serviceName}</p>
+        {address && <p className="break-words text-xs text-ink-500">{address}</p>}
       </div>
       <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide ${meta.badge}`}>
         <span className={`size-1.5 rounded-full ${meta.dot}`} /> {meta.label}

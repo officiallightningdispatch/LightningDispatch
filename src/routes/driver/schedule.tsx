@@ -117,7 +117,7 @@ function ScheduleView() {
           <p className="border-b border-ink-100 px-4 py-3 text-xs font-bold uppercase tracking-wide text-ink-400">Days you work</p>
           <ul>
             {rows?.map((r, i) => (
-              <li key={r.day} className={`flex items-center gap-3 px-4 py-3 ${i > 0 ? "border-t border-ink-100" : ""}`}>
+              <li key={r.day} className={`flex flex-wrap items-center gap-3 px-4 py-3 ${i > 0 ? "border-t border-ink-100" : ""}`}>
                 <button
                   type="button"
                   role="switch"
@@ -132,14 +132,14 @@ function ScheduleView() {
                   <span aria-hidden="true" className={`inline-block size-5 transform rounded-full bg-white shadow transition-transform duration-150 ${r.on ? "translate-x-6" : "translate-x-1"}`} />
                 </button>
                 <span className={`w-24 shrink-0 text-sm font-semibold ${r.on ? "text-ink-900" : "text-ink-300"}`}>{DAY_LABELS[r.day - 1]}</span>
-                <span className={`flex flex-1 items-center gap-2 ${r.on ? "" : "opacity-40"}`}>
+                <span className={`flex w-full min-w-0 flex-1 flex-col gap-2 sm:w-auto sm:flex-row sm:items-center sm:gap-2 ${r.on ? "" : "opacity-40"}`}>
                   <input
                     type="time"
                     value={r.start}
                     disabled={!r.on || ownerOverride}
                     onChange={(e) => setTime(r.day, "start", e.target.value)}
                     aria-label={`${DAY_LABELS[r.day - 1]} start time`}
-                    className="h-11 flex-1 rounded-xl border border-ink-200 bg-surface px-2 text-sm tabular-nums text-ink-800 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100 disabled:opacity-60"
+                    className="h-11 w-full rounded-xl border border-ink-200 bg-surface px-2 text-sm tabular-nums text-ink-800 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100 disabled:opacity-60 sm:flex-1"
                   />
                   <span className="text-xs font-semibold text-ink-400">to</span>
                   <input
@@ -148,7 +148,7 @@ function ScheduleView() {
                     disabled={!r.on || ownerOverride}
                     onChange={(e) => setTime(r.day, "end", e.target.value)}
                     aria-label={`${DAY_LABELS[r.day - 1]} end time`}
-                    className="h-11 flex-1 rounded-xl border border-ink-200 bg-surface px-2 text-sm tabular-nums text-ink-800 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100 disabled:opacity-60"
+                    className="h-11 w-full rounded-xl border border-ink-200 bg-surface px-2 text-sm tabular-nums text-ink-800 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100 disabled:opacity-60 sm:flex-1"
                   />
                 </span>
               </li>

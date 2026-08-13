@@ -358,14 +358,14 @@ export function HistoryView() {
                   <p className="mb-2 text-[11px] font-bold uppercase tracking-wider text-ink-400">Status timeline</p>
                   <ol className="space-y-1.5">
                     {timeline.map((e, i) => (
-                      <li key={i} className="flex items-baseline gap-2 text-xs">
+                      <li key={i} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs">
                         <span className="w-14 shrink-0 text-right font-mono tabular-nums text-ink-400">
                           {new Date(e.occurredAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                         </span>
                         <span className="text-ink-400">→</span>
                         <span className="font-semibold text-ink-700">{statusLabel(e.toStatus)}</span>
                         {e.actorRole && <span className="capitalize text-ink-400">by {e.actorRole}</span>}
-                        {e.note && <span className="truncate text-ink-400">· {e.note}</span>}
+                        {e.note && <span className="basis-full whitespace-pre-wrap break-words text-ink-400">· {e.note}</span>}
                       </li>
                     ))}
                   </ol>
@@ -414,15 +414,15 @@ export function ContractorsView() {
                 <Avatar name={c.name} />
                 <div className="min-w-0 flex-1">
                   <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm font-semibold">
-                    <span className="truncate">{c.name}</span>
+                    <span className="break-words">{c.name}</span>
                     <span className="flex shrink-0 items-center gap-1 text-[11px] font-semibold">
                       <span aria-hidden="true" className={`inline-block size-2 rounded-full ${c.status === "online" ? "bg-success-500" : "bg-ink-300"}`} />
                       <span className={c.status === "online" ? "text-success-600" : "text-ink-400"}>{c.status}</span>
                     </span>
                   </p>
-                  <p className="mt-0.5 truncate text-xs text-ink-500">{c.vehicleTypes.length ? c.vehicleTypes.join(" · ") : "No capabilities listed"}</p>
+                  <p className="mt-0.5 break-words text-xs text-ink-500">{c.vehicleTypes.length ? c.vehicleTypes.join(" · ") : "No capabilities listed"}</p>
                   {active ? (
-                    <p className="mt-0.5 truncate text-xs font-medium text-brand-700">
+                    <p className="mt-0.5 break-words text-xs font-medium text-brand-700">
                       {SERVICE_LABELS[active.serviceType]} · {active.customerName} · {JOB_STATUS_META[active.status].label}
                     </p>
                   ) : (
@@ -549,7 +549,7 @@ export function PerformanceView() {
                 ) : null,
               )}
             </div>
-            <div className="mt-4 grid grid-cols-3 gap-x-3 gap-y-3 sm:grid-cols-7">
+            <div className="mt-4 grid grid-cols-2 gap-x-3 gap-y-3 sm:grid-cols-7">
               {counts.map(({ status, count }) => (
                 <div key={status} className="flex items-center gap-1.5 text-xs">
                   <span aria-hidden="true" className={`size-2 rounded-full ${JOB_STATUS_META[status].dot}`} />
@@ -577,7 +577,7 @@ export function PerformanceView() {
                 <span className="w-6 shrink-0 text-center text-sm font-extrabold tabular-nums text-ink-300">{i + 1}</span>
                 <Avatar name={name} />
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-semibold">{name}</p>
+                  <p className="break-words text-sm font-semibold">{name}</p>
                   <p className="text-xs text-ink-400">assigned driver</p>
                 </div>
                 <div className="shrink-0 text-right">
@@ -658,7 +658,7 @@ function IncomingJobCard({ job, contractors }: { job: Job; contractors: Contract
             <span className="text-[11px] font-medium tabular-nums text-ink-400">created {timeAgo(job.createdAt)}</span>
           </div>
           <p className="mt-0.5 text-sm text-ink-600">{SERVICE_LABELS[job.serviceType]} · {job.location.area}</p>
-          <p className="truncate text-xs text-ink-400">{job.note}</p>
+          <p className="whitespace-pre-wrap break-words text-xs text-ink-400">{job.note}</p>
         </div>
       </div>
 
@@ -778,7 +778,7 @@ function OverridePicker({ job, rec, contractors, onAssign }: { job: Job; rec: Di
           return (
             <div key={c.id} className={`flex items-center justify-between gap-2 rounded-lg border bg-surface px-3 py-2 ${isTop ? "border-accent-200" : "border-ink-100"} ${offline ? "opacity-60" : ""}`}>
               <div className="flex min-w-0 items-center gap-2">
-                <span className={`truncate text-sm font-semibold ${offline ? "text-ink-400" : ""}`}>{c.name}</span>
+                <span className={`break-words text-sm font-semibold ${offline ? "text-ink-400" : ""}`}>{c.name}</span>
                 {isTop && <span className="shrink-0 rounded-full bg-accent-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-accent-700">AI pick</span>}
                 {offline && <span className="shrink-0 rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-ink-400">offline</span>}
               </div>
@@ -917,7 +917,7 @@ function CompletedRow({ job, contractors, last }: { job: Job; contractors: Contr
       <div className="flex items-center gap-3 px-4 py-3">
         <ServiceChip serviceType={job.serviceType} tone="ink" />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold">
+          <p className="break-words text-sm font-semibold">
             {job.customerName} <span className="font-normal text-ink-400">·</span>{" "}
             <span className="font-medium text-ink-500">{SERVICE_LABELS[job.serviceType]}</span>
           </p>

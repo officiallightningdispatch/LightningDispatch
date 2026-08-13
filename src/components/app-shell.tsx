@@ -1,5 +1,5 @@
 import { Link, useLocation } from "@tanstack/react-router";
-import { CarFront, Home, Inbox, Briefcase, DollarSign, LayoutDashboard, List, LogOut, Settings, User, UserRound, Users, History, BarChart3, Wallet, Bot, Map, UserCog, Zap, FileWarning } from "lucide-react";
+import { CarFront, Home, Inbox, Briefcase, DollarSign, LayoutDashboard, List, LogOut, MoreHorizontal, Settings, User, UserRound, Users, History, BarChart3, Wallet, Bot, Map, UserCog, Zap, FileWarning } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { authStatus, type AuthUser } from "~/data/auth";
 import { getMyProfilePhoto } from "~/data/driver-profile-photo";
@@ -34,6 +34,7 @@ function useProfilePhoto(portal: Portal) {
 }
 
 type NavItem = { to: string; label: string; icon: typeof Home };
+type PortalNav = { links: NavItem[]; mobile: NavItem[]; more?: NavItem[] };
 
 /**
  * Per-portal navigation. The portal is EXPLICIT (never inferred from the page
@@ -42,7 +43,7 @@ type NavItem = { to: string; label: string; icon: typeof Home };
  * portal). Every nav item stays inside its own portal's shell:
  * owner → /owner/*, ops → /ops/*, driver → /driver/*.
  */
-const NAV: Record<Portal, { links: NavItem[]; mobile: NavItem[] }> = {
+const NAV: Record<Portal, PortalNav> = {
   owner: {
     links: [
       { to: "/owner", label: "Dashboard", icon: Home },
@@ -57,20 +58,22 @@ const NAV: Record<Portal, { links: NavItem[]; mobile: NavItem[] }> = {
       { to: "/owner/ai-dispatcher", label: "AI Dispatcher", icon: Bot },
       { to: "/owner/settings", label: "Settings", icon: Settings },
     ],
-    // Bottom bar on phones — a subset so labels fit; all still /owner/*.
-    // Contractors MUST be reachable on a phone (owner-directed 2026-08-11:
-    // the Contractors tab is where payrate + compliance live). Live Map drops
-    // off the rail — the map is already a Dashboard section — but stays in the
-    // desktop sidebar.
+    // Bottom bar on phones — OWNER DECISION 2026-08-12 (locked): 5 primary
+    // (Dashboard, Queue, Active, Contractors, Payments) + a "More" sheet
+    // holding Metrics, Claims, AI Dispatcher, Settings. Contractors stays on
+    // the rail (owner-directed). Live Map stays in the desktop sidebar only.
     mobile: [
       { to: "/owner", label: "Dashboard", icon: Home },
       { to: "/owner/queue", label: "Queue", icon: List },
       { to: "/owner/active", label: "Active", icon: Briefcase },
       { to: "/owner/contractors", label: "Contractors", icon: UserCog },
+      { to: "/owner/money", label: "Payments", icon: Wallet },
+    ],
+    // Secondary owner destinations — surfaced through the "More" bottom sheet.
+    more: [
       { to: "/owner/metrics", label: "Metrics", icon: BarChart3 },
       { to: "/owner/claims", label: "Claims", icon: FileWarning },
-      { to: "/owner/money", label: "Payments", icon: Wallet },
-      { to: "/owner/ai-dispatcher", label: "AI", icon: Bot },
+      { to: "/owner/ai-dispatcher", label: "AI Dispatcher", icon: Bot },
       { to: "/owner/settings", label: "Settings", icon: Settings },
     ],
   },
@@ -168,7 +171,8 @@ export function AppShell({
   headerActions?: ReactNode;
 }) {
   const location = useLocation();
-  const { links, mobile } = NAV[portal];
+  const { links, mobile, more } = NAV[portal];
+  const [moreOpen, setMoreOpen] = useState(false);
   const meta = PORTAL_META[portal];
   const identity = useSessionIdentity();
   const { dataUrl: profilePhotoUrl } = useProfilePhoto(portal);
@@ -182,7 +186,7 @@ export function AppShell({
   // the session server-side and lands the user on /login — owner batch
   // 2026-08-12 (previously there was no sign-out route at all).
   const actions = headerActions ?? (portal === "driver" ? null : (
-    <Link to="/logout" className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-ink-200 px-3 text-xs font-bold text-ink-600 transition-colors hover:bg-ink-50 hover:text-ink-800" aria-label="Sign out">
+    <Link to="/logout" className="inline-flex h-10 items-center gap-1.5 rounded-xl border border-ink-200 px-3 text-xs font-bold text-ink-600 transition-colors hover:bg-ink-50 hover:text-ink-800" aria-label="Sign out">
       <LogOut className="size-3.5" aria-hidden="true" /> Sign out
     </Link>
   ));
@@ -216,7 +220,26 @@ export function AppShell({
     <div className="mx-auto flex max-w-7xl"><aside className="hidden w-56 shrink-0 border-r border-ink-100 py-5 pr-4 md:block"><nav className="space-y-1" aria-label="Portal navigation">{links.map(l => <Link key={l.to} to={l.to as any} className={`flex h-11 items-center gap-3 rounded-xl px-3 text-sm font-semibold ${isActive(l.to) ? "bg-ink-950 text-white" : "text-ink-500 hover:bg-ink-50"}`}><l.icon className="size-4" />{l.label}</Link>)}</nav></aside>
     <main className={`min-w-0 flex-1 px-4 py-7 sm:px-6 ${portal === "driver" ? "mx-auto max-w-lg md:max-w-none" : ""} ${slim ? "max-w-none px-0 py-0" : ""}`}>{!slim && <div className="mb-7"><p className="mb-2 text-xs font-bold uppercase tracking-[.18em] text-brand-600">{meta.portalLabel}</p><h1 className="text-2xl font-bold tracking-tight sm:text-3xl">{title}</h1><p className="mt-1 text-sm text-ink-500">{description}</p></div>}{children}</main>
     </div>
-    <nav className="fixed inset-x-0 bottom-0 z-20 flex border-t border-ink-100 bg-surface/95 p-1 backdrop-blur md:hidden" aria-label="Portal navigation">{mobile.map(l => <Link key={l.to} to={l.to as any} className={`flex min-h-11 flex-1 flex-col items-center justify-center gap-0.5 rounded-lg text-[11px] font-semibold ${isActive(l.to) ? "text-brand-600" : "text-ink-500"}`}><l.icon className="size-4" /><span>{l.label}</span></Link>)}</nav>
+    <nav className="fixed inset-x-0 bottom-0 z-20 flex border-t border-ink-100 bg-surface/95 p-1 backdrop-blur md:hidden" aria-label="Portal navigation">{mobile.map(l => <Link key={l.to} to={l.to as any} className={`flex min-h-11 flex-1 flex-col items-center justify-center gap-0.5 rounded-lg text-[11px] font-semibold ${isActive(l.to) ? "text-brand-600" : "text-ink-500"}`}><l.icon className="size-4" /><span>{l.label}</span></Link>)}{more && more.length > 0 ? <button type="button" onClick={() => setMoreOpen(true)} aria-haspopup="dialog" aria-expanded={moreOpen} aria-label="More options" className={`flex min-h-11 flex-1 flex-col items-center justify-center gap-0.5 rounded-lg text-[11px] font-semibold ${more.some(l => isActive(l.to)) ? "text-brand-600" : "text-ink-500"}`}>
+        <MoreHorizontal className="size-4" aria-hidden="true" />
+        <span>More</span>
+      </button> : null}</nav>
+    {moreOpen && more && more.length > 0 && (
+      <div className="fixed inset-0 z-40 bg-ink-950/40 backdrop-blur-[2px]" role="dialog" aria-modal="true" aria-label="More options" onClick={() => setMoreOpen(false)}>
+        <div className="absolute inset-x-0 bottom-0 rounded-t-3xl bg-surface p-3 pb-6 shadow-[0_-8px_24px_rgba(14,14,17,0.16)]" onClick={(e) => e.stopPropagation()}>
+          <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-ink-200" aria-hidden="true" />
+          <p className="mb-2 px-1 text-xs font-bold uppercase tracking-wider text-ink-400">More</p>
+          <div className="grid grid-cols-2 gap-2">
+            {more.map(l => (
+              <Link key={l.to} to={l.to as any} onClick={() => setMoreOpen(false)} className={`flex min-h-14 flex-col items-center justify-center gap-1.5 rounded-2xl border px-2 text-center text-xs font-semibold transition-colors ${isActive(l.to) ? "border-brand-200 bg-brand-50 text-brand-700" : "border-ink-100 bg-surface text-ink-600 hover:bg-ink-50"}`}>
+                <l.icon className="size-5" aria-hidden="true" />
+                <span>{l.label}</span>
+              </Link>
+            ))}
+          </div>
+        </div>
+      </div>
+    )}
   </div>;
 }
 

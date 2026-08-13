@@ -69,7 +69,7 @@ export function SoundToggle({ role, className = "" }: { role: SoundRole; classNa
       aria-pressed={!muted}
       aria-label={muted ? "Unmute notification sounds" : "Mute notification sounds"}
       title={muted ? "Notification sound: off" : "Notification sound: on"}
-      className={`inline-flex size-9 shrink-0 items-center justify-center rounded-lg text-ink-500 transition-colors duration-150 hover:bg-ink-50 hover:text-ink-700 active:scale-[0.97] ${className}`}
+      className={`inline-flex size-10 shrink-0 items-center justify-center rounded-lg text-ink-500 transition-colors duration-150 hover:bg-ink-50 hover:text-ink-700 active:scale-[0.97] ${className}`}
     >
       <Icon className="size-4" aria-hidden="true" />
     </button>

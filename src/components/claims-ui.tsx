@@ -108,7 +108,7 @@ export function SendTargetCard({ claim }: { claim: ClaimRow }) {
         {webForm ? (
           <p className="text-[13px] font-medium text-ink-700">{claim.company} requires its own web form — the per-company adapter is phase 2. Nothing can be emailed.</p>
         ) : (
-          <p className="truncate text-[13px] font-medium text-ink-700">{email ?? "No return address on file yet"}</p>
+          <p className="break-all text-[13px] font-medium text-ink-700">{email ?? "No return address on file yet"}</p>
         )}
       </div>
     </div>
@@ -212,10 +212,10 @@ export function OwnerClaimsView() {
                     <FileSignature className="size-5" aria-hidden="true" />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-bold text-ink-900">
+                    <p className="break-words text-sm font-bold text-ink-900">
                       {c.company || "Unknown company"} <span className="font-medium text-ink-400">· {c.claimNumber ?? "no case #"}</span>
                     </p>
-                    <p className="truncate text-xs text-ink-500">
+                    <p className="break-words text-xs text-ink-500">
                       {c.driverName ? `Driver: ${c.driverName}` : "No driver assigned yet"} · {fmtDate(c.createdAt)}
                     </p>
                   </div>
@@ -478,7 +478,7 @@ export function DriverClaimReviewCard() {
       </span>
       <span className="min-w-0">
         <span className="block text-xs font-extrabold text-danger-700">Damage claim needs your review</span>
-        <span className="block truncate text-[11px] font-medium text-ink-500">{first.company} · case {first.claimNumber ?? "—"} — tap to sign</span>
+        <span className="block break-words text-[11px] font-medium text-ink-500">{first.company} · case {first.claimNumber ?? "—"} — tap to sign</span>
       </span>
     </button>
   );
