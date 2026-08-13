@@ -510,12 +510,16 @@ export function OwnerDocumentRow({
               {error && <p role="alert" className="mb-2 text-xs font-medium text-danger-600">{error}</p>}
 
               <div className="flex flex-wrap items-center gap-2">
-                {doc.status !== "missing" && (
+                {doc.status !== "missing" && !doc.requiresNotificationsLocation && (
                   <Button size="sm" variant="secondary" className="!px-2.5" disabled={inFlight} onClick={() => void onView()}>
                     <Eye className="size-3.5" aria-hidden="true" /> View
                   </Button>
                 )}
-                {(doc.status === "uploaded" || doc.status === "rejected") && (
+                {doc.requiresNotificationsLocation ? (
+                  <span className="text-[11px] font-medium text-ink-400">
+                    {doc.status === "verified" ? "Auto-completed by the driver — alerts + location on." : "Driver has not set this up yet."}
+                  </span>
+                ) : (doc.status === "uploaded" || doc.status === "rejected") && (
                   doc.formKind && onReviewForm ? (
                     <Button size="sm" className="!px-2.5" disabled={inFlight} onClick={() => { onReviewForm(); setError(""); }}>
                       <ClipboardList className="size-3.5" aria-hidden="true" /> {doc.formKind === "w9" ? "Review W-9" : "Review I-9"}
@@ -526,7 +530,7 @@ export function OwnerDocumentRow({
                     </Button>
                   )
                 )}
-                {(doc.status === "verified" || doc.status === "expired") && (
+                {(doc.status === "verified" || doc.status === "expired") && !doc.requiresNotificationsLocation && (
                   <span className="flex items-center gap-1.5">
                     <input
                       type="date"
@@ -547,7 +551,7 @@ export function OwnerDocumentRow({
                     </Button>
                   </span>
                 )}
-                {(doc.status === "uploaded" || doc.status === "verified" || doc.status === "expired") && (
+                {(doc.status === "uploaded" || doc.status === "verified" || doc.status === "expired") && !doc.requiresNotificationsLocation && (
                   <Button size="sm" variant="ghost" className="!px-2.5" disabled={inFlight} onClick={() => { setRejectSheet(true); setError(""); }}>
                     Ask to reupload
                   </Button>

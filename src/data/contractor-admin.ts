@@ -20,6 +20,7 @@ import type {
   ContractorVehicleResult,
   DocFilePayload,
   DocTypeRow,
+  CompleteNotificationsLocationResult,
   FormSubmissionView,
   MyCompliance,
   SubmitFormResult,
@@ -134,6 +135,17 @@ export const getMyDocuments = createServerFn({ method: "GET" }).handler(async ()
   const core = await import("./contractor-admin-core");
   return core.getMyDocumentsHandler();
 });
+
+/** Driver completes the "Notifications & Location" required item (owner-directed
+ *  2026-08-13): grants notifications (saving a real push subscription) and
+ *  shares a live GPS fix; the server verifies both and marks the doc verified
+ *  so the SAME compliance gate opens. POST — the client sends the captured fix. */
+export const completeNotificationsLocation = createServerFn({ method: "POST" })
+  .validator(passthrough)
+  .handler(async ({ data }): Promise<CompleteNotificationsLocationResult> => {
+    const core = await import("./contractor-admin-core");
+    return core.completeNotificationsLocationHandler(data);
+  });
 
 export const uploadMyDocument = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<UploadDocumentResult> => {
   const core = await import("./contractor-admin-core");

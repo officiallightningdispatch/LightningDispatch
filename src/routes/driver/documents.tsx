@@ -1,11 +1,12 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { Camera, CheckCircle2, ClipboardList, Clock3, Eye, FileText, ImageIcon, Loader2, RefreshCw, Upload, X } from "lucide-react";
+import { Bell, Camera, CheckCircle2, ClipboardList, Clock3, Eye, FileText, ImageIcon, Loader2, MapPin, RefreshCw, Upload, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { AppShell } from "~/components/app-shell";
 import { DriverToolbar } from "~/components/driver-queue";
 import { InlineError } from "~/components/mutation-status";
 import { Button, Card, EmptyState, useToast } from "~/components/ui";
 import {
+  completeNotificationsLocation,
   getMyCompliance,
   getMyDocuments,
   getSelfieFile,
@@ -21,6 +22,11 @@ import {
   type MyCompliance,
 } from "~/data/contractor-admin";
 import { driverLogout } from "~/data/driver-auth";
+import {
+  ensurePushSubscription,
+  notificationsSupported,
+  pushSetupFailureCopy,
+} from "~/lib/push-client";
 
 /**
  * /driver/documents — the contractor's required-paperwork screen (spec §4.5,
@@ -127,6 +133,7 @@ function DocumentsView() {
   const [loading, setLoading] = useState(true);
   const [sheet, setSheet] = useState<{ docTypeId: string; title: string; requiresExpiry: boolean; isSelfie: boolean } | null>(null);
   const [formSheet, setFormSheet] = useState<{ docTypeId: string; formKind: "w9" | "i9" } | null>(null);
+  const [nlSheet, setNlSheet] = useState<{ docTypeId: string; title: string } | null>(null);
   const [viewer, setViewer] = useState<{ title: string; file: DocFilePayload } | null>(null);
   const [viewerLoading, setViewerLoading] = useState(false);
 
@@ -212,7 +219,14 @@ function DocumentsView() {
                       <p className="mt-1"><DocStatusBadge status={row.status} /></p>
                     </div>
                     <div className="flex shrink-0 gap-2">
-                      {row.formKind ? (
+                      {row.requiresNotificationsLocation ? (
+                        row.status === "verified" ? null : (
+                          <Button size="sm" onClick={() => setNlSheet({ docTypeId: row.docTypeId, title: row.docTypeName })}>
+                            <Bell className="size-3.5" aria-hidden="true" />
+                            {row.status === "missing" || row.status === "expired" ? "Set up now" : "Fix & set up"}
+                          </Button>
+                        )
+                      ) : row.formKind ? (
                         row.status === "verified" ? null : (
                           <Button size="sm" onClick={() => setFormSheet({ docTypeId: row.docTypeId, formKind: row.formKind! })}>
                             <ClipboardList className="size-3.5" aria-hidden="true" />
@@ -237,6 +251,18 @@ function DocumentsView() {
                   {row.formKind && row.status === "uploaded" && (
                     <p className="mt-2 text-[11px] leading-relaxed text-ink-500">
                       Your completed form is with the owner for review — it&apos;s not shown back to you after submission.
+                    </p>
+                  )}
+                  {row.requiresNotificationsLocation && row.status !== "verified" && (
+                    <p className="mt-2 text-[11px] leading-relaxed text-ink-500">
+                      Required before you can go online: allow notifications (one alert per new job) and share your location
+                      so the dispatcher always knows where you are. Two taps — you&apos;ll be done in under a minute.
+                    </p>
+                  )}
+                  {row.requiresNotificationsLocation && row.status === "verified" && (
+                    <p className="mt-2 text-[11px] leading-relaxed text-ink-500">
+                      Alerts are on for this device and your location is being shared. Reopen this screen from a new phone
+                      to add it too.
                     </p>
                   )}
                   {row.fileName && (
@@ -310,6 +336,15 @@ function DocumentsView() {
           docTypeId={formSheet.docTypeId}
           onClose={() => setFormSheet(null)}
           onSubmitted={onUploaded}
+        />
+      )}
+
+      {/* Notifications & Location self-completed required item (owner 2026-08-13) */}
+      {nlSheet && (
+        <NotificationsLocationSheet
+          title={nlSheet.title}
+          onClose={() => setNlSheet(null)}
+          onDone={(msg) => { onUploaded(msg); }}
         />
       )}
 
@@ -472,6 +507,144 @@ function SheetBridge({
         <input ref={pickerRef} type="file" accept={ACCEPT} className="hidden" onChange={(e) => { void pick(e.target.files?.[0]); e.target.value = ""; }} />
       </div>
     </div>
+  );
+}
+
+/* ------------------------------ Notifications & Location (owner 2026-08-13) ------------------------------ */
+
+/** The "Notifications & Location" REQUIRED compliance item. Two steps, both
+ *  proven to the SERVER before the item flips to approved:
+ *    1. Allow alerts — grants Notification permission and saves a real push
+ *       subscription (the fixed push-client flow; failures show the exact
+ *       driver-readable reason + retry, never a silent hide).
+ *    2. Share location — captures a live browser geolocation fix and POSTs it;
+ *       the server stores the ping and verifies the push subscription exists
+ *       before marking the doc verified (completeNotificationsLocation).
+ *  The SAME compliance gate as W-9/I-9/license/insurance then opens — going
+ *  online stays blocked until this item is done.
+ *  OS note: the background alert sound is OS-limited (Android Chrome plays one
+ *  default sound; iOS Safari ignores custom audio in push). The in-app strike
+ *  always plays — it is the reliable path, and it is LOUD (sound.ts).
+ */
+function NotificationsLocationSheet({ title, onClose, onDone }: { title: string; onClose: () => void; onDone: (msg: string) => void }) {
+  const [notifState, setNotifState] = useState<"idle" | "busy" | "done" | "failed">("idle");
+  const [locState, setLocState] = useState<"idle" | "busy" | "done" | "failed">("idle");
+  const [error, setError] = useState("");
+  const supported = typeof window !== "undefined" && notificationsSupported();
+
+  const allowNotifications = async () => {
+    setError("");
+    if (!supported) return setError("This browser can't receive alerts — use a recent Chrome, Safari or Edge.");
+    setNotifState("busy");
+    try {
+      if (Notification.permission !== "granted") {
+        const perm = await Notification.requestPermission();
+        if (perm !== "granted") {
+          setNotifState("failed");
+          return setError("Notifications are blocked in your browser settings. Turn them on for this site, then tap again.");
+        }
+      }
+      const result = await ensurePushSubscription();
+      if (!result.ok) {
+        setNotifState("failed");
+        return setError(pushSetupFailureCopy(result.reason));
+      }
+      setNotifState("done");
+    } catch {
+      setNotifState("failed");
+      setError(pushSetupFailureCopy("subscribe_failed"));
+    }
+  };
+
+  const shareLocation = () => {
+    setError("");
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      setLocState("failed");
+      return setError("Your browser doesn't support location sharing — use a recent Chrome, Safari or Edge.");
+    }
+    setLocState("busy");
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const { latitude, longitude, accuracy } = pos.coords;
+        if (latitude === 0 && longitude === 0) {
+          setLocState("failed");
+          return setError("Your location couldn't be read. Allow location for this site in your browser settings, then try again.");
+        }
+        try {
+          const r = await completeNotificationsLocation({ data: { latitude, longitude, accuracy: accuracy ?? null } });
+          if (!r.ok) {
+            setLocState("failed");
+            return setError(r.message);
+          }
+          setLocState("done");
+          onDone("Notifications & location are on — you're all set.");
+        } catch {
+          setLocState("failed");
+          setError("We couldn't finish setting this up — check your connection and try again.");
+        }
+      },
+      () => {
+        setLocState("failed");
+        setError("We couldn't get your location. Allow location for this site in your browser settings, then tap again.");
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 },
+    );
+  };
+
+  return (
+    <FormSheetFrame title={`Set up ${title}`} eyebrow="Required before you go online" onClose={onClose}>
+      <div className="space-y-4">
+        <p className="rounded-xl bg-ink-50 px-3 py-2.5 text-xs leading-relaxed text-ink-600">
+          Two quick steps. When you&apos;re done, this item shows <span className="font-bold text-ink-800">Approved ✓</span> and
+          nothing else blocks you from working.
+        </p>
+
+        <div className="rounded-2xl border border-ink-200 bg-ink-50/40 p-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-brand-50 text-brand-600"><Bell className="size-4" aria-hidden="true" /></span>
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-ink-900">1. Allow alerts</p>
+                <p className="text-[11px] text-ink-500">One alert + a loud strike per new job</p>
+              </div>
+            </div>
+            {notifState === "done" ? (
+              <CheckCircle2 className="size-5 shrink-0 text-success-600" aria-label="Done" />
+            ) : (
+              <Button size="sm" loading={notifState === "busy"} disabled={locState === "done"} onClick={() => void allowNotifications()}>
+                {notifState === "failed" ? "Try again" : "Allow"}
+              </Button>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-ink-200 bg-ink-50/40 p-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-brand-50 text-brand-600"><MapPin className="size-4" aria-hidden="true" /></span>
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-ink-900">2. Share your location</p>
+                <p className="text-[11px] text-ink-500">So the dispatcher knows where you are</p>
+              </div>
+            </div>
+            {locState === "done" ? (
+              <CheckCircle2 className="size-5 shrink-0 text-success-600" aria-label="Done" />
+            ) : (
+              <Button size="sm" variant={notifState === "done" ? "primary" : "secondary"} loading={locState === "busy"} disabled={notifState !== "done"} onClick={shareLocation}>
+                {locState === "failed" ? "Try again" : "Share location"}
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {error && <InlineError message={error} />}
+
+        <p className="text-center text-[11px] leading-relaxed text-ink-400">
+          On iPhone, alert sounds in the background depend on Apple&apos;s settings; the in-app strike always plays. You can
+          turn alerts off anytime from the speaker icon — but this item must stay on to keep working.
+        </p>
+      </div>
+    </FormSheetFrame>
   );
 }
 

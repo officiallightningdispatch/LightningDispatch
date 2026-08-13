@@ -5,7 +5,12 @@
  * a short white-noise burst (fast attack ~12ms, exponential decay ~250ms)
  * band-limited for a crackle, plus a low-frequency sine thump for body. The
  * whole thing is < 300ms, fires exactly once per call (one-shot sources, no
- * looping), and is loud enough to notice without being obnoxious.
+ * looping). LOUDNESS (owner-directed 2026-08-13): the strike must be
+ * UNMISTAKABLE in a noisy cab — master peak 0.7 → 0.95, noise 0.45 → 0.6,
+ * thump 0.55 → 0.75, with a DynamicsCompressor between the master and the
+ * speakers so the summed transient is loud and CLEAR, never clipped to
+ * distortion (the same +~4.5dB pass was applied to the rendered mp3/wav
+ * assets via scripts/generate-strike.mjs).
  *
  * Autoplay policy: the AudioContext is created lazily and primed on the first
  * user gesture (pointer/key) via primeAudio(). If the context is still blocked
@@ -104,11 +109,19 @@ export function playLightning(role: SoundRole): void {
     const now = c.currentTime;
 
     // Master envelope: fast attack, exponential decay — the "strike" shape.
+    // LOUD (2026-08-13): 0.7 → 0.95; the compressor below keeps it clean.
     const master = c.createGain();
     master.gain.setValueAtTime(0.0001, now);
-    master.gain.exponentialRampToValueAtTime(0.7, now + 0.012);
+    master.gain.exponentialRampToValueAtTime(0.95, now + 0.012);
     master.gain.exponentialRampToValueAtTime(0.0001, now + 0.26);
-    master.connect(c.destination);
+    const limiter = c.createDynamicsCompressor();
+    limiter.threshold.value = -6;
+    limiter.knee.value = 6;
+    limiter.ratio.value = 8;
+    limiter.attack.value = 0.001;
+    limiter.release.value = 0.1;
+    master.connect(limiter);
+    limiter.connect(c.destination);
 
     // White-noise crackle (band-limited so it reads as a strike, not hiss).
     const dur = 0.3;
@@ -123,7 +136,7 @@ export function playLightning(role: SoundRole): void {
     bandpass.frequency.value = 2200;
     bandpass.Q.value = 0.8;
     const noiseGain = c.createGain();
-    noiseGain.gain.setValueAtTime(0.45, now);
+    noiseGain.gain.setValueAtTime(0.6, now);
     noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
     noise.connect(bandpass);
     bandpass.connect(noiseGain);
@@ -138,7 +151,7 @@ export function playLightning(role: SoundRole): void {
     osc.frequency.exponentialRampToValueAtTime(48, now + 0.12);
     const thumpGain = c.createGain();
     thumpGain.gain.setValueAtTime(0.0001, now);
-    thumpGain.gain.exponentialRampToValueAtTime(0.55, now + 0.008);
+    thumpGain.gain.exponentialRampToValueAtTime(0.75, now + 0.008);
     thumpGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
     osc.connect(thumpGain);
     thumpGain.connect(master);
@@ -151,6 +164,7 @@ export function playLightning(role: SoundRole): void {
         noise.disconnect();
         osc.disconnect();
         master.disconnect();
+        limiter.disconnect();
       } catch { /* already gone */ }
     };
     noise.onended = cleanup;

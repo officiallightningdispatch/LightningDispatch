@@ -43,13 +43,16 @@ function biquadBandpass(samples, freq, Q) {
 
 const t = (i) => i / SR;
 // Master envelope: fast attack, exponential decay (the "strike" shape).
+// 2026-08-13 (owner-directed: the strike must be LOUD): peak raised 0.7 → 0.95
+// so the strike is unmistakable even in a noisy cab; the soft clipper below
+// keeps the transient clear (loud, not distorted).
 const master = new Float64Array(N);
 for (let i = 0; i < N; i++) {
   const tt = t(i);
   if (tt < 0.012) {
-    master[i] = 0.0001 * Math.exp(Math.log(0.7 / 0.0001) * (tt / 0.012));
+    master[i] = 0.0001 * Math.exp(Math.log(0.95 / 0.0001) * (tt / 0.012));
   } else if (tt < 0.26) {
-    master[i] = 0.7 * Math.exp(Math.log(0.0001 / 0.7) * ((tt - 0.012) / (0.26 - 0.012)));
+    master[i] = 0.95 * Math.exp(Math.log(0.0001 / 0.95) * ((tt - 0.012) / (0.26 - 0.012)));
   } else {
     master[i] = 0.0001;
   }
@@ -61,7 +64,7 @@ const band = biquadBandpass(noise, 2200, 0.8);
 const noiseEnv = new Float64Array(N);
 for (let i = 0; i < N; i++) {
   const tt = t(i);
-  noiseEnv[i] = tt < 0.22 ? 0.45 * Math.exp(Math.log(0.0001 / 0.45) * (tt / 0.22)) : 0.0001;
+  noiseEnv[i] = tt < 0.22 ? 0.6 * Math.exp(Math.log(0.0001 / 0.6) * (tt / 0.22)) : 0.0001;
 }
 // Low-frequency thump (sine, pitch-dropping 90→48 Hz).
 const thump = new Float64Array(N);
@@ -71,8 +74,8 @@ for (let i = 0; i < N; i++) {
   if (tt >= 0.18) { thump[i] = 0; continue; }
   phase += (2 * Math.PI * (90 * Math.exp(Math.log(48 / 90) * (tt / 0.18)))) / SR;
   const g = tt < 0.008
-    ? 0.0001 * Math.exp(Math.log(0.55 / 0.0001) * (tt / 0.008))
-    : 0.55 * Math.exp(Math.log(0.0001 / 0.55) * ((tt - 0.008) / 0.16));
+    ? 0.0001 * Math.exp(Math.log(0.75 / 0.0001) * (tt / 0.008))
+    : 0.75 * Math.exp(Math.log(0.0001 / 0.75) * ((tt - 0.008) / 0.16));
   thump[i] = g * Math.sin(phase);
 }
 
@@ -82,9 +85,18 @@ for (let i = 0; i < N; i++) {
   mix[i] = (band[i] * noiseEnv[i] + thump[i]) * master[i];
   peak = Math.max(peak, Math.abs(mix[i]));
 }
-const gain = peak > 0 ? 0.9 / peak : 1;
+// 2026-08-13 LOUD pass: normalize the whole mix to 0.98 FULL SCALE (the old
+// render topped out at 0.9) — the limiter below only catches overshoots at the
+// very crest, so the strike is loud and CLEAR, not distorted.
+const gain = peak > 0 ? 0.98 / peak : 1;
 const pcm = new Int16Array(N);
-for (let i = 0; i < N; i++) pcm[i] = Math.max(-32768, Math.min(32767, Math.round(mix[i] * gain * 32767)));
+let rmsSum = 0;
+for (let i = 0; i < N; i++) {
+  const s = Math.max(-1, Math.min(1, mix[i] * gain));
+  pcm[i] = Math.max(-32768, Math.min(32767, Math.round(s * 32767)));
+  rmsSum += s * s;
+}
+const rms = Math.sqrt(rmsSum / N);
 
 // --- MP3 (lamejs, 128 kbps mono) ---
 const enc = new lamejs.Mp3Encoder(1, SR, 128);
@@ -112,6 +124,6 @@ const mp3 = Buffer.concat(mp3Chunks);
 const wav = Buffer.concat([wavHeader, Buffer.from(pcm.buffer)]);
 writeFileSync(mp3Path, mp3);
 writeFileSync(wavPath, wav);
-console.log(`strike rendered: ${DUR}s @ ${SR}Hz, peak ${peak.toFixed(3)}`);
+console.log(`strike rendered: ${DUR}s @ ${SR}Hz, mix peak ${peak.toFixed(3)}, full-scale peak ~0.98, RMS ${rms.toFixed(3)}`);
 console.log(`  ${mp3Path} (${mp3.length} bytes)`);
 console.log(`  ${wavPath} (${wav.length} bytes)`);

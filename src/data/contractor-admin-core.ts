@@ -100,6 +100,12 @@ export type DocTypeRow = {
   /** Form-bearing type (owner-directed 2026-08-12): the W-9 / I-9 required
    *  docs are FILLABLE OFFICIAL FORMS, not uploads. 'i9' | 'w9' | null. */
   formKind: FormKind | null;
+  /** SELF-COMPLETED permissions type (owner-directed 2026-08-13): the
+   *  "Notifications & Location" required item. The driver completes it by
+   *  granting notifications + saving a push subscription + sharing a live GPS
+   *  fix; the server verifies all three and flips the doc to 'verified' —
+   *  counted by the SAME compliance gate as every other required type. */
+  requiresNotificationsLocation: boolean;
   sortOrder: number;
   active: boolean;
   createdAt: string;
@@ -124,6 +130,10 @@ export type ContractorDocumentRow = {
    *  forms carry the tax id (SSN/EIN) — owner-only visibility after submission
    *  (owner-directed 2026-08-12). False for i9/w9 form docs. */
   formViewableByDriver: boolean;
+  /** SELF-COMPLETED permissions type (owner-directed 2026-08-13): "Notifications
+   *  & Location" — completed by the driver (notifications + push subscription +
+   *  GPS fix), auto-verified by the server; no owner review. */
+  requiresNotificationsLocation: boolean;
   status: DocStatus;
   docId: string | null;
   fileName: string | null;
@@ -201,7 +211,7 @@ const TYPE_ID_SCHEMA = z.object({ id: z.string().trim().min(1).max(128) });
 
 async function loadDocType(actor: ContractorAdminActor, id: string): Promise<Record<string, unknown> | null> {
   const q = await db();
-  const rows = await q`SELECT id, org_id, name, requires_expiry, requires_facial_verification, form_kind, sort_order, active, created_at FROM contractor_doc_types WHERE id=${id} AND org_id=${actor.orgId} LIMIT 1`;
+  const rows = await q`SELECT id, org_id, name, requires_expiry, requires_facial_verification, form_kind, requires_notifications_location, sort_order, active, created_at FROM contractor_doc_types WHERE id=${id} AND org_id=${actor.orgId} LIMIT 1`;
   return rows.length ? (rows[0] as Record<string, unknown>) : null;
 }
 
@@ -212,7 +222,7 @@ export async function listRequiredDocTypesCore(actor: ContractorAdminActor): Pro
   try {
     await ensure();
     const q = await db();
-    const rows = await q`SELECT id, name, requires_expiry, requires_facial_verification, form_kind, sort_order, active, created_at
+    const rows = await q`SELECT id, name, requires_expiry, requires_facial_verification, form_kind, requires_notifications_location, sort_order, active, created_at
       FROM contractor_doc_types WHERE org_id=${actor.orgId}
       ORDER BY active DESC, sort_order ASC, created_at ASC`;
     const out: DocTypeRow[] = (rows as Record<string, unknown>[]).map((r) => ({
@@ -221,6 +231,7 @@ export async function listRequiredDocTypesCore(actor: ContractorAdminActor): Pro
       requiresExpiry: r.requires_expiry === true,
       requiresFacialVerification: r.requires_facial_verification === true,
       formKind: r.form_kind === "i9" || r.form_kind === "w9" ? (r.form_kind as FormKind) : null,
+      requiresNotificationsLocation: r.requires_notifications_location === true,
       sortOrder: r.sort_order != null ? Number(r.sort_order) : 0,
       active: r.active === true,
       createdAt: new Date(String(r.created_at)).toISOString(),
@@ -255,7 +266,7 @@ export async function addDocTypeCore(actor: ContractorAdminActor, data: unknown)
     const sortOrder = await nextSortOrder(actor.orgId);
     await q`INSERT INTO contractor_doc_types(id, org_id, name, requires_expiry, requires_facial_verification, sort_order) VALUES(${id}, ${actor.orgId}, ${name}, ${requiresExpiry}, ${requiresFacialVerification}, ${sortOrder})`;
     await recordAudit(actor, "contractor_doc_type_added", id, { name, requiresExpiry, requiresFacialVerification, sortOrder });
-    return ok({ id, name, requiresExpiry, requiresFacialVerification, formKind: null, sortOrder, active: true, createdAt: new Date().toISOString() });
+    return ok({ id, name, requiresExpiry, requiresFacialVerification, formKind: null, requiresNotificationsLocation: false, sortOrder, active: true, createdAt: new Date().toISOString() });
   } catch (e) {
     if (e instanceof Error && /duplicate/i.test(e.message)) {
       return err("duplicate", `"${name}" is already a required type.`);
@@ -284,6 +295,7 @@ export async function renameDocTypeCore(actor: ContractorAdminActor, data: unkno
       requiresExpiry: row.requires_expiry === true,
       requiresFacialVerification: row.requires_facial_verification === true,
       formKind: row.form_kind === "i9" || row.form_kind === "w9" ? (row.form_kind as FormKind) : null,
+      requiresNotificationsLocation: row.requires_notifications_location === true,
       sortOrder: row.sort_order != null ? Number(row.sort_order) : 0,
       active: row.active === true,
       createdAt: new Date(String(row.created_at)).toISOString(),
@@ -1041,7 +1053,7 @@ async function listContractorDocumentsUnchecked(actor: ContractorAdminActor, con
     const q = await db();
     const member = await q`SELECT 1 FROM organization_memberships m WHERE m.org_id=${actor.orgId} AND m.user_id=${contractorId} AND m.role='contractor' LIMIT 1`;
     if (!member.length) return err("not_found", "That contractor isn't on this account.");
-    const rows = await q`SELECT t.id AS doc_type_id, t.name AS doc_type_name, t.requires_expiry, t.requires_facial_verification, t.form_kind, t.sort_order,
+    const rows = await q`SELECT t.id AS doc_type_id, t.name AS doc_type_name, t.requires_expiry, t.requires_facial_verification, t.form_kind, t.requires_notifications_location, t.sort_order,
         d.id AS doc_id, d.file_name, d.mime, d.size_bytes, d.expires_on, d.review_note, d.uploaded_at, d.uploaded_by_user_id, d.status AS stored_status,
         s.file_name AS selfie_file_name, s.uploaded_at AS selfie_uploaded_at
       FROM contractor_doc_types t
@@ -1061,6 +1073,7 @@ async function listContractorDocumentsUnchecked(actor: ContractorAdminActor, con
         requiresFacialVerification: r.requires_facial_verification === true,
         formKind,
         formViewableByDriver: formKind === null,
+        requiresNotificationsLocation: r.requires_notifications_location === true,
         status,
         docId: r.doc_id != null ? String(r.doc_id) : null,
         fileName: r.file_name != null ? String(r.file_name) : null,
@@ -1348,6 +1361,98 @@ export async function getComplianceGateCore(actor: ContractorAdminActor): Promis
   };
 }
 
+/* ---------------- Notifications & Location (self-completed, owner 2026-08-13) ---------------- */
+
+const NOTIF_LOC_SCHEMA = z.object({
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+  accuracy: z.number().min(0).max(100000).nullable().optional(),
+});
+
+/** The "Notifications & Location" REQUIRED item (owner-directed 2026-08-13):
+ *  the driver completes it IN the driver app — this endpoint verifies BOTH
+ *  halves server-side before marking the doc verified:
+ *    1. a REAL push subscription is saved for this contractor
+ *       (push_subscriptions row — set up by the fixed push-setup flow), and
+ *    2. a REAL geolocation fix captured in THIS call (stored as a
+ *       driver_locations ping — the same table the owner live map reads).
+ *  Only then is the contractor_documents row for the org's active
+ *  "Notifications & Location" type flipped to 'verified' — the SAME status the
+ *  compliance gate requires from every required type, so going online stays
+ *  blocked until it's done. No owner review (the proof is the rows, not a
+ *  photo). Never throws; audited. */
+export type CompleteNotificationsLocationResult =
+  | { ok: true; document: ContractorDocumentRow }
+  | { ok: false; code: ContractorAdminErrorCode; message: string };
+
+export async function completeNotificationsLocationCore(
+  actor: ContractorAdminActor,
+  data: unknown,
+): Promise<CompleteNotificationsLocationResult> {
+  if (actor.role !== "contractor") return err("unauthorized", "Driver access required.");
+  const v = NOTIF_LOC_SCHEMA.safeParse(data);
+  if (!v.success) return err("invalid_input", "We need a valid location fix to mark this complete.");
+  // Geolocation-denied sentinel — never mark complete on a 0,0 fix (mirrors
+  // driver-gps-core evaluateGeofence: 0,0 means the browser refused).
+  if (v.data.latitude === 0 && v.data.longitude === 0) {
+    return err("invalid_input", "Your location couldn't be read. Allow location for this site in your browser settings, then try again.");
+  }
+  try {
+    await ensure();
+    const q = await db();
+    const types = await q`SELECT id FROM contractor_doc_types WHERE org_id=${actor.orgId} AND active=TRUE AND requires_notifications_location=TRUE ORDER BY created_at ASC LIMIT 1`;
+    if (!types.length) return err("not_found", "Notifications & Location isn't a required item on this account.");
+    const docTypeId = String(types[0].id);
+    const subs = await q`SELECT COUNT(*)::int AS c FROM push_subscriptions WHERE org_id=${actor.orgId} AND user_id=${actor.id}`;
+    if (Number(subs[0]?.c ?? 0) === 0) {
+      return err("invalid_input", "Enable notifications first — tap “Allow notifications” and make sure your phone confirms they're on.");
+    }
+    // Real GPS fix → real driver_locations ping (owner live map sees it too).
+    await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, job_id, latitude, longitude, accuracy)
+      VALUES(gen_random_uuid()::text, ${actor.orgId}, ${actor.id}, NULL, NULL, ${v.data.latitude}, ${v.data.longitude}, ${v.data.accuracy ?? null})`;
+    // Flip the doc to verified (upsert — the unique (org, contractor, type) index).
+    const id = `doc-${cryptoRandomId()}`;
+    const rows = await q`INSERT INTO contractor_documents(id, org_id, contractor_id, doc_type_id, storage_key, file_name, mime, size_bytes, status, uploaded_by_user_id, uploaded_at, updated_at)
+      VALUES(${id}, ${actor.orgId}, ${actor.id}, ${docTypeId}, 'permissions://notifications-location', 'Notifications + location enabled', NULL, NULL, 'verified', ${actor.id}, NOW(), NOW())
+      ON CONFLICT (org_id, contractor_id, doc_type_id) DO UPDATE SET
+        status='verified', storage_key='permissions://notifications-location', file_name='Notifications + location enabled', review_note=NULL, updated_at=NOW()
+      RETURNING id, doc_type_id, status, expires_on, review_note, uploaded_at, uploaded_by_user_id`;
+    const row = rows[0] as Record<string, unknown>;
+    await recordAudit(actor, "contractor_doc_verified", String(row.id), {
+      docTypeId,
+      name: "Notifications & Location",
+      via: "driver-self-complete",
+      latitude: v.data.latitude,
+      longitude: v.data.longitude,
+    });
+    const nameRows = await q`SELECT name FROM contractor_doc_types WHERE id=${docTypeId}`;
+    const doc: ContractorDocumentRow = {
+      docTypeId,
+      docTypeName: String(nameRows[0]?.name ?? "Notifications & Location"),
+      requiresExpiry: false,
+      requiresFacialVerification: false,
+      formKind: null,
+      formViewableByDriver: false,
+      requiresNotificationsLocation: true,
+      status: "verified",
+      docId: String(row.id),
+      fileName: String(row.file_name ?? "Notifications + location enabled"),
+      mime: null,
+      sizeBytes: null,
+      expiresOn: null,
+      reviewNote: null,
+      uploadedAt: new Date(String(row.uploaded_at)).toISOString(),
+      uploadedByUserId: String(row.uploaded_by_user_id ?? actor.id),
+      selfieStatus: "missing",
+      selfieFileName: null,
+      selfieUploadedAt: null,
+    };
+    return { ok: true, document: doc };
+  } catch (e) {
+    return err("database_error", e instanceof Error ? e.message : "Unable to complete this item.");
+  }
+}
+
 /* ----------------------- mandated doc set seed (owner-directed) ----------------------- */
 
 /** The owner-mandated required doc set (2026-08-12): W-9, I-9, Driver's license
@@ -1360,11 +1465,18 @@ export async function getComplianceGateCore(actor: ContractorAdminActor): Promis
  *  (case-insensitive) are left untouched; missing ones are appended.
  *  formKind (owner-directed 2026-08-12): W-9 and I-9 are FILLABLE OFFICIAL
  *  FORMS — the driver fills the form instead of uploading a photo. */
-export const MANDATED_DOC_TYPES: Array<{ name: string; requiresExpiry: boolean; requiresFacialVerification: boolean; formKind: FormKind | null }> = [
+export const MANDATED_DOC_TYPES: Array<{ name: string; requiresExpiry: boolean; requiresFacialVerification: boolean; formKind: FormKind | null; requiresNotificationsLocation?: boolean }> = [
   { name: "W-9", requiresExpiry: false, requiresFacialVerification: false, formKind: "w9" },
   { name: "I-9", requiresExpiry: false, requiresFacialVerification: false, formKind: "i9" },
   { name: "Driver's License", requiresExpiry: true, requiresFacialVerification: true, formKind: null },
   { name: "Insurance information", requiresExpiry: true, requiresFacialVerification: false, formKind: null },
+  // Owner-directed 2026-08-13: EVERY driver must enable notifications +
+  // location. This is a SELF-COMPLETED item (no owner review): the driver
+  // grants notifications (saving a real push subscription) and shares a live
+  // GPS fix; completeNotificationsLocationCore verifies both server-side and
+  // flips the doc to 'verified'. The SAME compliance gate enforces it — going
+  // online is blocked until every required item, this one included, is done.
+  { name: "Notifications & Location", requiresExpiry: false, requiresFacialVerification: false, formKind: null, requiresNotificationsLocation: true },
 ];
 
 /** Core seeding logic — throws on failure so callers decide how to surface it.
@@ -1382,15 +1494,15 @@ async function seedMandatedDocTypesUnsafe(orgId: string, auditActor?: Contractor
   for (const m of MANDATED_DOC_TYPES) {
     if (have.has(m.name.toLowerCase())) continue;
     const id = `dt-${cryptoRandomId()}`;
-    const inserted = await q`INSERT INTO contractor_doc_types(id, org_id, name, requires_expiry, requires_facial_verification, form_kind, sort_order)
-      VALUES(${id}, ${orgId}, ${m.name}, ${m.requiresExpiry}, ${m.requiresFacialVerification}, ${m.formKind}, ${sortOrder})
+    const inserted = await q`INSERT INTO contractor_doc_types(id, org_id, name, requires_expiry, requires_facial_verification, form_kind, requires_notifications_location, sort_order)
+      VALUES(${id}, ${orgId}, ${m.name}, ${m.requiresExpiry}, ${m.requiresFacialVerification}, ${m.formKind}, ${m.requiresNotificationsLocation === true}, ${sortOrder})
       ON CONFLICT (org_id, LOWER(name)) DO NOTHING`;
     // Race-proof idempotency backstop: a concurrent seed (or a migration
     // backfill) may have created the row between our read and this insert.
     // ON CONFLICT skips it; only a real insert counts as ADDED (audited below).
     const affected = Number((inserted as { count?: unknown })?.count ?? 1);
     if (!(affected > 0)) continue;
-    added.push({ id, name: m.name, requiresExpiry: m.requiresExpiry, requiresFacialVerification: m.requiresFacialVerification, formKind: m.formKind, sortOrder, active: true, createdAt: new Date().toISOString() });
+    added.push({ id, name: m.name, requiresExpiry: m.requiresExpiry, requiresFacialVerification: m.requiresFacialVerification, formKind: m.formKind, requiresNotificationsLocation: m.requiresNotificationsLocation === true, sortOrder, active: true, createdAt: new Date().toISOString() });
     sortOrder += 1;
   }
   if (added.length) {
@@ -1597,6 +1709,17 @@ export async function getComplianceGateHandler(): Promise<{ ok: true } | { ok: f
   const actor = await resolveContractorActor();
   if (!actor) return { ok: true };
   return getComplianceGateCore(actor);
+}
+/** Driver completes the "Notifications & Location" required item (owner-directed
+ *  2026-08-13): grants notifications (push subscription saved) + shares a live
+ *  GPS fix. The server verifies both and marks the doc verified — the SAME
+ *  compliance gate then opens. Owner-in-driver-view resolves to the same
+ *  effective driver. */
+export async function completeNotificationsLocationHandler(data: unknown): Promise<CompleteNotificationsLocationResult> {
+  if (!configured()) return err("database_error", "Notifications & Location requires database mode.");
+  const actor = await resolveContractorActor();
+  if (!actor) return err("unauthorized", "Driver access required.");
+  return completeNotificationsLocationCore(actor, data);
 }
 export async function seedMandatedDocTypesHandler(): Promise<ContractorAdminResult<DocTypeRow[]>> {
   if (!configured()) return DB_MODE_ERR("Document types");

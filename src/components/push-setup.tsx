@@ -1,6 +1,7 @@
 /**
  * Assigned-offer push setup (owner top priority 2026-08-12, design spec A4 —
- * copy verbatim). Mounted in the driver portal (RealDriverPortal):
+ * copy verbatim; hard-fix + compliance 2026-08-13). Mounted in the driver
+ * portal (RealDriverPortal):
  *
  *  1. On mount: preload the strike asset; if permission is ALREADY granted,
  *     ensure the service worker + subscription are registered (silent,
@@ -16,10 +17,16 @@
  *     strike (the rendered lightning-strike.mp3 asset) + success toast.
  *     Not now / denied → dismiss quietly; "Not now" re-asks up to 3 total.
  *
- * Never blocks the portal: every failure is silent, the in-app banner +
- * WebAudio strike (sound.ts) work regardless.
+ * 2026-08-13 fix (owner-directed, root cause of 0 saved subscriptions): the
+ * card NO LONGER hides itself when setup fails. Old behavior: permission
+ * granted → ensurePushSubscription() returned false → setVisible(false) with
+ * NO error and NO retry — a refused VAPID-key fetch, an SW registration
+ * failure, or an iOS subscribe rejection all looked identical to success.
+ * Now a failure keeps the card up with the exact driver-readable reason and a
+ * Try again button; only a real success, a browser-level denial, or the
+ * driver's own "Not now" hides it.
  */
-import { Bell } from "lucide-react";
+import { AlertTriangle, Bell } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button, Card, useToast } from "~/components/ui";
 import {
@@ -28,8 +35,10 @@ import {
   notificationsSupported,
   playStrikeAsset,
   preloadStrikeAsset,
+  pushSetupFailureCopy,
   recordAsk,
   registerServiceWorker,
+  type PushSetupFailureReason,
 } from "~/lib/push-client";
 
 /** The permission card itself — rendered by HomeSheet at the top of the peek
@@ -41,29 +50,38 @@ export function PushPermissionCard() {
     return Notification.permission === "default" && asksRemaining() > 0;
   });
   const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<{ reason: PushSetupFailureReason; message: string } | null>(null);
 
   if (!visible) return null;
 
   const allow = async () => {
     setBusy(true);
+    setFailure(null);
     recordAsk();
     try {
       const perm = await Notification.requestPermission();
       if (perm === "granted") {
-        const ok = await ensurePushSubscription();
-        if (ok) {
+        const result = await ensurePushSubscription();
+        if (result.ok) {
           playStrikeAsset(); // one confirmation strike — "this is the sound"
           toast("Offers on — one strike means one new job. You can mute it anytime from the speaker icon.");
+          setVisible(false);
+          return;
         }
-        setVisible(false);
+        // 2026-08-13: REAL failure — keep the card up with the reason + retry.
+        setFailure({ reason: result.reason, message: pushSetupFailureCopy(result.reason) });
         return;
       }
       // 'denied' (or 'default' if the user dismissed the browser prompt):
       // stop asking permanently after a denial; a "default" still consumes an
-      // ask (the cap keeps us honest).
+      // ask (the cap keeps us honest). A denial is the browser's own state, so
+      // the card hides — but the driver is told how to flip it back on.
+      if (perm === "denied") {
+        toast("Notifications are off in your browser settings — you can re-enable them there anytime.");
+      }
       setVisible(false);
     } catch {
-      setVisible(false);
+      setFailure({ reason: "subscribe_failed", message: pushSetupFailureCopy("subscribe_failed") });
     } finally {
       setBusy(false);
     }
@@ -88,9 +106,15 @@ export function PushPermissionCard() {
           </p>
         </div>
       </div>
+      {failure && (
+        <div className="mt-3 flex items-start gap-2 rounded-xl border border-danger-200 bg-danger-50 px-3 py-2.5" role="alert">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-danger-500" aria-hidden="true" />
+          <p className="text-xs leading-relaxed text-danger-800">{failure.message}</p>
+        </div>
+      )}
       <div className="mt-3 space-y-2">
         <Button variant="primary" size="md" className="h-11 w-full" loading={busy} onClick={() => void allow()}>
-          Allow notifications
+          {failure ? "Try again" : "Allow notifications"}
         </Button>
         <Button variant="ghost" size="md" className="h-10 w-full" disabled={busy} onClick={notNow}>
           Not now

@@ -971,6 +971,18 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`ALTER TABLE payout_records ADD COLUMN IF NOT EXISTS busy_bonus_jobs INTEGER NOT NULL DEFAULT 0`;
     await q`ALTER TABLE payout_records ADD COLUMN IF NOT EXISTS busy_bonus_hours JSONB`;
   }],
+  [41, async (q) => {
+    // "Notifications & Location" REQUIRED compliance item (owner-directed
+    // 2026-08-13): a contractor_doc_types flag marking the type as a
+    // SELF-COMPLETED permissions item — the driver must (a) grant notification
+    // permission AND save a push subscription AND (b) share a live geolocation
+    // fix; the server verifies both and flips the doc to 'verified' (no owner
+    // review needed — the proof is the push_subscriptions row + the stored
+    // driver_locations ping). Counted by the SAME compliance gate as W-9/I-9/
+    // license/insurance (getComplianceGateCore reads every active required
+    // type), so going online stays blocked until it's done.
+    await q`ALTER TABLE contractor_doc_types ADD COLUMN IF NOT EXISTS requires_notifications_location BOOLEAN NOT NULL DEFAULT FALSE`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();
