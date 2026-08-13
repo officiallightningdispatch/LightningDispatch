@@ -57,6 +57,8 @@ const OWNER = `push-owner-${TAG}`;
 const ADMIN = `push-admin-${TAG}`;
 const DRIVER = `push-driver-${TAG}`;
 const DRIVER2 = `push-driver2-${TAG}`; // second org member (scoping check)
+const OWNER_DRIVER = `push-ownerdrv-${TAG}`; // al0101 shape: owner member + own Towbook driver id
+const OWNER_DRIVER_TB = `99902-${TAG}`;
 const endpoint = (n) => `https://push.example.test/endpoint-${n}-${TAG}`;
 
 /* ------------------------------ RFC 8291 decrypter ------------------------------ */
@@ -93,12 +95,16 @@ async function setup() {
     [ADMIN, "QA Push Admin", "admin"],
     [DRIVER, "QA Push Driver", "contractor"],
     [DRIVER2, "QA Push Driver 2", "contractor"],
+    [OWNER_DRIVER, "QA Push Owner-Driver", "owner"],
   ]) {
     await q`INSERT INTO users(id, name, email, password_hash) VALUES(${uid}, ${name}, ${`qa-push-${uid}-${randomUUID()}@lightning.test`}, 'x')`;
     await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${ORG}, ${uid}, ${role})`;
   }
 }
 await setup();
+// al0101 real-world shape: the user row IS the driver identity (own
+// towbook_driver_id; unique index — fixture-unique value).
+await q`UPDATE users SET towbook_driver_id=${OWNER_DRIVER_TB} WHERE id=${OWNER_DRIVER}`;
 
 const actor = (uid) => ({ id: uid, orgId: ORG, role: (uid === OWNER ? "owner" : uid === ADMIN ? "admin" : "contractor") });
 
@@ -178,6 +184,28 @@ for (const [uid, label] of [[OWNER, "owner"], [ADMIN, "admin"]]) {
 }
 const anon = await savePushSubscriptionCore({ id: "nobody", orgId: ORG, role: "dispatcher" }, { endpoint: endpoint("anon"), p256dh: SUB_PUB, auth: SUB_AUTH });
 check("gate: dispatcher/unauthenticated refused", anon.ok === false);
+
+/* --------------- owner-with-driver-identity (al0101 shape, fix 2026-08-13) --------------- */
+// An owner member whose row carries a Towbook driver id may save/list/delete
+// their OWN subscription (owner-in-driver-view). The row is stored under their
+// own user id — never another contractor's.
+const odActor = { id: OWNER_DRIVER, orgId: ORG, role: "owner" };
+let od = await savePushSubscriptionCore(odActor, { endpoint: endpoint("od"), p256dh: SUB_PUB, auth: SUB_AUTH });
+check("owner-with-driver-identity: can save their own subscription (al0101 shape)", od.ok === true, JSON.stringify(od));
+check("owner-with-driver-identity: row stored under their own user id", od.ok && od.subscription.userId === OWNER_DRIVER && od.subscription.orgId === ORG, JSON.stringify(od));
+const odList = await listPushSubscriptionsCore(odActor);
+check("owner-with-driver-identity: lists their own subscriptions", odList.ok && odList.subscriptions.some((s) => s.endpoint === endpoint("od")), JSON.stringify(odList));
+check("owner-with-driver-identity: sees ONLY their own subs (no cross scope)", odList.ok && odList.subscriptions.every((s) => s.userId === OWNER_DRIVER), JSON.stringify(odList));
+const odCrossDel = await deletePushSubscriptionCore(odActor, endpoint(1)); // DRIVER's subscription
+check("owner-with-driver-identity: cannot delete another user's subscription", odCrossDel.ok === true && odCrossDel.deleted === false, JSON.stringify(odCrossDel));
+const odDel = await deletePushSubscriptionCore(odActor, endpoint("od"));
+check("owner-with-driver-identity: deletes their own subscription", odDel.ok === true && odDel.deleted === true, JSON.stringify(odDel));
+{
+  const src = await (await import("node:fs/promises")).readFile("./src/data/push.ts", "utf8");
+  check("push: server fns resolve the actor via effectiveDriverIdentity (owner-in-driver-view)", src.includes("resolvePushActor") && src.includes("await core.resolvePushActor(u)"), "push.ts not identity-resolving");
+  const coreSrc = await (await import("node:fs/promises")).readFile("./src/data/push-core.ts", "utf8");
+  check("push: core gate is driver-identity aware (hasOrgDriverIdentity)", coreSrc.includes("hasOrgDriverIdentity") && coreSrc.includes("towbook_driver_id IS NOT NULL OR u.linked_driver_user_id IS NOT NULL"), "push-core gate not identity-aware");
+}
 
 /* ----------------------------- sendAssignmentPush ----------------------------- */
 let sent = [];

@@ -6,9 +6,12 @@
  *
  * Tables: push_subscriptions (migration 35) — one row per browser endpoint,
  * UNIQUE on endpoint so a re-subscribe (endpoint changed) REPLACES the old row
- * (upsert). Scoped to (org_id, user_id); ONLY role 'contractor' users may
- * save/list/delete their own (owner/admin/dispatcher/unauthenticated refused —
- * owner-directed, task contract).
+ * (upsert). Scoped to (org_id, user_id); role 'contractor' users may
+ * save/list/delete their own — and so may any OTHER org member who has a valid
+ * driver identity (owner-in-driver-view, al0101 fix 2026-08-13: owner
+ * membership + Towbook driver link). Everyone else refused (owner/admin without
+ * a driver identity, dispatcher, unauthenticated — owner-directed, task
+ * contract).
  *
  * sendAssignmentPush loads the contractor's subscriptions, encrypts the
  * notification payload (webpush.ts, RFC 8188/8291/8292 — no provider account),
@@ -30,6 +33,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { findSiteRoot } from "./towbook-key";
+import type { AuthUser } from "./auth-server";
 
 export type PushActor = { id: string; orgId: string; role: string };
 export type PushSubscriptionRow = {
@@ -90,10 +94,51 @@ export async function loadVapidKeys(env: Record<string, string | undefined> = pr
 
 /* --------------------------------- role gate --------------------------------- */
 
-const contractorOnly = (actor: PushActor): string | null =>
-  actor.role === "contractor" ? null : "Only contractors can manage push notifications.";
+/** Self-scoped driver gate (fix 2026-08-13, owner-hit al0101). role
+ *  'contractor' always passes; any OTHER org member passes ONLY when they have
+ *  a valid driver identity (own towbook_driver_id or a linked-driver
+ *  resolution, not deactivated) — the owner-in-driver-view case. The actor id
+ *  is ALWAYS the row owner (org+user forced from the actor, never from the
+ *  client), so this can never touch another contractor's subscriptions. */
+const contractorOnly = async (actor: PushActor): Promise<string | null> => {
+  if (actor.role === "contractor") return null;
+  if (await hasOrgDriverIdentity(actor)) return null;
+  return "Only contractors can manage push notifications.";
+};
+
+/** The org-member-with-driver-identity check backing the gate: the actor is a
+ *  member of their org (any role) whose row carries a driver identity and is
+ *  not deactivated. Fails closed on DB errors. */
+async function hasOrgDriverIdentity(actor: PushActor): Promise<boolean> {
+  try {
+    const q = await db();
+    const rows = await q`SELECT 1 FROM organization_memberships m JOIN users u ON u.id=m.user_id
+      WHERE m.org_id=${actor.orgId} AND m.user_id=${actor.id} AND u.deactivated_at IS NULL
+        AND (u.towbook_driver_id IS NOT NULL OR u.linked_driver_user_id IS NOT NULL)
+      LIMIT 1`;
+    return rows.length > 0;
+  } catch {
+    return false;
+  }
+}
 
 const db = () => import("~/db").then((m) => m.sql());
+
+/** Resolve the push actor from a session user — the OWNER↔contractor view
+ *  toggle (fix 2026-08-13, owner-hit al0101). Uses the SAME effective-driver
+ *  resolver the driver portal maps the session through (auth-server
+ *  effectiveDriverIdentity, mirroring resolveContractorActor in
+ *  contractor-admin-core): an owner/admin with a valid driver identity becomes
+ *  their own contractor identity (id = the driver's user row, role
+ *  'contractor'), so the owner-in-driver-view saves/list/deletes subscriptions
+ *  under their own driver row — never as a cross-contractor owner. Members
+ *  without a driver identity keep their raw role; the gate refuses them. */
+export async function resolvePushActor(u: AuthUser): Promise<PushActor> {
+  const { effectiveDriverIdentity } = await import("./auth-server");
+  const identity = await effectiveDriverIdentity(u);
+  if (identity && !identity.deactivated) return { id: identity.userRowId, orgId: u.orgId, role: "contractor" };
+  return { id: u.id, orgId: u.orgId, role: u.role };
+}
 
 /* ------------------------------ subscription CRUD ------------------------------ */
 
@@ -131,7 +176,7 @@ export async function savePushSubscriptionCore(
   actor: PushActor,
   input: unknown,
 ): Promise<SavePushSubscriptionResult> {
-  const gate = contractorOnly(actor);
+  const gate = await contractorOnly(actor);
   if (gate) return { ok: false, error: gate };
   const v = subSchema.safeParse(input);
   if (!v.success) return { ok: false, error: "Invalid push subscription." };
@@ -151,7 +196,7 @@ export async function savePushSubscriptionCore(
 export type ListPushSubscriptionsResult = { ok: true; subscriptions: PushSubscriptionRow[] } | { ok: false; error: string };
 
 export async function listPushSubscriptionsCore(actor: PushActor): Promise<ListPushSubscriptionsResult> {
-  const gate = contractorOnly(actor);
+  const gate = await contractorOnly(actor);
   if (gate) return { ok: false, error: gate };
   const q = await db();
   const rows = await q`SELECT id, org_id, user_id, endpoint, p256dh, auth, user_agent, created_at, last_seen_at FROM push_subscriptions WHERE org_id=${actor.orgId} AND user_id=${actor.id} ORDER BY created_at`;
@@ -164,7 +209,7 @@ export async function deletePushSubscriptionCore(
   actor: PushActor,
   endpoint: string,
 ): Promise<DeletePushSubscriptionResult> {
-  const gate = contractorOnly(actor);
+  const gate = await contractorOnly(actor);
   if (gate) return { ok: false, error: gate };
   if (!z.string().min(1).max(1024).safeParse(endpoint).success) return { ok: false, error: "Invalid endpoint." };
   const q = await db();

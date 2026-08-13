@@ -1039,20 +1039,42 @@ export async function setMyScheduleCore(actor: ContractorAdminActor, data: unkno
 /* ------------------------------ contractor-own docs ------------------------------ */
 
 /** The acting contractor's own documents — same shape as
- *  listContractorDocumentsCore but session-scoped to self. */
+ *  listContractorDocumentsCore but session-scoped to self. SELF-scoped driver
+ *  read (fix 2026-08-13, owner-hit al0101): any org member WITH a valid driver
+ *  identity may read their OWN docs — the actor's role need not be
+ *  'contractor'. The membership + driver-identity boundary lives in
+ *  listContractorDocumentsUnchecked's self path (the handler already resolves
+ *  the actor through the effective-driver resolver, mirroring
+ *  getMySchedule/getMyComplianceCore). */
 export async function getMyDocumentsCore(actor: ContractorAdminActor): Promise<ContractorAdminResult<ContractorDocumentRow[]>> {
-  if (actor.role !== "contractor") return err("unauthorized", "Driver access required.");
   return listContractorDocumentsUnchecked(actor, actor.id);
 }
 
-/** Ungated row loader (owner path gates first; the contractor-own path calls
- *  it with self — the cross-contractor read is impossible by construction). */
+/** Row loader with the security boundary applied INSIDE (fix 2026-08-13,
+ *  owner-hit al0101 — "That contractor isn't on this account."):
+ *   · SELF (contractorId === actor.id): ANY membership role passes, but the
+ *     member must have a valid driver identity (own towbook_driver_id or a
+ *     linked-driver resolution, not deactivated) — the owner-in-driver-view
+ *     read of their OWN docs.
+ *   · CROSS (contractorId !== actor.id): the target must still be a
+ *     role='contractor' member — cross-contractor reads stay gated (and the
+ *     owner path gates first via listContractorDocumentsCore's canManage). */
 async function listContractorDocumentsUnchecked(actor: ContractorAdminActor, contractorId: string): Promise<ContractorAdminResult<ContractorDocumentRow[]>> {
   try {
     await ensure();
     const q = await db();
-    const member = await q`SELECT 1 FROM organization_memberships m WHERE m.org_id=${actor.orgId} AND m.user_id=${contractorId} AND m.role='contractor' LIMIT 1`;
+    const self = contractorId === actor.id;
+    const member = self
+      ? await q`SELECT 1 FROM organization_memberships m WHERE m.org_id=${actor.orgId} AND m.user_id=${contractorId} LIMIT 1`
+      : await q`SELECT 1 FROM organization_memberships m WHERE m.org_id=${actor.orgId} AND m.user_id=${contractorId} AND m.role='contractor' LIMIT 1`;
     if (!member.length) return err("not_found", "That contractor isn't on this account.");
+    if (self) {
+      const ident = await q`SELECT towbook_driver_id, linked_driver_user_id, deactivated_at FROM users WHERE id=${contractorId} LIMIT 1`;
+      const hasIdentity = ident.length > 0
+        && (ident[0].towbook_driver_id != null || ident[0].linked_driver_user_id != null)
+        && ident[0].deactivated_at == null;
+      if (!hasIdentity) return err("unauthorized", "Driver access required.");
+    }
     const rows = await q`SELECT t.id AS doc_type_id, t.name AS doc_type_name, t.requires_expiry, t.requires_facial_verification, t.form_kind, t.requires_notifications_location, t.sort_order,
         d.id AS doc_id, d.file_name, d.mime, d.size_bytes, d.expires_on, d.review_note, d.uploaded_at, d.uploaded_by_user_id, d.status AS stored_status,
         s.file_name AS selfie_file_name, s.uploaded_at AS selfie_uploaded_at

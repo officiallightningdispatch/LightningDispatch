@@ -27,6 +27,7 @@ const q = neon(process.env.DATABASE_URL);
 const { ensureSchema } = await import("./src/data/migrations.ts");
 const { assertQaOrg } = await import("./src/data/db-guard.ts");
 const { ownerMemberRole } = await import("./src/data/auth-server.ts");
+const { getMyDocumentsCore, listContractorDocumentsCore } = await import("./src/data/contractor-admin-core.ts");
 const checks = [];
 const check = (name, cond, extra = "") => {
   checks.push([name, Boolean(cond), extra]);
@@ -51,6 +52,7 @@ const ADMIN_DRIVER = uid("admindrv"); // admin member + own driver identity
 const CONTRACTOR_DRIVER = uid("contractordrv"); // contractor member (type-1 driver — stays contractor)
 const DISPATCHER_DRIVER = uid("dispatchdrv"); // dispatcher member (type-1 driver — stays contractor)
 const NO_MEMBER = uid("nomember"); // type-1 driver with no membership — stays contractor
+const OWNER_NO_ID = uid("ownernoid"); // owner member WITHOUT any driver identity (self-read must still refuse)
 const email = (u) => `${u}@lightning.test`;
 /* ------------------------------ fixture ------------------------------ */
 await ensureSchema();
@@ -69,6 +71,7 @@ await ins(ADMIN_DRIVER, "Admin Driver");
 await ins(CONTRACTOR_DRIVER, "Contractor Driver");
 await ins(DISPATCHER_DRIVER, "Dispatcher Driver");
 await ins(NO_MEMBER, "No Member Driver");
+await ins(OWNER_NO_ID, "Owner No Driver Id");
 // al0101 real-world SHAPE: the user row IS the driver identity (own
 // towbook_driver_id + towbook_user_id + login_handle). Ids are fixture-unique
 // (users_towbook_driver_id_idx is a unique index — the real 721132 already
@@ -83,7 +86,8 @@ await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES
   (${ORG}, ${OWNER_DRIVER}, 'owner'),
   (${ORG}, ${ADMIN_DRIVER}, 'admin'),
   (${ORG}, ${CONTRACTOR_DRIVER}, 'contractor'),
-  (${ORG}, ${DISPATCHER_DRIVER}, 'dispatcher')`;
+  (${ORG}, ${DISPATCHER_DRIVER}, 'dispatcher'),
+  (${ORG}, ${OWNER_NO_ID}, 'owner')`;
 // Leftover-QA shape: the SAME owner-member user is a contractor in another
 // (QA) org — the resolved org's membership alone decides the landing role.
 await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${ORG2}, ${OWNER_DRIVER}, 'contractor')`;
@@ -113,6 +117,25 @@ await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${ORG
   check("leftover-QA org membership (contractor) → null — only the RESOLVED org's membership decides", r === null, JSON.stringify(r));
   const r2 = await ownerMemberRole(ORG, OWNER_DRIVER);
   check("same user, resolved (real) org membership (owner) → 'owner' regardless of the QA leftover", r2 === "owner", JSON.stringify(r2));
+}
+/* ---------------- self-scoped driver documents (al0101 shape) ---------------- */
+{
+  // al0101 real-world SHAPE: owner membership + Towbook driver id on the SAME
+  // user row — the driver-view Documents screen must list THEIR OWN docs even
+  // though the only membership role is 'owner' (fix 2026-08-13).
+  const r = await getMyDocumentsCore({ orgId: ORG, id: OWNER_DRIVER, role: "owner" });
+  check("docs: owner member WITH driver identity lists OWN docs (al0101 shape)", r.ok === true, JSON.stringify(r));
+  const noId = await getMyDocumentsCore({ orgId: ORG, id: OWNER_NO_ID, role: "owner" });
+  check("docs: owner member WITHOUT a driver identity still refused (identity required for the self read)", noId.ok === false, JSON.stringify(noId));
+  // CROSS-contractor boundary stays closed: the owner fn still requires the
+  // TARGET to be a role='contractor' member — an admin member is "not on this
+  // account" as a contractor.
+  const cross = await listContractorDocumentsCore({ orgId: ORG, id: OWNER_DRIVER, role: "owner" }, { contractorId: ADMIN_DRIVER });
+  check("docs: cross read of a NON-contractor member refused (role='contractor' membership still required)", cross.ok === false && cross.message === "That contractor isn't on this account.", JSON.stringify(cross));
+  const crossOk = await listContractorDocumentsCore({ orgId: ORG, id: OWNER_DRIVER, role: "owner" }, { contractorId: CONTRACTOR_DRIVER });
+  check("docs: owner read of a real contractor member still works (owner access unchanged)", crossOk.ok === true, JSON.stringify(crossOk));
+  const contractorSelf = await getMyDocumentsCore({ orgId: ORG, id: CONTRACTOR_DRIVER, role: "contractor" });
+  check("docs: plain contractor still lists OWN docs", contractorSelf.ok === true, JSON.stringify(contractorSelf));
 }
 /* ------------------------------ driverLogin wiring ------------------------------ */
 {
