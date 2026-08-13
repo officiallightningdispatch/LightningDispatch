@@ -52,6 +52,12 @@ const {
   validateGeocodeResult,
   tomtomGeocodeLookup,
   GEOCODE_SCORE_FLOOR,
+  ANCHOR_RADIUS_MILES,
+  STALE_GPS_FIX_MINUTES,
+  loadDriverAnchors,
+  loadDriverGpsFixes,
+  etDayStartUtcMs,
+  areaSelectionNote,
 } = await import("./src/data/ai-dispatcher.ts");
 const { encryptSession } = await import("./src/data/towbook-key.ts");
 const { ensureSchema } = await import("./src/data/migrations.ts");
@@ -69,6 +75,7 @@ const ORG3 = `qa-ad3-${randomUUID()}`; // ETA v3 traffic-layer engine tests
 const ORG4 = `qa-ad4-${randomUUID()}`; // queue-aware capacity + all-loaded engine tests
 const ORG5 = `qa-ad5-${randomUUID()}`; // lost-race classification tests
 const ORG6 = `qa-ad6-${randomUUID()}`; // coordinate-less offer resolution (owner 2026-08-13)
+const ORG7 = `qa-ad7-${randomUUID()}`; // geography: area anchors + fresh-GPS ETA origins (owner 2026-08-13)
 const USER = `qa-ad-user-${randomUUID()}`;
 let created = false;
 
@@ -289,6 +296,7 @@ try {
   await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES(${ORG5}, ${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))}, 'connected')`;
   await q`INSERT INTO organizations(id, name) VALUES(${ORG6}, 'qa ai-dispatcher coords')`;
   await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES(${ORG6}, ${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))}, 'connected')`;
+  await q`INSERT INTO organizations(id, name) VALUES(${ORG7}, 'qa ai-dispatcher geography')`;
   created = true;
   // Owner-org baseline: the REAL incident row (offer 326520203, auto-accepted
   // 2026-08-10 with a 3-min straight-line ETA) lives in the owner org — the
@@ -1414,6 +1422,174 @@ try {
     check("owner org untouched: decision count unchanged by this run", Number(ownerDecisions[0].n) === ownerBaseline, `${ownerBaseline} → ${Number(ownerDecisions[0].n)}`);
   }
 
+  /* ============ 27) geography: area anchors + fresh-GPS ETA origins (owner 2026-08-13) ============ */
+  {
+    // Fixture geography (real CT shoreline towns): Jayden anchored in Darien,
+    // Levi in West Haven; the New Haven job must go to the West-Haven driver
+    // (owner example: "if Jayden gets a job in Darien, he shouldn't get a job
+    // in New Haven when Levi is in West Haven").
+    const DARIEN = { lat: 41.08, lng: -73.47 };
+    const WEST_HAVEN = { lat: 41.27, lng: -73.05 };
+    const NEW_HAVEN = { lat: 41.31, lng: -72.93 };
+    const STAMFORD = { lat: 41.05, lng: -73.54 };
+    const anchorOf = (driverTowbookId, c, jobId = `geo-${driverTowbookId}`) => ({
+      driverTowbookId: String(driverTowbookId), lat: c.lat, lng: c.lng, jobId, assignedAt: new Date().toISOString(),
+    });
+    const jayden = driver(703785, "Jayden Fountain", { lat: DARIEN.lat, lng: DARIEN.lng, etaSec: 604 });
+    const levi = driver(717660, "Levi C Martin", { lat: WEST_HAVEN.lat, lng: WEST_HAVEN.lng, etaSec: 604 });
+    const leviStamford = driver(717660, "Levi C Martin", { lat: STAMFORD.lat, lng: STAMFORD.lng, etaSec: 604 });
+    const offline = driver(717660, "Levi C Martin", { checkedIn: false, etaSec: 10 });
+    const anchors = new Map([
+      ["703785", anchorOf(703785, DARIEN)],
+      ["717660", anchorOf(717660, WEST_HAVEN)],
+    ]);
+    // Constants + the owner example hold: Darien→New Haven OUT of the 15-mi
+    // circle, West Haven→New Haven IN.
+    check("geography constants: ANCHOR_RADIUS_MILES=15, STALE_GPS_FIX_MINUTES=15",
+      ANCHOR_RADIUS_MILES === 15 && STALE_GPS_FIX_MINUTES === 15, `${ANCHOR_RADIUS_MILES}/${STALE_GPS_FIX_MINUTES}`);
+    check("geography fixture: Darien→New Haven > 15 mi (Jayden OUT), West Haven→New Haven ≤ 15 mi (Levi IN)",
+      haversineMiles(NEW_HAVEN.lat, NEW_HAVEN.lng, DARIEN.lat, DARIEN.lng) > ANCHOR_RADIUS_MILES &&
+      haversineMiles(NEW_HAVEN.lat, NEW_HAVEN.lng, WEST_HAVEN.lat, WEST_HAVEN.lng) <= ANCHOR_RADIUS_MILES,
+      `${haversineMiles(NEW_HAVEN.lat, NEW_HAVEN.lng, DARIEN.lat, DARIEN.lng).toFixed(1)} mi / ${haversineMiles(NEW_HAVEN.lat, NEW_HAVEN.lng, WEST_HAVEN.lat, WEST_HAVEN.lng).toFixed(1)} mi`);
+    // Jayden gets the BETTER road ETA (600s) — the in-area rule must still
+    // send the New Haven job to Levi (3600s): an out-of-area driver is NOT a
+    // candidate, no matter how fast their road ETA is.
+    const geoRouter = makeRouter({
+      "41.08,-73.47": 600,   // Jayden (Darien) → New Haven: fast, but OUT of area
+      "41.27,-73.05": 3600,  // Levi (West Haven) → New Haven: slow, but IN area
+    });
+    const pickNh = await chooseBestDriverByRoad([jayden, levi], NEW_HAVEN.lat, NEW_HAVEN.lng, geoRouter, undefined, { anchors });
+    check("in-area preference: New Haven job → West-Haven Levi, NOT Darien Jayden (owner example)",
+      pickNh?.driver.driverId === 717660 && pickNh?.areaFallback === false && pickNh?.anchor?.driverTowbookId === "717660",
+      JSON.stringify(pickNh && { d: pickNh.driver.driverId, fb: pickNh.areaFallback, anchor: pickNh.anchor?.driverTowbookId, base: pickNh.baseMinutes }));
+    check("in-area choice: reason helper notes the anchor + in-circle pickup",
+      pickNh != null && pickNh.anchor != null && String(areaSelectionNote(pickNh, NEW_HAVEN.lat, NEW_HAVEN.lng)).includes("in-circle"),
+      String(pickNh && areaSelectionNote(pickNh, NEW_HAVEN.lat, NEW_HAVEN.lng)));
+
+    // Fallback: BOTH anchored OUT of area (Jayden Darien, Levi Stamford) →
+    // global closest-by-ETA engages (areaFallback true) and fast Jayden wins.
+    const anchorsBothOut = new Map([
+      ["703785", anchorOf(703785, DARIEN)],
+      ["717660", anchorOf(717660, STAMFORD)],
+    ]);
+    const pickFb = await chooseBestDriverByRoad([jayden, leviStamford], NEW_HAVEN.lat, NEW_HAVEN.lng, geoRouter, undefined, { anchors: anchorsBothOut });
+    check("fallback: no in-area candidate → global closest-by-ETA (areaFallback true), fast Jayden wins",
+      pickFb?.driver.driverId === 703785 && pickFb?.areaFallback === true &&
+      String(areaSelectionNote(pickFb, NEW_HAVEN.lat, NEW_HAVEN.lng)).includes("global closest-by-ETA fallback"),
+      JSON.stringify(pickFb && { d: pickFb.driver.driverId, fb: pickFb.areaFallback, base: pickFb.baseMinutes }));
+
+    // No-anchor drivers are flexible: with Jayden anchored out-of-area, the
+    // UNANCHORED Levi is still a candidate for New Haven; and with NO anchors
+    // configured at all the engine behaves exactly as before (shortest road
+    // ETA wins, payload origins).
+    const anchorsJaydenOnly = new Map([["703785", anchorOf(703785, DARIEN)]]);
+    const pickFlex = await chooseBestDriverByRoad([jayden, levi], NEW_HAVEN.lat, NEW_HAVEN.lng, geoRouter, undefined, { anchors: anchorsJaydenOnly });
+    check("no-anchor drivers flexible: unanchored Levi takes the New Haven job (anchored Jayden out-of-area excluded)",
+      pickFlex?.driver.driverId === 717660 && pickFlex?.areaFallback === false && pickFlex?.anchor === null,
+      JSON.stringify(pickFlex && { d: pickFlex.driver.driverId, anchor: pickFlex.anchor }));
+    const pickBothFlex = await chooseBestDriverByRoad([jayden, levi], NEW_HAVEN.lat, NEW_HAVEN.lng, geoRouter, undefined, {});
+    check("no anchors configured → pre-geography behavior (shortest road ETA wins, payload origin, no area note)",
+      pickBothFlex?.driver.driverId === 703785 && pickBothFlex?.areaFallback === false && pickBothFlex?.originBasis === "payload" &&
+      areaSelectionNote(pickBothFlex, NEW_HAVEN.lat, NEW_HAVEN.lng) === null,
+      JSON.stringify(pickBothFlex && { d: pickBothFlex.driver.driverId, basis: pickBothFlex.originBasis }));
+
+    // ETA origin: freshest app GPS fix when ≤ 15 min old; a STALE fix (> 15
+    // min) routes from the driver's anchor center with the basis noted; no fix
+    // at all keeps the payload GPS (pre-geography default — absence of a ping
+    // is not treated as a stale ping).
+    const geoNow = new Date();
+    const fixAt = (c, ageMin) => ({ lat: c.lat, lng: c.lng, capturedAt: new Date(geoNow.getTime() - ageMin * 60000).toISOString() });
+    const pickFresh = await chooseBestDriverByRoad([jayden], NEW_HAVEN.lat, NEW_HAVEN.lng,
+      makeRouter({ "41.31,-72.93": 600 }), // fix (New Haven) route — would be ~86 min factor if the payload were used
+      undefined, { anchors, gpsFixes: new Map([["703785", fixAt(NEW_HAVEN, 5)]]), now: geoNow });
+    check("fresh GPS fix: ETA routed FROM the fix (originBasis gps, 10 min — not the payload's ~86-min factor)",
+      pickFresh?.driver.driverId === 703785 && pickFresh?.originBasis === "gps" && pickFresh?.baseMinutes === 10 &&
+      pickFresh?.gpsFixAgeMinutes != null && pickFresh.gpsFixAgeMinutes >= 4 && pickFresh.gpsFixAgeMinutes <= 6,
+      JSON.stringify(pickFresh && { basis: pickFresh.originBasis, base: pickFresh.baseMinutes, age: pickFresh.gpsFixAgeMinutes }));
+    check("fresh GPS fix: reason label names the app-GPS origin",
+      pickFresh != null && String(etaDetailLabel(pickFresh, 5, 5, 45, 15)).includes("origin: app GPS fix"),
+      String(pickFresh && etaDetailLabel(pickFresh, 5, 5, 45, 15)));
+    const pickStale = await chooseBestDriverByRoad([levi], NEW_HAVEN.lat, NEW_HAVEN.lng,
+      makeRouter({ "41.27,-73.05": 600 }), // anchor-center (West Haven) route — the stale fix (41.30,-72.95) would factor to ~18 min
+      undefined, { anchors, gpsFixes: new Map([["717660", fixAt({ lat: 41.30, lng: -72.95 }, 30)]]), now: geoNow });
+    check("stale GPS fix (>15 min): ETA routed from the ANCHOR center, basis noted (originBasis anchor)",
+      pickStale?.driver.driverId === 717660 && pickStale?.originBasis === "anchor" && pickStale?.baseMinutes === 10 &&
+      pickStale?.gpsFixAgeMinutes != null && pickStale.gpsFixAgeMinutes >= 29 && pickStale.gpsFixAgeMinutes <= 31,
+      JSON.stringify(pickStale && { basis: pickStale.originBasis, base: pickStale.baseMinutes, age: pickStale.gpsFixAgeMinutes }));
+    check("stale GPS fix: reason label + area note never hide the anchor-center origin",
+      pickStale != null && String(etaDetailLabel(pickStale, 5, 5, 45, 15)).includes("origin: anchor center") &&
+      String(areaSelectionNote(pickStale, NEW_HAVEN.lat, NEW_HAVEN.lng)).includes("ETA origin: anchor center"),
+      `${etaDetailLabel(pickStale, 5, 5, 45, 15)} ${areaSelectionNote(pickStale, NEW_HAVEN.lat, NEW_HAVEN.lng)}`);
+    const noFix = driver(603482, "Antone jerret", { lat: WEST_HAVEN.lat, lng: WEST_HAVEN.lng, etaSec: 604 });
+    const pickNoFix = await chooseBestDriverByRoad([noFix], NEW_HAVEN.lat, NEW_HAVEN.lng,
+      makeRouter({ "41.27,-73.05": 600 }),
+      undefined, { anchors, gpsFixes: new Map(), now: geoNow });
+    check("no app GPS fix: payload coords stay the origin (originBasis payload — absence is not staleness)",
+      pickNoFix?.driver.driverId === 603482 && pickNoFix?.originBasis === "payload" && pickNoFix?.gpsFixAgeMinutes === null && pickNoFix?.baseMinutes === 10,
+      JSON.stringify(pickNoFix && { basis: pickNoFix.originBasis, age: pickNoFix.gpsFixAgeMinutes, base: pickNoFix.baseMinutes }));
+
+    // Escalation backstop under area context: no eligible candidate at all →
+    // null (the engine escalates rather than auto-accepting blind — safety
+    // rails intact with anchors configured).
+    const esc = await chooseBestDriverByRoad([offline], NEW_HAVEN.lat, NEW_HAVEN.lng, geoRouter, undefined, { anchors });
+    check("escalate on unresolvable ETA: area context + only ineligible drivers → null (existing backstop intact)",
+      esc === null, JSON.stringify(esc));
+
+    // etDayStartUtcMs: today's ET business-day start, DST-aware, ≤ now.
+    const ds = new Date(etDayStartUtcMs());
+    const dsHour = Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "2-digit", hour12: false }).formatToParts(ds).find((p) => p.type === "hour")?.value);
+    check("etDayStartUtcMs: resolves to today's ET midnight (00:00 America/New_York), ≤ now",
+      ds.getTime() <= Date.now() + 1000 && (dsHour === 0 || dsHour === 24), `${ds.toISOString()} hour=${dsHour}`);
+
+    // --- anchor derivation from dispatch_jobs (no migration — derived rows) ---
+    // geo-a1: driver 703785 dispatched TODAY in Darien → their anchor.
+    // geo-a2: same driver dispatched LATER today in West Haven → FIRST row
+    //   wins (the anchor persists for the rest of the day).
+    // geo-a3: driver 717660's row was CREATED yesterday but dispatchTime is
+    //   TODAY → the true assignment instant anchors today (dispatchTime is
+    //   the ground truth, not the import time).
+    // geo-a4: driver 603482 created YESTERDAY with no assigned_at and no
+    //   dispatchTime → not assigned today → no anchor (flexible).
+    // geo-a5: driver 668209 dispatched today with a MALFORMED dispatchTime →
+    //   the regex guard falls back to created_at (today) → anchored; the
+    //   malformed value never takes down the whole anchor load.
+    const zless = (d) => d.toISOString().slice(0, 19); // Z-less ISO (UTC) — the documented dispatchTime shape
+    const todayIso = zless(geoNow);
+    const laterIso = zless(new Date(geoNow.getTime() + 3600e3));
+    const yestIso = zless(new Date(geoNow.getTime() - 86400e3));
+    const geoInsert = (id, driverId, c, createdIso, rawJson) => q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, raw_json, pickup_lat, pickup_lng, assigned_driver_towbook_id)
+      VALUES(${id}, ${ORG7}, 'Geo Job', '', 0, 0, 'CT', 'tow', 'accepted', ${createdIso}, '', ${JSON.stringify(rawJson)}::jsonb, ${c.lat}, ${c.lng}, ${driverId})`;
+    await geoInsert("geo-a1", "703785", DARIEN, geoNow.toISOString(), { dispatchTime: todayIso });
+    await geoInsert("geo-a2", "703785", WEST_HAVEN, geoNow.toISOString(), { dispatchTime: laterIso });
+    await geoInsert("geo-a3", "717660", WEST_HAVEN, new Date(geoNow.getTime() - 86400e3).toISOString(), { dispatchTime: todayIso });
+    await geoInsert("geo-a4", "603482", STAMFORD, new Date(geoNow.getTime() - 86400e3).toISOString(), {});
+    await geoInsert("geo-a5", "668209", NEW_HAVEN, geoNow.toISOString(), { dispatchTime: "not-a-timestamp" });
+    const dbAnchors = await loadDriverAnchors(ORG7);
+    check("anchor derivation: first ASSIGNED job of the day sets the anchor (703785 → geo-a1 Darien; later job does not override)",
+      dbAnchors.get("703785")?.jobId === "geo-a1" && Math.abs(Number(dbAnchors.get("703785")?.lat) - DARIEN.lat) < 1e-9 &&
+      Math.abs(Number(dbAnchors.get("703785")?.lng) - DARIEN.lng) < 1e-9, JSON.stringify(dbAnchors.get("703785")));
+    check("anchor derivation: dispatchTime (ground truth) anchors a row created YESTERDAY (717660 → geo-a3 West Haven)",
+      dbAnchors.get("717660")?.jobId === "geo-a3" && Math.abs(Number(dbAnchors.get("717660")?.lat) - WEST_HAVEN.lat) < 1e-9,
+      JSON.stringify(dbAnchors.get("717660")));
+    check("anchor derivation: no today-assignment → no anchor (603482 flexible)",
+      dbAnchors.get("603482") === undefined, JSON.stringify(dbAnchors.get("603482")));
+    check("anchor derivation: malformed dispatchTime falls back to created_at without throwing (668209 anchored today)",
+      dbAnchors.get("668209")?.jobId === "geo-a5", JSON.stringify(dbAnchors.get("668209")));
+    check("anchor derivation: exactly the three today-assigned drivers carry anchors",
+      dbAnchors.size === 3, `size=${dbAnchors.size} [${[...dbAnchors.keys()].join(",")}]`);
+
+    // --- freshest GPS fix per driver (driver_locations) ---
+    await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at)
+      VALUES('geo-gps-old', ${ORG7}, ${USER}, '703785', ${WEST_HAVEN.lat}, ${WEST_HAVEN.lng}, ${new Date(geoNow.getTime() - 3600e3).toISOString()})`;
+    await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at)
+      VALUES('geo-gps-new', ${ORG7}, ${USER}, '703785', ${DARIEN.lat}, ${DARIEN.lng}, ${geoNow.toISOString()})`;
+    await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at)
+      VALUES('geo-gps-levi', ${ORG7}, ${USER}, '717660', ${WEST_HAVEN.lat}, ${WEST_HAVEN.lng}, ${geoNow.toISOString()})`;
+    const dbFixes = await loadDriverGpsFixes(ORG7);
+    check("gps fixes: freshest fix per driver wins (703785 → the NEW fix, not the 1-hour-old one)",
+      Math.abs(Number(dbFixes.get("703785")?.lat) - DARIEN.lat) < 1e-9 && dbFixes.get("717660") != null,
+      JSON.stringify(dbFixes.get("703785")));
+  }
   console.log("\nALL AI-DISPATCHER CHECKS PASSED");
   for (const [name, ok, extra] of checks) console.log(`  ${ok ? "PASS" : "FAIL"}  ${name}${extra ? ` (${extra})` : ""}`);
 } finally {
@@ -1425,6 +1601,7 @@ try {
     assertQaOrg(ORG4); await q`DELETE FROM organizations WHERE id=${ORG4}`.catch(() => {});
     assertQaOrg(ORG5); await q`DELETE FROM organizations WHERE id=${ORG5}`.catch(() => {});
     assertQaOrg(ORG6); await q`DELETE FROM organizations WHERE id=${ORG6}`.catch(() => {});
+    assertQaOrg(ORG7); await q`DELETE FROM organizations WHERE id=${ORG7}`.catch(() => {});
     await q`DELETE FROM users WHERE id=${USER}`.catch(() => {});
   }
   const leftover = await q`SELECT

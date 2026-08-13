@@ -229,6 +229,175 @@ export function haversineMiles(lat1: number, lng1: number, lat2: number, lng2: n
   return 2 * EARTH_RADIUS_MILES * Math.asin(Math.sqrt(a));
 }
 
+/* ---------------- area anchoring + GPS-fix ETA origin (owner 2026-08-13) ----------------
+ * Owner direction: "keep the drivers in the area they get assigned for their
+ * first job of the day (for instance, if Jayden gets a job in Darien, he
+ * shouldn't get a job in New Haven when Levi is in West Haven)... all jobs
+ * getting accurate ETAs based on live traffic from the drivers location to the
+ * customer."
+ * Rule (owner-directed 2026-08-13):
+ *  1. A driver's FIRST ASSIGNED job of the day (local ET 00:00-23:59) sets
+ *     their service area: a circle of ANCHOR_RADIUS_MILES around that job's
+ *     pickup coords, persisting until 23:59 ET.
+ *  2. Drivers with NO anchor yet are flexible — candidates for any job (the
+ *     job they take becomes their anchor). Anchored drivers are candidates only
+ *     when the job falls inside their circle. Pick the candidate with the
+ *     SHORTEST live-traffic road ETA (not straight-line). FALLBACK: when no
+ *     in-area candidate exists, fall back to the global closest-by-ETA among
+ *     all available drivers. The existing escalation is the backstop when no
+ *     candidate yields a validated ETA (never auto-accept blindly).
+ *  3. ETA origin = the freshest app GPS fix (driver_locations). A fix older
+ *     than STALE_GPS_FIX_MINUTES falls back to the driver's anchor center and
+ *     the basis is noted in the offer/audit. A driver with NO app fix at all
+ *     keeps the pre-geography payload GPS (nearestDrivers lat/lng) — absence of
+ *     a ping is not treated as a stale ping.
+ * Both the anchor and the fix are DERIVED from existing rows (dispatch_jobs
+ * assignment history + driver_locations) — no migration needed. */
+
+/** Owner-tunable service-area radius (miles) — the single named constant: a
+ *  driver's first assigned job of the day anchors them to a circle of this
+ *  radius around that job. Tune with the owner later (15 mi default). */
+export const ANCHOR_RADIUS_MILES = 15;
+
+/** An app GPS fix older than this (minutes) is NOT fresh — the ETA origin
+ *  falls back to the driver's anchor center (owner-directed 2026-08-13) and
+ *  the basis is noted in the offer/audit. */
+export const STALE_GPS_FIX_MINUTES = 15;
+
+/** A driver's service-area anchor for today — DERIVED from dispatch_jobs (the
+ *  first row with an assigned driver + usable pickup coords created in today's
+ *  ET day), never stored. */
+export type DriverAnchor = {
+  /** Towbook driver id (dispatch_jobs.assigned_driver_towbook_id). */
+  driverTowbookId: string;
+  /** Anchor center = the first assigned job's pickup coordinates. */
+  lat: number;
+  lng: number;
+  /** The dispatch_jobs row id that set the anchor. */
+  jobId: string;
+  /** The anchoring job's created_at (assignment-time proxy), ISO. */
+  assignedAt: string;
+};
+
+/** Freshest app GPS fix for a driver (driver_locations), keyed by Towbook
+ *  driver id. */
+export type DriverGpsFix = {
+  lat: number;
+  lng: number;
+  /** Fix time (captured_at), ISO. */
+  capturedAt: string;
+};
+
+/** Where the road ETA was routed FROM — surfaced in the offer/audit so a
+ *  stale-GPS fallback is never silent: "gps" = fresh app fix, "anchor" = the
+ *  driver's anchor center (stale fix), "payload" = the nearestDrivers payload
+ *  lat/lng (no app fix — the pre-geography default). */
+export type EtaOriginBasis = "gps" | "anchor" | "payload";
+
+/** Start of today's ET business day (America/New_York 00:00) as UTC ms —
+ *  DST-aware: the offset is resolved from the ET calendar date, so winter EST
+ *  (-5) and summer EDT (-4) both land on the correct instant. */
+export function etDayStartUtcMs(now: Date = new Date()): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(now);
+  const y = Number(parts.find((p) => p.type === "year")?.value);
+  const m = Number(parts.find((p) => p.type === "month")?.value);
+  const d = Number(parts.find((p) => p.type === "day")?.value);
+  const naiveUtc = Date.UTC(y, m - 1, d);
+  const tz = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", timeZoneName: "short" })
+    .formatToParts(new Date(naiveUtc)).find((p) => p.type === "timeZoneName")?.value;
+  return naiveUtc + (tz === "EST" ? 5 : 4) * 3600e3;
+}
+
+/** Derive every driver's area anchor for TODAY (ET): the FIRST dispatch_jobs
+ *  row with an assigned driver + usable pickup coords ASSIGNED since ET
+ *  midnight, per driver. The assignment instant = COALESCE(assigned_at, raw
+ *  dispatchTime, created_at) — the team's busy-bonus ground-truth chain
+ *  (busy-bonus-core, verified against the live org 2026-08-13): assigned_at is
+ *  set only when a job's status passes through the platform accept flow (2/70
+ *  live rows), raw_json.dispatchTime is the true Towbook dispatch moment
+ *  (70/70 driver-attributed rows, Z-less ISO in UTC — the DB session timezone
+ *  is GMT, so the cast is exact; a regex guard keeps a malformed value from
+ *  ever taking down the anchor load), and created_at (import time) is the
+ *  fallback for platform-only rows with no Towbook payload. One org-scoped
+ *  read, ordered oldest-first; the first row per driver wins (the anchor
+ *  persists for the rest of the day). Rows whose assignment predates today
+ *  (ET) never anchor today — a late-imported, already-dispatched call cannot
+ *  lock a driver into today's area. A driver with no row assigned today has
+ *  no anchor (flexible). Never throws — a DB error returns an empty map so
+ *  the engine degrades to the pre-geography behavior instead of crashing a
+ *  tick. */
+export async function loadDriverAnchors(orgId: string, now: Date = new Date()): Promise<Map<string, DriverAnchor>> {
+  try {
+    const dayStart = new Date(etDayStartUtcMs(now)).toISOString();
+    const rows = await sql()`SELECT id, assigned_driver_towbook_id, pickup_lat, pickup_lng,
+        COALESCE(assigned_at,
+          CASE WHEN raw_json->>'dispatchTime' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}'
+            THEN (raw_json->>'dispatchTime')::timestamptz END,
+          created_at) AS dispatch_at
+      FROM dispatch_jobs
+      WHERE org_id=${orgId}
+        AND assigned_driver_towbook_id IS NOT NULL
+        AND pickup_lat IS NOT NULL AND pickup_lng IS NOT NULL
+        AND pickup_lat != 0 AND pickup_lng != 0
+        AND COALESCE(assigned_at,
+          CASE WHEN raw_json->>'dispatchTime' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}'
+            THEN (raw_json->>'dispatchTime')::timestamptz END,
+          created_at) >= ${dayStart}
+      ORDER BY 5 ASC`;
+    const anchors = new Map<string, DriverAnchor>();
+    for (const r of rows as Array<Record<string, unknown>>) {
+      const did = String(r.assigned_driver_towbook_id ?? "");
+      if (!did || anchors.has(did)) continue;
+      const lat = Number(r.pickup_lat);
+      const lng = Number(r.pickup_lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+      anchors.set(did, {
+        driverTowbookId: did,
+        lat,
+        lng,
+        jobId: String(r.id ?? ""),
+        assignedAt: new Date(String(r.dispatch_at ?? "")).toISOString(),
+      });
+    }
+    return anchors;
+  } catch {
+    return new Map();
+  }
+}
+
+/** Freshest app GPS fix per driver (driver_locations), keyed by Towbook driver
+ *  id — the ETA origin when fresh. No time window: the ping ledger is pruned to
+ *  24h on write, so any row here is recent; the caller decides freshness via
+ *  STALE_GPS_FIX_MINUTES against captured_at. Never throws — a DB error
+ *  returns an empty map so the engine degrades to payload-GPS origins. */
+export async function loadDriverGpsFixes(orgId: string): Promise<Map<string, DriverGpsFix>> {
+  try {
+    const rows = await sql()`SELECT DISTINCT ON (towbook_driver_id) towbook_driver_id, latitude, longitude, captured_at
+      FROM driver_locations
+      WHERE org_id=${orgId} AND towbook_driver_id IS NOT NULL
+        AND latitude != 0 AND longitude != 0
+      ORDER BY towbook_driver_id, captured_at DESC`;
+    const fixes = new Map<string, DriverGpsFix>();
+    for (const r of rows as Array<Record<string, unknown>>) {
+      const did = String(r.towbook_driver_id ?? "");
+      if (!did) continue;
+      const lat = Number(r.latitude);
+      const lng = Number(r.longitude);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+      fixes.set(did, {
+        lat,
+        lng,
+        capturedAt: new Date(String(r.captured_at ?? "")).toISOString(),
+      });
+    }
+    return fixes;
+  } catch {
+    return new Map();
+  }
+}
+
 /* --------------------------- road-aware ETA model --------------------------- */
 
 /** Fallback drive-time model (used when OSRM routing fails): straight-line
@@ -1196,6 +1365,38 @@ export type ChosenDriverEta = {
   /** GPS ping age in minutes when the payload carried a timestamp (null when
    *  the payload has none). A stale ping is surfaced in the decision reason. */
   gpsPingAgeMinutes: number | null;
+  /** ETA origin (owner-directed 2026-08-13): the actual coordinates the road
+   *  ETA was routed FROM (freshest app GPS fix, anchor center, or payload). */
+  originLat: number;
+  originLng: number;
+  /** What produced the origin: "gps" (fresh app fix), "anchor" (anchor center
+   *  — stale fix), "payload" (nearestDrivers lat/lng — no app fix). */
+  originBasis: EtaOriginBasis;
+  /** Age of the freshest app GPS fix in minutes (null when no fix exists). */
+  gpsFixAgeMinutes: number | null;
+  /** The driver's area anchor (first assigned job of the day) when they have
+   *  one; null for flexible (unanchored) drivers. */
+  anchor: DriverAnchor | null;
+  /** The anchor radius used for the in-area test (ANCHOR_RADIUS_MILES). */
+  anchorRadiusMiles: number;
+  /** True when NO in-area candidate existed and the global closest-by-ETA
+   *  fallback engaged (owner-directed 2026-08-13). */
+  areaFallback: boolean;
+};
+
+/** Area-geography context (owner-directed 2026-08-13): the per-org anchors
+ *  (first assigned job of the day per driver), freshest app GPS fixes, the
+ *  anchor radius, and "now" for staleness. All optional — when omitted the
+ *  engine behaves exactly as before (payload-GPS origins, no area filter).
+ *  The manual-reassign path passes NO anchors (the human's choice is
+ *  authoritative — never area-filtered), only fixes. */
+export type AreaContext = {
+  anchors?: Map<string, DriverAnchor>;
+  gpsFixes?: Map<string, DriverGpsFix>;
+  /** In-area circle radius (defaults to ANCHOR_RADIUS_MILES). */
+  anchorRadiusMiles?: number;
+  /** "Now" for the fresh/stale fix decision (defaults to new Date()). */
+  now?: Date;
 };
 
 /** Workload-aware arrival model (owner-directed 2026-08-11): a driver with
@@ -1226,6 +1427,11 @@ export async function workloadAwareArrivalMinutes(
   pickupLng: number,
   roadRouter: RoadRouter | null,
   activeCount?: number,
+  /** Overrides the chain's STARTING position (the GPS→first-job leg): the
+   *  area-geography path passes the driver's freshest app GPS fix or anchor
+   *  center (owner 2026-08-13); when omitted the driver's payload
+   *  latitude/longitude is used (pre-geography default). */
+  origin?: { lat: number; lng: number },
 ): Promise<{
   arrivalMinutes: number;
   queueMinutes: number;
@@ -1254,12 +1460,12 @@ export async function workloadAwareArrivalMinutes(
     }
     return { minutes: fallbackRoadMinutes(haversineMiles(fromLat, fromLng, toLat, toLng)), provider: "factor" };
   };
-  const lat = Number(driver.latitude);
-  const lng = Number(driver.longitude);
+  const originLat = origin != null && Number.isFinite(origin.lat) ? origin.lat : Number(driver.latitude);
+  const originLng = origin != null && Number.isFinite(origin.lng) ? origin.lng : Number(driver.longitude);
   const unlocatedJobs = Math.max(0, total - queue.length);
   let queueMinutes = 0;
-  let prevLat = lat;
-  let prevLng = lng;
+  let prevLat = originLat;
+  let prevLng = originLng;
   let startedOnScene = false;
   if (queue.length) {
     const first = queue[0];
@@ -1304,16 +1510,27 @@ export async function workloadAwareArrivalMinutes(
   };
 }
 
-/** Road-aware driver choice (owner-directed 2026-08-11, queue-aware):
+/** Road-aware driver choice (owner-directed 2026-08-11, queue-aware; area +
+ *  fresh-GPS ETA origin owner-directed 2026-08-13):
  *  rails = checked in && real GPS (lat/lng nonzero AND finite) && finite
  *  estimatedTimeSeconds && active-job-count < MAX_DRIVER_QUEUE (active =
  *  dispatch_jobs lifecycle statuses new/offered/accepted/en_route/arrived,
  *  cross-checked against the payload `calls` — a driver at the 3-job cap is
- *  NOT eligible). Each ELIGIBLE candidate is routed from its precise GPS to
- *  the pickup and the minimum ROAD ETA wins — a driver with a better real
- *  drive time beats one with a better straight-line time. Routing failures
- *  fall back to the factor model per candidate, so a driver is never dropped
- *  for a router hiccup.
+ *  NOT eligible). Each ELIGIBLE candidate is routed from its ETA ORIGIN (the
+ *  freshest app GPS fix when ≤ STALE_GPS_FIX_MINUTES old, else the driver's
+ *  area-anchor center when they have one — stale fix, else the payload
+ *  lat/lng — the pre-geography default) to the pickup, and the minimum ROAD
+ *  ETA wins — a driver with a better real drive time beats one with a better
+ *  straight-line time. Routing failures fall back to the factor model per
+ *  candidate, so a driver is never dropped for a router hiccup.
+ *  AREA ANCHOR (owner-directed 2026-08-13): a driver whose first assigned job
+ *  of the day set their anchor is a candidate only when the job falls inside
+ *  their anchor circle (ANCHOR_RADIUS_MILES); drivers with NO anchor are
+ *  flexible candidates for any job. When NO in-area candidate exists, fall
+ *  back to the global closest-by-ETA among ALL available drivers
+ *  (areaFallback flagged on the choice). The manual-reassign path never
+ *  passes anchors (the human's choice is authoritative — the caller narrows
+ *  the pool).
  *  ALL-LOADED path: when EVERY candidate is at the cap, dispatch to whoever
  *  would ARRIVE fastest after their queue — queue travel between consecutive
  *  job pickups + SERVICE_MINUTES_PER_JOB per queued job + the road leg to the
@@ -1328,6 +1545,7 @@ export async function chooseBestDriverByRoad(
   pickupLng: number,
   roadRouter: RoadRouter | null,
   driverQueues?: Map<string, DriverQueue>,
+  area?: AreaContext,
 ): Promise<ChosenDriverEta | null> {
   const queues = driverQueues ?? new Map<string, DriverQueue>();
   const baseEligible = drivers.filter((d): d is NearestDriver => {
@@ -1342,21 +1560,64 @@ export async function chooseBestDriverByRoad(
   });
   if (!baseEligible.length) return null;
 
-  const underCap = baseEligible.filter((d) => driverActiveCount(d, queues) < MAX_DRIVER_QUEUE);
-  const pickCandidates = underCap.length ? underCap : baseEligible;
+  // --- area anchor filter + ETA origin (owner-directed 2026-08-13) ---
+  // Anchored drivers are candidates only when the job falls inside their
+  // anchor circle; unanchored drivers are flexible. When NO in-area candidate
+  // exists the pool falls back to ALL available drivers (global closest by
+  // ETA — the owner's New Haven example: a Darien-anchored Jayden must not
+  // take a New Haven job when a West-Haven-anchored Levi is in-area).
+  const radius = area?.anchorRadiusMiles ?? ANCHOR_RADIUS_MILES;
+  const now = area?.now ?? new Date();
+  const inArea = (d: NearestDriver): boolean => {
+    const anchor = area?.anchors?.get(String(d.driverId));
+    if (!anchor) return true; // no anchor → flexible candidate
+    return haversineMiles(pickupLat, pickupLng, anchor.lat, anchor.lng) <= radius;
+  };
+  const areaPool = baseEligible.filter(inArea);
+  const usedAreaFallback = areaPool.length === 0;
+  const pool = usedAreaFallback ? baseEligible : areaPool;
+
+  // ETA origin per driver: freshest app GPS fix when fresh (≤ 15 min); a
+  // STALE fix falls back to the anchor center (basis noted — the offer/audit
+  // must never silently quote a stale position); no app fix at all keeps the
+  // payload GPS (the pre-geography default — absence of a ping is not treated
+  // as a stale ping).
+  const originFor = (d: NearestDriver): { lat: number; lng: number; basis: EtaOriginBasis; fixAgeMinutes: number | null } => {
+    const did = String(d.driverId);
+    const fix = area?.gpsFixes?.get(did);
+    let fixAge: number | null = null;
+    if (fix) {
+      const t = Date.parse(fix.capturedAt);
+      if (Number.isFinite(t)) fixAge = (now.getTime() - t) / 60000;
+    }
+    if (fix && fixAge != null && fixAge >= 0 && fixAge <= STALE_GPS_FIX_MINUTES) {
+      return { lat: fix.lat, lng: fix.lng, basis: "gps", fixAgeMinutes: fixAge };
+    }
+    const anchor = area?.anchors?.get(did);
+    if (fix && fixAge != null && fixAge > STALE_GPS_FIX_MINUTES && anchor) {
+      return { lat: anchor.lat, lng: anchor.lng, basis: "anchor", fixAgeMinutes: fixAge };
+    }
+    return { lat: Number(d.latitude), lng: Number(d.longitude), basis: "payload", fixAgeMinutes: fixAge };
+  };
+
+  const underCap = pool.filter((d) => driverActiveCount(d, queues) < MAX_DRIVER_QUEUE);
+  const pickCandidates = underCap.length ? underCap : pool;
   const routeOne = async (d: NearestDriver): Promise<ChosenDriverEta | null> => {
     const straightLineMinutes = Math.max(1, Math.ceil(Number(d.estimatedTimeSeconds) / 60));
     const pingAge = gpsPingAgeMinutes(d);
     const activeCount = driverActiveCount(d, queues);
+    const origin = originFor(d);
+    const anchor = area?.anchors?.get(String(d.driverId)) ?? null;
     if (activeCount > 0) {
       // Workload-aware (owner-directed 2026-08-11): a driver with active jobs
       // must finish them before this offer — remaining on the in-progress job
       // + travel between consecutive job pickups + the final leg from the LAST
       // job's location to the offer. A busy driver is always modelable
       // (unlocated jobs contribute their service time at the tail), so the
-      // chain never fails here.
+      // chain never fails here. The chain's STARTING position is the same
+      // origin the free path uses (freshest fix / anchor center / payload).
       const geometry = queueGeometryFor(d, queues);
-      const chain = await workloadAwareArrivalMinutes(d, geometry, pickupLat, pickupLng, roadRouter, activeCount);
+      const chain = await workloadAwareArrivalMinutes(d, geometry, pickupLat, pickupLng, roadRouter, activeCount, origin);
       if (chain) {
         return {
           driver: d,
@@ -1376,15 +1637,15 @@ export async function chooseBestDriverByRoad(
           unlocatedJobs: chain.unlocatedJobs,
           tomtomFailure: chain.tomtomFailure,
           gpsPingAgeMinutes: pingAge,
+          originLat: origin.lat, originLng: origin.lng, originBasis: origin.basis,
+          gpsFixAgeMinutes: origin.fixAgeMinutes, anchor, anchorRadiusMiles: radius, areaFallback: usedAreaFallback,
         };
       }
       return null; // free-only guard; busy drivers are always modelable
     }
     let result: RoadResult | null = null;
     try {
-      result = roadRouter ? await roadRouter(
-        Number(d.latitude), Number(d.longitude), pickupLat, pickupLng,
-      ) : null;
+      result = roadRouter ? await roadRouter(origin.lat, origin.lng, pickupLat, pickupLng) : null;
     } catch { result = null; }
     if (result && Number.isFinite(result.seconds) && result.seconds > 0) {
       return {
@@ -1406,10 +1667,12 @@ export async function chooseBestDriverByRoad(
         unlocatedJobs: null,
         tomtomFailure: result.tomtomFailure ?? null,
         gpsPingAgeMinutes: pingAge,
+        originLat: origin.lat, originLng: origin.lng, originBasis: origin.basis,
+        gpsFixAgeMinutes: origin.fixAgeMinutes, anchor, anchorRadiusMiles: radius, areaFallback: usedAreaFallback,
       };
     }
     const fallback = fallbackRoadMinutes(
-      haversineMiles(Number(d.latitude), Number(d.longitude), pickupLat, pickupLng),
+      haversineMiles(origin.lat, origin.lng, pickupLat, pickupLng),
     );
     return {
       driver: d,
@@ -1429,6 +1692,8 @@ export async function chooseBestDriverByRoad(
       unlocatedJobs: null,
       tomtomFailure: null,
       gpsPingAgeMinutes: pingAge,
+      originLat: origin.lat, originLng: origin.lng, originBasis: origin.basis,
+      gpsFixAgeMinutes: origin.fixAgeMinutes, anchor, anchorRadiusMiles: radius, areaFallback: usedAreaFallback,
     };
   };
 
@@ -1441,12 +1706,14 @@ export async function chooseBestDriverByRoad(
   }
 
   // --- all-loaded: EVERY candidate is at the cap → chain-aware arrival ---
-  const modeled = await Promise.all(baseEligible.map(async (d): Promise<ChosenDriverEta | null> => {
+  const modeled = await Promise.all(pool.map(async (d): Promise<ChosenDriverEta | null> => {
     const geometry = queueGeometryFor(d, queues);
-    const arrival = await workloadAwareArrivalMinutes(d, geometry, pickupLat, pickupLng, roadRouter, driverActiveCount(d, queues));
+    const origin = originFor(d);
+    const arrival = await workloadAwareArrivalMinutes(d, geometry, pickupLat, pickupLng, roadRouter, driverActiveCount(d, queues), origin);
     if (!arrival) return null; // free driver — cannot be in the all-loaded path
     const straightLineMinutes = Math.max(1, Math.ceil(Number(d.estimatedTimeSeconds) / 60));
     const activeCount = driverActiveCount(d, queues);
+    const anchor = area?.anchors?.get(String(d.driverId)) ?? null;
     return {
       driver: d,
       roadSeconds: null,
@@ -1465,6 +1732,8 @@ export async function chooseBestDriverByRoad(
       unlocatedJobs: arrival.unlocatedJobs,
       tomtomFailure: arrival.tomtomFailure,
       gpsPingAgeMinutes: gpsPingAgeMinutes(d),
+      originLat: origin.lat, originLng: origin.lng, originBasis: origin.basis,
+      gpsFixAgeMinutes: origin.fixAgeMinutes, anchor, anchorRadiusMiles: radius, areaFallback: usedAreaFallback,
     };
   }));
   const winners = modeled.filter((m): m is ChosenDriverEta => m != null);
@@ -1516,7 +1785,36 @@ export function etaDetailLabel(c: ChosenDriverEta, buffer: number, floor: number
   const pingNote = c.gpsPingAgeMinutes != null && c.gpsPingAgeMinutes >= STALE_GPS_MINUTES
     ? `; GPS ping age ${Math.round(c.gpsPingAgeMinutes)} min`
     : "";
-  return `ETA ${finalMinutes} min (${base} + buffer ${buffer}${delay}${tomtomNote}${pingNote}; floor ${floor}, ceiling ${ceiling}; straight-line ${c.straightLineMinutes}; GPS ${Number(c.driver.latitude)},${Number(c.driver.longitude)})`;
+  // ETA-origin transparency (owner-directed 2026-08-13): the label prints the
+  // ACTUAL origin the road ETA was routed FROM and names the basis — a stale
+  // app fix routed from the anchor center is never silent in the ledger.
+  const originNote = c.originBasis === "anchor"
+    ? `; origin: anchor center${c.gpsFixAgeMinutes != null ? ` (GPS fix ${Math.round(c.gpsFixAgeMinutes)} min old)` : " (no app GPS fix)"}`
+    : c.originBasis === "gps"
+      ? `; origin: app GPS fix${c.gpsFixAgeMinutes != null ? ` (${Math.round(c.gpsFixAgeMinutes)} min old)` : ""}`
+      : "";
+  return `ETA ${finalMinutes} min (${base} + buffer ${buffer}${delay}${tomtomNote}${pingNote}; floor ${floor}, ceiling ${ceiling}; straight-line ${c.straightLineMinutes}; GPS ${Number(c.originLat) || Number(c.driver.latitude)},${Number(c.originLng) || Number(c.driver.longitude)}${originNote})`;
+}
+
+/** Human-readable area/origin note for the decision reason (owner-directed
+ *  2026-08-13): which anchor (if any) the chosen driver carries + whether the
+ *  job is in-circle, when the global closest-by-ETA fallback engaged (no
+ *  in-area candidate), and when the ETA origin was the anchor center (stale
+ *  app fix — never silent). Returns null when there is nothing notable (no
+ *  anchors configured — pre-geography behavior). */
+export function areaSelectionNote(c: ChosenDriverEta, pickupLat: number, pickupLng: number): string | null {
+  const parts: string[] = [];
+  if (c.anchor) {
+    const dist = haversineMiles(pickupLat, pickupLng, c.anchor.lat, c.anchor.lng);
+    parts.push(`area anchor job ${c.anchor.jobId} (${c.anchor.lat.toFixed(4)},${c.anchor.lng.toFixed(4)}; pickup ${dist.toFixed(1)} mi ${dist <= c.anchorRadiusMiles ? "in-circle" : "OUTSIDE"})`);
+  }
+  if (c.areaFallback) parts.push("no in-area candidate — global closest-by-ETA fallback");
+  if (c.originBasis === "anchor") {
+    parts.push(`ETA origin: anchor center (app GPS fix ${c.gpsFixAgeMinutes != null ? `${Math.round(c.gpsFixAgeMinutes)} min old` : "absent"})`);
+  } else if (c.originBasis === "gps") {
+    parts.push(`ETA origin: app GPS fix (${c.gpsFixAgeMinutes != null ? `${Math.round(c.gpsFixAgeMinutes)} min old` : "fresh"})`);
+  }
+  return parts.length ? `; ${parts.join("; ")}` : null;
 }
 
 /* ----------------------------------- Towbook HTTP ----------------------------------- */
@@ -2062,6 +2360,17 @@ async function runAutoDispatchInternal(
 
     const actor = await deps.resolveOrgActor(orgId);
     const result: AutoDispatchRunResult = { ...base, offersSeen: offers.length };
+    // Geography + ETA accuracy (owner-directed 2026-08-13): derive every
+    // driver's area anchor (first assigned job of the day, ET), freshest app
+    // GPS fix, and active-job queue ONCE per run from existing rows
+    // (dispatch_jobs assignment history + driver_locations — no migration),
+    // then let chooseBestDriverByRoad apply the in-area rule + fresh-fix ETA
+    // origin per offer. Never throws (each loader degrades to empty).
+    const [driverQueues, driverAnchors, driverGpsFixes] = await Promise.all([
+      loadOrgDriverQueues(orgId),
+      loadDriverAnchors(orgId),
+      loadDriverGpsFixes(orgId),
+    ]);
 
     for (const rawOffer of offers) {
       let shape: { ok: true; offer: OfferShape } | { ok: false; missing: string[] } = validateOfferShape(rawOffer);
@@ -2210,13 +2519,21 @@ async function runAutoDispatchInternal(
       // active-job count + queue geometry from the org's dispatch_jobs (the
       // sync already persists calls with assigned driver + pickup coords) —
       // one indexed read, no live Towbook calls in the selection path.
-      const driverQueues = await loadOrgDriverQueues(orgId);
+      // Area context (owner-directed 2026-08-13): anchors + freshest app GPS
+      // fixes (loaded once per run above). The MANUAL-REASSIGN path passes NO
+      // anchors — the human's choice is authoritative and must never be
+      // area-filtered ("do not touch the manual assign path"); the fresh-fix
+      // origin still improves the ETA for the human-chosen driver.
+      const areaCtx: AreaContext = humanReassigned
+        ? { gpsFixes: driverGpsFixes }
+        : { anchors: driverAnchors, gpsFixes: driverGpsFixes };
       const chosen = await chooseBestDriverByRoad(
         candidates,
         offer.startLocationLatitude,
         offer.startLocationLongitude,
         resolved.router,
         driverQueues,
+        areaCtx,
       );
       const driver = chosen?.driver ?? null;
       const effectiveMaxEta = Math.min(settings.maxEtaMinutes, offer.maxEta ?? settings.maxEtaMinutes);
@@ -2265,6 +2582,16 @@ async function runAutoDispatchInternal(
         unlocatedJobs: chosen.unlocatedJobs,
         tomtomFailure: chosen.tomtomFailure,
         gpsPingAgeMinutes: chosen.gpsPingAgeMinutes,
+        // Area + ETA-origin facts (owner-directed 2026-08-13): where the ETA
+        // was routed FROM and which area rule applied — the audit never hides
+        // a stale-fix anchor-origin or a global fallback.
+        originLatitude: chosen.originLat,
+        originLongitude: chosen.originLng,
+        originBasis: chosen.originBasis,
+        gpsFixAgeMinutes: chosen.gpsFixAgeMinutes,
+        anchor: chosen.anchor,
+        anchorRadiusMiles: chosen.anchorRadiusMiles,
+        areaFallback: chosen.areaFallback,
       } : null;
       const allLoadedNote: string | null = null;
       const noDriverReason = driver
@@ -2370,7 +2697,8 @@ async function runAutoDispatchInternal(
           const etaLabel = etaMinutes != null && chosen
             ? ` — ${etaDetailLabel(chosen, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta, etaMinutes)}`
             : " — no road ETA quoted (driver not in the live nearestDrivers payload; ETA at the SLA ceiling)";
-          const reason = `accepted and dispatched to ${dispatchDriverName ?? dispatchDriverId} (driver ${dispatchDriverId}, VERIFIED on call ${verification.callId})${verificationRecoveryNote ? `; ${verificationRecoveryNote}` : ""}${manualNote ? `; ${manualNote}` : ""}${etaLabel}`;
+          const areaNote = chosen ? areaSelectionNote(chosen, offer.startLocationLatitude, offer.startLocationLongitude) : null;
+          const reason = `accepted and dispatched to ${dispatchDriverName ?? dispatchDriverId} (driver ${dispatchDriverId}, VERIFIED on call ${verification.callId})${verificationRecoveryNote ? `; ${verificationRecoveryNote}` : ""}${manualNote ? `; ${manualNote}` : ""}${etaLabel}${areaNote ?? ""}`;
           await record({
             decision: "auto_accept_with_driver",
             callId: verification.callId,
