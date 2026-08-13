@@ -51,6 +51,17 @@ export type DriverCall = {
    *  completed), else enrouteTime, else createDate. Used by the Earnings
    *  Today/Week toggle + per-job rows. null when the call has no timestamps. */
   updatedAtIso: string | null;
+  /** Service-time live counter data (completion-goals-spec.md, owner-directed
+   *  2026-08-13): arrival moment for the running mm:ss timer + the owner's
+   *  goal for this service. arrivedAtIso is the SERVER timestamp (LD
+   *  dispatch_jobs.arrived_at, falling back to the raw Towbook arrivalTime) —
+   *  never local clock drift. goalSeconds = org service_time_goals lookup
+   *  (battery installs resolve standard/advanced from battery_sales); null
+   *  when the service has no goal (counter shows elapsed without a target).
+   *  Filled server-side in fetchDriverQueue. */
+  arrivedAtIso: string | null;
+  goalSeconds: number | null;
+  serviceKey: string | null;
 };
 export type DriverJobAction = "accept" | "en_route";
 /* LD action → Towbook status id. CORRECTED 2026-08-12 (owner-reported bug):
@@ -440,6 +451,15 @@ function callUpdatedAt(call: Record<string, unknown>): string | null {
   }
   return null;
 }
+/** The raw Towbook arrival timestamp ONLY (no enroute/create fallbacks) — the
+ *  live counter's fallback arrival moment when LD dispatch_jobs.arrived_at is
+ *  missing (completion-goals-spec.md: counter ticks from the SERVER timestamp).
+ *  The driver queue enrichment prefers dispatch_jobs.arrived_at and only falls
+ *  back to this. */
+function callArrivalAt(call: Record<string, unknown>): string | null {
+  const v = call["arrivalTime"];
+  return typeof v === "string" && v ? v : null;
+}
 
 /** Normalize one raw Towbook call into a driver card. Field names read directly
  *  from the real call object (evidence: api-calls-full.json). */
@@ -471,6 +491,9 @@ export function normalizeDriverCall(call: Record<string, unknown>): DriverCall |
     pickupLat: Number.isFinite(wLat) && wLat !== 0 ? wLat : null,
     pickupLng: Number.isFinite(wLng) && wLng !== 0 ? wLng : null,
     updatedAtIso: callUpdatedAt(call),
+    arrivedAtIso: callArrivalAt(call),
+    goalSeconds: null,
+    serviceKey: null,
   };
 }
 
@@ -493,7 +516,7 @@ const LD_STATUS_TO_ID: Readonly<Record<string, number>> = {
 async function platformOnlyCalls(user: { orgId: string; towbookDriverId: string }): Promise<DriverCall[]> {
   try {
     const q = await db();
-    const rows = await q`SELECT id, status, customer_name, phone, area, pickup, pickup_lat, pickup_lng, vehicle_desc, note, service_type, created_at, completed_at
+    const rows = await q`SELECT id, status, customer_name, phone, area, pickup, pickup_lat, pickup_lng, vehicle_desc, note, service_type, created_at, completed_at, arrived_at, assigned_at
       FROM dispatch_jobs
       WHERE org_id=${user.orgId} AND towbook_job_id IS NULL AND assigned_driver_towbook_id=${user.towbookDriverId}
       ORDER BY created_at DESC LIMIT 100`;
@@ -502,6 +525,7 @@ async function platformOnlyCalls(user: { orgId: string; towbookDriverId: string 
       const lat = Number(r.pickup_lat ?? 0);
       const lng = Number(r.pickup_lng ?? 0);
       const serviceType = String(r.service_type ?? "");
+      const arrivedAt = r.arrived_at != null ? new Date(String(r.arrived_at)).toISOString() : null;
       return {
         id: String(r.id),
         callNumber: String(r.id),
@@ -517,6 +541,9 @@ async function platformOnlyCalls(user: { orgId: string; towbookDriverId: string 
         pickupLat: Number.isFinite(lat) && lat !== 0 ? lat : null,
         pickupLng: Number.isFinite(lng) && lng !== 0 ? lng : null,
         updatedAtIso: r.completed_at != null ? new Date(String(r.completed_at)).toISOString() : new Date(String(r.created_at)).toISOString(),
+        arrivedAtIso: arrivedAt,
+        goalSeconds: null,
+        serviceKey: null,
       };
     });
   } catch {
@@ -543,7 +570,61 @@ async function fetchDriverQueue(user: { orgId: string; towbookDriverId: string }
     .filter((c): c is DriverCall => c !== null);
   const platformCards = await platformOnlyCalls(user); // battery-install etc.
   const seen = new Set(towbookCards.map((c) => c.id));
-  return { ok: true, calls: [...towbookCards, ...platformCards.filter((c) => !seen.has(c.id))] };
+  const merged = [...towbookCards, ...platformCards.filter((c) => !seen.has(c.id))];
+  return { ok: true, calls: await attachServiceTime(user, merged) };
+}
+/** Service-time live counter enrichment (completion-goals-spec.md §1, §5):
+ *  for every ARRIVED-state call (statusId 3 on scene / 4 towing) attach the
+ *  arrival moment + the org's service-time goal. arrival = dispatch_jobs
+ *  .arrived_at (SERVER timestamp — never local clock drift) with the raw
+ *  Towbook arrivalTime as fallback; goal = org service_time_goals via
+ *  service-time-core's pure lookup (battery installs resolve standard/advanced
+ *  from Phase 1's battery_sales.install_type). Best-effort: any DB hiccup
+ *  leaves the queue fully functional with nulls (counter hidden). */
+async function attachServiceTime(user: { orgId: string }, calls: DriverCall[]): Promise<DriverCall[]> {
+  const active = calls.filter((c) => c.statusId === 3 || c.statusId === 4);
+  if (!active.length) return calls;
+  try {
+    const q = await db();
+    const ids = active.map((c) => c.id);
+    const [goalRows, variantRows, arrivalRows] = await Promise.all([
+      q`SELECT service_type, variant, goal_seconds FROM service_time_goals WHERE org_id=${user.orgId}`,
+      q`SELECT install_job_id, install_type FROM battery_sales WHERE org_id=${user.orgId} AND install_type IS NOT NULL AND install_job_id IS NOT NULL`,
+      q`SELECT id, towbook_job_id, arrived_at, service_type FROM dispatch_jobs WHERE org_id=${user.orgId} AND (towbook_job_id = ANY(${ids}) OR id = ANY(${ids}))`,
+    ]);
+    const goals = (goalRows as Record<string, unknown>[]).map((r) => ({
+      serviceType: String(r.service_type),
+      variant: String(r.variant ?? ""),
+      goalSeconds: Number(r.goal_seconds),
+    }));
+    const batteryVariantByJobId = new Map<string, string>();
+    for (const r of variantRows as Record<string, unknown>[]) {
+      if (r.install_job_id != null) batteryVariantByJobId.set(String(r.install_job_id), String(r.install_type));
+    }
+    const arrivalByJobId = new Map<string, { arrivedAtIso: string | null; serviceType: string | null }>();
+    for (const r of arrivalRows as Record<string, unknown>[]) {
+      const entry = {
+        arrivedAtIso: r.arrived_at != null ? new Date(String(r.arrived_at)).toISOString() : null,
+        serviceType: r.service_type != null ? String(r.service_type) : null,
+      };
+      if (r.id != null) arrivalByJobId.set(String(r.id), entry);
+      if (r.towbook_job_id != null) arrivalByJobId.set(String(r.towbook_job_id), entry);
+    }
+    const { attachServiceTimeData } = await import("./service-time-core");
+    const enriched = attachServiceTimeData(
+      calls.map((c) => ({ id: c.id, statusId: c.statusId, serviceName: c.serviceName, ldServiceType: null, rawArrivalAtIso: c.arrivedAtIso })),
+      goals,
+      batteryVariantByJobId,
+      arrivalByJobId,
+    );
+    return calls.map((c) => {
+      const e = enriched.get(c.id);
+      if (!e) return c;
+      return { ...c, arrivedAtIso: e.arrivedAtIso ?? c.arrivedAtIso, goalSeconds: e.goalSeconds, serviceKey: e.serviceKey };
+    });
+  } catch {
+    return calls; // never break the queue for counter data
+  }
 }
 
 /* --------------------------------- status transitions --------------------------------- */

@@ -1077,6 +1077,42 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS manually_reassigned_by TEXT`;
     await q`CREATE INDEX IF NOT EXISTS dispatch_jobs_org_reassigned_idx ON dispatch_jobs(org_id, manually_reassigned_at) WHERE manually_reassigned_at IS NOT NULL`;
   }],
+  [45, async (q) => {
+    // JOB COMPLETION-TIME GOALS + LIVE COUNTER (owner-directed 2026-08-13,
+    // completion-goals-spec.md). TWO additions:
+    //   1. service_time_goals — per-org, per-service goal seconds (owner-
+    //      configurable; defaults below are the owner-spec'd 5/15/5/5 min +
+    //      battery install 1h/2h). variant '' means "no variant" (the non-
+    //      battery services); battery_install rows use variant 'standard' /
+    //      'advanced' (Phase 1's battery_sales.install_type). Rows are lazily
+    //      created with defaults (org_settings pattern) and edited from the
+    //      owner Settings "Service time goals" card.
+    //   2. dispatch_jobs.duration_seconds — service duration captured ONCE at
+    //      completion: completed_at − arrived_at (fallback assigned_at),
+    //      immutable like payday rows. NULL for jobs completed before this
+    //      migration — the metrics query computes the same value on the fly
+    //      (COALESCE) so history needs no backfill.
+    // Plus the 11th Academy lesson "On-Time Service Standards" (metric_key
+    // service_time) that the Academy coach auto-recommends to drivers whose
+    // trailing service average is OVER the goal, and that owners can assign
+    // manually from the contractor metrics detail.
+    await q`CREATE TABLE IF NOT EXISTS service_time_goals (
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      service_type TEXT NOT NULL,
+      variant TEXT NOT NULL DEFAULT '',
+      goal_seconds INTEGER NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (org_id, service_type, variant)
+    )`;
+    await q`CREATE INDEX IF NOT EXISTS service_time_goals_org_idx ON service_time_goals(org_id)`;
+    await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS duration_seconds INTEGER`;
+    await q`INSERT INTO academy_lessons(id, slug, title, summary, metric_key, content, duration_minutes, sort_order, active) VALUES
+      ('lesson-on-time-service-standards', 'on-time-service-standards', 'On-Time Service Standards',
+       'Finish each service inside its goal time — jump starts, fuel and lockouts in 5 minutes, tire changes in 15, battery installs in 1–2 hours.',
+       'service_time',
+       'WHY IT MATTERS: The owner tracks how long each service takes from arrival to completion — a 5-minute jump start goal, 15 minutes for a tire change, 5 minutes for fuel and lockouts, 1 hour for a standard battery install and 2 for an advanced one. Members and motor clubs notice the wait.\\n\\nCHECKLIST:\\n- Stage your truck the night before: cables, fuel cans, and tools where you can grab them in seconds\\n- Arrive prepared — know the service before you knock, so the member is not waiting while you hunt for equipment\\n- Call ahead on the way so the member has the car unlocked and clear\\n- Jump starts: clamp, crank, disconnect in order — no re-staging mid-job\\n- Tire changes: lay out the spare, jack, and lug wrench before lifting\\n- Battery installs: confirm the size and terminal layout before you start, keep the new battery within reach, and torque the terminals once\\n- If a service will run long, tell the member and update dispatch — never let the clock surprise you', 4, 11, TRUE)
+      ON CONFLICT (slug) DO NOTHING`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

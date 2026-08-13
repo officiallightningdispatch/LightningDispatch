@@ -629,7 +629,8 @@ async function markPlatformCompleted(user: PhotoUser, job: { id: string; towbook
   const note = `driver completed job (Lightning Dispatch)${user.ownerInDriverView ? " (owner in driver view)" : ""}`;
   await q.transaction([
     q`WITH changed AS (
-        UPDATE dispatch_jobs SET status='completed', completed_at=NOW(), towbook_status='5'
+        UPDATE dispatch_jobs SET status='completed', completed_at=NOW(), towbook_status='5',
+          duration_seconds=EXTRACT(EPOCH FROM (NOW() - COALESCE(arrived_at, assigned_at)))::integer
         WHERE id=${job.id} AND org_id=${user.orgId} AND status='arrived'
         RETURNING id, org_id, 'arrived'::text AS old_status
       )
