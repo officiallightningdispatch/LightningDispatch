@@ -400,10 +400,10 @@ await setup();
   const txnId = String(rows[0].id);
   const r = await chargeStagedCore(ACTOR, { txnId, sourceId: "cnon:qa_webpayments_nonce_a" }, { fetchImpl });
   check("charge ok → charged", r.ok === true && r.data.status === "charged", JSON.stringify(r));
-  check("charge records square payment id + attempt 1 + charge_path square", r.data.squarePaymentId === "pymt_club_1" && r.data.attempt === 1 && r.data.idempotencyKey === `club-${txnId}-1` && r.data.chargePath === "square", JSON.stringify(r.data));
+  check("charge records square payment id + attempt 1 + charge_path square", r.data.squarePaymentId === "pymt_club_1" && r.data.attempt === 1 && r.data.idempotencyKey === squareIdempotencyKey("club-", txnId, 1) && r.data.chargePath === "square", JSON.stringify(r.data));
   const call = squareCalls[0];
   check("Square auth header = Bearer <secret token>", call.headers.authorization === "Bearer test-square-token", JSON.stringify(call.headers));
-  check("Square body: idempotency key club-<id>-1 + amount cents + currency + source = NONCE + location", call.body.idempotency_key === `club-${txnId}-1` && call.body.amount_money.amount === 8500 && call.body.amount_money.currency === "USD" && call.body.source_id === "cnon:qa_webpayments_nonce_a" && call.body.location_id === "loc_test", JSON.stringify(call.body));
+  check("Square body: hashed idempotency key (≤45 chars) + amount cents + currency + source = NONCE + location", call.body.idempotency_key === squareIdempotencyKey("club-", txnId, 1) && call.body.amount_money.amount === 8500 && call.body.amount_money.currency === "USD" && call.body.source_id === "cnon:qa_webpayments_nonce_a" && call.body.location_id === "loc_test", JSON.stringify(call.body));
   check("Square note carries club + PO attribution", String(call.body.note).includes("Allied Dispatch") && String(call.body.note).includes("88231"), JSON.stringify(call.body.note));
   check("exactly one Square call (no retry loop)", squareCalls.length === 1, JSON.stringify(squareCalls.length));
   const dbRow = await q`SELECT card_source_id FROM payment_transactions WHERE id=${txnId}`;
@@ -436,13 +436,13 @@ await setup();
   const r = await chargeStagedCore(ACTOR, { txnId, sourceId: "cnon:qa_nonce_fail" }, { fetchImpl });
   check("400 → failed with error + attempt 1", r.ok === false && r.code === "square_failed" && r.retryable === true && String(r.message).includes("CARD_DECLINED"), JSON.stringify(r));
   const dbRow = await q`SELECT status, error, attempt, idempotency_key FROM payment_transactions WHERE id=${txnId}`;
-  check("row failed + error + attempt 1 + key recorded", String(dbRow[0].status) === "failed" && String(dbRow[0].error).includes("CARD_DECLINED") && Number(dbRow[0].attempt) === 1 && String(dbRow[0].idempotency_key) === `club-${txnId}-1`, JSON.stringify(dbRow));
+  check("row failed + error + attempt 1 + key recorded", String(dbRow[0].status) === "failed" && String(dbRow[0].error).includes("CARD_DECLINED") && Number(dbRow[0].attempt) === 1 && String(dbRow[0].idempotency_key) === squareIdempotencyKey("club-", txnId, 1), JSON.stringify(dbRow));
   // Retry after confirmed failure uses a FRESH attempt → fresh key (the first
   // was declined; no double-charge risk) + a fresh nonce from the owner.
   const r2 = await chargeStagedCore(ACTOR, { txnId, sourceId: "cnon:qa_nonce_fail_2" }, { fetchImpl });
-  check("retry → attempt 2 + fresh key club-<id>-2", r2.ok === false && squareCalls.length === 2 && squareCalls[1].body.idempotency_key === `club-${txnId}-2`, JSON.stringify(squareCalls.map((c) => c.body.idempotency_key)));
+  check("retry → attempt 2 + fresh hashed key (deterministic per attempt)", r2.ok === false && squareCalls.length === 2 && squareCalls[1].body.idempotency_key === squareIdempotencyKey("club-", txnId, 2), JSON.stringify(squareCalls.map((c) => c.body.idempotency_key)));
   const dbRow2 = await q`SELECT attempt, idempotency_key FROM payment_transactions WHERE id=${txnId}`;
-  check("row attempt 2 + key club-<id>-2 persisted", Number(dbRow2[0].attempt) === 2 && String(dbRow2[0].idempotency_key) === `club-${txnId}-2`, JSON.stringify(dbRow2));
+  check("row attempt 2 + key persisted", Number(dbRow2[0].attempt) === 2 && String(dbRow2[0].idempotency_key) === squareIdempotencyKey("club-", txnId, 2), JSON.stringify(dbRow2));
   const aud = await q`SELECT COUNT(*)::int AS n FROM audit_log WHERE org_id=${ORG} AND action='payment_charge_failed'`;
   check("audit payment_charge_failed recorded", Number(aud[0].n) >= 1, JSON.stringify(aud));
 }
@@ -458,8 +458,8 @@ await setup();
   check("blip → row STAYS staged, attempt unchanged (0)", String(dbRow[0].status) === "staged" && Number(dbRow[0].attempt) === 0 && dbRow[0].idempotency_key == null, JSON.stringify(dbRow));
   const r2 = await chargeStagedCore(ACTOR, { txnId, sourceId: "cnon:qa_nonce_blip" }, { fetchImpl });
   check("retry after blip → charged (same attempt reused)", r2.ok === true && r2.data.attempt === 1 && r2.data.idempotencyKey === `club-${txnId}-1`, JSON.stringify(r2));
-  check("BOTH Square calls used the SAME idempotency key (replay-safe)", squareCalls.length === 2 && squareCalls[0].body.idempotency_key === `club-${txnId}-1` && squareCalls[1].body.idempotency_key === `club-${txnId}-1`, JSON.stringify(squareCalls.map((c) => c.body.idempotency_key)));
-  check("same payment returned for the replayed key (no double charge)", paymentIds.get(`club-${txnId}-1`) === r2.data.squarePaymentId && squareCalls[0].body.idempotency_key === squareCalls[1].body.idempotency_key, JSON.stringify(r2.data.squarePaymentId));
+  check("BOTH Square calls used the SAME idempotency key (replay-safe)", squareCalls.length === 2 && squareCalls[0].body.idempotency_key === squareIdempotencyKey("club-", txnId, 1) && squareCalls[1].body.idempotency_key === squareIdempotencyKey("club-", txnId, 1), JSON.stringify(squareCalls.map((c) => c.body.idempotency_key)));
+  check("same payment returned for the replayed key (no double charge)", paymentIds.get(squareIdempotencyKey("club-", txnId, 1)) === r2.data.squarePaymentId && squareCalls[0].body.idempotency_key === squareCalls[1].body.idempotency_key, JSON.stringify(r2.data.squarePaymentId));
 }
 
 /* ============ 9) charge rails: missing source, cross-org, role gate ============ */
@@ -475,6 +475,9 @@ await setup();
   check("charge: contractor actor → unauthorized", denied.ok === false && denied.code === "unauthorized", JSON.stringify(denied));
   const dbRow = await q`SELECT status FROM payment_transactions WHERE id=${txnId}`;
   check("no-source row untouched (staged)", String(dbRow[0].status) === "staged", JSON.stringify(dbRow));
+  // IDEMPOTENCY-KEY LENGTH REGRESSION (production incident: every club charge
+  // failed HTTP 400 VALUE_TOO_LONG — `club-<uuid>-<attempt>` was 47 chars).
+  check("idempotency keys always ≤ 45 chars (Square's hard limit)", [squareIdempotencyKey("club-", txnId, 1), squareIdempotencyKey("club-", txnId, 2)].every((k) => k.length <= 45), "");
 }
 
 /* ============ 10) tip mirror: paid tip → ledger row, idempotent ============ */

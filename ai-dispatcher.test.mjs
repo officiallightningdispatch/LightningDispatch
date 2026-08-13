@@ -84,7 +84,7 @@ let created = false;
 const ZONE = { lat: 41.208862, lng: -73.207253, radiusMi: 30 };
 const northOf = (dMiles) => ZONE.lat + dMiles / 69.09; // ~1° lat = 69.09 mi
 
-const offer = (id, { lat = 41.2, lng = -73.2, status = 0, expiresInMin = 10, maxEta = null, omitLat = false, omitLng = false, startingLocation = null, past = false } = {}) => {
+const offer = (id, { lat = 41.2, lng = -73.2, status = 0, expiresInMin = 10, maxEta = null, omitLat = false, omitLng = false, startingLocation = "123 MAIN ST, BRIDGEPORT CT 06606", past = false } = {}) => {
   const o = {
     callRequestId: id,
     masterAccountId: 29,
@@ -261,6 +261,11 @@ const makeDeps = (fetchImpl, router, opts = {}) => {
     verifyRetryDelayMs: 0,
     ...(opts.env ? { env: opts.env } : {}),
     ...(opts.geocodeOverride ? { geocodeOverride: opts.geocodeOverride } : {}),
+    // SAME-STATE GUARD (owner rule 2026-08-13): hermetic driver-state resolver —
+    // fixture drivers sit at CT coords, so default "CT"; the guard's job-state
+    // parse, comparison and fail-closed refusal still run in the engine. The
+    // dedicated guard cases pass their own resolver via opts.stateResolver.
+    ...(opts.noStateGuardOverride ? {} : { stateGuardResolver: opts.stateResolver ?? (async () => "CT") }),
   };
   // Default: inject a hermetic router so tests never hit real OSRM/TomTom.
   // opts.noRouterOverride exercises the real env-resolution path instead.
@@ -1247,7 +1252,7 @@ try {
   {
     // (e) no startingLocation text at all + no coords → escalates (unchanged
     // pre-fix behavior for the truly unresolvable offer).
-    const m = makeFetch({ offers: [offer(6004, { omitLat: true, omitLng: true })], drivers: [] });
+    const m = makeFetch({ offers: [offer(6004, { omitLat: true, omitLng: true, startingLocation: "" })], drivers: [] });
     const { deps } = makeDeps(m.fetchImpl);
     const r = await runAutoDispatch(ORG6, deps);
     check("coords no-address: escalated_unexpected_shape + reason names no startingLocation, zero POSTs", r.decisions[0]?.decision === "escalated_unexpected_shape" && r.decisions[0]?.escalated === true && posts(m.calls).length === 0 && String(r.decisions[0]?.reason).includes("no startingLocation text"), String(r.decisions[0]?.reason));

@@ -50,6 +50,8 @@
  * omitted; nulls are explicit.
  */
 import { z } from "zod";
+import { parseStateFromAddress, reverseGeocodeState } from "./state-guard-core";
+import { resolveTomtomKey, loadDriverAnchors } from "./ai-dispatcher";
 
 export type ReassignActor = { id: string; role: "owner" | "admin" | "dispatcher" | "contractor" };
 
@@ -90,6 +92,14 @@ export type ReassignCoreInput = {
     pushImpl?: (orgId: string, contractorUserId: string, jobId: string) => Promise<unknown>;
     /** Injectable clock (tests pin the marker timestamp). */
     now?: Date;
+    /** SAME-STATE GUARD driver-state resolver (owner rule 2026-08-13, no
+     *  cross-state assignments): resolves the NEW driver's CURRENT US state
+     *  from its last-known coordinates. Injected for hermetic tests —
+     *  production defaults to a TomTom reverse geocode (reverseGeocodeState)
+     *  with the resolved key. The override supplies ONLY driver-state
+     *  evidence; the job-state parsing, same-state comparison and fail-closed
+     *  refusal all stay in this core — an override can never weaken the rule. */
+    resolveDriverState?: (towbookDriverId: string, lat: number, lng: number) => Promise<string | null>;
   };
 };
 
@@ -261,6 +271,79 @@ async function verifyCallHasDriver(
   return { ok: false, code: "verify_failed", message: `Towbook did not confirm driver ${driverId} on call ${towbookJobId} after the reassign PUT.`, attempts };
 }
 
+/** Job state from the dispatch_jobs row: pickup address text → raw
+ *  startingLocation text — parsed by the same address rule the AI dispatcher
+ *  uses (ZIP prefix table + trailing state token; NEVER coordinates, because
+ *  production rows carried Bridgeport placeholder coords with TX addresses).
+ *  Uppercase 2-letter state or null (null → the caller fails closed). */
+function jobStateOfJob(job: Record<string, unknown>): string | null {
+  const pickup = job.pickup != null && String(job.pickup).trim() !== "" ? String(job.pickup).trim() : null;
+  if (pickup) {
+    const st = parseStateFromAddress(pickup);
+    if (st) return st;
+  }
+  const raw = job.raw_json;
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    const sl = (raw as Record<string, unknown>).startingLocation;
+    if (typeof sl === "string" && sl.trim() !== "") {
+      const st = parseStateFromAddress(sl.trim());
+      if (st) return st;
+    }
+  }
+  return null;
+}
+
+/** The NEW driver's CURRENT location: freshest app GPS fix (driver_locations —
+ *  the ping ledger is pruned to 24h, so any row is recent) → today's area
+ *  anchor (the first job assigned to the driver since ET midnight — the same
+ *  anchor semantics the AI dispatcher's ETA-origin chain uses) → null (the
+ *  caller fails closed). Never throws. */
+async function resolveDriverCurrentLocation(
+  orgId: string,
+  towbookDriverId: string,
+): Promise<{ lat: number; lng: number; basis: "gps" | "anchor" } | null> {
+  try {
+    const q = await db();
+    const fixRows = await q`SELECT latitude, longitude FROM driver_locations
+      WHERE org_id=${orgId} AND towbook_driver_id=${towbookDriverId}
+        AND latitude != 0 AND longitude != 0
+      ORDER BY captured_at DESC LIMIT 1`;
+    if (fixRows.length) {
+      const lat = Number((fixRows[0] as Record<string, unknown>).latitude);
+      const lng = Number((fixRows[0] as Record<string, unknown>).longitude);
+      if (Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 && lng !== 0) {
+        return { lat, lng, basis: "gps" };
+      }
+    }
+    const anchors = await loadDriverAnchors(orgId);
+    const anchor = anchors.get(towbookDriverId);
+    if (anchor) return { lat: anchor.lat, lng: anchor.lng, basis: "anchor" };
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** Driver state from a location: the injected resolver (tests) or a TomTom
+ *  reverse geocode with the resolved key (production; a missing key yields
+ *  null → fail closed). Never throws. */
+async function resolveDriverStateFor(
+  towbookDriverId: string,
+  lat: number,
+  lng: number,
+  injected: ((towbookDriverId: string, lat: number, lng: number) => Promise<string | null>) | undefined,
+  fetchImpl: typeof fetch,
+): Promise<string | null> {
+  try {
+    if (injected) return await injected(towbookDriverId, lat, lng);
+    const key = resolveTomtomKey(process.env);
+    if (!key) return null;
+    return await reverseGeocodeState(lat, lng, key, fetchImpl);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Reassign a call's assigned driver. See the header for the full flow.
  * Never throws — every failure mode is a structured {ok:false} result.
@@ -285,7 +368,7 @@ export async function reassignDriverCore(input: ReassignCoreInput): Promise<Reas
   try {
     const q = await db();
     // (2) The job — org-scoped; terminal jobs cannot be reassigned.
-    const jobRows = await q`SELECT id, status, towbook_job_id, assigned_driver_towbook_id, assigned_driver_name FROM dispatch_jobs WHERE id=${jobId} AND org_id=${orgId}`;
+    const jobRows = await q`SELECT id, status, towbook_job_id, assigned_driver_towbook_id, assigned_driver_name, pickup, raw_json FROM dispatch_jobs WHERE id=${jobId} AND org_id=${orgId}`;
     if (!jobRows.length) return { ok: false, code: "not_found", message: "Job not found." };
     const job = jobRows[0] as Record<string, unknown>;
     const status = String(job.status ?? "");
@@ -311,6 +394,34 @@ export async function reassignDriverCore(input: ReassignCoreInput): Promise<Reas
     const newDriverName = String(con.name ?? "");
     if (oldDriverId != null && oldDriverId === newDriverId) {
       return { ok: false, code: "conflict", message: `${newDriverName} is already the assigned driver for this job.` };
+    }
+
+    // (3.5) SAME-STATE GUARD (owner rule 2026-08-13: "No cross-state
+    // assignments"; production incident — offers carrying Bridgeport CT
+    // placeholder coords with Georgetown/Austin TX addresses were dispatched
+    // to CT drivers). A manual reassign is an ASSIGNMENT and gets the same
+    // containment as the AI dispatcher: the job's state comes from its
+    // ADDRESS text (pickup → raw startingLocation — never coordinates), the
+    // driver's state from a reverse geocode of its CURRENT location (freshest
+    // app GPS fix → today's area anchor). FAIL-CLOSED: an unresolvable job
+    // state, an unresolvable driver location, or an unresolvable driver state
+    // all REFUSE the reassign (no Towbook write, no DB write, no push); a
+    // driver proven in a DIFFERENT state is refused outright. The owner can
+    // still assign via Towbook directly — this rail guards the platform path.
+    const jobState = jobStateOfJob(job);
+    if (!jobState) {
+      return { ok: false, code: "invalid_state", message: `The job's state could not be determined from its address — the same-state rule cannot be verified. The assignment was NOT changed (no cross-state assignments).` };
+    }
+    const driverLoc = await resolveDriverCurrentLocation(orgId, newDriverId);
+    if (!driverLoc) {
+      return { ok: false, code: "invalid_state", message: `${newDriverName} has no current location on record — their state cannot be verified. The assignment was NOT changed (no cross-state assignments).` };
+    }
+    const driverState = await resolveDriverStateFor(newDriverId, driverLoc.lat, driverLoc.lng, input.opts?.resolveDriverState, fetchImpl);
+    if (!driverState) {
+      return { ok: false, code: "invalid_state", message: `${newDriverName}'s state could not be verified from their current location — the same-state rule cannot be confirmed. The assignment was NOT changed (no cross-state assignments).` };
+    }
+    if (driverState !== jobState) {
+      return { ok: false, code: "invalid_state", message: `${newDriverName} is currently in ${driverState}, but this job is in ${jobState} — cross-state assignments are not allowed. The assignment was NOT changed.` };
     }
 
     // (4) Towbook persistence FIRST (so the sync can never observe a stale

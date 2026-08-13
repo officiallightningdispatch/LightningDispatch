@@ -50,10 +50,18 @@ const ORG2 = `qa-rd2-${randomUUID()}`; // AI-dispatcher guard org
 const USER = `qa-rd-user-${randomUUID()}`;
 const DRIVER_A = `qa-rd-driver-a-${randomUUID()}`; // old driver (LD user id)
 const DRIVER_B = `qa-rd-driver-b-${randomUUID()}`; // new driver (LD user id)
+const DRIVER_C = `qa-rd-driver-c-${randomUUID()}`; // out-of-state driver (LD user id)
+const DRIVER_D = `qa-rd-driver-d-${randomUUID()}`; // no-location driver (LD user id)
 const TB_A = "777101"; // old driver Towbook id
 const TB_B = "777102"; // new driver Towbook id
+const TB_C = "777103"; // out-of-state driver Towbook id
+const TB_D = "777104"; // no-location driver Towbook id
 const JOB = `qa-rd-job-${randomUUID()}`;
 const JOB_NO_TB = `qa-rd-job-nodb-${randomUUID()}`;
+const JOB2 = `qa-rd-job2-${randomUUID()}`; // same-state-guard job (CT, fresh)
+const JOB_UNKNOWN = `qa-rd-job-unk-${randomUUID()}`; // no resolvable state
+const CT_FIX = [41.2, -73.2];
+const TX_FIX = [30.2, -97.7];
 let created = false;
 
 /* ------------------------------ fixtures ------------------------------ */
@@ -69,7 +77,7 @@ const jsonResponse = (status, body) => ({
  *  the call (status + asset); PUT /api/calls/{id} applies the NEW driver from
  *  the Map-app payload and records the PUT body for payload-shape assertions.
  *  Any URL outside the surface throws — a stray call fails the test. */
-function makeReassignFetch({ callId = 279111111, callStatus = 2, assetId = 777111, oldDriverId = Number(TB_A) }) {
+function makeReassignFetch({ callId = 279111111, callStatus = 2, assetId = 777111, oldDriverId = Number(TB_A), reverseStates = {} }) {
   const calls = [];
   let call = { id: callId, callNumber: 25001, status: { id: callStatus }, version: 1, assets: [{ id: assetId, driver: { id: oldDriverId, name: "Old Driver" } }] };
   const fetchImpl = async (url, init = {}) => {
@@ -77,6 +85,17 @@ function makeReassignFetch({ callId = 279111111, callStatus = 2, assetId = 77711
     const method = init.method || "GET";
     const body = init.body ? JSON.parse(init.body) : null;
     calls.push({ method, url: u, body });
+    // SAME-STATE GUARD reverse-geocode route (TomTom Search v2 shape): per
+    // rounded coordinate → state from reverseStates; anything unmapped is CT
+    // (all default fixtures sit at CT coords). A mapped null → 404 (state
+    // unresolvable → the guard fails closed).
+    const rg = u.match(/\/search\/2\/reverseGeocode\/(-?[\d.]+),(-?[\d.]+)\.json/);
+    if (rg) {
+      const key = `${Number(rg[1]).toFixed(3)},${Number(rg[2]).toFixed(3)}`;
+      const st = key in reverseStates ? reverseStates[key] : "CT";
+      if (!st) return jsonResponse(404, {});
+      return jsonResponse(200, { addresses: [{ address: { countryCode: "US", adminDistrict: st } }] });
+    }
     const m = u.match(/\/api\/calls\/(\d+)$/);
     if (!m) throw new Error(`reassign mock hit an unexpected URL: ${method} ${u}`);
     if (String(m[1]) !== String(callId)) return jsonResponse(404, { error: "not found" });
@@ -105,6 +124,7 @@ const offer = (id, po, eligible = [603482, 703785]) => ({
   expirationDateUtc: new Date(Date.now() + 10 * 60000).toISOString(),
   defaultEta: 30,
   purchaseOrderNumber: po,
+  startingLocation: "123 MAIN ST, BRIDGEPORT CT 06606",
   sound: false,
   startLocationLatitude: 41.2,
   startLocationLongitude: -73.2,
@@ -163,6 +183,10 @@ const makeDeps = (fetchImpl) => ({
   fetchImpl,
   verifyRetryDelayMs: 0,
   routerOverride: { provider: "osrm", tomtomKeyConfigured: false, router: makeRouter() },
+  // SAME-STATE GUARD (owner rule 2026-08-13): hermetic driver-state resolver —
+  // every fixture driver sits at CT coords; the engine's job-state parse,
+  // comparison and fail-closed refusal still run.
+  stateGuardResolver: async () => "CT",
 });
 
 try {
@@ -171,12 +195,23 @@ try {
   await q`INSERT INTO users(id, name, email, password_hash, towbook_driver_id) VALUES
     (${USER}, 'QA Reassign Owner', ${`rd-${randomUUID()}@qa.local`}, 'x', NULL),
     (${DRIVER_A}, 'QA Old Driver', ${`rd-a-${randomUUID()}@qa.local`}, 'x', ${TB_A}),
-    (${DRIVER_B}, 'QA New Driver', ${`rd-b-${randomUUID()}@qa.local`}, 'x', ${TB_B})`;
+    (${DRIVER_B}, 'QA New Driver', ${`rd-b-${randomUUID()}@qa.local`}, 'x', ${TB_B}),
+    (${DRIVER_C}, 'QA Texas Driver', ${`rd-c-${randomUUID()}@qa.local`}, 'x', ${TB_C}),
+    (${DRIVER_D}, 'QA No-Fix Driver', ${`rd-d-${randomUUID()}@qa.local`}, 'x', ${TB_D})`;
   await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES
     (${ORG}, ${USER}, 'owner'),
     (${ORG}, ${DRIVER_A}, 'contractor'),
     (${ORG}, ${DRIVER_B}, 'contractor'),
+    (${ORG}, ${DRIVER_C}, 'contractor'),
+    (${ORG}, ${DRIVER_D}, 'contractor'),
     (${ORG2}, ${USER}, 'owner')`;
+  // SAME-STATE GUARD fixtures: current locations for the drivers the guard
+  // reverse-geocodes (freshest driver_locations fix → today's anchor).
+  await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES
+    (${`qa-rd-loc-a-${randomUUID()}`}, ${ORG}, ${DRIVER_A}, ${TB_A}, ${CT_FIX[0]}, ${CT_FIX[1]}, NOW()),
+    (${`qa-rd-loc-b-${randomUUID()}`}, ${ORG}, ${DRIVER_B}, ${TB_B}, ${CT_FIX[0]}, ${CT_FIX[1]}, NOW()),
+    (${`qa-rd-loc-c-${randomUUID()}`}, ${ORG}, ${DRIVER_C}, ${TB_C}, ${TX_FIX[0]}, ${TX_FIX[1]}, NOW())`;
+  // DRIVER_D intentionally has NO driver_locations row (the unknown-location case).
   await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES
     (${ORG}, ${await encryptSession(JSON.stringify({ cookies: "xtl=rd-session", baseUrl: "https://app.towbook.com" }))}, 'connected'),
     (${ORG2}, ${await encryptSession(JSON.stringify({ cookies: "xtl=rd-session", baseUrl: "https://app.towbook.com" }))}, 'connected')`;
@@ -189,6 +224,11 @@ try {
     VALUES(${`qa-rd-guard-${randomUUID()}`}, ${ORG2}, 'QA Guarded Call', '555', 41.2, -73.2, 'Bridgeport CT', 'tire_change', 'offered', NOW(), '', '279222222', ${JSON.stringify({ id: 279222222, purchaseOrderNumber: "1125guard", status: { id: 2 } })}::jsonb, 'Bridgeport CT', 41.2, -73.2, ${TB_B}, 'QA New Driver', NOW(), NOW(), ${USER})`;
   await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, raw_json, pickup, pickup_lat, pickup_lng, assigned_driver_towbook_id, assigned_driver_name, assigned_at, manually_reassigned_at, manually_reassigned_by)
     VALUES(${`qa-rd-guard2-${randomUUID()}`}, ${ORG2}, 'QA Ineligible Guarded', '555', 41.2, -73.2, 'Bridgeport CT', 'fuel_delivery', 'offered', NOW(), '', '279333333', ${JSON.stringify({ id: 279333333, purchaseOrderNumber: "1125inelig", status: { id: 2 } })}::jsonb, 'Bridgeport CT', 41.2, -73.2, ${TB_A}, 'QA Old Driver', NOW(), NOW(), ${USER})`;
+  // SAME-STATE GUARD jobs: JOB2 is a fresh CT job assigned to TB_A (the guard
+  // tests reassign it); JOB_UNKNOWN's pickup has no resolvable state.
+  await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, raw_json, pickup, pickup_lat, pickup_lng, assigned_driver_towbook_id, assigned_driver_name, assigned_at)
+    VALUES(${JOB2}, ${ORG}, 'QA Guard Job', '555', 41.2, -73.2, 'Bridgeport CT', 'jump_start', 'accepted', NOW(), '', '279444444', ${JSON.stringify({ id: 279444444, purchaseOrderNumber: "1125guard2", status: { id: 2 } })}::jsonb, '1441 MAIN ST, BRIDGEPORT CT 06606', 41.2, -73.2, ${TB_A}, 'QA Old Driver', NOW()),
+          (${JOB_UNKNOWN}, ${ORG}, 'QA No-State Job', '555', 41.2, -73.2, 'Bridgeport CT', 'lockout', 'offered', NOW(), '', '279555555', ${JSON.stringify({ id: 279555555, purchaseOrderNumber: "1125unk", status: { id: 2 } })}::jsonb, 'MAIN ST', 41.2, -73.2, ${TB_A}, 'QA Old Driver', NOW())`;
   created = true;
 
   /* ============ 1) role gating ============ */
@@ -294,9 +334,78 @@ try {
     check("no-marker: reason has NO manual-reassign note", dec && !String(dec.reason).includes("manual reassignment respected"), String(dec?.reason));
   }
 
+  /* ============ 7) SAME-STATE GUARD (owner rule 2026-08-13): the manual
+     reassign path fails closed on cross-state + unknown, and succeeds same-state ============ */
+  {
+    // (a) same-state succeeds: CT job + CT driver → Towbook PUT + DB + audit.
+    const m = makeReassignFetch({ callId: 279444444, oldDriverId: Number(TB_A) });
+    const pushed = [];
+    const r = await reassignDriverCore({
+      jobId: JOB2, contractorId: DRIVER_B, orgId: ORG, actor: { id: USER, role: "owner" },
+      opts: { fetchImpl: m.fetchImpl, pushImpl: async (orgId, contractorUserId, jobId) => { pushed.push({ orgId, contractorUserId, jobId }); } },
+    });
+    check("guard same-state: reassign ok + Towbook verified (CT job, CT driver)", r.ok && r.towbookStatus === "verified" && r.newDriverId === TB_B, JSON.stringify(r));
+    check("guard same-state: Towbook PUT fired (guard did not block)", m.calls.some((c) => c.method === "PUT"), JSON.stringify(m.calls));
+    const row2 = (await q`SELECT assigned_driver_towbook_id FROM dispatch_jobs WHERE id=${JOB2} AND org_id=${ORG}`)[0];
+    check("guard same-state: dispatch_jobs updated to the new driver", String(row2.assigned_driver_towbook_id) === TB_B, JSON.stringify(row2));
+  }
+  {
+    // (b) CROSS-STATE refused: the job is CT but the chosen driver's CURRENT
+    // location reverse-geocodes to TX → invalid_state, ZERO Towbook calls
+    // (no GET, no PUT), DB unchanged, no audit, no push.
+    const m = makeReassignFetch({ callId: 279666666, oldDriverId: Number(TB_B), reverseStates: { "30.200,-97.700": "TX" } });
+    const pushed = [];
+    const r = await reassignDriverCore({
+      jobId: JOB2, contractorId: DRIVER_C, orgId: ORG, actor: { id: USER, role: "owner" },
+      opts: { fetchImpl: m.fetchImpl, pushImpl: async () => { pushed.push(1); } },
+    });
+    check("guard cross-state: refused invalid_state, reason names TX vs CT", !r.ok && r.code === "invalid_state" && String(r.message).includes("TX") && String(r.message).includes("CT"), JSON.stringify(r));
+    check("guard cross-state: ZERO Towbook calls (no GET/PUT — assignment NOT changed)", !m.calls.some((c) => c.url.includes("/api/calls")), JSON.stringify(m.calls));
+    check("guard cross-state: no push fired", pushed.length === 0, String(pushed.length));
+    const row2 = (await q`SELECT assigned_driver_towbook_id, assigned_at FROM dispatch_jobs WHERE id=${JOB2} AND org_id=${ORG}`)[0];
+    check("guard cross-state: dispatch_jobs unchanged (still the same-state driver)", String(row2.assigned_driver_towbook_id) === TB_B, JSON.stringify(row2));
+    const aud2 = await q`SELECT count(*)::int n FROM audit_log WHERE org_id=${ORG} AND entity_id=${JOB2} AND action='reassign_driver'`;
+    check("guard cross-state: no audit row written", Number(aud2[0].n) === 1, String(aud2[0].n)); // only the same-state reassign's row
+  }
+  {
+    // (c) UNKNOWN JOB STATE refused: the job's address carries no resolvable
+    // US state → fail closed BEFORE any driver check or Towbook call.
+    const m = makeReassignFetch({ callId: 279555555, oldDriverId: Number(TB_A) });
+    const r = await reassignDriverCore({
+      jobId: JOB_UNKNOWN, contractorId: DRIVER_B, orgId: ORG, actor: { id: USER, role: "owner" },
+      opts: { fetchImpl: m.fetchImpl },
+    });
+    check("guard unknown-job: refused invalid_state, reason names the state rule", !r.ok && r.code === "invalid_state" && String(r.message).includes("state could not be determined"), JSON.stringify(r));
+    check("guard unknown-job: ZERO Towbook calls", m.calls.length === 0, JSON.stringify(m.calls));
+  }
+  {
+    // (d) UNKNOWN DRIVER LOCATION refused: the chosen driver has no GPS fix
+    // and no today anchor → their state cannot be verified → fail closed.
+    const m = makeReassignFetch({ callId: 279666666, oldDriverId: Number(TB_B) });
+    const r = await reassignDriverCore({
+      jobId: JOB2, contractorId: DRIVER_D, orgId: ORG, actor: { id: USER, role: "owner" },
+      opts: { fetchImpl: m.fetchImpl },
+    });
+    check("guard unknown-driver-loc: refused invalid_state, reason names no current location", !r.ok && r.code === "invalid_state" && String(r.message).includes("no current location"), JSON.stringify(r));
+    check("guard unknown-driver-loc: ZERO Towbook calls", m.calls.length === 0, JSON.stringify(m.calls));
+    const row2 = (await q`SELECT assigned_driver_towbook_id FROM dispatch_jobs WHERE id=${JOB2} AND org_id=${ORG}`)[0];
+    check("guard unknown-driver-loc: dispatch_jobs unchanged", String(row2.assigned_driver_towbook_id) === TB_B, JSON.stringify(row2));
+  }
+  {
+    // (e) UNKNOWN DRIVER STATE refused: the driver HAS a fix but the reverse
+    // geocode cannot resolve a state → fail closed (mapped null → 404).
+    const m = makeReassignFetch({ callId: 279666666, oldDriverId: Number(TB_B), reverseStates: { "30.200,-97.700": null } });
+    const r = await reassignDriverCore({
+      jobId: JOB2, contractorId: DRIVER_C, orgId: ORG, actor: { id: USER, role: "owner" },
+      opts: { fetchImpl: m.fetchImpl },
+    });
+    check("guard unknown-driver-state: refused invalid_state, reason names state not verified", !r.ok && r.code === "invalid_state" && String(r.message).includes("state could not be verified"), JSON.stringify(r));
+    check("guard unknown-driver-state: ZERO Towbook calls (evidence geocode only)", !m.calls.some((c) => c.url.includes("/api/calls")), JSON.stringify(m.calls));
+  }
+
   /* ============ cleanup (assertQaOrg-guarded) ============ */
   for (const org of [ORG, ORG2]) { assertQaOrg(org); await q`DELETE FROM organizations WHERE id=${org}`; }
-  await q`DELETE FROM users WHERE id IN (${USER}, ${DRIVER_A}, ${DRIVER_B})`;
+  await q`DELETE FROM users WHERE id IN (${USER}, ${DRIVER_A}, ${DRIVER_B}, ${DRIVER_C}, ${DRIVER_D})`;
   const failures = checks.filter(([, ok]) => !ok);
   console.log(`reassign-driver: ${checks.length - failures.length}/${checks.length} checks PASS`);
   if (failures.length) {
@@ -309,7 +418,7 @@ try {
   if (created) {
     try {
       for (const org of [ORG, ORG2]) { assertQaOrg(org); await q`DELETE FROM organizations WHERE id=${org}`; }
-      await q`DELETE FROM users WHERE id IN (${USER}, ${DRIVER_A}, ${DRIVER_B})`;
+      await q`DELETE FROM users WHERE id IN (${USER}, ${DRIVER_A}, ${DRIVER_B}, ${DRIVER_C}, ${DRIVER_D})`;
     } catch { /* best-effort */ }
   }
   process.exit(1);

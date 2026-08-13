@@ -170,6 +170,14 @@ export type AiDispatcherDeps = {
    *  validation (score floor + token overlap) on whatever this returns — an
    *  override can never bypass the safety rail. */
   geocodeOverride?: (address: string) => Promise<GeocodeLookup | null>;
+  /** SAME-STATE GUARD driver-state resolver (owner rule 2026-08-13, no
+   *  cross-state assignments): resolves a driver's CURRENT US state from its
+   *  ETA-origin coordinates. Injected for hermetic tests — production defaults
+   *  to a TomTom reverse geocode (reverseGeocodeState) with the resolved key.
+   *  The override supplies ONLY the driver-state evidence; the guard's job-state
+   *  parsing, same-state comparison and fail-closed refusal all stay in the
+   *  engine — an override can never weaken the containment rule. */
+  stateGuardResolver?: (driverId: number, lat: number, lng: number) => Promise<string | null>;
 };
 
 export type OrgAiSettings = {
@@ -1643,7 +1651,13 @@ export async function chooseBestDriverByRoad(
   // candidates (the caller escalates rather than assigning cross-state). ---
   let statePool = pool;
   const guardOut = out?.stateGuard;
-  if (guardOut && area?.stateGuard) {
+  // Only filter when there ARE candidates: an EMPTY pool (no eligible /
+  // checked-in / in-area driver) dispatches nobody — the pre-guard
+  // no-driver behavior (accept without dispatch) is untouched, so the guard
+  // never manufactures a state-based block that could let a club offer
+  // expire. When candidates EXIST, every one of them must be proven in the
+  // job's state or it is excluded (fail closed).
+  if (guardOut && area?.stateGuard && statePool.length > 0) {
     guardOut.active = true;
     guardOut.jobState = area.stateGuard.jobState;
     if (!area.stateGuard.jobState) {
@@ -2613,22 +2627,24 @@ async function runAutoDispatchInternal(
       const jobState = rawStarting ? (stateCityOf(rawStarting)?.state ?? parseStateFromAddress(rawStarting)) : null;
       const tomtomKeyForGuard = resolveTomtomKey(deps.env ?? process.env);
       const reverseStateCache = new Map<string, string | null>();
-      const stateGuardCtx: StateGuardContext | null = (tomtomKeyForGuard || jobState)
-        ? {
-            jobState: jobState ? jobState.toUpperCase() : null,
-            resolveDriverState: async (driverId, lat, lng) => {
-              const key = driverStateCacheKey(driverId, lat, lng);
-              if (reverseStateCache.has(key)) return reverseStateCache.get(key) ?? null;
-              const st = tomtomKeyForGuard ? await reverseGeocodeState(lat, lng, tomtomKeyForGuard, fetchImpl) : null;
-              reverseStateCache.set(key, st);
-              return st;
-            },
-          }
-        : null;
+      // ALWAYS active (fail-closed): a null jobState (unresolvable address)
+      // blocks selection and the caller escalates — the guard must NEVER
+      // silently disable, even when no TomTom key is configured (a missing
+      // key makes every driver's state UNKNOWN, which also blocks).
+      const stateGuardCtx: StateGuardContext = {
+        jobState: jobState ? jobState.toUpperCase() : null,
+        resolveDriverState: deps.stateGuardResolver ?? (async (driverId, lat, lng) => {
+          const key = driverStateCacheKey(driverId, lat, lng);
+          if (reverseStateCache.has(key)) return reverseStateCache.get(key) ?? null;
+          const st = tomtomKeyForGuard ? await reverseGeocodeState(lat, lng, tomtomKeyForGuard, fetchImpl) : null;
+          reverseStateCache.set(key, st);
+          return st;
+        }),
+      };
       const guardOutcome: StateGuardOutcome = { active: false, jobState: null, blocked: false, blockedReason: null, checked: 0, inState: 0, excluded: [] };
       const areaCtx: AreaContext = humanReassigned
-        ? { gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx ?? undefined }
-        : { anchors: driverAnchors, gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx ?? undefined };
+        ? { gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx }
+        : { anchors: driverAnchors, gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx };
       const chosen = await chooseBestDriverByRoad(
         candidates,
         offer.startLocationLatitude,
