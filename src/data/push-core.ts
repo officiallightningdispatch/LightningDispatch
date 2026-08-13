@@ -19,8 +19,11 @@
  * an audit row (`assignment_push` with status sent/failed/stale/no_subscriptions
  * + per-attempt evidence). A total failure ALSO records an
  * escalated_contractor_push_failure decision row (the ai_dispatcher_decisions
- * pattern) so the owner's "Needs attention" banner surfaces it. NEVER throws —
- * push problems can never fail or slow the assignment.
+ * pattern) so the owner's "Needs attention" banner surfaces it. REPAIR
+ * 2026-08-13 (phase 2): an ASSIGNED driver with ZERO subscriptions used to be
+ * silently skipped (audit only — the banner never fired); it now records the
+ * SAME deduplicated escalation (dedupe push-<callId>), so ops sees the delivery
+ * gap. NEVER throws — push problems can never fail or slow the assignment.
  *
  * VAPID key resolution mirrors the existing secrets convention (towbook-key /
  * b2-client): env vars → <site-parent>/.secrets/*.key (stable, publish-proof)
@@ -376,6 +379,19 @@ export async function sendAssignmentPush(
       outcome.skipped = true;
       outcome.reason = "no_subscriptions";
       await recordAudit(orgId, userId, payload, "no_subscriptions", { attempts: [] });
+      // REPAIR 2026-08-13 (phase 2): a zero-subscription assigned driver used to
+      // be silently skipped (audit row only) — the ops "Needs attention" banner
+      // never fired. Record the SAME deduplicated escalation the failed-send path
+      // writes (decision escalated_contractor_push_failure, dedupe key
+      // push-<callId> via the (org_id, call_request_id) unique index + ON
+      // CONFLICT DO NOTHING), so ops sees the delivery gap. Fire-and-forget:
+      // recordPushEscalation never throws, so the skip stays non-blocking.
+      await recordPushEscalation(
+        orgId,
+        payload,
+        `Contractor ${userId} has no push subscription — notification not delivered; in-app banner only.`,
+        { sent: 0, failed: 0, attempts: [] },
+      );
       return outcome;
     }
     let keys: { publicKey: string; privateKey: string } | null = null;

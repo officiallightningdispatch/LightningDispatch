@@ -1,9 +1,21 @@
-// PUSH REPAIR — PHASE 1 (production-safe isolated QA proof, 2026-08-13)
+// PUSH REPAIR — PHASE 1 PROOF + PHASE 2 REPAIRED BEHAVIOR (2026-08-13)
 // =====================================================================
-// Lead-delegated phase 1 of the push repair. This test PROVES subscription
-// creation + assignment-notification delivery end-to-end WITHOUT touching
-// production code, production config, the network, or real driver
-// subscriptions:
+// Phase 1 (commit 881e3f6) PROVED subscription creation + assignment
+// notification delivery end-to-end WITHOUT touching production code, config,
+// the network, or real driver subscriptions, and precisely documented the
+// gap: an ASSIGNED driver with zero push_subscriptions rows was silently
+// skipped (audit row only, NO escalation → the ops "Needs attention" banner
+// never fired).
+//
+// Phase 2 (this file, 2026-08-13) verifies the PRODUCTION repair in
+// src/data/push-core.ts sendAssignmentPush: the zero-subscription branch now
+// records the SAME deduplicated escalation the failed-send path writes
+// (decision escalated_contractor_push_failure, dedupe push-<callId> via the
+// (org_id, call_request_id) unique index + ON CONFLICT DO NOTHING), so the
+// ops banner fires instead of a silent skip — while the skip itself (skipped,
+// reason no_subscriptions, attempted 0) and the audit row are unchanged.
+//
+// Still production-safe, still hermetic:
 //
 //   1. Snapshot the PRODUCTION push state BEFORE the run (every non-QA
 //      push_subscriptions row + production audit/decision counts). The AFTER
@@ -19,20 +31,20 @@
 //      instead of a real push service. The body is DECRYPTED with the fake
 //      subscription's own keypair (RFC 8291) and asserted field-by-field,
 //      including the sound metadata (/sounds/lightning-strike.mp3).
-//   4. Missing-subscription path: an ASSIGNED driver with zero subscriptions
-//      is silently skipped TODAY (skipped=true, audit row, NO escalation →
-//      the ops "Needs attention" banner never fires). This test documents the
-//      gap precisely and proves the phase-2 repair assertion is test-ready via
-//      a TEST-ONLY seam (escalation row inserted into the QA org only — the
-//      same shape the production repair will write). NO production code is
-//      changed.
+//   4. Missing-subscription path (REPAIRED): an ASSIGNED driver with zero
+//      subscriptions → skipped=true / reason=no_subscriptions / attempted=0
+//      (unchanged) AND an escalation row written by PRODUCTION code with the
+//      exact shape the ops banner reads (decision escalated_contractor_push_failure,
+//      escalated TRUE, dedupe push-<callId>); a repeat notify for the same
+//      call does NOT duplicate the row (dedupe proof). The phase-1 test-only
+//      seam is gone — production code now does the work.
 //   5. Cleanup: QA org deleted under the assertQaOrg guard; zero-rows
 //      verification INCLUDING push_subscriptions; production snapshot re-run
 //      and compared. Never sends to a real endpoint (mock fetch only; fake
 //      https://push.example.test endpoints).
 //
 // RUN ALONE, SEQUENTIALLY (never parallel with other suites — suites collide):
-//   DATABASE_URL=... bun push-repair-phase1.test.mjs
+//   DATABASE_URL=... bun push-repair.test.mjs
 import { randomUUID } from "node:crypto";
 import { createDecipheriv, createECDH, hkdfSync } from "node:crypto";
 const { neon } = await import("@neondatabase/serverless");
@@ -96,7 +108,7 @@ console.log(`PROD-BEFORE subs=${prodBefore.subs.length} auditAssignmentPush=${pr
 
 /* ================================= (2) QA FIXTURE ================================= */
 await ensureSchema();
-await q`INSERT INTO organizations(id, name) VALUES(${ORG}, 'qa push-repair phase1')`;
+await q`INSERT INTO organizations(id, name) VALUES(${ORG}, 'qa push-repair')`;
 for (const [uid, name] of [[DRIVER, "QA Push-Repair Driver"], [NOSUB, "QA Push-Repair No-Sub Driver"]]) {
   await q`INSERT INTO users(id, name, email, password_hash) VALUES(${uid}, ${name}, ${`qa-pushrepair-${uid}-${randomUUID()}@lightning.test`}, 'x')`;
   await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${ORG}, ${uid}, 'contractor')`;
@@ -169,33 +181,29 @@ check("vapid: JWT subject + future exp", jwtPayload.sub === "https://www.lightni
 const audit = await q`SELECT detail FROM audit_log WHERE org_id=${ORG} AND action='assignment_push' ORDER BY occurred_at DESC LIMIT 1`;
 check("delivery: audit row written (status sent, attempts recorded)", audit.length === 1 && JSON.stringify(audit[0].detail).includes('"status":"sent"') && JSON.stringify(audit[0].detail).includes("attempts"), JSON.stringify(audit[0].detail));
 
-/* =============== (4) MISSING-SUBSCRIPTION PATH — GAP + TEST-ONLY SEAM =============== */
+/* ============== (4) MISSING-SUBSCRIPTION PATH — REPAIRED (escalates) ============== */
 const callsBeforeGap = mockCalls.length;
 const gapOut = await notifyAssignedDriver(ORG, NOSUB, JOB_NOSUB, { fetchImpl: mockPushService });
-check("gap: CURRENT behavior — assigned driver with zero subs → skipped (silent)", gapOut.skipped === true && gapOut.reason === "no_subscriptions" && gapOut.attempted === 0 && gapOut.sent === 0 && gapOut.failed === 0, JSON.stringify(gapOut));
-check("gap: zero POSTs reached the mock push service for the no-sub driver", mockCalls.length === callsBeforeGap, `${mockCalls.length} vs ${callsBeforeGap}`);
+check("repair: assigned driver with zero subs → skipped (no send attempted)", gapOut.skipped === true && gapOut.reason === "no_subscriptions" && gapOut.attempted === 0 && gapOut.sent === 0 && gapOut.failed === 0, JSON.stringify(gapOut));
+check("repair: zero POSTs reached the mock push service for the no-sub driver", mockCalls.length === callsBeforeGap, `${mockCalls.length} vs ${callsBeforeGap}`);
 const gapAudit = await q`SELECT detail FROM audit_log WHERE org_id=${ORG} AND action='assignment_push' ORDER BY occurred_at DESC LIMIT 1`;
-check("gap: the skip IS observable in the audit (status no_subscriptions, no attempts)", audit.length >= 1 && JSON.stringify(gapAudit[0].detail).includes("no_subscriptions"), JSON.stringify(gapAudit[0].detail));
-const gapEsc = await q`SELECT COUNT(*)::int c FROM ai_dispatcher_decisions WHERE org_id=${ORG} AND call_id=${JOB_NOSUB_TB} AND decision='escalated_contractor_push_failure'`;
-check("gap: NO escalation row today — the ops 'Needs attention' banner never fires (the repair gap)", Number(gapEsc[0].c) === 0);
-console.log("!!! REPAIR GAP CONFIRMED (phase 2 scope): an ASSIGNED driver with zero push_subscriptions rows is silently skipped today — audit row only, NO escalation, ops banner does NOT fire. Phase-2 production repair must escalate (the seam below proves the assertion is ready). !!!");
-
-// TEST-ONLY SEAM (phase-2 rehearsal — NOT production code): simulate the
-// repaired behavior — write the same escalation row the production repair
-// will write (decision escalated_contractor_push_failure, call_request_id
-// push-<callId>, escalated TRUE) into the QA org only, then assert the ops
-// banner query surfaces it. src/data/push-core.ts is untouched.
-const gapPayload = { callId: JOB_NOSUB_TB, callRequestId: null, jobType: "Jump start", location: "12 Depot Rd, 06610", etaMinutes: null, jobUrl: "/driver" };
-await q`INSERT INTO ai_dispatcher_decisions(id, org_id, call_request_id, call_id, decision, escalated, driver_id, driver_name, eta_minutes, zone_distance_miles, reason, raw_response)
-  VALUES(gen_random_uuid()::text, ${ORG}, ${`push-${gapPayload.callId}`}, ${gapPayload.callId}, 'escalated_contractor_push_failure', TRUE, NULL, NULL, NULL, NULL, 'Assigned driver has no push subscription — in-app banner only.', ${JSON.stringify({ sent: 0, failed: 0, attempts: [] })}::jsonb)
-  ON CONFLICT DO NOTHING`;
+check("repair: the skip IS observable in the audit (status no_subscriptions, no attempts)", gapAudit.length >= 1 && JSON.stringify(gapAudit[0].detail).includes("no_subscriptions"), JSON.stringify(gapAudit[0].detail));
+const gapEsc = await q`SELECT decision, escalated, call_id, call_request_id, reason FROM ai_dispatcher_decisions WHERE org_id=${ORG} AND call_id=${JOB_NOSUB_TB} AND decision='escalated_contractor_push_failure'`;
+check("repair: ESCALATION row written by PRODUCTION code (dedupe push-<callId>, escalated TRUE — ops banner fires)", gapEsc.length === 1 && gapEsc[0].escalated === true && gapEsc[0].call_request_id === `push-${JOB_NOSUB_TB}` && String(gapEsc[0].reason).includes("no push subscription"), JSON.stringify(gapEsc));
+// Dedupe: a repeat notify for the SAME call must NOT duplicate the escalation
+// (the (org_id, call_request_id) unique index + ON CONFLICT DO NOTHING).
+await notifyAssignedDriver(ORG, NOSUB, JOB_NOSUB, { fetchImpl: mockPushService });
+const gapEsc2 = await q`SELECT COUNT(*)::int c FROM ai_dispatcher_decisions WHERE org_id=${ORG} AND call_id=${JOB_NOSUB_TB} AND decision='escalated_contractor_push_failure'`;
+check("repair: dedupe — repeat notify for the same call does not duplicate the escalation (1 row)", Number(gapEsc2[0].c) === 1);
+// The ops banner query (listAiDispatcherDecisions escalatedOnly shape): the
+// row must surface with escalated=TRUE and a readable reason.
 const banner = await q`SELECT decision, escalated, call_id, reason FROM ai_dispatcher_decisions WHERE org_id=${ORG} AND call_id=${JOB_NOSUB_TB} AND decision='escalated_contractor_push_failure'`;
-check("seam: repaired behavior escalates — banner query surfaces it (phase-2 assertion proven testable)", banner.length === 1 && banner[0].escalated === true && String(banner[0].reason).includes("no push subscription"), JSON.stringify(banner));
-check("seam: production push-core is UNCHANGED (no repair implemented — src untouched)", true);
+check("repair: ops banner query surfaces it (escalated=TRUE, reason readable)", banner.length === 1 && banner[0].escalated === true && String(banner[0].reason).includes("no push subscription"), JSON.stringify(banner));
+console.log("!!! PHASE-2 REPAIR VERIFIED: a zero-subscription assigned driver now escalates (dedupe push-<callId>) — the ops 'Needs attention' banner fires instead of a silent skip. !!!");
 
 /* ============================== (5) CLEANUP + PROOF ============================== */
 const failed = checks.filter(([, ok]) => !ok);
-console.log(`push-repair-phase1.test.mjs: ${checks.length - failed.length}/${checks.length} passed`);
+console.log(`push-repair.test.mjs: ${checks.length - failed.length}/${checks.length} passed`);
 if (failed.length) { console.error(failed.map(([n, , e]) => `  ${n} ${e}`).join("\n")); process.exit(1); }
 
 const memberIds = await q`SELECT DISTINCT m.user_id FROM organization_memberships m JOIN organizations o ON o.id=m.org_id WHERE o.name LIKE 'qa push-repair%'`;
@@ -215,7 +223,7 @@ const leftover = await q`SELECT
 const z = Object.values(leftover[0]).every((v) => Number(v) === 0);
 console.log(`cleanup: ${JSON.stringify(leftover[0])}`);
 if (!z) { console.error("FAIL: QA cleanup left rows behind (push_subscriptions included)"); process.exit(1); }
-console.log("push-repair-phase1.test.mjs: cleanup verified — zero QA rows left");
+console.log("push-repair.test.mjs: cleanup verified — zero QA rows left");
 
 // Production-untouched proof: the AFTER snapshot must equal the BEFORE snapshot.
 const prodAfter = {
@@ -232,4 +240,4 @@ const realDrivers = await q`SELECT u.towbook_driver_id, (SELECT COUNT(*)::int FR
   FROM users u WHERE u.towbook_driver_id IN ('717660','603482','703785') ORDER BY u.towbook_driver_id`;
 console.log(`PROD-DRIVER-SUBS ${JSON.stringify(realDrivers.map((r) => ({ tb: r.towbook_driver_id, subs: r.subs })))}`);
 check("PRODUCTION UNTOUCHED: real drivers' subscription counts unchanged (Levi 717660=0, Jayden 703785=0, Antone 603482=1)", realDrivers.every((r) => (r.towbook_driver_id === "603482" ? Number(r.subs) === 1 : Number(r.subs) === 0)), JSON.stringify(realDrivers));
-console.log("push-repair-phase1.test.mjs: PRODUCTION RECORDS UNTOUCHED — proof complete");
+console.log("push-repair.test.mjs: PRODUCTION RECORDS UNTOUCHED — proof complete");

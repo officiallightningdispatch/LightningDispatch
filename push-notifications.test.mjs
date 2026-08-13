@@ -13,7 +13,8 @@
 //   · sendAssignmentPush: loads the right subs, POSTs each with VAPID auth,
 //     audits `assignment_push` (status sent/failed + attempts); sender 500 →
 //     never throws, audit failed + escalated_contractor_push_failure decision;
-//     410 → subscription removed; zero subs → skipped audit.
+//     410 → subscription removed; zero subs → skipped + escalated decision row
+//     (dedupe push-<callId>) so the ops "Needs attention" banner fires.
 //   · sendAssignmentPushByTowbookDriver resolves LD user by towbook_driver_id
 //     (and skips cleanly when the driver has no LD user).
 //   · fireAssignmentPush (manual assignJob trigger): builds the payload from
@@ -240,9 +241,17 @@ out = await sendAssignmentPush(ORG, DRIVER, { ...payload, callId: "279999003" },
 check("stale: 410 removed, other sent", out.staleRemoved === 1 && out.sent === 1);
 check("stale: row actually deleted", (await q`SELECT COUNT(*)::int c FROM push_subscriptions WHERE endpoint=${endpoint(2)}`)[0].c === 0);
 
-// No subscriptions → skipped audit, no send.
+// No subscriptions → skipped (no send), but ESCALATED (repair 2026-08-13):
+// the ops "Needs attention" banner fires instead of a silent skip.
 const noneOut = await sendAssignmentPush(ORG, DRIVER2, payload, { fetchImpl: okFetch });
-check("no-subs: skipped (no send attempted)", noneOut.skipped === true && noneOut.attempted === 0);
+check("no-subs: skipped (no send attempted)", noneOut.skipped === true && noneOut.attempted === 0 && noneOut.sent === 0 && noneOut.failed === 0, JSON.stringify(noneOut));
+const noneEsc = await q`SELECT decision, escalated, call_id, call_request_id FROM ai_dispatcher_decisions WHERE org_id=${ORG} AND decision='escalated_contractor_push_failure' AND call_id=${payload.callId}`;
+check("no-subs: escalation row written by production code (decision, escalated TRUE, dedupe push-<callId> — ops banner fires)", noneEsc.length === 1 && noneEsc[0].escalated === true && noneEsc[0].call_request_id === `push-${payload.callId}`, JSON.stringify(noneEsc));
+// Dedupe: a repeat send for the SAME call must NOT duplicate the escalation
+// (the (org_id, call_request_id) unique index + ON CONFLICT DO NOTHING).
+await sendAssignmentPush(ORG, DRIVER2, payload, { fetchImpl: okFetch });
+const noneEsc2 = await q`SELECT COUNT(*)::int c FROM ai_dispatcher_decisions WHERE org_id=${ORG} AND decision='escalated_contractor_push_failure' AND call_id=${payload.callId}`;
+check("no-subs: dedupe — repeat send for the same call does not duplicate the escalation (1 row)", Number(noneEsc2[0].c) === 1);
 
 /* ------------------------------ push self-test ------------------------------ */
 // sendPushSelfTestCore (owner-directed 2026-08-13): the driver taps "Send test
