@@ -60,11 +60,15 @@ const OTHER = `qa-photos-other-${randomUUID()}`;  // not assigned to any job
 // rows from crashed runs (the LD users_towbook_driver_id index is global).
 const tb = (seed) => String(BigInt("0x" + seed.slice(-36).replace(/-/g, "").slice(0, 10)) % 900_000_000n);
 const TB1 = tb(DRIVER), TB2 = tb(DRIVER2), TB3 = tb(DRIVER3), TB4 = tb(DRIVER4), TBO = tb(OTHER);
+// Per-run Towbook call ids (9-digit) — job ids (`tb-<call>`) and towbook_job_id
+// both derive from the org's own UUID so crashed runs can never collide on
+// dispatch_jobs_pkey or the call-id resolution.
+const cid = (seed) => String(100_000_000n + BigInt("0x" + seed.slice(-36).replace(/-/g, "").slice(0, 10)) % 90_000_000n);
 const CONF = {
-  [ORG]: { userId: DRIVER, tbDriver: TB1, tbUser: "111", job: "tb-441001", call: "441001", status: "en_route" },
-  [ORG2]: { userId: DRIVER2, tbDriver: TB2, tbUser: "112", job: "tb-442002", call: "442002", status: "arrived" },
-  [ORG3]: { userId: DRIVER3, tbDriver: TB3, tbUser: "113", job: "tb-443003", call: "443003", status: "arrived" },
-  [ORG4]: { userId: DRIVER4, tbDriver: TB4, tbUser: "114", job: "tb-444004", call: "444004", status: "arrived" },
+  [ORG]: { userId: DRIVER, owner: OWNER, tbDriver: TB1, tbUser: "111", job: `tb-${cid(ORG)}`, call: cid(ORG), status: "en_route" },
+  [ORG2]: { userId: DRIVER2, owner: OWNER2, tbDriver: TB2, tbUser: "112", job: `tb-${cid(ORG2)}`, call: cid(ORG2), status: "arrived" },
+  [ORG3]: { userId: DRIVER3, owner: OWNER3, tbDriver: TB3, tbUser: "113", job: `tb-${cid(ORG3)}`, call: cid(ORG3), status: "arrived" },
+  [ORG4]: { userId: DRIVER4, owner: OWNER4, tbDriver: TB4, tbUser: "114", job: `tb-${cid(ORG4)}`, call: cid(ORG4), status: "arrived" },
 };
 const PICKUP = { lat: 41.2, lng: -73.2 };
 const northMeters = (m) => PICKUP.lat + m / 111190;
@@ -133,21 +137,17 @@ const userFor = (orgId) => ({ orgId, id: CONF[orgId].userId, role: "contractor",
 
 async function setup() {
   await ensureSchema();
-  for (const [org, owner, driver, tbDriver, tbUser, job, callId, status] of [
-    [ORG, OWNER, DRIVER, TB1, "111", "tb-441001", "441001", "en_route"],
-    [ORG2, OWNER2, DRIVER2, TB2, "112", "tb-442002", "442002", "arrived"],
-    [ORG3, OWNER3, DRIVER3, TB3, "113", "tb-443003", "443003", "arrived"],
-    [ORG4, OWNER4, DRIVER4, TB4, "114", "tb-444004", "444004", "arrived"],
-  ]) {
+  for (const org of [ORG, ORG2, ORG3, ORG4]) {
+    const c = CONF[org];
     await q`INSERT INTO organizations(id, name) VALUES(${org}, 'qa driver-photos')`;
-    await q`INSERT INTO users(id, name, email, password_hash) VALUES(${owner}, 'QA Photos Owner', ${`photos-owner-${randomUUID()}@qa.local`}, 'x')`;
-    await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${org}, ${owner}, 'owner')`;
-    await q`INSERT INTO users(id, name, email, password_hash, towbook_driver_id, towbook_user_id) VALUES(${driver}, 'QA Photos Driver', ${`photos-driver-${randomUUID()}@qa.local`}, 'x', ${tbDriver}, ${tbUser})`;
-    await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${org}, ${driver}, 'contractor')`;
+    await q`INSERT INTO users(id, name, email, password_hash) VALUES(${c.owner}, 'QA Photos Owner', ${`photos-owner-${randomUUID()}@qa.local`}, 'x')`;
+    await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${org}, ${c.owner}, 'owner')`;
+    await q`INSERT INTO users(id, name, email, password_hash, towbook_driver_id, towbook_user_id) VALUES(${c.userId}, 'QA Photos Driver', ${`photos-driver-${randomUUID()}@qa.local`}, 'x', ${c.tbDriver}, ${c.tbUser})`;
+    await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${org}, ${c.userId}, 'contractor')`;
     await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status, session_kind, towbook_driver_id)
-      VALUES(${org}, ${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))}, 'connected', 'driver', ${tbDriver})`;
+      VALUES(${org}, ${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))}, 'connected', 'driver', ${c.tbDriver})`;
     await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, pickup, towbook_status, raw_json, pickup_lat, pickup_lng)
-      VALUES(${job}, ${org}, 'QA Customer', '', 0, 0, 'Bridgeport', 'flatbed_tow', ${status}, NOW(), '', ${callId}, '70 Pitt Street', ${status === "en_route" ? "3" : "4"}, ${JSON.stringify(rawCall(callId, Number(tbDriver), status === "en_route" ? 3 : 4))}::jsonb, ${PICKUP.lat}, ${PICKUP.lng})`;
+      VALUES(${c.job}, ${org}, 'QA Customer', '', 0, 0, 'Bridgeport', 'flatbed_tow', ${c.status}, NOW(), '', ${c.call}, '70 Pitt Street', ${c.status === "en_route" ? "3" : "4"}, ${JSON.stringify(rawCall(c.call, Number(c.tbDriver), c.status === "en_route" ? 3 : 4))}::jsonb, ${PICKUP.lat}, ${PICKUP.lng})`;
     await q`INSERT INTO org_settings(org_id, geofence_radius_meters, photos_required) VALUES(${org}, 150, ${org === ORG})`;
   }
   // An unassigned driver in ORG2 (wrong-driver rail).
@@ -161,8 +161,12 @@ process.env.B2_KEY_ID = "004testkeyid";
 process.env.B2_APPLICATION_KEY = "testsecret";
 process.env.B2_BUCKET_NAME = "qa-bucket";
 
+/* The whole body runs inside try (setup included) so a failing check or thrown
+ * error can NEVER skip the cleanup block below — a crashed run leaves zero QA
+ * rows. */
+let runError = null;
+try {
 await setup();
-
 /* ============================ 1) SigV4 (pure) ============================ */
 {
   // AWS documentation test vector (GET object with Range header) — the exact
@@ -369,21 +373,27 @@ await setup();
  *      job_photos and is retrievable on the CORRECT PO (owner-display path,
  *      incident report 2026-08-13: "photos are not saving to POs") ============ */
 {
-  const c = CONF[ORG]; // tb-442001 call 442001 arrived (org already has its 4 pre-arrival photos from block 3)
+  const c = CONF[ORG]; // tb-441001 call 441001 arrived (org already has its 4 pre-arrival photos from block 3)
   const { fetchImpl } = makeFetch({ callId: c.call });
   const user = userFor(ORG);
   const owner = { orgId: ORG, id: OWNER, role: "owner", towbookDriverId: "0" };
-  const marker = "PHOTO-PO-ROUNDTRIP";
+  // Base64-safe marker: photoDataUrl embeds marker.repeat(1500) raw as the
+  // base64 payload, and upload validation decodes it (dashes would fail the
+  // [A-Za-z0-9+/=] regex in decodeDataUrl — the earlier 'PHOTO-PO-ROUNDTRIP'
+  // variant is why the committed run failed, not the production path).
+  const marker = "PHOTOPOROUNDTRIP";
   // Block 3's retake reset the match flag — re-confirm so the service slot opens.
   await setVehicleMatchCore(user, { jobId: c.call, confirmed: true }, { fetchImpl });
-  const up = await uploadJobPhotoCore(user, { jobId: c.call, phase: "service", side: "front", dataUrl: photoDataUrl(marker) }, { fetchImpl });
+  const sent = photoDataUrl(marker);
+  const up = await uploadJobPhotoCore(user, { jobId: c.call, phase: "service", side: "front", dataUrl: sent }, { fetchImpl });
   check("regression: synthetic photo persists (B2 + job_photos row)", up.ok === true && up.storageKey === `ld-photos/${ORG}/${c.job}/service/front.jpg`, JSON.stringify(up));
-  // Owner-display round-trip: getJobPhotoCore must return the SAME bytes for the
-  // job — both via the LD id and via the Towbook call id (PO linkage) — proving
-  // the photo is retrievable on the correct PO, not orphaned on another row.
+  // Owner-display round-trip: getJobPhotoCore must return the EXACT SAME bytes
+  // (data URL byte-equality) for the job — both via the LD id and via the
+  // Towbook call id (PO linkage) — proving the photo is retrievable on the
+  // correct PO, not orphaned on another row.
   for (const [label, jobId] of [["LD id", c.job], ["Towbook call id (PO)", c.call]]) {
     const got = await getJobPhotoCore(owner, { jobId, phase: "service", side: "front" }, { fetchImpl });
-    check(`regression: photo retrievable via ${label}`, got.ok === true && got.dataUrl.includes(marker), JSON.stringify(got));
+    check(`regression: photo retrievable via ${label} (exact bytes)`, got.ok === true && got.dataUrl === sent, JSON.stringify(got).slice(0, 120));
   }
   // Wrong-PO isolation: the same photo must NOT be retrievable on a different job.
   const wrong = await getJobPhotoCore(owner, { jobId: "tb-999999", phase: "service", side: "front" }, { fetchImpl });
@@ -395,9 +405,10 @@ await setup();
   check("regression: pre-arrival + this service photo present on the PO job", st.counts.pre_arrival === 4 && st.counts.service === 1, JSON.stringify(st.counts));
 }
 /* ================================ summary + cleanup ================================ */
+} catch (e) { runError = e instanceof Error ? e : new Error(String(e)); }
 const failed = checks.filter(([, ok]) => !ok);
 console.log(`driver-photos.test.mjs: ${checks.length - failed.length}/${checks.length} passed`);
-if (failed.length) { console.error(failed.map(([n, , e]) => `  ${n} ${e}`).join("\n")); process.exit(1); }
+if (runError) console.error(`driver-photos.test.mjs: ABORTED (${runError.name}): ${runError.message}`);
 // Prove cleanup: deleting the QA orgs cascades every row they created.
 for (const org of [ORG, ORG2, ORG3, ORG4]) { assertQaOrg(org); await q`DELETE FROM organizations WHERE id=${org}`.catch(() => {}); }
 for (const u of [OWNER, OWNER2, OWNER3, OWNER4, DRIVER, DRIVER2, DRIVER3, DRIVER4, OTHER]) await q`DELETE FROM users WHERE id=${u}`.catch(() => {});
@@ -416,3 +427,5 @@ const z = Object.values(leftover[0]).every((n) => Number(n) === 0);
 console.log(`cleanup: ${JSON.stringify(leftover[0])}`);
 if (!z) { console.error("FAIL: QA cleanup left rows behind"); process.exit(1); }
 console.log("driver-photos.test.mjs: cleanup verified — zero QA rows left");
+if (runError) { console.error(runError.stack ?? String(runError)); process.exit(1); }
+if (failed.length) { console.error(failed.map(([n, , e]) => `  ${n} ${e}`).join("\n")); process.exit(1); }
