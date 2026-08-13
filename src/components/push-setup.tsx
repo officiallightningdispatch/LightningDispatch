@@ -33,7 +33,7 @@
  * Chrome") with an "I've done that — re-check" button that re-evaluates the
  * APIs without a reload and continues the normal allow flow when they appear.
  */
-import { AlertTriangle, Bell } from "lucide-react";
+import { AlertTriangle, Bell, CheckCircle2, Info, Send } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button, Card, useToast } from "~/components/ui";
 import {
@@ -43,12 +43,16 @@ import {
   notificationsSupported,
   playStrikeAsset,
   preloadStrikeAsset,
+  pushBrowserTruth,
+  pushPermissionCopy,
   pushSetupFailureCopy,
   recordAsk,
   registerServiceWorker,
   type NotificationSupportStatus,
+  type PushBrowserTruth,
   type PushSetupFailureReason,
 } from "~/lib/push-client";
+import { sendPushSelfTest } from "~/data/push";
 
 /** The permission card itself — rendered by HomeSheet at the top of the peek
  *  area (spec A4 placement: above the primary job). */
@@ -178,6 +182,10 @@ export function PushPermissionCard() {
           Not now
         </Button>
       </div>
+      {/* Browser truth + one-tap end-to-end self-test (owner-directed
+          2026-08-13): shows granted/denied/default + push service availability
+          and sends a real test push to THIS device. */}
+      <PushSelfTestPanel />
     </Card>
   );
 }
@@ -206,4 +214,107 @@ export function PushNotificationSetup() {
     void boot();
   }, []);
   return null;
+}
+
+/**
+ * "Send test notification" + browser-truth readout (owner-directed 2026-08-13).
+ * Rendered on the driver's Notifications card (Home push card + the Documents
+ * "Notifications & Location" sheet — and therefore the owner's driver-view copy
+ * of both). Shows the REAL phone-side state so a driver with notifications off
+ * in browser/OS settings sees "Browser permission: denied" instead of silent
+ * failure, and lets them verify end-to-end delivery with one tap.
+ */
+export function PushSelfTestPanel() {
+  const [truth, setTruth] = useState<PushBrowserTruth>(() =>
+    typeof window === "undefined"
+      ? { permission: "unsupported", pushManager: false, serviceWorker: false }
+      : pushBrowserTruth(),
+  );
+  // Re-read when the tab regains focus — permission changes land in Settings.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const re = () => setTruth(pushBrowserTruth());
+    window.addEventListener("focus", re);
+    return () => window.removeEventListener("focus", re);
+  }, []);
+  const [busy, setBusy] = useState(false);
+  const [outcome, setOutcome] = useState<{ tone: "ok" | "warn" | "err"; text: string } | null>(null);
+
+  const send = async () => {
+    setBusy(true);
+    setOutcome(null);
+    try {
+      const r = await sendPushSelfTest();
+      if (!r.ok) {
+        setOutcome({ tone: "err", text: "Couldn't send the test — sign in again and retry." });
+        return;
+      }
+      const d = r.data;
+      if (d.sent > 0) {
+        setOutcome({
+          tone: "ok",
+          text: `Sent ✓ — check this phone's notifications for the Lightning Dispatch test banner.`,
+        });
+      } else if (d.reason === "no_subscriptions") {
+        setOutcome({ tone: "warn", text: "No subscription on this device — allow notifications first, then send again." });
+      } else if (d.reason && d.reason.startsWith("Only contractors")) {
+        setOutcome({ tone: "warn", text: "This account can't send test alerts on this device." });
+      } else if (d.failed > 0) {
+        setOutcome({
+          tone: "err",
+          text: "The test didn't reach this device — make sure notifications are allowed in Settings, then try again.",
+        });
+      } else if (d.reason) {
+        setOutcome({ tone: "warn", text: d.reason });
+      } else {
+        setOutcome({ tone: "err", text: "The test didn't reach this device — try again in a moment." });
+      }
+    } catch {
+      setOutcome({ tone: "err", text: "Couldn't reach the alert service — check your connection and try again." });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pushReady = truth.pushManager && truth.serviceWorker;
+  const tone =
+    truth.permission === "granted" ? "bg-success-50 text-success-700" :
+    truth.permission === "denied" ? "bg-danger-50 text-danger-700" :
+    "bg-ink-50 text-ink-600";
+
+  return (
+    <div className="mt-3 rounded-xl border border-ink-100 bg-surface p-3">
+      <p className="text-xs font-bold text-ink-800">Test notifications on this phone</p>
+      <p className={`mt-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-semibold leading-relaxed ${tone}`}>
+        {pushPermissionCopy(truth.permission)}
+        {truth.permission !== "unsupported" && (
+          <span className="font-normal text-ink-500">
+            {" · "}
+            {pushReady ? "alert service ready" : "alert service not available on this browser"}
+          </span>
+        )}
+      </p>
+      <Button
+        variant="secondary"
+        size="md"
+        className="mt-2.5 h-11 w-full"
+        loading={busy}
+        onClick={() => void send()}
+      >
+        <Send className="size-4" aria-hidden="true" /> Send test notification
+      </Button>
+      {outcome && (
+        <p
+          role="status"
+          aria-live="polite"
+          className={`mt-2 flex items-start gap-1.5 text-[11px] font-medium leading-relaxed ${
+            outcome.tone === "ok" ? "text-success-700" : outcome.tone === "warn" ? "text-accent-800" : "text-danger-700"
+          }`}
+        >
+          {outcome.tone === "ok" ? <CheckCircle2 className="mt-0.5 size-3.5 shrink-0" /> : <Info className="mt-0.5 size-3.5 shrink-0" />}
+          {outcome.text}
+        </p>
+      )}
+    </div>
+  );
 }

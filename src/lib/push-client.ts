@@ -256,3 +256,39 @@ export async function hasServerSubscription(): Promise<boolean> {
   const res = await listPushSubscriptions();
   return res.ok && res.data.length > 0;
 }
+
+/** What THIS browser actually exposes for push, read straight from the APIs
+ *  (2026-08-13, owner-directed): Notification.permission + whether
+ *  PushManager and ServiceWorker are present — so a driver with notifications
+ *  off in their browser/OS settings sees "Browser permission: denied" instead
+ *  of a silent failure. "unsupported" permission = no Notification API. */
+export type PushBrowserTruth = {
+  permission: "granted" | "denied" | "default" | "unsupported";
+  pushManager: boolean;
+  serviceWorker: boolean;
+};
+
+export function pushBrowserTruth(): PushBrowserTruth {
+  if (typeof window === "undefined" || typeof Notification === "undefined") {
+    return { permission: "unsupported", pushManager: false, serviceWorker: false };
+  }
+  return {
+    permission: Notification.permission,
+    pushManager: "PushManager" in window,
+    serviceWorker: "serviceWorker" in navigator,
+  };
+}
+
+/** Driver-readable one-liner for the permission part of the readout. */
+export function pushPermissionCopy(permission: PushBrowserTruth["permission"]): string {
+  switch (permission) {
+    case "granted":
+      return "Browser permission: granted";
+    case "denied":
+      return "Browser permission: denied — turn on notifications for Lightning Dispatch in your browser settings";
+    case "default":
+      return "Browser permission: not set yet — allow notifications to receive job alerts";
+    case "unsupported":
+      return "This browser can't receive push alerts";
+  }
+}

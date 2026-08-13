@@ -38,6 +38,7 @@ const {
   deletePushSubscriptionCore,
   sendAssignmentPush,
   sendAssignmentPushByTowbookDriver,
+  sendPushSelfTestCore,
   fireAssignmentPush,
   loadVapidKeys,
 } = await import("./src/data/push-core.ts");
@@ -128,6 +129,7 @@ check("sound: absolute same-origin URL (Android Chrome showNotification)", notif
 check("trigger: notifyAssignedDriver is the single assignment trigger (fireAssignmentPush delegates)", typeof (await import("./src/data/push-core.ts")).notifyAssignedDriver === "function");
 check("spec A1: body = service · location · ETA", notifJson.body === "Flatbed tow · Main St & 5th Ave, 06606 · ETA ~12 min");
 check("spec A1: tag job-<callId>", notifJson.tag === "job-279999001");
+check("selftest: tag override wins (self-test-<ts>)", buildPushNotificationJson({ ...payload, tag: "self-test-1" }).tag === "self-test-1");
 check("spec A1: data.url /driver", notifJson.data.url === "/driver");
 check("spec A1: icon+badge favicon", notifJson.icon === "/favicon.svg" && notifJson.badge === "/favicon.svg");
 check("spec A1: sound field", notifJson.sound === "/sounds/lightning-strike.mp3");
@@ -241,6 +243,50 @@ check("stale: row actually deleted", (await q`SELECT COUNT(*)::int c FROM push_s
 // No subscriptions → skipped audit, no send.
 const noneOut = await sendAssignmentPush(ORG, DRIVER2, payload, { fetchImpl: okFetch });
 check("no-subs: skipped (no send attempted)", noneOut.skipped === true && noneOut.attempted === 0);
+
+/* ------------------------------ push self-test ------------------------------ */
+// sendPushSelfTestCore (owner-directed 2026-08-13): the driver taps "Send test
+// notification" on the Notifications card; the server sends to the ACTOR'S OWN
+// subscription rows only (self-scoped — the actor comes from the session, and
+// the core derives org/user from the actor, never from the client).
+let stSent = [];
+const stFetch = async (url, init) => { stSent.push({ url, init }); return new Response("ok", { status: 201 }); };
+// Non-driver members (owner/admin without a driver identity) are refused by the
+// SAME gate as the subscription endpoints — before any network send.
+for (const [uid, label] of [[OWNER, "owner"], [ADMIN, "admin"]]) {
+  const g = await sendPushSelfTestCore(actor(uid), { fetchImpl: stFetch });
+  check(`selftest: ${label} (no driver identity) refused`, g.attempted === 0 && g.sent === 0 && typeof g.reason === "string" && g.reason.includes("Only contractors"), JSON.stringify(g));
+}
+check("selftest: gate refusals never reach the network", stSent.length === 0);
+// No subscription on this device → clean skip with the exact reason.
+const stNone = await sendPushSelfTestCore(actor(DRIVER2), { fetchImpl: stFetch });
+check("selftest: no subscription → skipped + reason", stNone.attempted === 0 && stNone.sent === 0 && stNone.reason === "no_subscriptions", JSON.stringify(stNone));
+// Send-ok: DRIVER has exactly one sub row (endpoint(1)) at this point.
+stSent = [];
+const stOk = await sendPushSelfTestCore(actor(DRIVER), { fetchImpl: stFetch });
+check("selftest: send-ok (attempted 1 / sent 1)", stOk.attempted === 1 && stOk.sent === 1 && stOk.failed === 0 && stOk.reason === null, JSON.stringify(stOk));
+check("selftest: POSTed the actor's own endpoint only", stSent.length === 1 && stSent[0].url === endpoint(1), JSON.stringify(stSent.map((s) => s.url)));
+const stWire = JSON.parse(decryptPushBody(SUB_PRIV, SUB_AUTH, stSent[0].init.body).toString("utf8"));
+check("selftest: tag self-test-<ts>", /^self-test-\d+$/.test(stWire.tag), stWire.tag);
+check("selftest: jobType + location copy on the wire", stWire.body.includes("Lightning Dispatch test") && stWire.body.includes("If you see this banner, notifications are working on this phone."), stWire.body);
+const stAudit = await q`SELECT entity_id, detail FROM audit_log WHERE org_id=${ORG} AND action='assignment_push' ORDER BY occurred_at DESC LIMIT 1`;
+const stAuditDetail = typeof stAudit[0].detail === "string" ? JSON.parse(stAudit[0].detail) : stAudit[0].detail;
+check("selftest: audit callId SELF-<ts>", /^SELF-\d+$/.test(String(stAudit[0].entity_id)), String(stAudit[0].entity_id));
+check("selftest: audit status sent", stAuditDetail.status === "sent");
+// Actor scoping, strongest proof: an owner-with-driver-identity sends to THEIR
+// OWN rows only — never another contractor's subscription (endpoint(1) is
+// DRIVER's; endpoint("od-st") is the owner-driver's own).
+await savePushSubscriptionCore(odActor, { endpoint: endpoint("od-st"), p256dh: SUB_PUB, auth: SUB_AUTH });
+stSent = [];
+const stOd = await sendPushSelfTestCore(odActor, { fetchImpl: stFetch });
+check("selftest: owner-with-driver-identity send-ok (own sub)", stOd.attempted === 1 && stOd.sent === 1, JSON.stringify(stOd));
+check("selftest: actor scoping — never another user's subscription", stSent.length === 1 && stSent[0].url === endpoint("od-st"), JSON.stringify(stSent.map((s) => s.url)));
+{
+  const src = await (await import("node:fs/promises")).readFile("./src/data/push.ts", "utf8");
+  check("selftest: server fn resolves the actor from the session (never client input)", src.includes("sendPushSelfTest") && src.includes("await core.resolvePushActor(u)") && src.includes("await core.sendPushSelfTestCore(actor)"), "sendPushSelfTest not session-resolved");
+  const coreSrc = await (await import("node:fs/promises")).readFile("./src/data/push-core.ts", "utf8");
+  check("selftest: core sends to the actor's own id with the self-test payload", coreSrc.includes("sendPushSelfTestCore") && coreSrc.includes('`self-test-${ts}`') && coreSrc.includes('SELF-${ts}') && coreSrc.includes("sendAssignmentPush(actor.orgId, actor.id"), "self-test core not actor-scoped");
+}
 
 /* ---------------------- sendAssignmentPushByTowbookDriver ---------------------- */
 const TOW_DRIVER = `99901-${TAG}`;

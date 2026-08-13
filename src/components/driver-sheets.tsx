@@ -5,12 +5,12 @@
  * disclosure) so the dominant-action logic has ONE source of truth.
  */
 import { ChevronDown, MapPin, Navigation, Phone, RefreshCw, Truck } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { DriverBottomSheet } from "~/components/driver-bottom-sheet";
 import { ProgressRail } from "~/components/driver-progress";
 import { etaLabel, JobCardActions, STATUS_META, type GpsState } from "~/components/driver-queue";
 import { GpsStatusChip } from "~/components/driver-queue";
-import { NavigateMenu } from "~/components/nav-sheet";
+import { buildNavigateUrl } from "~/lib/navigation";
 import { Button } from "~/components/ui";
 import type { DriverCall } from "~/data/driver-auth";
 
@@ -22,6 +22,12 @@ const addressOf = (call: DriverCall): string => [call.pickupAddress, call.zip].f
 export function PrimaryJobPeek({ call, acting, onAct, onQueueChanged }: { call: DriverCall; acting: boolean; onAct: (id: string, a: "accept" | "en_route") => Promise<void>; onQueueChanged: () => void }) {
   const meta = STATUS_META[call.statusId] ?? { label: `Status ${call.statusId}`, badge: "bg-ink-100 text-ink-600" };
   const address = addressOf(call);
+  const [ua, setUa] = useState("");
+  useEffect(() => {
+    if (typeof navigator !== "undefined") setUa(navigator.userAgent);
+  }, []);
+  const navUrl = buildNavigateUrl(call.pickupLat, call.pickupLng, address, ua);
+  const isActive = call.statusId === 2 || call.statusId === 3 || call.statusId === 4;
   return (
     <div>
       <div className="flex items-start justify-between gap-2">
@@ -47,6 +53,20 @@ export function PrimaryJobPeek({ call, acting, onAct, onQueueChanged }: { call: 
           <span className="flex min-w-0 items-center gap-1"><Truck className="size-3.5 shrink-0" /><span className="break-words">{call.vehicle}</span></span>
         )}
       </div>
+      {/* Navigate — one tap into the phone's maps app (owner-directed 2026-08-13):
+          coords when the job has them, address query when not. Active jobs only;
+          offers stay on Accept. ≥44px tap target, sits above the job actions. */}
+      {isActive && navUrl && (
+        <a
+          href={navUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Open the customer's location in your maps app"
+          className="mt-2.5 flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-ink-950 text-sm font-semibold text-white transition-colors hover:bg-ink-800 active:scale-[0.98]"
+        >
+          <Navigation className="size-5 text-brand-400" /> Navigate
+        </a>
+      )}
       <JobCardActions call={call} acting={acting} onAct={onAct} onQueueChanged={onQueueChanged} />
     </div>
   );
@@ -240,8 +260,14 @@ export function TripSheet({
 }) {
   const address = addressOf(call);
   const phoneDigits = call.customerPhone.replace(/[^+\d]/g, "");
-  const hasCoords = call.pickupLat != null && call.pickupLng != null;
-  const [navOpen, setNavOpen] = useState(false);
+  const [ua, setUa] = useState("");
+  useEffect(() => {
+    if (typeof navigator !== "undefined") setUa(navigator.userAgent);
+  }, []);
+  // One tap into the phone's maps app (owner-directed 2026-08-13): coords deep
+  // link when the job has them, geocodable address query when it doesn't.
+  // iOS → Apple Maps, Android → Google Maps, desktop → Google Maps search.
+  const navUrl = buildNavigateUrl(call.pickupLat, call.pickupLng, address, ua);
   return (
     <DriverBottomSheet
       snapPoints={[0.55, 0.85]}
@@ -255,8 +281,8 @@ export function TripSheet({
         Call #{call.callNumber} · {call.serviceName}
       </p>
 
-      {/* Row 2: call + navigate (in-app navigation DEFAULT + maps menu —
-          feature batch 6, owner-directed 2026-08-12) */}
+      {/* Row 2: call + navigate — the Navigate button is a direct maps deep
+          link (coords OR address; ≥44px target), near the address block. */}
       <div className="mt-3 flex gap-2">
         {phoneDigits ? (
           <a
@@ -267,29 +293,23 @@ export function TripSheet({
             <Phone className="size-5 text-brand-600" /> Call {call.customerName || "customer"}
           </a>
         ) : null}
-        {hasCoords ? (
-          <button
-            type="button"
-            onClick={() => setNavOpen(true)}
-            title="Start navigation"
+        {navUrl ? (
+          <a
+            href={navUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open the customer's location in your maps app"
             className="flex h-12 flex-1 items-center justify-center gap-2 rounded-xl bg-ink-950 text-sm font-semibold text-white transition-colors hover:bg-ink-800 active:scale-[0.98]"
           >
             <Navigation className="size-5 text-brand-400" /> Navigate
-          </button>
+          </a>
         ) : null}
-        {!phoneDigits && !hasCoords && (
+        {!phoneDigits && !navUrl && (
           <p className="flex h-12 flex-1 items-center justify-center gap-2 rounded-xl border border-dashed border-ink-200 bg-ink-50 px-3 text-xs text-ink-400">
             Contact + directions weren&apos;t provided on this call.
           </p>
         )}
       </div>
-      <NavigateMenu
-        open={navOpen}
-        onClose={() => setNavOpen(false)}
-        lat={call.pickupLat ?? 0}
-        lng={call.pickupLng ?? 0}
-        address={address}
-      />
 
       {/* Row 3: lifecycle rail */}
       <div className="mt-4">

@@ -27,6 +27,45 @@ export type NavOption = {
 
 export const isIOSUA = (ua: string): boolean => /iphone|ipad|ipod/i.test(ua);
 
+/** Android detection for the one-tap maps deep link (Chrome/WebView/tablets). */
+export const isAndroidUA = (ua: string): boolean => /android/i.test(ua);
+
+/** Desktop/web fallback — Google Maps search (a coordinate pair and a plain
+ *  address both geocode fine as a query). */
+const googleMapsSearchUrl = (query: string): string =>
+  `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+
+/**
+ * THE one-tap maps deep link (owner-directed 2026-08-13, nav-button brief):
+ *  - coordinates (dispatch_jobs lat/lng) when the job has them → exact pin;
+ *  - otherwise the address text (pickup/area) as a geocodable query;
+ *  - iOS → Apple Maps (maps.apple.com, daddr for coords / q for address);
+ *  - Android → Google Maps directions (dir/?api=1&destination=…);
+ *  - desktop/web fallback → Google Maps search.
+ * Returns null when there are neither coordinates nor an address — callers
+ * hide the Navigate button. Coordinates win over address (exactness).
+ */
+export function buildNavigateUrl(
+  lat: number | null | undefined,
+  lng: number | null | undefined,
+  address: string,
+  ua: string,
+): string | null {
+  const hasCoords =
+    lat != null && lng != null && Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 && lng !== 0;
+  if (hasCoords) {
+    const c = `${lat},${lng}`;
+    if (isIOSUA(ua)) return `https://maps.apple.com/?daddr=${c}`;
+    if (isAndroidUA(ua)) return `https://www.google.com/maps/dir/?api=1&destination=${c}`;
+    return googleMapsSearchUrl(c);
+  }
+  const q = address.trim();
+  if (!q) return null;
+  if (isIOSUA(ua)) return `https://maps.apple.com/?q=${encodeURIComponent(q)}`;
+  if (isAndroidUA(ua)) return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(q)}`;
+  return googleMapsSearchUrl(q);
+}
+
 const googleMapsUrl = (lat: number, lng: number): string =>
   `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
 const appleMapsUrl = (lat: number, lng: number): string =>

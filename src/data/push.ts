@@ -14,8 +14,8 @@
  * WebAudio strike are the primary path anyway).
  */
 import { createServerFn } from "@tanstack/react-start";
-import type { PushSubscriptionRow } from "./push-core";
-export type { PushSubscriptionRow } from "./push-core";
+import type { PushSelfTestResult, PushSubscriptionRow } from "./push-core";
+export type { PushSelfTestResult, PushSubscriptionRow } from "./push-core";
 
 const passthrough = (x: unknown) => x;
 
@@ -72,4 +72,21 @@ export const getPushVapidPublicKey = createServerFn({ method: "GET" }).validator
   } catch {
     return { ok: false as const, error: "Unable to load the push key." };
   }
+});
+
+/** Send a test push to the CALLER'S OWN device(s) — the "Send test
+ *  notification" button on the driver's Notifications card (owner-directed
+ *  2026-08-13). The actor is resolved from the SESSION through the same
+ *  effective-driver path as the subscription CRUD (never from the client), so
+ *  the self-test is self-scoped: it can only reach the caller's own
+ *  subscription rows. Returns { attempted, sent, failed, reason } and never
+ *  throws. */
+export const sendPushSelfTest = createServerFn({ method: "POST" }).validator(passthrough).handler(async (): Promise<PushCommandResult<PushSelfTestResult>> => {
+  const core = await import("./push-core");
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u) return { ok: false as const, error: "Sign in required." };
+  const actor = await core.resolvePushActor(u);
+  const res = await core.sendPushSelfTestCore(actor);
+  return { ok: true as const, data: res };
 });

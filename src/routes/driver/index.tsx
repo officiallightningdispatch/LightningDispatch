@@ -19,6 +19,7 @@ import {
 import type { Contractor, Job, JobStatus, ServiceType } from "~/data/seed";
 import { avgResponseMinutes } from "~/lib/dispatch-recommendation";
 import { JOB_STATUS_META, SERVICE_ICONS, SERVICE_LABELS, timeAgo } from "~/lib/job-ui";
+import { buildNavigateUrl } from "~/lib/navigation";
 import { mutationKey, useDispatchStore } from "~/lib/store";
 
 import { authStatus } from "~/data/auth";
@@ -455,7 +456,14 @@ function OfferCard({
 function ActiveJobCard({ job, onAdvance }: { job: Job; onAdvance: (jobId: string) => Promise<boolean> }) {
   const step = NEXT_STEP_ACTION[job.status];
   const phoneDigits = job.phone.replace(/\D/g, "");
-  const mapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${job.location.lat},${job.location.lng}`;
+  const [ua, setUa] = useState("");
+  useEffect(() => {
+    if (typeof navigator !== "undefined") setUa(navigator.userAgent);
+  }, []);
+  // Platform-aware one-tap maps deep link (owner-directed 2026-08-13): coords
+  // when present, address query when not — iOS → Apple Maps, Android → Google
+  // Maps, desktop → Google Maps search.
+  const navUrl = buildNavigateUrl(job.location.lat, job.location.lng, job.location.area, ua);
   const meta = JOB_STATUS_META[job.status];
   const { isPending, getError } = useDispatchStore();
   const toast = useToast();
@@ -534,14 +542,14 @@ function ActiveJobCard({ job, onAdvance }: { job: Job; onAdvance: (jobId: string
           </Button>
         )}
         <a
-          href={mapsUrl}
+          href={navUrl ?? undefined}
           target="_blank"
           rel="noopener noreferrer"
-          title="Open directions in Google Maps"
+          title="Open directions in your maps app"
           className="grid h-11 w-12 shrink-0 place-items-center rounded-xl border border-ink-200 bg-surface text-ink-600 transition-colors duration-150 hover:bg-hover hover:text-brand-600"
         >
           <Navigation className="size-5" strokeWidth={2} aria-hidden="true" />
-          <span className="sr-only">Open directions in Google Maps</span>
+          <span className="sr-only">Open directions in your maps app</span>
         </a>
         <a
           href={`tel:${phoneDigits}`}

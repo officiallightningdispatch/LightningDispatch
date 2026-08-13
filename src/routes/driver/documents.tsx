@@ -22,6 +22,7 @@ import {
   type MyCompliance,
 } from "~/data/contractor-admin";
 import { driverLogout } from "~/data/driver-auth";
+import { PushSelfTestPanel } from "~/components/push-setup";
 import {
   ensurePushSubscription,
   notificationSupportStatus,
@@ -712,6 +713,11 @@ function NotificationsLocationSheet({ title, onClose, onDone }: { title: string;
             )}
           </div>
         </div>
+
+        {/* Browser truth + one-tap end-to-end self-test (owner-directed
+            2026-08-13): the driver sees granted/denied/default + whether the
+            push service is available, and can verify delivery with one tap. */}
+        <PushSelfTestPanel />
 
         {error && <InlineError message={error} />}
 

@@ -217,6 +217,59 @@ export async function deletePushSubscriptionCore(
   return { ok: true, deleted: rows.length > 0 };
 }
 
+/* ------------------------------ self-test send ------------------------------ */
+
+/** Result of a push self-test (owner-directed 2026-08-13). reason is null on a
+ *  full send, "no_subscriptions" when the actor has no saved subscription on
+ *  any device, the actor-gate message when the caller isn't a driver, or the
+ *  underlying send error. NEVER throws. */
+export type PushSelfTestResult = {
+  attempted: number;
+  sent: number;
+  failed: number;
+  reason: string | null;
+};
+
+/**
+ * Send a test push to the ACTOR's OWN subscriptions — the "Send test
+ *  notification" button on the driver's Notifications card. Same driver-
+ *  identity gate as the subscription CRUD (contractor, or any org member with
+ *  a valid driver identity — owner-in-driver-view). The org id and user id are
+ *  taken from the session-resolved actor, NEVER from the client, so a self-test
+ *  can only ever target the caller's own subscription rows (self-scoped).
+ *
+ * Payload: tag `self-test-<ts>`, callId `SELF-<ts>` (audit identity), jobType
+ * "Lightning Dispatch test", location "If you see this banner, notifications
+ * are working on this phone." — the banner the driver sees.
+ */
+export async function sendPushSelfTestCore(actor: PushActor, opts: SendDeps = {}): Promise<PushSelfTestResult> {
+  const gate = await contractorOnly(actor);
+  if (gate) return { attempted: 0, sent: 0, failed: 0, reason: gate };
+  const ts = Date.now();
+  const payload: AssignmentPushPayload = {
+    callId: `SELF-${ts}`,
+    callRequestId: null,
+    jobType: "Lightning Dispatch test",
+    location: "If you see this banner, notifications are working on this phone.",
+    etaMinutes: null,
+    jobUrl: "/driver",
+    tag: `self-test-${ts}`,
+  };
+  try {
+    const out = await sendAssignmentPush(actor.orgId, actor.id, payload, opts);
+    return {
+      attempted: out.attempted,
+      sent: out.sent,
+      failed: out.failed,
+      reason: out.skipped ? out.reason : out.failed > 0 ? `Send failed on ${out.failed} attempt(s)` : null,
+    };
+  } catch (err) {
+    // sendAssignmentPush never throws by contract; this is belt-and-braces for
+    // the "never throws" guarantee of the self-test itself.
+    return { attempted: 0, sent: 0, failed: 1, reason: String(err).slice(0, 200) };
+  }
+}
+
 /* ------------------------------ send on assignment ------------------------------ */
 
 /** The notification payload the service worker renders (spec A1 — verbatim
@@ -234,6 +287,9 @@ export type AssignmentPushPayload = {
   etaMinutes: number | null;
   /** In-app route the notification opens ("/driver"). */
   jobUrl: string;
+  /** Notification tag override (self-test 2026-08-13: "self-test-<ts>").
+   *  Defaults to job-<callId|callRequestId> when omitted. */
+  tag?: string;
 };
 
 export type PushSendOutcome = {
@@ -252,7 +308,7 @@ export function buildPushNotificationJson(p: AssignmentPushPayload): Record<stri
   return {
     title: "New job — Lightning Dispatch",
     body: `${p.jobType || "Tow job"} · ${location} · ${eta}`,
-    tag: `job-${p.callId ?? p.callRequestId ?? "unknown"}`,
+    tag: p.tag ?? `job-${p.callId ?? p.callRequestId ?? "unknown"}`,
     data: { url: p.jobUrl || "/driver" },
     icon: "/favicon.svg",
     badge: "/favicon.svg",
