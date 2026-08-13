@@ -55,11 +55,15 @@ const DRIVER2 = `qa-photos-driver2-${randomUUID()}`;
 const DRIVER3 = `qa-photos-driver3-${randomUUID()}`;
 const DRIVER4 = `qa-photos-driver4-${randomUUID()}`;
 const OTHER = `qa-photos-other-${randomUUID()}`;  // not assigned to any job
+// Per-run Towbook driver ids — fixed ids (11-14/15) collide with leftover QA
+// rows from crashed runs (the LD users_towbook_driver_id index is global).
+const tb = (seed) => String(BigInt("0x" + seed.slice(-36).replace(/-/g, "").slice(0, 10)) % 900_000_000n);
+const TB1 = tb(DRIVER), TB2 = tb(DRIVER2), TB3 = tb(DRIVER3), TB4 = tb(DRIVER4), TBO = tb(OTHER);
 const CONF = {
-  [ORG]: { userId: DRIVER, tbDriver: "11", tbUser: "111", job: "tb-441001", call: "441001", status: "en_route" },
-  [ORG2]: { userId: DRIVER2, tbDriver: "12", tbUser: "112", job: "tb-442002", call: "442002", status: "arrived" },
-  [ORG3]: { userId: DRIVER3, tbDriver: "13", tbUser: "113", job: "tb-443003", call: "443003", status: "arrived" },
-  [ORG4]: { userId: DRIVER4, tbDriver: "14", tbUser: "114", job: "tb-444004", call: "444004", status: "arrived" },
+  [ORG]: { userId: DRIVER, tbDriver: TB1, tbUser: "111", job: "tb-441001", call: "441001", status: "en_route" },
+  [ORG2]: { userId: DRIVER2, tbDriver: TB2, tbUser: "112", job: "tb-442002", call: "442002", status: "arrived" },
+  [ORG3]: { userId: DRIVER3, tbDriver: TB3, tbUser: "113", job: "tb-443003", call: "443003", status: "arrived" },
+  [ORG4]: { userId: DRIVER4, tbDriver: TB4, tbUser: "114", job: "tb-444004", call: "444004", status: "arrived" },
 };
 const PICKUP = { lat: 41.2, lng: -73.2 };
 const northMeters = (m) => PICKUP.lat + m / 111190;
@@ -129,10 +133,10 @@ const userFor = (orgId) => ({ orgId, id: CONF[orgId].userId, role: "contractor",
 async function setup() {
   await ensureSchema();
   for (const [org, owner, driver, tbDriver, tbUser, job, callId, status] of [
-    [ORG, OWNER, DRIVER, "11", "111", "tb-441001", "441001", "en_route"],
-    [ORG2, OWNER2, DRIVER2, "12", "112", "tb-442002", "442002", "arrived"],
-    [ORG3, OWNER3, DRIVER3, "13", "113", "tb-443003", "443003", "arrived"],
-    [ORG4, OWNER4, DRIVER4, "14", "114", "tb-444004", "444004", "arrived"],
+    [ORG, OWNER, DRIVER, TB1, "111", "tb-441001", "441001", "en_route"],
+    [ORG2, OWNER2, DRIVER2, TB2, "112", "tb-442002", "442002", "arrived"],
+    [ORG3, OWNER3, DRIVER3, TB3, "113", "tb-443003", "443003", "arrived"],
+    [ORG4, OWNER4, DRIVER4, TB4, "114", "tb-444004", "444004", "arrived"],
   ]) {
     await q`INSERT INTO organizations(id, name) VALUES(${org}, 'qa driver-photos')`;
     await q`INSERT INTO users(id, name, email, password_hash) VALUES(${owner}, 'QA Photos Owner', ${`photos-owner-${randomUUID()}@qa.local`}, 'x')`;
@@ -146,7 +150,7 @@ async function setup() {
     await q`INSERT INTO org_settings(org_id, geofence_radius_meters, photos_required) VALUES(${org}, 150, ${org === ORG})`;
   }
   // An unassigned driver in ORG2 (wrong-driver rail).
-  await q`INSERT INTO users(id, name, email, password_hash, towbook_driver_id) VALUES(${OTHER}, 'QA Other Driver', ${`photos-other-${randomUUID()}@qa.local`}, 'x', '15')`;
+  await q`INSERT INTO users(id, name, email, password_hash, towbook_driver_id) VALUES(${OTHER}, 'QA Other Driver', ${`photos-other-${randomUUID()}@qa.local`}, 'x', ${TBO})`;
   await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${ORG2}, ${OTHER}, 'contractor')`;
 }
 
@@ -210,7 +214,7 @@ await setup();
   check("gate: 4 photos but no match → false", (await photosCompleteForJob(ORG, c.job)) === false);
 
   // Wrong driver: the unassigned OTHER driver in ORG2 cannot touch ORG's job.
-  const other = { orgId: ORG, id: OTHER, role: "contractor", towbookDriverId: "15" };
+  const other = { orgId: ORG, id: OTHER, role: "contractor", towbookDriverId: TBO };
   const denied = await uploadJobPhotoCore(other, { jobId: c.call, phase: "pre_arrival", side: "front", dataUrl: photoDataUrl("Z") }, { fetchImpl });
   check("wrong driver → unauthorized", denied.ok === false && denied.code === "unauthorized", JSON.stringify(denied));
 

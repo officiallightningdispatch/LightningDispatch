@@ -40,9 +40,13 @@ const OWNER2 = `qa-completion-owner2-${randomUUID()}`;
 const DRIVER = `qa-completion-driver-${randomUUID()}`;
 const DRIVER2 = `qa-completion-driver2-${randomUUID()}`;
 const OTHER = `qa-completion-other-${randomUUID()}`; // not assigned to any job
+// Per-run Towbook driver/user ids — fixed ids (15/16/99) collide with leftover
+// QA rows from crashed runs (the LD users_towbook_driver_id index is global).
+const tb = (seed) => String(BigInt("0x" + seed.slice(-36).replace(/-/g, "").slice(0, 10)) % 900_000_000n);
+const TB15 = tb(DRIVER), TU15 = tb(DRIVER + "u"), TB16 = tb(DRIVER2), TU16 = tb(DRIVER2 + "u"), TB99 = tb(OTHER);
 const CONF = {
-  [ORG]: { userId: DRIVER, tbDriver: "15", tbUser: "115", job: "tb-445005", call: "445005" },
-  [ORG2]: { userId: DRIVER2, tbDriver: "16", tbUser: "116", job: "tb-446006", call: "446006" },
+  [ORG]: { userId: DRIVER, tbDriver: TB15, tbUser: TU15, job: "tb-445005", call: "445005" },
+  [ORG2]: { userId: DRIVER2, tbDriver: TB16, tbUser: TU16, job: "tb-446006", call: "446006" },
 };
 const PICKUP = { lat: 41.2, lng: -73.2 };
 
@@ -112,8 +116,8 @@ const userFor = (orgId) => ({ orgId, id: CONF[orgId].userId, role: "contractor",
 async function setup() {
   await ensureSchema();
   for (const [org, owner, driver, tbDriver, tbUser, job, callId] of [
-    [ORG, OWNER, DRIVER, "15", "115", "tb-445005", "445005"],
-    [ORG2, OWNER2, DRIVER2, "16", "116", "tb-446006", "446006"],
+    [ORG, OWNER, DRIVER, TB15, TU15, "tb-445005", "445005"],
+    [ORG2, OWNER2, DRIVER2, TB16, TU16, "tb-446006", "446006"],
   ]) {
     await q`INSERT INTO organizations(id, name) VALUES(${org}, 'qa completion-flow')`;
     await q`INSERT INTO users(id, name, email, password_hash) VALUES(${owner}, 'QA Completion Owner', ${`completion-owner-${randomUUID()}@qa.local`}, 'x')`;
@@ -127,7 +131,7 @@ async function setup() {
     await q`INSERT INTO org_settings(org_id, geofence_radius_meters, photos_required) VALUES(${org}, 150, FALSE)`;
   }
   // An unassigned driver in ORG (wrong-driver rail).
-  await q`INSERT INTO users(id, name, email, password_hash, towbook_driver_id) VALUES(${OTHER}, 'QA Completion Other', ${`completion-other-${randomUUID()}@qa.local`}, 'x', '99')`;
+  await q`INSERT INTO users(id, name, email, password_hash, towbook_driver_id) VALUES(${OTHER}, 'QA Completion Other', ${`completion-other-${randomUUID()}@qa.local`}, 'x', ${TB99})`;
   await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${ORG}, ${OTHER}, 'contractor')`;
 }
 
@@ -210,7 +214,7 @@ const orgFetch = makeFetch({ callId: CONF[ORG].call });
   check("capture read status captured", (await completionCaptureForJob(ORG, c.job)).status === "captured");
 
   // Wrong driver rail.
-  const other = { orgId: ORG, id: OTHER, role: "contractor", towbookDriverId: "99" };
+  const other = { orgId: ORG, id: OTHER, role: "contractor", towbookDriverId: TB99 };
   const denied = await captureCompletionCore(other, { jobId: c.call, signatureDataUrl: sigDataUrl("D"), survey: { rating: 5 } }, { fetchImpl });
   check("wrong driver → unauthorized", denied.ok === false && denied.code === "unauthorized", JSON.stringify(denied));
 
@@ -239,7 +243,7 @@ const orgFetch = makeFetch({ callId: CONF[ORG].call });
   check("line item amount + currency", item?.quantity === "1" && item?.base_price_money?.amount === 500 && item?.base_price_money?.currency === "USD", JSON.stringify(item));
   const row = await q`SELECT tip FROM job_completions WHERE org_id=${ORG} AND job_id=${c.job}`;
   const tip = row[0].tip;
-  check("tip row stored (link_created, amount, link id, driver)", tip && tip.status === "link_created" && tip.amount_cents === 500 && tip.currency === "USD" && tip.square_payment_link_id === "pl_test_123" && tip.driver_towbook_id === "15", JSON.stringify(tip));
+  check("tip row stored (link_created, amount, link id, driver)", tip && tip.status === "link_created" && tip.amount_cents === 500 && tip.currency === "USD" && tip.square_payment_link_id === "pl_test_123" && tip.driver_towbook_id === TB15, JSON.stringify(tip));
   const cap = await completionCaptureForJob(ORG, c.job);
   check("capture status tip_link_created", cap.status === "tip_link_created" && cap.tip?.amountCents === 500, JSON.stringify(cap));
 
