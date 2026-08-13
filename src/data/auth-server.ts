@@ -181,8 +181,10 @@ export async function effectiveDriverIdentity(u: AuthUser): Promise<DriverIdenti
  *  the org lands in the OWNER portal EVEN when their Towbook account type is 1
  *  (driver account) — the membership is authoritative for the portal role
  *  (powers come from membership; role-gating intact), while the Towbook account
- *  type keeps its refusal (type 3 — disabled) and its non-member mapping
- *  (type 1 → contractor portal). normalizeRole maps legacy 'manager' → owner.
+ *  type keeps its non-member mapping (type 1/3 → contractor portal, type 2 →
+ *  owner via driverLogin; type is a CATEGORY — the `disabled` boolean, resolved
+ *  in identifyDriver from the /api/users list, is the ONLY status refusal).
+ *  normalizeRole maps legacy 'manager' → owner.
  *  Returns the landing role ('owner' | 'admin') or null for non-owner/admin
  *  memberships (contractor/dispatcher members keep their own landing). */
 export async function ownerMemberRole(orgId: string, userId: string): Promise<Role | null> {

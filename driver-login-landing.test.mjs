@@ -2,7 +2,9 @@
 // contractor access. Landing rule: an active user who is an owner/admin member
 // of the org lands in the OWNER portal EVEN when their Towbook account type is
 // 1 (driver account) — membership is authoritative for the portal role, the
-// Towbook type keeps its refusal (3) and non-member mapping (1 → contractor).
+// Towbook type keeps its non-member mapping (1/3 → contractor, 2 → owner) and
+// the `disabled` boolean (resolved from the /api/users list in identifyDriver)
+// is the only status refusal.
 //
 // This suite tests the NEW landing logic:
 //   - ownerMemberRole (auth-server): the membership→landing-role resolver that

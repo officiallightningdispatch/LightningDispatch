@@ -1,9 +1,12 @@
-// Hermetic Towbook account-type role mapping tests (owner-directed 2026-08-12):
-// the Towbook account TYPE is authoritative for the portal role — type 1
-// (driver) → contractor portal, type 2 (manager/dispatcher) → owner portal,
-// type 3 (disabled) → refused, unknown → refused. Also covers the /api/users
-// fallback when /api/user lacks `type`, and the type-1 no-roster-match
-// resolution (never the old "not linked to a driver record" dead-end).
+// Hermetic Towbook account-type role mapping tests (owner-directed 2026-08-12;
+// owner-corrected 2026-08-13): the Towbook account TYPE is authoritative for
+// the portal role — type 1 OR type 3 (driver) → contractor portal, type 2
+// (manager/dispatcher) → owner portal, unknown → refused. The account STATUS
+// is the SEPARATE `disabled` boolean (only in the /api/users LIST — /api/user
+// never carries it): disabled:true → refused, everything else signs in. Also
+// covers the /api/users fallback when /api/user lacks `type`, the `disabled`
+// resolution, and the type-1/3 no-roster-match resolution (never the old "not
+// linked to a driver record" dead-end).
 // Pure function tests — no DB, no network, no fixture rows (nothing to clean up).
 //   bun towbook-account-type.test.mjs
 import { readFileSync } from "node:fs";
@@ -62,18 +65,54 @@ const API_USER = "GET https://app.towbook.com/api/user";
     r.ok && r.kind === "owner" && r.user.userId === "822856" && r.user.name === "Lightning Dispatch", JSON.stringify(r));
   check("type 2 → no driver identity resolved (no roster call, no checkin POST)", r.ok && r.kind === "owner" && !("identity" in r));
 }
-/* ==================== type 3 (disabled) → refused ==================== */
+/* ============ type 3 (driver category) — the `disabled` boolean gates ============ */
 {
+  // THE regression case (owner 2026-08-13): type 3 + disabled:false is an
+  // ACTIVE normal driver (Jayden Fountain 803825, Levi C Martin 819454, Oscar
+  // Young 803373, 24 Hour Battery 771533 — all type:3 disabled:false live).
+  // /api/user NEVER carries `disabled`; the /api/users LIST resolves it.
   const r = await identifyDriver(SESSION, { fetchImpl: jsonFetch({
-    [API_USER]: { body: { id: 349846, name: "Antoine Jarrett CT", type: 3, disabled: true } },
+    [API_USER]: { body: { id: 803825, name: "Jayden Fountain", type: 3 } },
+    "GET https://app.towbook.com/api/users": { body: [{ id: 803825, name: "Jayden Fountain", type: 3, disabled: false }, { id: 803373, name: "Oscar Young", type: 3, disabled: false }] },
+    "GET https://app.towbook.com/api/drivers": { body: [{ id: 703785, name: "Jayden Fountain", linkedUserId: 803825 }] },
   }) });
-  check("type 3 → refused with calm 'disabled' message",
+  check("type 3 + disabled:false → contractor portal (driver identity) — regression case",
+    r.ok && r.kind === "driver" && r.identity.driverId === "703785" && r.identity.userId === "803825", JSON.stringify(r));
+}
+{
+  // Real refusal shape: /api/user lacks `disabled` (true live shape); the
+  // /api/users list resolves disabled:true (Jin Lugo CT 449284, Stanford James
+  // CT 467401 — the only genuinely disabled accounts) → the ONLY status refusal.
+  const r = await identifyDriver(SESSION, { fetchImpl: jsonFetch({
+    [API_USER]: { body: { id: 449284, name: "Jin Lugo CT", type: 3 } },
+    "GET https://app.towbook.com/api/users": { body: [{ id: 449284, name: "Jin Lugo CT", type: 3, disabled: true }] },
+  }) });
+  check("type 3 + disabled:true (via /api/users list) → refused with calm 'disabled' message",
     !r.ok && String(r.message).includes("disabled") && String(r.message).includes("owner"), JSON.stringify(r));
-  // Owner-clarified 2026-08-12: type 3 = disabled, NO access, exact copy.
-  check("type 3 → exact white-label refusal copy (no brand leakage)",
+  check("type 3 + disabled:true → exact white-label refusal copy (no brand leakage)",
     !r.ok && r.message === "This account is disabled — contact the owner." && !String(r.message).includes("Towbook"), JSON.stringify(r));
-  check("type 3 → refusal is NOT an expired-session signal (no silent retry)",
+  check("type 3 + disabled:true → refusal is NOT an expired-session signal (no silent retry)",
     !r.ok && r.expired !== true, JSON.stringify(r));
+}
+{
+  // Status undeterminable (user ABSENT from the /api/users list) → legacy
+  // default: type 3 still signs in — never refused on a missing status.
+  const r = await identifyDriver(SESSION, { fetchImpl: jsonFetch({
+    [API_USER]: { body: { id: 803825, name: "Jayden Fountain", type: 3 } },
+    "GET https://app.towbook.com/api/users": { body: [{ id: 999999, name: "Someone Else", type: 1, disabled: false }] },
+    "GET https://app.towbook.com/api/drivers": { body: [{ id: 703785, name: "Jayden Fountain", linkedUserId: 803825 }] },
+  }) });
+  check("type 3 + user absent from /api/users → legacy default driver flow (never refused on missing status)",
+    r.ok && r.kind === "driver" && r.identity.driverId === "703785", JSON.stringify(r));
+}
+{
+  // /api/users list unroutable → same legacy default, no refusal.
+  const r = await identifyDriver(SESSION, { fetchImpl: jsonFetch({
+    [API_USER]: { body: { id: 803825, name: "Jayden Fountain", type: 3 } },
+    "GET https://app.towbook.com/api/drivers": { body: [{ id: 703785, name: "Jayden Fountain", linkedUserId: 803825 }] },
+  }) });
+  check("type 3 + /api/users unavailable → NOT refused (undeterminable → not disabled)",
+    r.ok && r.kind === "driver", JSON.stringify(r));
 }
 /* ==================== unknown type → refused ==================== */
 {

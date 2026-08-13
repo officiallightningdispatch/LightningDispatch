@@ -213,9 +213,12 @@ export type IdentityResult =
   | { ok: false; expired?: boolean; message: string };
 
 /** The Towbook account TYPE (owner-directed 2026-08-12 role mapping): 1 =
- *  driver, 2 = manager/dispatcher, 3 = disabled (recon evidence
+ *  driver, 2 = manager/dispatcher, 3 = driver (owner-corrected 2026-08-13:
+ *  type is a CATEGORY, not a status — type 3 is a normal driver account, e.g.
+ *  Jayden Fountain 803825 type:3 disabled:false; the real status field is the
+ *  separate `disabled` boolean). Recon evidence
  *  /home/team/shared/towbook-recon-evidence/users.json + api-user.json —
- *  /api/user carries `type`; the /api/users list carries it too). Null when the
+ *  /api/user carries `type`; the /api/users list carries it too. Null when the
  *  field is absent or non-numeric. */
 function accountTypeOf(o: Record<string, unknown>): number | null {
   const t = o.type;
@@ -223,34 +226,53 @@ function accountTypeOf(o: Record<string, unknown>): number | null {
   const n = typeof t === "number" ? t : Number(t);
   return Number.isFinite(n) ? n : null;
 }
-/** Fallback when /api/user did not carry `type` (GET-only): look the user id up
- *  in GET /api/users (the list) and read its `type`. Returns null when the
- *  list call fails or the user is absent — callers then default to the legacy
- *  driver flow (never a new dead-end). */
-async function lookupAccountType(session: DriverSession, userId: string, fetchImpl: typeof fetch): Promise<number | null> {
+/** Towbook's `disabled` STATUS boolean (owner-corrected 2026-08-13): the only
+ *  field that gates sign-in. Absent/false → ACTIVE; anything undeterminable is
+ *  treated as NOT disabled (a missing status must never dead-end a driver).
+ *  Strict on the value so a string "false" can never disable an account. */
+function disabledOf(o: Record<string, unknown>): boolean {
+  const d = o.disabled;
+  return d === true || d === 1 || d === "1" || d === "true";
+}
+/** Account metadata resolved from GET /api/users (the LIST — the ONLY Towbook
+ *  response that carries the `disabled` status; /api/user never does, verified
+ *  live 2026-08-13). */
+type AccountMeta = { type: number | null; disabled: boolean };
+/** Resolve account type + `disabled` status from GET /api/users (the list),
+ *  matched by user id. Returns null when the list call fails or the user is
+ *  absent — callers then keep the /api/user type and treat disabled as false
+ *  (the legacy default, never a new dead-end). */
+async function lookupAccountMeta(session: DriverSession, userId: string, fetchImpl: typeof fetch): Promise<AccountMeta | null> {
   const res = await tbFetch(fetchImpl, `${session.baseUrl}/api/users`, session);
   if (!Array.isArray(res.body)) return null;
   for (const u of res.body as Record<string, unknown>[]) {
-    if (u && typeof u === "object" && u.id != null && String(u.id) === userId) return accountTypeOf(u);
+    if (u && typeof u === "object" && u.id != null && String(u.id) === userId) {
+      return { type: accountTypeOf(u), disabled: disabledOf(u) };
+    }
   }
   return null;
 }
 
 /** After a successful Towbook login: GET /api/user (the current user) and read
  *  the account TYPE — the Towbook account type is authoritative for the portal
- *  role (owner-directed 2026-08-12):
- *    type 1 (driver) → contractor portal: resolve the roster driver record
- *      (linkedUserId match, name-match fallback) to obtain the driver id. A
- *      type-1 account is NEVER rejected for missing a roster record — the
- *      driver id falls back to the Towbook USER id (rosterFallback: true).
+ *  role (owner-directed 2026-08-12); the account STATUS is the separate
+ *  `disabled` boolean (owner-corrected 2026-08-13 — type 3 is a NORMAL driver
+ *  category, NOT disabled; /api/user never carries `disabled`, so it is read
+ *  from the /api/users LIST, which does):
+ *    disabled:true → refused ("contact the owner") — the ONLY status refusal.
  *    type 2 (manager/dispatcher) → owner portal: no roster resolution, no
  *      checkin — the caller upserts an owner user and returns role "owner".
- *    type 3 (disabled) → refused ("contact the owner").
- *    unknown type → refused ("contact dispatch").
- *  When the type cannot be determined at all (no `type` on /api/user AND the
- *  /api/users fallback fails), default to the driver flow — the pre-mapping
- *  behavior, so nothing that worked before regresses. Returns the Towbook USER
- *  id (checkin id) AND DRIVER id (assignment key) on the driver path. */
+ *    type 1 (driver) OR type 3 (driver) → contractor portal: resolve the roster
+ *      driver record (linkedUserId match, name-match fallback) to obtain the
+ *      driver id. A type-1/3 account is NEVER rejected for missing a roster
+ *      record — the driver id falls back to the Towbook USER id
+ *      (rosterFallback: true).
+ *    unknown type (non-null, not 1/2/3) → refused ("contact dispatch").
+ *  When the type/status cannot be determined at all (no `type` on /api/user,
+ *  list call failed, or user absent from the list), default to the driver flow —
+ *  the pre-mapping behavior, so nothing that worked before regresses. Returns
+ *  the Towbook USER id (checkin id) AND DRIVER id (assignment key) on the
+ *  driver path. */
 export async function identifyDriver(session: DriverSession, opts: { fetchImpl?: typeof fetch } = {}): Promise<IdentityResult> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const me = await tbFetch(fetchImpl, `${session.baseUrl}/api/user`, session);
@@ -260,16 +282,22 @@ export async function identifyDriver(session: DriverSession, opts: { fetchImpl?:
   const userId = userObj.id != null ? String(userObj.id) : "";
   const userName = typeof userObj.name === "string" ? userObj.name.trim() : "";
   if (!userId) return { ok: false, message: "Sign-in didn't return your account id — try again." };
-  const type = accountTypeOf(userObj) ?? (await lookupAccountType(session, userId, fetchImpl));
-  if (type === 3) return { ok: false, message: "This account is disabled — contact the owner." };
+  // STATUS gate: the `disabled` BOOLEAN (owner-corrected 2026-08-13). Type is a
+  // category, not a status; /api/user never carries `disabled`, so it is always
+  // resolved from the /api/users list. Undeterminable (list failed / user
+  // absent) → NOT disabled — a missing status must never refuse a driver.
+  const meta = await lookupAccountMeta(session, userId, fetchImpl);
+  const type = accountTypeOf(userObj) ?? meta?.type ?? null;
+  if (meta?.disabled === true) return { ok: false, message: "This account is disabled — contact the owner." };
   if (type === 2) {
     return { ok: true, kind: "owner", user: { userId, name: userName || "Lightning Dispatch" } };
   }
   // A non-null type that is not 1/2/3 is an unrecognized account type → refuse.
+  // Type 3 is a NORMAL driver account (disabled:false) → contractor flow.
   // Null (type undeterminable: no `type` on /api/user AND the /api/users
   // fallback failed) defaults to the driver flow — the pre-mapping behavior.
-  if (type != null && type !== 1) return { ok: false, message: "Account type not recognized — contact dispatch." };
-  // Type 1 (driver) — or type undeterminable (legacy default). Roster resolution.
+  if (type != null && type !== 1 && type !== 3) return { ok: false, message: "Account type not recognized — contact dispatch." };
+  // Type 1 or 3 (driver) — or type undeterminable (legacy default). Roster resolution.
   const roster = await tbFetch(fetchImpl, `${session.baseUrl}/api/drivers`, session);
   const drivers = Array.isArray(roster.body) ? (roster.body as Record<string, unknown>[]) : [];
   const byLinked = drivers.find((d) => d.linkedUserId != null && String(d.linkedUserId) === userId);
@@ -733,11 +761,12 @@ export const driverLogin = createServerFn({ method: "POST" }).validator(passthro
     const { startSession, ownerMemberRole } = await import("./auth-server");
     // Owner direction 2026-08-13: an owner/admin membership overrides the
     // type-1 landing. The Towbook account type still decides the portal for
-    // NON-members (type 1 → contractor below; type 2 → the owner branch above;
-    // type 3 → refused in identifyDriver), but a real owner/admin member with
-    // a Towbook driver account lands in the OWNER portal — powers come from
-    // the membership (role-gating intact), and the driver identity + driver
-    // session persisted above make the owner↔contractor view toggle work.
+    // NON-members (type 1/3 → contractor below; type 2 → the owner branch
+    // above; only the `disabled` boolean refuses — resolved in identifyDriver),
+    // but a real owner/admin member with a Towbook driver account lands in the
+    // OWNER portal — powers come from the membership (role-gating intact), and
+    // the driver identity + driver session persisted above make the
+    // owner↔contractor view toggle work.
     const memberRole = await ownerMemberRole(orgId, userId);
     await startSession(userId);
     if (memberRole) {

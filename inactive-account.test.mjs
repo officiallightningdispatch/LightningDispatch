@@ -1,8 +1,10 @@
 // Hermetic inactive-account sign-in refusal tests (owner-clarified 2026-08-12:
 // "inactive/deactivated accounts on Towbook get NO access. Only active drivers,
 // managers, and dispatchers sign in."). HEAD fb0dca2 harden delta on e832369:
-//   (a) Towbook type 3 (disabled) refused with exact white-label copy — and NOT
-//       an expired-session signal (identifyDriver, pure).
+//   (a) Towbook disabled:true refused with exact white-label copy — and NOT
+//       an expired-session signal (identifyDriver, pure). The status is the
+//       `disabled` BOOLEAN from the /api/users list (owner-corrected
+//       2026-08-13 — type 3 is a normal driver category, NOT a status).
 //   (b) deactivated LD DRIVER refused on the contractor path: isDriverDeactivated
 //       matches on BOTH towbook_driver_id and towbook_user_id (roster-fallback /
 //       id-shift coverage) and loginCore refuses a deactivated contractor row
@@ -99,7 +101,7 @@ await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${ORG
 await q`INSERT INTO users(id, name, email, password_hash, login_handle, towbook_user_id)
   VALUES(${ACT_MGR}, 'QA Active Manager', ${ACT_MGR_EMAIL}, ${hash(Math.random().toString(36))}, ${ACT_MGR_HANDLE}, ${ACT_MGR_TB})`;
 await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${ORG}, ${ACT_MGR}, 'owner')`;
-/* ==================== (a) Towbook type 3 (disabled) → refused, exact copy ==================== */
+/* ============ (a) Towbook disabled:true → refused, exact copy ============ */
 {
   const jsonFetch = (routes) => async (url, init) => {
     const key = `${init?.method ?? "GET"} ${url}`;
@@ -108,14 +110,18 @@ await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${ORG
     const { status = 200, body } = hit;
     return { status, ok: status >= 200 && status < 300, text: async () => JSON.stringify(body), json: async () => JSON.parse(JSON.stringify(body)) };
   };
+  // Real refusal shape: type 3 is a NORMAL driver category; the status is the
+  // `disabled` boolean and only the /api/users LIST carries it (owner-corrected
+  // 2026-08-13 — /api/user never includes `disabled`, verified live).
   const r = await identifyDriver({ cookies: "c=1", baseUrl: "https://app.towbook.com" }, {
     fetchImpl: jsonFetch({
-      "GET https://app.towbook.com/api/user": { body: { id: 349846, name: "Antoine Jarrett CT", type: 3, disabled: true } },
+      "GET https://app.towbook.com/api/user": { body: { id: 449284, name: "Jin Lugo CT", type: 3 } },
+      "GET https://app.towbook.com/api/users": { body: [{ id: 449284, name: "Jin Lugo CT", type: 3, disabled: true }] },
     }),
   });
-  check("(a) type 3 → refused with the EXACT white-label copy (no brand leakage)",
+  check("(a) disabled:true (type 3) → refused with the EXACT white-label copy (no brand leakage)",
     !r.ok && r.message === "This account is disabled — contact the owner." && !String(r.message).includes("Towbook"), JSON.stringify(r));
-  check("(a) type 3 → not an expired-session signal (no silent reconnect)",
+  check("(a) disabled:true → not an expired-session signal (no silent reconnect)",
     !r.ok && r.expired !== true, JSON.stringify(r));
 }
 /* ==================== (b) deactivated driver — contractor path ==================== */
