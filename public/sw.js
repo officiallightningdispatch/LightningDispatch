@@ -5,14 +5,13 @@
  *  push  — the server sends an encrypted RFC 8291 payload whose JSON carries
  *          { title, body, tag, data:{url}, icon, badge, sound, renotify }
  *          (built by push-core buildPushNotificationJson — spec A1 verbatim).
- *          showNotification with ONE single-burst vibrate [200] — the single
- *          lightning strike. The OS decides how much of `sound`/`vibrate` it
- *          honours: Android Chrome plays its own default once (still exactly
- *          one strike), iOS Safari ignores custom sound — the in-app WebAudio 
- *          LOUDNESS (owner-directed 2026-08-13): /sounds/lightning-strike.mp3
- *          was re-rendered to 98% full scale (scripts/generate-strike.mjs) and
- *          the WebAudio gains raised — the strike is unmistakable in a cab.
- *          strike (sound.ts) is the reliable sound path when the app is open.
+ *          showNotification with a single-burst vibrate [200]. The OS decides
+ *          how much of `sound`/`vibrate` it honours: Android Chrome plays the
+ *          sound once per push — the ~5 s THUNDER STORM (owner-directed
+ *          2026-08-13: /sounds/lightning-strike.mp3 re-rendered full-scale,
+ *          ~-0.5 dBFS, by scripts/generate-strike.mjs — loud in a cab), iOS
+ *          Safari ignores custom sound — the in-app WebAudio strike (sound.ts)
+ *          is the reliable sound path when the app is open.
  *          tag 'job-<callId>' replaces stale notifications for the same job.
  *
  *  notificationclick — focus an existing app tab, else open data.url ("/driver"
