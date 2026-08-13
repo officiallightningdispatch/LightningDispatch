@@ -14,7 +14,7 @@
  *     browser permission APIs need a user gesture anyway).
  *  3. Allow → requestPermission (user gesture) → subscribe (PushManager with
  *     the server's VAPID public key) → POST to the API → one confirmation
- *     strike (the rendered lightning-strike.mp3 asset) + success toast.
+ *     strike (the OWNER exact MP3 alert.mp3 asset) + success toast.
  *     Not now / denied → dismiss quietly; "Not now" re-asks up to 3 total.
  *
  * 2026-08-13 fix (owner-directed, root cause of 0 saved subscriptions): the

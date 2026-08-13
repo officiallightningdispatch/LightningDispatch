@@ -24,7 +24,7 @@ const q = neon(process.env.DATABASE_URL);
 // Test key for THIS process only (env-first resolution overrides the stable
 // key file — same pattern as the other suites).
 process.env.TOWBOOK_SESSION_KEY = Buffer.alloc(32, 9).toString("base64");
-const { loadSquareConfig, loadSquarePublicConfig, createCardPayment } = await import("./src/data/square-client.ts");
+const { loadSquareConfig, loadSquarePublicConfig, createCardPayment, squareIdempotencyKey } = await import("./src/data/square-client.ts");
 const {
   captureCompletionCore,
   chargeTipCore,
@@ -236,7 +236,7 @@ let firstPaymentId = null;
   firstPaymentId = t.paymentId;
   check("one Square /v2/payments POST with Bearer token", squareCalls.length === 1 && String(squareCalls[0].headers?.authorization) === "Bearer test-square-token", JSON.stringify(squareCalls.map((x) => x.headers)));
   const body = squareCalls[0].body;
-  check("idempotency key = tip-<job>-<driver>-<attempt>", body.idempotency_key === `tip-${c.job}-35-1`, JSON.stringify(body.idempotency_key));
+  check("idempotency key = deterministic tip-<sha1(job,driver,attempt)> ≤45 chars (Square limit)", body.idempotency_key === squareIdempotencyKey("tip-", c.job, "35", 1) && body.idempotency_key.startsWith("tip-") && body.idempotency_key.length <= 45, JSON.stringify(body.idempotency_key));
   check("source_id is the client token", body.source_id === "cnonce-card-0001", JSON.stringify(body.source_id));
   check("amount_money + location id in the payment request", body.amount_money?.amount === 500 && body.amount_money?.currency === "USD" && body.location_id === "loc_test", JSON.stringify(body));
   check("note carries driver attribution", String(body.note ?? "").includes("QA CF Driver") && String(body.note ?? "").includes("job 447011"), JSON.stringify(body.note));
