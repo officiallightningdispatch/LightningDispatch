@@ -31,6 +31,7 @@ const {
   photoStatusForJob,
   photosCompleteForJob: _unused, // gate lives in driver-gps-core
 } = await import("./src/data/driver-photos-core.ts");
+const { getJobPhotoCore } = await import("./src/data/job-detail-core.ts");
 const { captureCompletionCore } = await import("./src/data/completion-core.ts");
 const { photosCompleteForJob, evaluateGeofence, getGeofenceSettings } = await import("./src/data/driver-gps-core.ts");
 const { encryptSession } = await import("./src/data/towbook-key.ts");
@@ -364,6 +365,35 @@ await setup();
   check("summary for completed org2 job (all 12)", st.counts.pre_arrival === 4 && st.counts.service === 4 && st.counts.final === 4, JSON.stringify(st.counts));
 }
 
+/* ============ 8) INCIDENT REGRESSION: synthetic photo persists in B2 +
+ *      job_photos and is retrievable on the CORRECT PO (owner-display path,
+ *      incident report 2026-08-13: "photos are not saving to POs") ============ */
+{
+  const c = CONF[ORG]; // tb-442001 call 442001 arrived (org already has its 4 pre-arrival photos from block 3)
+  const { fetchImpl } = makeFetch({ callId: c.call });
+  const user = userFor(ORG);
+  const owner = { orgId: ORG, id: OWNER, role: "owner", towbookDriverId: "0" };
+  const marker = "PHOTO-PO-ROUNDTRIP";
+  // Block 3's retake reset the match flag — re-confirm so the service slot opens.
+  await setVehicleMatchCore(user, { jobId: c.call, confirmed: true }, { fetchImpl });
+  const up = await uploadJobPhotoCore(user, { jobId: c.call, phase: "service", side: "front", dataUrl: photoDataUrl(marker) }, { fetchImpl });
+  check("regression: synthetic photo persists (B2 + job_photos row)", up.ok === true && up.storageKey === `ld-photos/${ORG}/${c.job}/service/front.jpg`, JSON.stringify(up));
+  // Owner-display round-trip: getJobPhotoCore must return the SAME bytes for the
+  // job — both via the LD id and via the Towbook call id (PO linkage) — proving
+  // the photo is retrievable on the correct PO, not orphaned on another row.
+  for (const [label, jobId] of [["LD id", c.job], ["Towbook call id (PO)", c.call]]) {
+    const got = await getJobPhotoCore(owner, { jobId, phase: "service", side: "front" }, { fetchImpl });
+    check(`regression: photo retrievable via ${label}`, got.ok === true && got.dataUrl.includes(marker), JSON.stringify(got));
+  }
+  // Wrong-PO isolation: the same photo must NOT be retrievable on a different job.
+  const wrong = await getJobPhotoCore(owner, { jobId: "tb-999999", phase: "service", side: "front" }, { fetchImpl });
+  check("regression: photo not retrievable on a different PO", wrong.ok === false && wrong.code === "not_found", JSON.stringify(wrong));
+  // Completion still pushes to the correct call's PO (block 3 verified the full
+  // 12-photo set for this org — this block only re-proves the linkage contract).
+  const rows = await jobPhotoRows(ORG, c.job);
+  const st = summarizePhotos(rows);
+  check("regression: pre-arrival + this service photo present on the PO job", st.counts.pre_arrival === 4 && st.counts.service === 1, JSON.stringify(st.counts));
+}
 /* ================================ summary + cleanup ================================ */
 const failed = checks.filter(([, ok]) => !ok);
 console.log(`driver-photos.test.mjs: ${checks.length - failed.length}/${checks.length} passed`);
