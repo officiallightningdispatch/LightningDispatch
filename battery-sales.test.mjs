@@ -20,6 +20,7 @@ const {
 const { completeJobCore } = await import("./src/data/driver-photos-core.ts");
 const { ensureSchema } = await import("./src/data/migrations.ts");
 const { assertQaOrg } = await import("./src/data/db-guard.ts");
+const { squareIdempotencyKey } = await import("./src/data/square-client.ts");
 await ensureSchema();
 const checks = [];
 const check = (name, cond, extra = "") => { checks.push([name, Boolean(cond), extra]); if (!cond) throw new Error(`FAIL: ${name} ${extra}`); };
@@ -50,8 +51,15 @@ const cleanup = async () => {
 };
 
 const sqEnv = { t: process.env.SQUARE_ACCESS_TOKEN, l: process.env.SQUARE_LOCATION_ID, a: process.env.SQUARE_APPLICATION_ID };
+// Body-capturing Square mock — records every /v2/payments request so the test
+// can assert the idempotency key actually sent (hashed ≤45 chars, deterministic
+// per attempt — Square's no-double-charge guarantee).
+const squareCalls = [];
 const squareOk = () => (url, opts) => {
   if (String(url).includes("/v2/payments")) {
+    let body = {};
+    try { body = JSON.parse(String(opts?.body ?? "{}")); } catch { /* keep {} */ }
+    squareCalls.push({ url: String(url), body });
     return Promise.resolve(new Response(JSON.stringify({ payment: { id: "pay_test_battery", status: "COMPLETED", receipt_url: "https://receipt.test" } }), { status: 200, headers: { "content-type": "application/json" } }));
   }
   return Promise.resolve(new Response("{}", { status: 404 }));
@@ -169,6 +177,19 @@ check("flow: approve → handoff (hard gate)", approveStep.ok && approveStep.sta
 // charge with REAL env square config (token read from env, mocked /v2/payments)
 const paid = await chargeBatterySaleCore(DRIVER, { saleId: installStep.state.sale.id, token: "cnon:qa_battery_nonce", attempt: 1 }, { fetchImpl: squareOk() });
 check("flow: charge ok → step paid", paid.ok && paid.state.step === "paid", JSON.stringify(paid));
+// SQUARE KEY LENGTH REPAIR (2026-08-13): the battery charge must send the
+// HASHED idempotency key (≤45 chars) — the raw `battery-<uuid>-<attempt>` was
+// 46–47 chars and Square rejects it with HTTP 400 VALUE_TOO_LONG (the same
+// incident that broke every club charge). Deterministic per (sale, attempt):
+// the replayed attempt carries the SAME key → no double charge.
+{
+  const saleId = installStep.state.sale.id;
+  const charge = squareCalls.find((c) => c.body?.idempotency_key === squareIdempotencyKey("battery-", saleId, 1));
+  check("key: battery charge sent the HASHED idempotency key (≤45 chars)", charge != null && charge.body.idempotency_key.length <= 45, charge ? charge.body.idempotency_key : "no charge body captured");
+  check("key: raw legacy `battery-<uuid>-<attempt>` WOULD exceed 45 (the 400)", `battery-${saleId}-1`.length > 45, `battery-${saleId}-1`.length);
+  check("key: re-computing the same (sale, attempt) yields the SAME key (retry replay-safe)", squareIdempotencyKey("battery-", saleId, 1) === squareIdempotencyKey("battery-", saleId, 1), "");
+  check("key: attempt 2 yields a DIFFERENT key (confirmed-failure retry is a new logical attempt)", squareIdempotencyKey("battery-", saleId, 2) !== squareIdempotencyKey("battery-", saleId, 1), "");
+}
 check("flow: sale status paid + square id stored", paid.ok && paid.state.sale?.status === "paid" && paid.state.sale?.squareChargeId === "pay_test_battery", JSON.stringify(paid.state.sale));
 check("flow: paid_at set", paid.ok && paid.state.sale?.paidAt != null, "no paid_at");
 check("flow: install job created + linked", paid.ok && paid.state.sale?.installJobId != null && paid.state.installJob?.status === "offered", JSON.stringify(paid.state.installJob));

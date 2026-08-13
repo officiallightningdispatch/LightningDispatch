@@ -478,7 +478,14 @@ await setup();
   check("no-source row untouched (staged)", String(dbRow[0].status) === "staged", JSON.stringify(dbRow));
   // IDEMPOTENCY-KEY LENGTH REGRESSION (production incident: every club charge
   // failed HTTP 400 VALUE_TOO_LONG — `club-<uuid>-<attempt>` was 47 chars).
+  const legacyRaw = `club-${txnId}-1`;
+  check("regression: the LEGACY raw key would exceed Square's 45-char limit (the 400)", legacyRaw.length > 45, `${legacyRaw} (${legacyRaw.length})`);
   check("idempotency keys always ≤ 45 chars (Square's hard limit)", [squareIdempotencyKey("club-", txnId, 1), squareIdempotencyKey("club-", txnId, 2)].every((k) => k.length <= 45), "");
+  check("deterministic: same txn + same attempt → SAME key (retry replay-safe)", squareIdempotencyKey("club-", txnId, 1) === squareIdempotencyKey("club-", txnId, 1), "");
+  check("distinct: attempt 2 → different key (confirmed-failure retry)", squareIdempotencyKey("club-", txnId, 2) !== squareIdempotencyKey("club-", txnId, 1), "");
+  const txnOther = `ptx-${ORG.slice(0, 8)}-${randomUUID()}`;
+  check("distinct: another transaction → different key (no cross-txn collision)", squareIdempotencyKey("club-", txnOther, 1) !== squareIdempotencyKey("club-", txnId, 1), "");
+  check("distinct: another transaction with the SAME attempt still differs", squareIdempotencyKey("club-", txnOther, 1) !== squareIdempotencyKey("club-", txnId, 2), "");
 }
 
 /* ============ 10) tip mirror: paid tip → ledger row, idempotent ============ */

@@ -36,7 +36,7 @@
  * and hermetic tests — never by client-reachable modules.
  */
 import { z } from "zod";
-import { loadSquareConfig, createCardPayment } from "./square-client";
+import { loadSquareConfig, createCardPayment, squareIdempotencyKey } from "./square-client";
 import { resolveJob, isAssignedDriver } from "./driver-photos-core";
 import type { PhotoUser } from "./driver-photos-core";
 
@@ -652,7 +652,10 @@ export type BatteryChargeResult =
 /** THE payment step — deterministic, never LLM-gated. The card NONCE was
  *  created CLIENT-SIDE by Square's Web Payments SDK in the customer-present
  *  hand-off form; it is charged HERE with the OWNER's Bearer token (exactly one
- *  idempotent POST /v2/payments, idempotency key battery-<sale>-<attempt>). On
+ *  idempotent POST /v2/payments, idempotency key squareIdempotencyKey("battery-",
+ *  sale.id, attempt) — hashed ≤45 chars (the raw `battery-<uuid>-<attempt>` was
+ *  46–47 chars and Square rejects idempotency_key > 45 with HTTP 400
+ *  VALUE_TOO_LONG, the same 2026-08-13 incident that broke every club charge). On
  *  success the sale flips to 'paid' and the "Battery installation" job is
  *  auto-created for the SAME contractor. Injectable fetchImpl + squareStableDir
  *  for hermetic tests. */
@@ -697,7 +700,13 @@ export async function chargeBatterySaleCore(
 
     const driverNameRows = await q`SELECT name FROM users WHERE id=${user.id} LIMIT 1`;
     const driverName = driverNameRows.length && driverNameRows[0].name ? String(driverNameRows[0].name) : `Driver ${user.towbookDriverId}`;
-    const idempotencyKey = `battery-${sale.id}-${v.data.attempt}`;
+    // SQUARE KEY LENGTH FIX (2026-08-13 incident): `battery-<saleId>-<attempt>`
+    // with a gen_random_uuid() sale id is 46–47 chars — Square's
+    // idempotency_key limit is 45 (HTTP 400 VALUE_TOO_LONG on every charge).
+    // The hashed key is deterministic per (sale, attempt): a replayed attempt
+    // carries the SAME key (Square returns the same payment — no double
+    // charge), a bumped attempt gets a fresh key, and the key always fits.
+    const idempotencyKey = squareIdempotencyKey("battery-", sale.id, v.data.attempt);
     const note = `Battery sale — ${sale.vehicleYear} ${sale.vehicleMake} ${sale.vehicleModel} (VIN ${sale.vin}) — ${driverName}`;
 
     await q`UPDATE battery_sales SET charge_attempt=${v.data.attempt} WHERE id=${sale.id}`;
