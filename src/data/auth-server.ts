@@ -177,6 +177,21 @@ export async function effectiveDriverIdentity(u: AuthUser): Promise<DriverIdenti
   return null;
 }
 
+/** Owner direction 2026-08-13: an active user who is an owner/admin member of
+ *  the org lands in the OWNER portal EVEN when their Towbook account type is 1
+ *  (driver account) — the membership is authoritative for the portal role
+ *  (powers come from membership; role-gating intact), while the Towbook account
+ *  type keeps its refusal (type 3 — disabled) and its non-member mapping
+ *  (type 1 → contractor portal). normalizeRole maps legacy 'manager' → owner.
+ *  Returns the landing role ('owner' | 'admin') or null for non-owner/admin
+ *  memberships (contractor/dispatcher members keep their own landing). */
+export async function ownerMemberRole(orgId: string, userId: string): Promise<Role | null> {
+  const rows = await sql()`SELECT role FROM organization_memberships WHERE org_id=${orgId} AND user_id=${userId} LIMIT 1`;
+  if (!rows.length) return null;
+  const role = normalizeRole((rows[0] as Record<string, unknown>).role);
+  return role === "owner" || role === "admin" ? role : null;
+}
+
 export async function currentUser(): Promise<AuthUser | null> {
   if (!configured()) return null;
   await ensureAuthSchema();

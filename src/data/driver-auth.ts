@@ -642,8 +642,19 @@ export const driverLogin = createServerFn({ method: "POST" }).validator(passthro
     const lat = typeof d.latitude === "number" && Number.isFinite(d.latitude) ? d.latitude : 0;
     const lng = typeof d.longitude === "number" && Number.isFinite(d.longitude) ? d.longitude : 0;
     const checkin = await driverCheckin(session, identity.identity.userId, lat, lng, { locationDenied: Boolean(d.locationDenied) });
-    const { startSession } = await import("./auth-server");
+    const { startSession, ownerMemberRole } = await import("./auth-server");
+    // Owner direction 2026-08-13: an owner/admin membership overrides the
+    // type-1 landing. The Towbook account type still decides the portal for
+    // NON-members (type 1 → contractor below; type 2 → the owner branch above;
+    // type 3 → refused in identifyDriver), but a real owner/admin member with
+    // a Towbook driver account lands in the OWNER portal — powers come from
+    // the membership (role-gating intact), and the driver identity + driver
+    // session persisted above make the owner↔contractor view toggle work.
+    const memberRole = await ownerMemberRole(orgId, userId);
     await startSession(userId);
+    if (memberRole) {
+      return { ok: true as const, name: identity.identity.driverName, role: memberRole };
+    }
     return {
       ok: true as const,
       name: identity.identity.driverName,
