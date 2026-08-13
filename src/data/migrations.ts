@@ -897,8 +897,13 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     // can pull each image. Numbers/titles are driver-entered metadata; files
     // live in private B2.
     await q`ALTER TABLE contractor_doc_types ADD COLUMN IF NOT EXISTS form_kind TEXT CHECK (form_kind IS NULL OR form_kind IN ('i9','w9'))`;
+    // The partial unique index must be (org_id, form_kind): each org carries TWO
+    // form rows (W-9 AND I-9), so org_id alone would reject the second backfill.
+    // Drop-then-create keeps this idempotent for DBs that already hold the wrong
+    // (org_id)-only index from the partially-applied first version of this migration.
+    await q`DROP INDEX IF EXISTS contractor_doc_types_org_form_uidx`;
     await q`CREATE UNIQUE INDEX IF NOT EXISTS contractor_doc_types_org_form_uidx
-      ON contractor_doc_types(org_id) WHERE form_kind IS NOT NULL`;
+      ON contractor_doc_types(org_id, form_kind) WHERE form_kind IS NOT NULL`;
     await q`UPDATE contractor_doc_types SET form_kind='w9' WHERE form_kind IS NULL AND LOWER(name)='w-9'`;
     await q`UPDATE contractor_doc_types SET form_kind='i9' WHERE form_kind IS NULL AND LOWER(name)='i-9'`;
     await q`CREATE TABLE IF NOT EXISTS contractor_form_submissions (
@@ -937,6 +942,18 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
       uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`;
     await q`CREATE INDEX IF NOT EXISTS contractor_form_docs_submission_idx ON contractor_form_docs(submission_id)`;
+  }],
+  [39, async (q) => {
+    // CORRECTIVE PASS for DBs that already carry migration 38's partial state
+    // (form_kind column added, the WRONG (org_id)-only partial unique index
+    // created, W-9 backfilled while the I-9 row stayed NULL). Idempotent:
+    // drop-then-create the (org_id, form_kind) partial unique index and re-run
+    // both backfill UPDATEs (WHERE form_kind IS NULL — no-op once tagged).
+    await q`DROP INDEX IF EXISTS contractor_doc_types_org_form_uidx`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS contractor_doc_types_org_form_uidx
+      ON contractor_doc_types(org_id, form_kind) WHERE form_kind IS NOT NULL`;
+    await q`UPDATE contractor_doc_types SET form_kind='w9' WHERE form_kind IS NULL AND LOWER(name)='w-9'`;
+    await q`UPDATE contractor_doc_types SET form_kind='i9' WHERE form_kind IS NULL AND LOWER(name)='i-9'`;
   }],
 ];
 export async function ensureSchema() {

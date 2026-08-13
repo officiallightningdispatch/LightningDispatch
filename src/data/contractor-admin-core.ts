@@ -1376,8 +1376,14 @@ async function seedMandatedDocTypesUnsafe(orgId: string, auditActor?: Contractor
   for (const m of MANDATED_DOC_TYPES) {
     if (have.has(m.name.toLowerCase())) continue;
     const id = `dt-${cryptoRandomId()}`;
-    await q`INSERT INTO contractor_doc_types(id, org_id, name, requires_expiry, requires_facial_verification, form_kind, sort_order)
-      VALUES(${id}, ${orgId}, ${m.name}, ${m.requiresExpiry}, ${m.requiresFacialVerification}, ${m.formKind}, ${sortOrder})`;
+    const inserted = await q`INSERT INTO contractor_doc_types(id, org_id, name, requires_expiry, requires_facial_verification, form_kind, sort_order)
+      VALUES(${id}, ${orgId}, ${m.name}, ${m.requiresExpiry}, ${m.requiresFacialVerification}, ${m.formKind}, ${sortOrder})
+      ON CONFLICT (org_id, LOWER(name)) DO NOTHING`;
+    // Race-proof idempotency backstop: a concurrent seed (or a migration
+    // backfill) may have created the row between our read and this insert.
+    // ON CONFLICT skips it; only a real insert counts as ADDED (audited below).
+    const affected = Number((inserted as { count?: unknown })?.count ?? 1);
+    if (!(affected > 0)) continue;
     added.push({ id, name: m.name, requiresExpiry: m.requiresExpiry, requiresFacialVerification: m.requiresFacialVerification, formKind: m.formKind, sortOrder, active: true, createdAt: new Date().toISOString() });
     sortOrder += 1;
   }
