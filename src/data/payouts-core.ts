@@ -405,6 +405,13 @@ export type PayoutRecord = {
   payrateCents: number | null; // snapshot at compute; NULL = rate not set
   grossCents: number;
   tipsCents: number;
+  /** Busy-time bonus (owner-locked 2026-08-13): +$1 per job completed in a
+   *  busy hour (3+ assigned calls in one clock hour) — derived from
+   *  dispatch_jobs at compute time, snapshot here (part of the paid amount). */
+  busyBonusCents: number;
+  busyBonusJobs: number;
+  /** Per busy-hour breakdown (ET clock-hour starts) for manifest line items. */
+  busyBonusHours: { startsAtIso: string; completedJobs: number }[] | null;
   totalCents: number;
   methodStatus: PayoutMethodStatusOfRecord;
   status: PayoutRecordStatus;
@@ -418,6 +425,7 @@ export type PayPeriodDetail = {
   totals: {
     grossCents: number;
     tipsCents: number;
+    busyBonusCents: number;
     totalCents: number;
     contractorCount: number;
     jobCount: number;
@@ -587,6 +595,11 @@ export async function getPayPeriodDetailCore(actor: PayoutActor, periodId: strin
       payrateCents: r.payrate_cents != null ? Number(r.payrate_cents) : null,
       grossCents: r.gross_cents != null ? Number(r.gross_cents) : 0,
       tipsCents: r.tips_cents != null ? Number(r.tips_cents) : 0,
+      busyBonusCents: r.busy_bonus_cents != null ? Number(r.busy_bonus_cents) : 0,
+      busyBonusJobs: r.busy_bonus_jobs != null ? Number(r.busy_bonus_jobs) : 0,
+      busyBonusHours: Array.isArray(r.busy_bonus_hours)
+        ? (r.busy_bonus_hours as { startsAtIso?: unknown; completedJobs?: unknown }[]).map((h) => ({ startsAtIso: String(h.startsAtIso ?? ""), completedJobs: Number(h.completedJobs ?? 0) }))
+        : null,
       totalCents: r.total_cents != null ? Number(r.total_cents) : 0,
       methodStatus: String(r.method_status ?? "none") as PayoutMethodStatusOfRecord,
       status: String(r.status ?? "computed") as PayoutRecordStatus,
@@ -605,6 +618,7 @@ export async function getPayPeriodDetailCore(actor: PayoutActor, periodId: strin
     const totals = {
       grossCents: rows.reduce((s, r) => s + r.grossCents, 0),
       tipsCents: rows.reduce((s, r) => s + r.tipsCents, 0),
+      busyBonusCents: rows.reduce((s, r) => s + r.busyBonusCents, 0),
       totalCents: rows.reduce((s, r) => s + r.totalCents, 0),
       contractorCount: rows.length,
       jobCount: rows.reduce((s, r) => s + r.jobCount, 0),
@@ -656,6 +670,38 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
         AND dj.completed_at >= ${iso(startsAt)} AND dj.completed_at < ${iso(endsAt)}
         AND dj.assigned_driver_towbook_id IS NOT NULL
       GROUP BY dj.assigned_driver_towbook_id`;
+    // BUSY-TIME BONUS (owner-locked 2026-08-13): 3+ ASSIGNED calls per
+    // contractor within one clock hour = busy hour; +$1 per job COMPLETED in
+    // that busy hour. Derived here (pure busy-bonus-core math) from every
+    // driver-attributed dispatch_jobs row — the assignment instant is
+    // COALESCE(assigned_at, raw dispatchTime, created_at), the completion
+    // instant COALESCE(completed_at, raw completionTime); both must fall
+    // inside the period window (same out-of-window exclusion payday applies).
+    // Recompute-stable: same rows in → same bonus out.
+    const { computeBusyBonus, jobAssignmentMs, jobCompletedMs } = await import("./busy-bonus-core");
+    const busyJobRows = await q`
+      SELECT dj.assigned_driver_towbook_id AS tb_id, dj.status,
+        dj.assigned_at, dj.completed_at, dj.created_at, dj.raw_json
+      FROM dispatch_jobs dj
+      WHERE dj.org_id=${actor.orgId} AND dj.assigned_driver_towbook_id IS NOT NULL`;
+    const assignByTb = new Map<string, Array<number | null>>();
+    const completeByTb = new Map<string, Array<number | null>>();
+    for (const r of busyJobRows as Record<string, unknown>[]) {
+      const tb = String(r.tb_id);
+      if (!tb) continue;
+      const aMs = jobAssignmentMs(r);
+      if (aMs != null && aMs >= startsAt.getTime() && aMs < endsAt.getTime()) {
+        if (!assignByTb.has(tb)) assignByTb.set(tb, []);
+        assignByTb.get(tb)!.push(aMs);
+      }
+      if (String(r.status) === "completed") {
+        const cMs = jobCompletedMs(r);
+        if (cMs != null && cMs >= startsAt.getTime() && cMs < endsAt.getTime()) {
+          if (!completeByTb.has(tb)) completeByTb.set(tb, []);
+          completeByTb.get(tb)!.push(cMs);
+        }
+      }
+    }
     // TIP CASH-OUT EXCLUSION (owner-directed 2026-08-12): any tip row covered
     // by a PAID cash-out was already paid outside payday — it must NEVER appear
     // in a manifest again (covered_tip_ids is recorded at request time, so
@@ -713,6 +759,17 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
         earnByUser.get(uid)!.tipsCents = cents;
       }
     }
+    // busy bonus per LD user (tb id → user id, mirroring the jobRows join)
+    const busyByUser = new Map<string, { bonusCents: number; bonusJobs: number; hours: { startsAtIso: string; completedJobs: number }[] }>();
+    for (const [tb, user] of userByTb) {
+      const bonus = computeBusyBonus(assignByTb.get(tb) ?? [], completeByTb.get(tb) ?? []);
+      if (bonus.bonusJobs === 0) continue;
+      busyByUser.set(user.userId, {
+        bonusCents: bonus.bonusCents,
+        bonusJobs: bonus.bonusJobs,
+        hours: bonus.hours.map((h) => ({ startsAtIso: iso(new Date(h.startsAtMs)), completedJobs: h.completedJobs })),
+      });
+    }
 
     // wipe non-paid records → recompute replaces; paid rows stay (immutable)
     await q`DELETE FROM payout_records WHERE org_id=${actor.orgId} AND period_id=${periodId} AND status <> 'paid'`;
@@ -729,11 +786,14 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
       const handleMasked = method ? maskHandle(rail!, method.handle != null ? String(method.handle) : null, method.bank_institution_name != null ? String(method.bank_institution_name) : null, method.bank_last4 != null ? String(method.bank_last4) : null) : "";
       const grossCents = e.payrateCents != null ? e.payrateCents * e.jobCount : 0;
       const tipsCents = e.tipsCents;
+      const busy = busyByUser.get(uid) ?? { bonusCents: 0, bonusJobs: 0, hours: null as { startsAtIso: string; completedJobs: number }[] | null };
+      const busyHoursJson = busy.hours && busy.hours.length ? busy.hours : null;
+      const totalCents = grossCents + tipsCents + busy.bonusCents;
       const recordId = `pr-${periodId}-${uid}`;
       const inserted = await q`INSERT INTO payout_records(id, org_id, period_id, contractor_id, method_id, rail, handle_full, handle_masked,
-          job_count, payrate_cents, gross_cents, tips_cents, total_cents, method_status, status, updated_at)
+          job_count, payrate_cents, gross_cents, tips_cents, busy_bonus_cents, busy_bonus_jobs, busy_bonus_hours, total_cents, method_status, status, updated_at)
         VALUES(${recordId}, ${actor.orgId}, ${periodId}, ${uid}, ${method ? String(method.id) : null}, ${rail}, ${handleFull}, ${handleMasked},
-          ${e.jobCount}, ${e.payrateCents}, ${grossCents}, ${tipsCents}, ${grossCents + tipsCents}, ${methodStatus}, ${verified ? "computed" : "blocked"}, NOW())
+          ${e.jobCount}, ${e.payrateCents}, ${grossCents}, ${tipsCents}, ${busy.bonusCents}, ${busy.bonusJobs}, ${busyHoursJson ? JSON.stringify(busyHoursJson) : null}, ${totalCents}, ${methodStatus}, ${verified ? "computed" : "blocked"}, NOW())
         ON CONFLICT (org_id, period_id, contractor_id) DO NOTHING
         RETURNING id`;
       const recordInserted = Array.isArray(inserted) && inserted.length > 0;
@@ -744,7 +804,7 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
       if (recordInserted) {
         try {
           await q`INSERT INTO payment_transactions(id, org_id, kind, amount_cents, currency, status, idempotency_key, attempt)
-            VALUES(${`pt-${recordId}`}, ${actor.orgId}, 'payout', ${grossCents + tipsCents}, 'USD', 'staged', ${`payout-${recordId}`}, 0)
+            VALUES(${`pt-${recordId}`}, ${actor.orgId}, 'payout', ${totalCents}, 'USD', 'staged', ${`payout-${recordId}`}, 0)
             ON CONFLICT (idempotency_key) DO UPDATE SET amount_cents=EXCLUDED.amount_cents, updated_at=NOW()`;
         } catch { /* ledger mirror is best-effort */ }
       }
@@ -762,7 +822,10 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
         payrateCents: e.payrateCents,
         grossCents,
         tipsCents,
-        totalCents: grossCents + tipsCents,
+        busyBonusCents: busy.bonusCents,
+        busyBonusJobs: busy.bonusJobs,
+        busyBonusHours: busyHoursJson,
+        totalCents,
         methodStatus,
         status: verified ? "computed" : "blocked",
         paidAt: null,
@@ -799,6 +862,7 @@ async function buildDetailFallback(actor: PayoutActor, periodId: string, records
   const totals = {
     grossCents: records.reduce((s, r) => s + r.grossCents, 0),
     tipsCents: records.reduce((s, r) => s + r.tipsCents, 0),
+    busyBonusCents: records.reduce((s, r) => s + r.busyBonusCents, 0),
     totalCents: records.reduce((s, r) => s + r.totalCents, 0),
     contractorCount: records.length,
     jobCount: records.reduce((s, r) => s + r.jobCount, 0),

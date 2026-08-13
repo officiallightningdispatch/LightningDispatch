@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { Check, CheckCircle2, ChevronRight, CircleX, Clock, DollarSign, Wallet } from "lucide-react";
+import { Check, CheckCircle2, ChevronRight, CircleX, Clock, DollarSign, Wallet, Zap } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "~/components/app-shell";
 import { DriverEmptyState, DriverToolbar, QueueSkeleton } from "~/components/driver-queue";
@@ -86,6 +86,21 @@ function EarningsView() {
     if (state?.ok) for (const t of state.tips) if (t.callNumber) m.set(t.callNumber, t.amountCents);
     return m;
   }, [state]);
+
+  // Busy-time bonus (owner-locked 2026-08-13): line item per busy hour —
+  // "Busy-time bonus — <day> <hour>" +$1 × jobs completed in that hour.
+  // The server derives the hours from this driver's dispatch_jobs; the
+  // Today/Week toggle filters by the hour start.
+  const fmtBusyHour = (isoStart: string) => {
+    const d = new Date(isoStart);
+    if (Number.isNaN(d.getTime())) return isoStart;
+    return `${d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })}, ${d.toLocaleTimeString([], { hour: "numeric" })}`;
+  };
+  const filteredBusyHours = useMemo(
+    () => (state?.ok ? state.busyBonus.hours.filter((h) => inRange(h.startsAtIso, range, now)) : []),
+    [state, range, now],
+  );
+  const busyRangeTotal = useMemo(() => filteredBusyHours.reduce((s, h) => s + h.bonusCents, 0), [filteredBusyHours]);
 
   /* Feature batch 8 (owner-directed 2026-08-12): per-PAY-PERIOD totals.
    * Pay periods run Mon 00:00 → Sun 23:59; the "current" period is open, the
@@ -230,6 +245,32 @@ function EarningsView() {
               </button>
             ))}
           </div>
+
+          {/* Busy-time bonus (owner-locked 2026-08-13): 3+ assigned calls in a
+              clock hour = busy hour; +$1 per job completed in that hour. */}
+          {filteredBusyHours.length > 0 && (
+            <div>
+              <h2 className="mb-2 text-sm font-bold text-ink-700">Busy-time bonus</h2>
+              <Card className="divide-y divide-ink-100">
+                {filteredBusyHours.map((h) => (
+                  <div key={h.startsAtIso} className="flex items-center justify-between gap-2 p-3">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <Zap className="size-4 shrink-0 text-brand-600" />
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-ink-800">{fmtBusyHour(h.startsAtIso)}</p>
+                        <p className="text-xs text-ink-400">Busy hour — {h.completedJobs} job{h.completedJobs === 1 ? "" : "s"} completed · +$1 each</p>
+                      </div>
+                    </div>
+                    <span className="shrink-0 text-sm font-bold tabular-nums text-brand-700">+{money(h.bonusCents)}</span>
+                  </div>
+                ))}
+                <div className="flex items-center justify-between gap-2 p-3">
+                  <p className="text-xs font-bold uppercase tracking-wide text-ink-400">Bonus total</p>
+                  <p className="text-sm font-bold tabular-nums text-brand-700">+{money(busyRangeTotal)}</p>
+                </div>
+              </Card>
+            </div>
+          )}
 
           {filteredCompleted.length > 0 && (
             <div>

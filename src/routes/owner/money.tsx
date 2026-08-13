@@ -451,6 +451,7 @@ function MoneyView() {
                           {rec.jobCount} job{rec.jobCount === 1 ? "" : "s"}
                           {rec.payrateCents == null ? " · rate not set" : ` · ${money(rec.grossCents)}`}
                           {rec.tipsCents > 0 && <span className="text-success-600"> + {money(rec.tipsCents)} tips</span>}
+                          {rec.busyBonusCents > 0 && <span className="text-brand-700"> + {money(rec.busyBonusCents)} busy-time bonus</span>}
                           {cashedOutNote(rec)}
                         </p>
                       </div>
@@ -498,6 +499,7 @@ function MoneyView() {
                     <p className="text-xs text-ink-400">
                       {rec.jobCount} job{rec.jobCount === 1 ? "" : "s"} · {money(rec.totalCents)}
                       {rec.tipsCents > 0 && <span className="text-success-600"> + {money(rec.tipsCents)} tips</span>}
+                      {rec.busyBonusCents > 0 && <span className="text-brand-700"> + {money(rec.busyBonusCents)} busy-time bonus</span>}
                       {cashedOutNote(rec)}
                     </p>
                   </div>
@@ -534,6 +536,7 @@ function MoneyView() {
                         {rec.jobCount} job{rec.jobCount === 1 ? "" : "s"}
                         {rec.payrateCents == null ? " · rate not set" : ` · ${money(rec.grossCents)}`}
                         {rec.tipsCents > 0 && <span className="text-success-600"> + {money(rec.tipsCents)} tips</span>}
+                        {rec.busyBonusCents > 0 && <span className="text-brand-700"> + {money(rec.busyBonusCents)} busy-time bonus</span>}
                         {cashedOutNote(rec)}
                       </p>
                     </div>
@@ -606,6 +609,7 @@ function MoneyView() {
                 <CalendarDays className="size-3.5" />
                 {detail.totals.contractorCount} contractor{detail.totals.contractorCount === 1 ? "" : "s"} · {detail.totals.jobCount} job{detail.totals.jobCount === 1 ? "" : "s"}
                 {detail.totals.tipsCents > 0 && <span className="text-success-600"> · {money(detail.totals.tipsCents)} in tips</span>}
+                {detail.totals.busyBonusCents > 0 && <span className="text-brand-700"> · {money(detail.totals.busyBonusCents)} busy-time bonus</span>}
                 {cashedOutTotalCents > 0 && <span className="text-info-600"> · {money(cashedOutTotalCents)} cashed out directly to contractors</span>}
                 {detail.totals.blockedCount > 0 && <span className="text-danger-600"> · {detail.totals.blockedCount} blocked</span>}
               </p>

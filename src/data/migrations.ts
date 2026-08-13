@@ -955,6 +955,22 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`UPDATE contractor_doc_types SET form_kind='w9' WHERE form_kind IS NULL AND LOWER(name)='w-9'`;
     await q`UPDATE contractor_doc_types SET form_kind='i9' WHERE form_kind IS NULL AND LOWER(name)='i-9'`;
   }],
+  [40, async (q) => {
+    // Busy-time bonus (owner-locked mechanics 2026-08-13): 3+ ASSIGNED calls
+    // per contractor within one clock hour = busy hour; +$1 per job COMPLETED
+    // in that busy hour. Derived at computePaydayCore time from dispatch_jobs
+    // (assigned_at / raw_json.dispatchTime → assignment, completed_at /
+    // raw_json.completionTime → completion — see busy-bonus-core.ts), then
+    // SNAPSHOTTED onto the payout_record so the manifest row, its paid state,
+    // and the payment_transactions payout mirror all carry the bonus (the
+    // bonus is part of the amount the owner sends). busy_bonus_hours keeps the
+    // per-hour breakdown for the manifest line items. Paid rows are immutable;
+    // a recompute rewrites non-paid rows with the same derived values
+    // (recompute-stable — same dispatch_jobs input → same bonus).
+    await q`ALTER TABLE payout_records ADD COLUMN IF NOT EXISTS busy_bonus_cents INTEGER NOT NULL DEFAULT 0`;
+    await q`ALTER TABLE payout_records ADD COLUMN IF NOT EXISTS busy_bonus_jobs INTEGER NOT NULL DEFAULT 0`;
+    await q`ALTER TABLE payout_records ADD COLUMN IF NOT EXISTS busy_bonus_hours JSONB`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

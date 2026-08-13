@@ -834,8 +834,18 @@ export type DriverEarningsTip = {
    *  the Earnings Today/Week toggle. ISO string; absent → null. */
   createdAtIso: string | null;
 };
+/** Busy-time bonus (owner-locked 2026-08-13): one line item per busy hour
+ *  (3+ ASSIGNED calls in one ET clock hour) showing +$1 × jobs completed in
+ *  that hour. Derived from the driver's dispatch_jobs rows (system of record —
+ *  the same numbers the owner's payday manifest snapshots). */
+export type DriverBusyBonusHour = { startsAtIso: string; completedJobs: number; bonusCents: number };
+export type DriverBusyBonus = {
+  hours: DriverBusyBonusHour[];
+  bonusJobs: number;
+  bonusCents: number;
+};
 export type DriverEarningsResult =
-  | { ok: true; profile: { name: string; email: string; towbookDriverId: string; payrateCents: number | null }; completed: DriverCall[]; tips: DriverEarningsTip[]; totals: { completedJobs: number; tipsTotalCents: number; tipCount: number } }
+  | { ok: true; profile: { name: string; email: string; towbookDriverId: string; payrateCents: number | null }; completed: DriverCall[]; tips: DriverEarningsTip[]; busyBonus: DriverBusyBonus; totals: { completedJobs: number; tipsTotalCents: number; tipCount: number } }
   | { ok: false; expired: boolean; message: string };
 /** The driver-facing email: real addresses are shown; derived @towbook.driver
  *  placeholders are internal-only and must never reach a driver's screen
@@ -887,6 +897,35 @@ export const driverEarnings = createServerFn({ method: "GET" }).handler(async ()
       });
     }
     const tipsTotalCents = tips.reduce((s, t) => s + t.amountCents, 0);
+    // BUSY-TIME BONUS (owner-locked 2026-08-13): derived from THIS driver's
+    // dispatch_jobs rows — assignment instant = COALESCE(assigned_at, raw
+    // dispatchTime, created_at), completion instant = COALESCE(completed_at,
+    // raw completionTime). ALL-TIME window (the driver's full history; the
+    // Earnings Today/Week toggle filters the line items client-side). Dynamic
+    // import inside the handler body so the client bundle never follows it
+    // (tanstack-client-graph-leak rule).
+    const busyBonus: DriverBusyBonus = { hours: [], bonusJobs: 0, bonusCents: 0 };
+    try {
+      const { computeBusyBonus, jobAssignmentMs, jobCompletedMs, BUSY_BONUS_PER_JOB_CENTS } = await import("./busy-bonus-core");
+      const bbRows = await q`
+        SELECT status, assigned_at, completed_at, created_at, raw_json
+        FROM dispatch_jobs
+        WHERE org_id=${ctx.u.orgId} AND assigned_driver_towbook_id=${driverId}`;
+      const assignments: Array<number | null> = [];
+      const completions: Array<number | null> = [];
+      for (const r of bbRows as Record<string, unknown>[]) {
+        assignments.push(jobAssignmentMs(r));
+        if (String(r.status) === "completed") completions.push(jobCompletedMs(r));
+      }
+      const bonus = computeBusyBonus(assignments, completions);
+      busyBonus.bonusJobs = bonus.bonusJobs;
+      busyBonus.bonusCents = bonus.bonusCents;
+      busyBonus.hours = bonus.hours.map((h) => ({
+        startsAtIso: new Date(h.startsAtMs).toISOString(),
+        completedJobs: h.completedJobs,
+        bonusCents: h.completedJobs * BUSY_BONUS_PER_JOB_CENTS,
+      }));
+    } catch { /* busy bonus never fails the earnings screen — zero on error */ }
     return {
       ok: true as const,
       profile: {
@@ -897,6 +936,7 @@ export const driverEarnings = createServerFn({ method: "GET" }).handler(async ()
       },
       completed,
       tips,
+      busyBonus,
       totals: { completedJobs: completed.length, tipsTotalCents, tipCount: tips.length },
     };
   } catch {
