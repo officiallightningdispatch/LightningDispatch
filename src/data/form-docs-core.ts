@@ -402,14 +402,16 @@ export type FormSubmissionView = {
   docTypeId: string;
   formKind: FormKind;
   status: DocStatus;
-  /** All form fields EXCEPT the tax id (seroval-safe — null, never undefined). */
-  payload: Record<string, unknown>;
+  /** All form fields EXCEPT the tax id (seroval-safe — null, never undefined;
+   *  values are the driver-entered strings/booleans, typed primitives so the
+   *  serverFn return passes TanStack's strict serializable check). */
+  payload: Record<string, string | number | boolean | null>;
   taxIdType: "ssn" | "ein" | null;
   /** Decrypted tax id — OWNER-ONLY (null for contractor reads; the SSN/EIN
    *  must never render to the contractor after submission). */
   taxId: string | null;
   identityDocs: I9IdentityDocRow[];
-  section2: Record<string, unknown> | null;
+  section2: Record<string, string | number | boolean | null> | null;
   section2ApprovedAt: string | null;
   submittedAt: string;
 };
@@ -435,7 +437,7 @@ export async function getFormSubmissionCore(actor: ContractorAdminActor, data: u
     if (!rows.length) return err("not_found", "No form submission on file for that document.");
     const r = rows[0] as Record<string, unknown>;
     const formKind: FormKind = r.form_kind === "i9" ? "i9" : "w9";
-    const payload = (r.payload ?? {}) as Record<string, unknown>;
+    const payload = (r.payload ?? {}) as Record<string, string | number | boolean | null>;
     const taxIdType = payload.taxIdType === "ein" || payload.taxIdType === "ssn" ? (payload.taxIdType as "ssn" | "ein") : null;
     let taxId: string | null = null;
     const enc = r.tax_id_encrypted != null ? String(r.tax_id_encrypted) : null;
@@ -472,7 +474,7 @@ export async function getFormSubmissionCore(actor: ContractorAdminActor, data: u
       taxIdType,
       taxId,
       identityDocs,
-      section2: r.section2 != null && typeof r.section2 === "object" ? (r.section2 as Record<string, unknown>) : null,
+      section2: r.section2 != null && typeof r.section2 === "object" ? (r.section2 as Record<string, string | number | boolean | null>) : null,
       section2ApprovedAt: r.section2_approved_at != null ? new Date(String(r.section2_approved_at)).toISOString() : null,
       submittedAt: new Date(String(r.updated_at ?? r.section2_approved_at)).toISOString(),
     });
@@ -553,7 +555,7 @@ export async function reviewI9Section2Core(actor: ContractorAdminActor, data: un
     const orgName = org.length ? String(org[0].name) : "";
     const docsRows = await q`SELECT list, title, issuing_authority, number, expiration FROM contractor_form_docs WHERE submission_id=${String(sub[0].id)} ORDER BY uploaded_at ASC, id ASC`;
     const docs = (docsRows as Record<string, unknown>[]).map((d) => ({
-      list: String(d.list),
+      list: (d.list === "B" || d.list === "C" ? d.list : "A") as "A" | "B" | "C",
       title: d.title != null ? String(d.title) : "",
       issuingAuthority: d.issuing_authority != null ? String(d.issuing_authority) : "",
       number: d.number != null ? String(d.number) : "",

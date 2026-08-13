@@ -220,20 +220,35 @@ export const setMySchedule = createServerFn({ method: "POST" }).validator(passth
 
 export const submitW9Form = createServerFn({ method: "POST" })
   .validator(passthrough)
-  .handler(async ({ data }): Promise<SubmitFormResult> => core.submitW9FormHandler(data));
+  .handler(async ({ data }): Promise<SubmitFormResult> => {
+    const core = await import("./contractor-admin-core");
+    return core.submitW9FormHandler(data);
+  });
 
 export const submitI9Form = createServerFn({ method: "POST" })
   .validator(passthrough)
-  .handler(async ({ data }): Promise<SubmitFormResult> => core.submitI9FormHandler(data));
+  .handler(async ({ data }): Promise<SubmitFormResult> => {
+    const core = await import("./contractor-admin-core");
+    return core.submitI9FormHandler(data);
+  });
 
 export const getFormSubmission = createServerFn({ method: "GET" })
   .validator(passthrough)
-  .handler(async ({ data }): Promise<ContractorAdminResult<FormSubmissionView>> => core.getFormSubmissionHandler(data));
+  .handler(async ({ data }): Promise<ContractorAdminResult<FormSubmissionView>> => {
+    const core = await import("./contractor-admin-core");
+    return core.getFormSubmissionHandler(data);
+  });
 
 export const getFormDocFile = createServerFn({ method: "GET" })
   .validator(passthrough)
-  .handler(async ({ data }): Promise<ContractorAdminResult<DocFilePayload>> => core.getFormDocFileHandler(data));
+  .handler(async ({ data }): Promise<ContractorAdminResult<DocFilePayload>> => {
+    const core = await import("./contractor-admin-core");
+    return core.getFormDocFileHandler(data);
+  });
 
 export const reviewI9Section2 = createServerFn({ method: "POST" })
   .validator(passthrough)
-  .handler(async ({ data }): Promise<ContractorAdminResult<{ docId: string; status: "verified" | "rejected" }>> => core.reviewI9Section2Handler(data));
+  .handler(async ({ data }): Promise<ContractorAdminResult<{ docId: string; status: "verified" | "rejected" }>> => {
+    const core = await import("./contractor-admin-core");
+    return core.reviewI9Section2Handler(data);
+  });

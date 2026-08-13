@@ -46,9 +46,14 @@
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
 import { loadB2Config, authorizeAccount, putObject, getObject } from "./b2-client";
-import { encryptBankValue, decryptBankValue } from "./bank-key";
-import { buildW9Pdf, buildI9Pdf } from "./form-pdf";
-import type { W9PdfValues, I9PdfValues } from "./form-pdf";
+import {
+  submitW9FormCore,
+  submitI9FormCore,
+  getFormSubmissionCore,
+  getFormDocFileCore,
+  reviewI9Section2Core,
+} from "./form-docs-core";
+import type { FormKind, FormSubmissionView, SubmitFormResult } from "./form-docs-core";
 
 /* --------------------------------- helpers --------------------------------- */
 
@@ -250,7 +255,7 @@ export async function addDocTypeCore(actor: ContractorAdminActor, data: unknown)
     const sortOrder = await nextSortOrder(actor.orgId);
     await q`INSERT INTO contractor_doc_types(id, org_id, name, requires_expiry, requires_facial_verification, sort_order) VALUES(${id}, ${actor.orgId}, ${name}, ${requiresExpiry}, ${requiresFacialVerification}, ${sortOrder})`;
     await recordAudit(actor, "contractor_doc_type_added", id, { name, requiresExpiry, requiresFacialVerification, sortOrder });
-    return ok({ id, name, requiresExpiry, requiresFacialVerification, sortOrder, active: true, createdAt: new Date().toISOString() });
+    return ok({ id, name, requiresExpiry, requiresFacialVerification, formKind: null, sortOrder, active: true, createdAt: new Date().toISOString() });
   } catch (e) {
     if (e instanceof Error && /duplicate/i.test(e.message)) {
       return err("duplicate", `"${name}" is already a required type.`);
@@ -278,6 +283,7 @@ export async function renameDocTypeCore(actor: ContractorAdminActor, data: unkno
       name: v.data.name,
       requiresExpiry: row.requires_expiry === true,
       requiresFacialVerification: row.requires_facial_verification === true,
+      formKind: row.form_kind === "i9" || row.form_kind === "w9" ? (row.form_kind as FormKind) : null,
       sortOrder: row.sort_order != null ? Number(row.sort_order) : 0,
       active: row.active === true,
       createdAt: new Date(String(row.created_at)).toISOString(),

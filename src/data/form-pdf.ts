@@ -24,7 +24,7 @@ export type W9PdfValues = {
   name: string;
   businessName: string;
   taxClassification: "individual" | "c_corp" | "s_corp" | "partnership" | "trust_estate" | "llc" | "other";
-  llcTaxClass: "c" | "s" | "p" | "other";
+  llcTaxClass: "c" | "s" | "p" | "other" | "";
   otherDescription: string;
   payeeCode: string;
   exemptionCode: string;
@@ -114,7 +114,7 @@ function pdfText(s: string): string {
 
 class PdfBuilder {
   private pages: string[][] = [[]];
-  private y = TOP;
+  y = TOP;
   private cur = 0;
 
   private ops(...ops: string[]) { this.pages[this.cur].push(...ops); }
@@ -186,7 +186,7 @@ class PdfBuilder {
     const f1 = add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>");
     const f2 = add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>");
     // 3) page objects
-    const pageRefs = contents.map((c, i) =>
+    const pageRefs = contents.map((c) =>
       add(`<< /Type /Page /Parent 3 0 R /MediaBox [0 0 ${W} ${H}] /Resources << /Font << /F1 ${f1} 0 R /F2 ${f2} 0 R >> >> /Contents ${c} 0 R >>`));
     // 4) pages tree + catalog
     add(`<< /Type /Pages /Kids [${pageRefs.map((r) => `${r} 0 R`).join(" ")}] /Count ${pageRefs.length} >>`);

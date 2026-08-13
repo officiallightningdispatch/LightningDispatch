@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useParams } from "@tanstack/react-router";
-import { ArrowLeft, BarChart3, CalendarClock, FileText, Loader2, Pencil, Trash2, X } from "lucide-react";
+import { ArrowLeft, BarChart3, CalendarClock, ClipboardList, FileText, Loader2, Pencil, ShieldCheck, Trash2, X } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { AppShell } from "~/components/app-shell";
 import {
@@ -27,14 +27,18 @@ import {
 import {
   getContractorDetail,
   getDocumentFile,
+  getFormDocFile,
+  getFormSubmission,
   getSelfieFile,
   listContractorDocuments,
+  reviewI9Section2,
   setContractorPayrate,
   setDocumentExpiry,
   setDocumentStatus,
   type ContractorDetailRow,
   type ContractorDocumentRow,
   type DocFilePayload,
+  type FormSubmissionView,
 } from "~/data/contractor-admin";
 import { timeAgo } from "~/lib/job-ui";
 export const Route = createFileRoute("/owner/contractors/$id")({ component: OwnerContractorDetail });
@@ -58,6 +62,8 @@ function OwnerContractorDetail() {
   /* Contractor Management v2: the profile editor + compare sheet */
   const [editing, setEditing] = useState<EditorSection | null>(null);
   const [compare, setCompare] = useState<ContractorDocumentRow | null>(null);
+  /* official fillable forms (W-9 / I-9) review sheet */
+  const [formReview, setFormReview] = useState<ContractorDocumentRow | null>(null);
   /* remove */
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   const [reason, setReason] = useState("");
@@ -349,6 +355,7 @@ function OwnerContractorDetail() {
                     onView={() => openViewer(doc)}
                     onViewSelfie={doc.requiresFacialVerification && doc.selfieStatus === "uploaded" ? async () => { openSelfieViewer(doc); } : undefined}
                     onReviewPair={doc.requiresFacialVerification && doc.selfieStatus === "uploaded" ? async () => { setCompare(doc); } : undefined}
+                    onReviewForm={doc.formKind ? () => setFormReview(doc) : undefined}
                   />
                 ))
               )}
@@ -450,6 +457,14 @@ function OwnerContractorDetail() {
           onClose={() => setCompare(null)}
         />
       )}
+      {formReview && (
+        <FormReviewSheet
+          contractorId={id}
+          doc={formReview}
+          onClose={() => setFormReview(null)}
+          onDone={async (msg) => { toast(msg); setFormReview(null); await refresh(); }}
+        />
+      )}
     </AppShell>
   );
 }
@@ -463,6 +478,291 @@ function DetailRow({ label, value, mono, sub, action }: { label: string; value: 
         {sub && <p className="mt-0.5 text-xs text-ink-400">{sub}</p>}
       </div>
       {action}
+    </div>
+  );
+}
+
+/* ------------------------------ official fillable forms review (2026-08-12) ------------------------------ */
+/** Owner review surface for the OFFICIAL FILLABLE W-9 / I-9 docs (owner-directed
+ *  2026-08-12). The driver fills the official form in-app; the completed PDF is
+ *  owner-only. This sheet shows the full submission (decrypted SSN/EIN — owner
+ *  read only), the completed PDF, and the approve / request-changes actions:
+ *  W-9 → verify via setDocumentStatus; I-9 → Section 2 completion via
+ *  reviewI9Section2 (regenerates the PDF with Section 2 stamped and flips the
+ *  doc verified — the compliance gate then passes). */
+const TAX_CLASS_LABELS: Record<string, string> = {
+  individual: "Individual / sole proprietor", llc: "Limited liability company (LLC)",
+  s_corp: "S Corporation", c_corp: "C Corporation", partnership: "Partnership",
+  trust_estate: "Trust / estate", other: "Other",
+};
+const CITIZEN_LABELS: Record<string, string> = {
+  citizen: "U.S. citizen", noncitizen_national: "Noncitizen national",
+  lpr: "Lawful permanent resident", noncitizen_authorized: "Noncitizen authorized to work",
+};
+const LIST_LABELS: Record<string, string> = { A: "List A", B: "List B", C: "List C" };
+const strv = (v: unknown) => (v == null ? "" : String(v));
+
+function FormReviewSheet({ contractorId, doc, onClose, onDone }: { contractorId: string; doc: ContractorDocumentRow; onClose: () => void; onDone: (msg: string) => Promise<void> }) {
+  const [sub, setSub] = useState<FormSubmissionView | null>(null);
+  const [pdf, setPdf] = useState<DocFilePayload | null>(null);
+  const [docFiles, setDocFiles] = useState<Record<string, DocFilePayload>>({});
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [repName, setRepName] = useState("");
+  const [repTitle, setRepTitle] = useState("");
+  const [reviewNote, setReviewNote] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      setLoading(true);
+      const s = await getFormSubmission({ data: { contractorId, docTypeId: doc.docTypeId } });
+      const f = doc.docId ? await getDocumentFile({ data: { docId: doc.docId } }) : null;
+      if (!alive) return;
+      if (!s.ok) { setError(s.message); setLoading(false); return; }
+      setSub(s.data);
+      if (f && f.ok) setPdf(f.data);
+      if (s.data.formKind === "i9") {
+        const files: Record<string, DocFilePayload> = {};
+        for (const d of s.data.identityDocs) {
+          const r = await getFormDocFile({ data: { docId: d.id } });
+          if (r.ok) files[d.id] = r.data;
+        }
+        if (!alive) return;
+        setDocFiles(files);
+      }
+      setLoading(false);
+    };
+    void load();
+    return () => { alive = false; };
+  }, [contractorId, doc.docTypeId, doc.docId]);
+
+  const isI9 = doc.formKind === "i9";
+  const p = sub?.payload ?? {};
+
+  const approve = async () => {
+    if (!doc.docId || !sub) return;
+    setBusy(true); setError("");
+    try {
+      if (isI9) {
+        if (!repName.trim()) { setError("Enter your name (the certifying representative) to complete Section 2."); setBusy(false); return; }
+        const r = await reviewI9Section2({ data: { docId: doc.docId, approve: true, repName: repName.trim(), repTitle: repTitle.trim() } });
+        if (!r.ok) throw new Error(r.message);
+        await onDone("I-9 Section 2 completed — the form is verified.");
+      } else {
+        const r = await setDocumentStatus({ data: { docId: doc.docId, status: "verified" } });
+        if (!r.ok) throw new Error(r.message);
+        await onDone("W-9 verified — the contractor is compliant.");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "That action didn't go through — try again.");
+      setBusy(false);
+    }
+  };
+
+  const requestChanges = async () => {
+    if (!doc.docId || !sub) return;
+    setBusy(true); setError("");
+    try {
+      if (isI9) {
+        const r = await reviewI9Section2({ data: { docId: doc.docId, approve: false, repName: "x", repTitle: "", reviewNote } });
+        if (!r.ok) throw new Error(r.message);
+        await onDone("Changes requested — the contractor will see your note and resubmit.");
+      } else {
+        const r = await setDocumentStatus({ data: { docId: doc.docId, status: "rejected", reviewNote } });
+        if (!r.ok) throw new Error(r.message);
+        await onDone("Changes requested — the contractor will see your note and resubmit.");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "That action didn't go through — try again.");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-ink-950/40 sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-label={isI9 ? "Review I-9" : "Review W-9"}>
+      <div className="flex max-h-[92dvh] w-full max-w-2xl flex-col rounded-t-3xl bg-surface shadow-card sm:rounded-3xl">
+        <div className="mx-auto mt-3 h-1.5 w-10 shrink-0 rounded-full bg-ink-200" aria-hidden="true" />
+        <div className="flex shrink-0 items-center justify-between gap-2 px-5 pb-3 pt-3">
+          <div className="min-w-0">
+            <p className="text-[10px] font-bold uppercase tracking-wide text-brand-600">Official fillable form</p>
+            <p className="truncate text-base font-bold text-ink-900">{isI9 ? "Review I-9" : "Review W-9"}</p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close" className="grid size-9 shrink-0 place-items-center rounded-full text-ink-400 transition-colors hover:bg-ink-50 hover:text-ink-600">
+            <X className="size-5" />
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-8">
+          {loading ? (
+            <div className="grid h-48 place-items-center"><Loader2 className="size-5 animate-spin text-brand-500 motion-reduce:animate-none" aria-hidden="true" /></div>
+          ) : error && !sub ? (
+            <InlineError message={error} />
+          ) : sub ? (
+            <div className="space-y-4">
+              {doc.status === "rejected" && doc.reviewNote && (
+                <p className="rounded-xl border border-accent-200 bg-accent-50 px-3 py-2.5 text-xs text-accent-800"><strong>Last rejection reason:</strong> {doc.reviewNote}</p>
+              )}
+              {sub.section2ApprovedAt && (
+                <p className="rounded-xl border border-success-100 bg-success-50 px-3 py-2.5 text-xs text-success-700">
+                  <ShieldCheck className="mr-1 inline size-3.5" aria-hidden="true" /> Section 2 completed {new Date(sub.section2ApprovedAt).toLocaleDateString()}.
+                </p>
+              )}
+
+              {!isI9 ? (
+                /* ------------------------------ W-9 ------------------------------ */
+                <>
+                  <div className="grid grid-cols-1 gap-3 rounded-2xl border border-ink-100 p-4 sm:grid-cols-2">
+                    <ReviewKV label="Name on tax return" value={strv(p.name)} />
+                    <ReviewKV label="Business name" value={strv(p.businessName) || "—"} />
+                    <ReviewKV label="Tax classification" value={TAX_CLASS_LABELS[strv(p.taxClassification)] ?? strv(p.taxClassification)} />
+                    {strv(p.taxClassification) === "llc" && <ReviewKV label="LLC classification" value={strv(p.llcTaxClass)} />}
+                    {strv(p.taxClassification) === "other" && <ReviewKV label="Other classification" value={strv(p.otherDescription)} />}
+                    <ReviewKV label="Address" value={[strv(p.address), strv(p.city), strv(p.state), strv(p.zip)].filter(Boolean).join(", ")} />
+                    {strv(p.accountNumbers) && <ReviewKV label="Account numbers" value={strv(p.accountNumbers)} />}
+                    {strv(p.requesterName) && <ReviewKV label="Requester name" value={strv(p.requesterName)} />}
+                    {strv(p.requesterAddress) && <ReviewKV label="Requester address" value={strv(p.requesterAddress)} />}
+                    <ReviewKV label="Signed" value={`${strv(p.signature)} · ${strv(p.date)}`} />
+                  </div>
+                  <div className="rounded-2xl border border-amber-200 bg-amber-50/60 p-4">
+                    <p className="flex items-center gap-1.5 text-xs font-bold text-amber-900">
+                      <ShieldCheck className="size-4" aria-hidden="true" /> Taxpayer ID — owner only, stored encrypted
+                    </p>
+                    <p className="mt-2 font-mono text-lg font-bold tracking-widest text-ink-900">
+                      {sub.taxIdType === "ein" ? "EIN" : "SSN"} · {sub.taxId ?? "—"}
+                    </p>
+                    <p className="mt-1 text-[11px] leading-relaxed text-amber-800">Never shown to the contractor; encrypted at rest; never in the audit log.</p>
+                  </div>
+                </>
+              ) : (
+                /* ------------------------------ I-9 ------------------------------ */
+                <>
+                  <div className="rounded-2xl border border-ink-100 p-4">
+                    <p className="mb-2 text-xs font-bold uppercase tracking-wide text-ink-400">Section 1 — employee information</p>
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <ReviewKV label="Legal name" value={[strv(p.firstName), strv(p.middleInitial), strv(p.lastName)].filter(Boolean).join(" ")} />
+                      <ReviewKV label="Other names" value={strv(p.otherNames) || "—"} />
+                      <ReviewKV label="Date of birth" value={strv(p.dob)} />
+                      <ReviewKV label="Address" value={[strv(p.address), strv(p.apt), strv(p.city), strv(p.state), strv(p.zip)].filter(Boolean).join(", ")} />
+                      <ReviewKV label="Email" value={strv(p.email) || "—"} />
+                      <ReviewKV label="Phone" value={strv(p.phone) || "—"} />
+                      <ReviewKV label="Citizenship" value={CITIZEN_LABELS[strv(p.citizenship)] ?? strv(p.citizenship)} />
+                      {strv(p.alienNumber) && <ReviewKV label="A-number" value={strv(p.alienNumber)} mono />}
+                      {strv(p.uscisNumber) && <ReviewKV label="USCIS number" value={strv(p.uscisNumber)} mono />}
+                      {strv(p.i94Number) && <ReviewKV label="I-94 number" value={strv(p.i94Number)} mono />}
+                      {strv(p.i94Expiration) && <ReviewKV label="I-94 expiration" value={strv(p.i94Expiration)} />}
+                      <ReviewKV label="Signed" value={`${strv(p.signature)} · ${strv(p.date)}`} />
+                    </div>
+                    {sub.taxId && (
+                      <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50/60 px-3 py-2.5">
+                        <span className="text-xs font-bold text-amber-900">SSN on file (owner only, encrypted):</span>{" "}
+                        <span className="font-mono text-sm font-bold tracking-widest text-ink-900">{sub.taxId}</span>
+                      </p>
+                    )}
+                  </div>
+                  <div className="rounded-2xl border border-ink-100 p-4">
+                    <p className="mb-2 text-xs font-bold uppercase tracking-wide text-ink-400">Identity documents</p>
+                    <div className="space-y-3">
+                      {sub.identityDocs.map((d) => (
+                        <div key={d.id} className="rounded-xl border border-ink-100 bg-ink-50/50 p-3">
+                          <p className="flex items-center gap-1.5 text-xs font-bold text-ink-800">
+                            <span className="rounded-full bg-brand-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-brand-700">{LIST_LABELS[d.list]}</span>
+                            {d.title ?? "Document"}
+                          </p>
+                          <p className="mt-1.5 text-xs text-ink-600">
+                            {d.issuingAuthority && <><span className="font-semibold text-ink-700">{d.issuingAuthority}</span> · </>}
+                            <span className="font-mono">{d.number}</span>
+                            {d.expiration ? ` · expires ${d.expiration}` : ""}
+                          </p>
+                          {docFiles[d.id] && (docFiles[d.id].mime.startsWith("image/") ? (
+                            <img src={`data:${docFiles[d.id].mime};base64,${docFiles[d.id].base64}`} alt={d.title ?? "Identity document"} className="mt-2 max-h-48 w-full rounded-lg border border-ink-100 object-contain" />
+                          ) : (
+                            <a
+                              href={`data:${docFiles[d.id].mime};base64,${docFiles[d.id].base64}`}
+                              download={docFiles[d.id].fileName ?? `${d.title ?? "document"}.pdf`}
+                              className="mt-2 inline-flex h-9 items-center gap-1.5 rounded-lg bg-surface px-3 text-xs font-bold text-brand-700 ring-1 ring-ink-200 hover:bg-brand-50"
+                            >
+                              <FileText className="size-3.5" aria-hidden="true" /> Open {docFiles[d.id].fileName ?? "PDF"}
+                            </a>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  {!sub.section2ApprovedAt && (
+                    <div className="rounded-2xl border border-brand-200 bg-brand-50/40 p-4">
+                      <p className="mb-2 flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-brand-800">
+                        <ClipboardList className="size-4" aria-hidden="true" /> Section 2 — employer review
+                      </p>
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <label className="block">
+                          <span className="mb-1 block text-xs font-semibold text-ink-500">Certifying representative name <span className="text-danger-500">*</span></span>
+                          <input value={repName} onChange={(e) => setRepName(e.target.value)} placeholder="Your name" className="h-11 w-full rounded-xl border border-ink-200 bg-surface px-3 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" />
+                        </label>
+                        <label className="block">
+                          <span className="mb-1 block text-xs font-semibold text-ink-500">Title / department <span className="font-normal text-ink-300">(optional)</span></span>
+                          <input value={repTitle} onChange={(e) => setRepTitle(e.target.value)} placeholder="e.g. Owner" className="h-11 w-full rounded-xl border border-ink-200 bg-surface px-3 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" />
+                        </label>
+                      </div>
+                      <p className="mt-2 text-[11px] leading-relaxed text-ink-500">
+                        Approving records the Section 2 certification, regenerates the completed I-9 PDF with Section 2 stamped in, and verifies the document.
+                      </p>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* completed PDF (owner-only file) */}
+              {pdf && (
+                <div className="rounded-2xl border border-ink-100 p-4">
+                  <p className="mb-2 text-xs font-bold uppercase tracking-wide text-ink-400">Completed form (PDF)</p>
+                  {pdf.mime === "application/pdf" ? (
+                    <a
+                      href={`data:${pdf.mime};base64,${pdf.base64}`}
+                      download={pdf.fileName ?? (isI9 ? "Form I-9 (completed).pdf" : "Form W-9 (completed).pdf")}
+                      className="inline-flex h-11 items-center gap-2 rounded-xl bg-brand-500 px-4 text-sm font-semibold text-white hover:bg-brand-600"
+                    >
+                      <FileText className="size-4" aria-hidden="true" /> Open completed {isI9 ? "I-9" : "W-9"} (PDF)
+                    </a>
+                  ) : null}
+                </div>
+              )}
+
+              {error && <InlineError message={error} />}
+
+              {/* actions */}
+              {doc.status !== "verified" && (
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <Button loading={busy} onClick={() => void approve()}>
+                    <ShieldCheck className="size-4" aria-hidden="true" /> {isI9 ? "Complete Section 2 & verify" : "Approve W-9"}
+                  </Button>
+                  <Button variant="secondary" disabled={busy} onClick={() => { setReviewNote(""); setError(""); }}>
+                    Request changes
+                  </Button>
+                </div>
+              )}
+              {doc.status !== "verified" && (
+                <label className="block">
+                  <span className="mb-1 block text-xs font-semibold text-ink-500">Note to the contractor <span className="font-normal text-ink-300">(shown when you request changes)</span></span>
+                  <textarea value={reviewNote} onChange={(e) => setReviewNote(e.target.value)} rows={2} maxLength={300} placeholder="e.g. The document number is hard to read — please resubmit." className="w-full rounded-xl border border-ink-200 bg-surface px-3 py-2 text-sm outline-none placeholder:text-ink-300 focus:border-brand-500 focus:ring-2 focus:ring-brand-100" />
+                  <Button size="sm" variant="ghost" className="mt-2" disabled={busy} onClick={() => void requestChanges()}>
+                    Send changes request
+                  </Button>
+                </label>
+              )}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReviewKV({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-[10px] font-bold uppercase tracking-wide text-ink-300">{label}</p>
+      <p className={`mt-0.5 break-words text-sm font-semibold text-ink-900 ${mono ? "font-mono tabular-nums" : ""}`}>{value}</p>
     </div>
   );
 }

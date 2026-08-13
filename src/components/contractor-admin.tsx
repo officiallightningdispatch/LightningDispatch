@@ -6,7 +6,7 @@
  * the doc-status color map, rounded-2xl cards / rounded-xl controls /
  * rounded-full badges, touch targets ≥44px (h-11), tabular-nums for numbers.
  */
-import { Camera, Check, CheckCircle2, ChevronDown, Eye, Pencil, Trash2, X } from "lucide-react";
+import { Camera, Check, CheckCircle2, ChevronDown, ClipboardList, Eye, Pencil, Trash2, X } from "lucide-react";
 import { useState } from "react";
 import { Button } from "./ui";
 import type { ContractorDocumentRow, DocStatus, DocTypeRow } from "~/data/contractor-admin";
@@ -392,6 +392,7 @@ export function OwnerDocumentRow({
   onView,
   onViewSelfie,
   onReviewPair,
+  onReviewForm,
 }: {
   doc: ContractorDocumentRow;
   busy: boolean;
@@ -407,6 +408,12 @@ export function OwnerDocumentRow({
    *  license+selfie compare sheet (DocCompareSheet) for pair-bearing types.
    *  When provided, the expanded row's primary action becomes "Review pair". */
   onReviewPair?: () => Promise<void>;
+  /** Official fillable forms (2026-08-12): the W-9 / I-9 rows are FILLABLE
+   *  OFFICIAL FORMS — the owner reviews the completed form in a dedicated
+   *  sheet (decrypted SSN/EIN for the W-9, Section 2 completion for the I-9)
+   *  instead of the generic verify tap. When provided, the primary action
+   *  becomes "Review {W-9|I-9}". */
+  onReviewForm?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [verifySheet, setVerifySheet] = useState(false);
@@ -509,9 +516,15 @@ export function OwnerDocumentRow({
                   </Button>
                 )}
                 {(doc.status === "uploaded" || doc.status === "rejected") && (
-                  <Button size="sm" className="!px-2.5" disabled={inFlight} onClick={() => { setVerifySheet(true); setError(""); }}>
-                    {doc.status === "rejected" ? "Clear & re-verify" : "Verify"}
-                  </Button>
+                  doc.formKind && onReviewForm ? (
+                    <Button size="sm" className="!px-2.5" disabled={inFlight} onClick={() => { onReviewForm(); setError(""); }}>
+                      <ClipboardList className="size-3.5" aria-hidden="true" /> {doc.formKind === "w9" ? "Review W-9" : "Review I-9"}
+                    </Button>
+                  ) : (
+                    <Button size="sm" className="!px-2.5" disabled={inFlight} onClick={() => { setVerifySheet(true); setError(""); }}>
+                      {doc.status === "rejected" ? "Clear & re-verify" : "Verify"}
+                    </Button>
+                  )
                 )}
                 {(doc.status === "verified" || doc.status === "expired") && (
                   <span className="flex items-center gap-1.5">
