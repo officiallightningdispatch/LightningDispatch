@@ -237,6 +237,25 @@ export function PushSelfTestPanel() {
     window.addEventListener("focus", re);
     return () => window.removeEventListener("focus", re);
   }, []);
+  // Round-trip proof: when the test push lands back on THIS device, the service
+  // worker pings us ("LD_PUSH_RECEIVED"). Play the strike — the guaranteed-loud
+  // in-app path — and upgrade the outcome, even on iOS where a banner only
+  // shows when the app is closed/backgrounded.
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
+    const onSwMessage = (e: MessageEvent) => {
+      const d = e.data as { type?: string; tag?: string } | null | undefined;
+      if (!d || d.type !== "LD_PUSH_RECEIVED" || typeof d.tag !== "string" || !d.tag.startsWith("self-test-")) return;
+      preloadStrikeAsset();
+      playStrikeAsset();
+      setOutcome({
+        tone: "ok",
+        text: "Delivered ✓ — the test reached THIS phone. (Strike played here; the banner shows on the lock screen when the app is closed.)",
+      });
+    };
+    navigator.serviceWorker.addEventListener("message", onSwMessage);
+    return () => navigator.serviceWorker.removeEventListener("message", onSwMessage);
+  }, []);
   const [busy, setBusy] = useState(false);
   const [outcome, setOutcome] = useState<{ tone: "ok" | "warn" | "err"; text: string } | null>(null);
 

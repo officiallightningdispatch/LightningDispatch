@@ -16,7 +16,31 @@
  *          tag 'job-<callId>' replaces stale notifications for the same job.
  *
  *  notificationclick — focus an existing app tab, else open data.url ("/driver"
- *          — the Home sheet shows the primary job front-and-center). */
+ *          — the Home sheet shows the primary job front-and-center).
+ *
+ *  iOS-defensive display (2026-08-13, root-caused: Apple accepted every push
+ *  (HTTP 201) but the banner NEVER appeared on the owner's iPhone — iOS WebKit
+ *  silently DROPS web-push notifications whose options include unsupported
+ *  keys (custom `sound`, `vibrate`, `badge`, `renotify`). Fix: detect iOS here
+ *  and show a MINIMAL option set (title/body/tag/data/icon only); keep the
+ *  full set incl. loud strike on Android. Also ping open app windows with an
+ *  "LD_PUSH_RECEIVED" message so the in-app strike plays for self-tests even
+ *  though iOS never shows a banner for the foreground app. */
+const LD_UA = typeof navigator !== "undefined" ? navigator.userAgent || "" : "";
+const LD_IS_IOS = /iPhone|iPad|iPod/i.test(LD_UA) ||
+  (/Macintosh|Mac OS X/i.test(LD_UA) && typeof navigator !== "undefined" && navigator.maxTouchPoints > 1);
+
+async function ldNotifyClients(payload) {
+  try {
+    const clientsList = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    for (const c of clientsList) {
+      try {
+        c.postMessage({ type: "LD_PUSH_RECEIVED", tag: payload.tag, title: payload.title, body: payload.body });
+      } catch {}
+    }
+  } catch {}
+}
+
 self.addEventListener("push", (event) => {
   let data = { title: "New job — Lightning Dispatch", body: "A new job landed in your queue.", tag: "new-assignment", data: { url: "/driver" } };
   if (event.data) {
@@ -39,16 +63,24 @@ self.addEventListener("push", (event) => {
     }
   }
   event.waitUntil(
-    self.registration.showNotification(data.title, {
-      body: data.body,
-      tag: data.tag,
-      data: data.data,
-      icon: data.icon,
-      badge: data.badge,
-      sound: data.sound,
-      renotify: data.renotify,
-      vibrate: [200], // ONE single sharp burst — the lightning strike
-    }),
+    (async () => {
+      try {
+        await ldNotifyClients(data);
+        const opts = { body: data.body, tag: data.tag, data: data.data, icon: data.icon };
+        if (!LD_IS_IOS) {
+          opts.badge = data.badge;
+          opts.sound = data.sound;
+          opts.renotify = data.renotify;
+          opts.vibrate = [200]; // ONE single sharp burst — the lightning strike
+        }
+        await self.registration.showNotification(data.title, opts);
+      } catch {
+        // Last resort: bare title+body — never let one bad option swallow the banner.
+        try {
+          await self.registration.showNotification(data.title, { body: data.body, tag: data.tag, data: data.data });
+        } catch {}
+      }
+    })(),
   );
 });
 
