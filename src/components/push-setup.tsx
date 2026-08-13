@@ -25,6 +25,13 @@
  * Now a failure keeps the card up with the exact driver-readable reason and a
  * Try again button; only a real success, a browser-level denial, or the
  * driver's own "Not now" hides it.
+ *
+ * 2026-08-13 (owner-hit, iOS): iPhone/iPad Safari exposes NO push APIs until
+ * the site is added to the Home Screen, so this card used to hide itself on
+ * iOS — a silent dead-end. On iOS (not installed) and in-app webviews the card
+ * now renders the fix ("Add to Home Screen" walkthrough / "open in Safari or
+ * Chrome") with an "I've done that — re-check" button that re-evaluates the
+ * APIs without a reload and continues the normal allow flow when they appear.
  */
 import { AlertTriangle, Bell } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -32,12 +39,14 @@ import { Button, Card, useToast } from "~/components/ui";
 import {
   asksRemaining,
   ensurePushSubscription,
+  notificationSupportStatus,
   notificationsSupported,
   playStrikeAsset,
   preloadStrikeAsset,
   pushSetupFailureCopy,
   recordAsk,
   registerServiceWorker,
+  type NotificationSupportStatus,
   type PushSetupFailureReason,
 } from "~/lib/push-client";
 
@@ -45,9 +54,17 @@ import {
  *  area (spec A4 placement: above the primary job). */
 export function PushPermissionCard() {
   const toast = useToast();
+  // 2026-08-13 (owner-hit): iPhone/iPad Safari has NO push APIs until the site
+  // is added to the Home Screen. Previously this card hid itself on iOS and
+  // in-app browsers — a silent dead-end. Now it renders the guidance (Add to
+  // Home Screen walkthrough / use Safari-Chrome) so the driver knows the fix.
+  const [support, setSupport] = useState<NotificationSupportStatus>(() =>
+    typeof window === "undefined" ? "unsupported" : notificationSupportStatus(),
+  );
   const [visible, setVisible] = useState(() => {
-    if (typeof window === "undefined" || !notificationsSupported()) return false;
-    return Notification.permission === "default" && asksRemaining() > 0;
+    if (typeof window === "undefined") return false;
+    if (support === "supported") return Notification.permission === "default" && asksRemaining() > 0;
+    return support === "ios_not_installed" || support === "webview";
   });
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<{ reason: PushSetupFailureReason; message: string } | null>(null);
@@ -87,6 +104,25 @@ export function PushPermissionCard() {
     }
   };
 
+  /** "I've done that — re-check" (iOS): after the driver adds the site to the
+   *  Home Screen and reopens it, the push APIs can appear without a reload —
+   *  re-evaluate, then continue the normal allow flow when they do. */
+  const recheck = async () => {
+    setBusy(true);
+    setFailure(null);
+    const status = notificationSupportStatus();
+    setSupport(status);
+    if (status !== "supported") {
+      setBusy(false);
+      setFailure({
+        reason: "subscribe_failed",
+        message: "Still not available — make sure you opened Lightning Dispatch from the Home Screen icon (not Safari), then tap again.",
+      });
+      return;
+    }
+    await allow();
+  };
+
   const notNow = () => {
     recordAsk();
     setVisible(false);
@@ -106,6 +142,22 @@ export function PushPermissionCard() {
           </p>
         </div>
       </div>
+      {support !== "supported" && !failure && (
+        <div className="mt-3 rounded-xl border border-brand-200 bg-brand-50 px-3 py-2.5" role="status">
+          {support === "ios_not_installed" ? (
+            <p className="text-xs leading-relaxed text-ink-700">
+              <b>First add Lightning Dispatch to your Home Screen:</b> tap <b>Share</b> (the square with an up arrow at the
+              bottom of Safari) → <b>Add to Home Screen</b> → open <b>Lightning Dispatch</b> from your home screen, then
+              come back and tap <b>Allow</b>.
+            </p>
+          ) : (
+            <p className="text-xs leading-relaxed text-ink-700">
+              Open this page in <b>Safari or Chrome</b> — in-app browsers (like the ones inside Facebook, Instagram, or
+              iMessage) can&apos;t receive job alerts.
+            </p>
+          )}
+        </div>
+      )}
       {failure && (
         <div className="mt-3 flex items-start gap-2 rounded-xl border border-danger-200 bg-danger-50 px-3 py-2.5" role="alert">
           <AlertTriangle className="mt-0.5 size-4 shrink-0 text-danger-500" aria-hidden="true" />
@@ -113,9 +165,15 @@ export function PushPermissionCard() {
         </div>
       )}
       <div className="mt-3 space-y-2">
-        <Button variant="primary" size="md" className="h-11 w-full" loading={busy} onClick={() => void allow()}>
-          {failure ? "Try again" : "Allow notifications"}
-        </Button>
+        {support === "ios_not_installed" ? (
+          <Button variant="primary" size="md" className="h-11 w-full" loading={busy} onClick={() => void recheck()}>
+            I've done that — re-check
+          </Button>
+        ) : support === "supported" ? (
+          <Button variant="primary" size="md" className="h-11 w-full" loading={busy} onClick={() => void allow()}>
+            {failure ? "Try again" : "Allow notifications"}
+          </Button>
+        ) : null}
         <Button variant="ghost" size="md" className="h-10 w-full" disabled={busy} onClick={notNow}>
           Not now
         </Button>

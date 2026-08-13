@@ -35,6 +35,47 @@ export function notificationsSupported(): boolean {
   );
 }
 
+/** True on iPhone/iPad/iPod — including iPadOS, which masquerades as a Mac
+ *  (platform "MacIntel" + touch). iOS Safari only exposes the Web Push APIs
+ *  AFTER the site is added to the Home Screen (iOS 16.4+), so callers branch
+ *  on this to teach the install steps instead of declaring a fully-capable
+ *  browser broken (owner-hit 2026-08-13: iPhone Safari dead-ended the
+ *  compliance sheet with "can't receive alerts"). */
+export function isIOSDevice(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return (
+    /iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  );
+}
+
+/** Why this browser can't subscribe to push right now. "supported" means the
+ *  APIs exist (go). "ios_not_installed" is a fully-capable iPhone/iPad stuck
+ *  in a normal Safari tab — the caller teaches Add to Home Screen instead of
+ *  dead-ending. "webview" is an in-app browser (Facebook/Instagram/iMessage)
+ *  that can never receive push — the caller says "open in Safari/Chrome".
+ *  "unsupported" is a genuinely old browser. */
+export type NotificationSupportStatus = "supported" | "ios_not_installed" | "webview" | "unsupported";
+
+export function notificationSupportStatus(): NotificationSupportStatus {
+  if (notificationsSupported()) return "supported";
+  if (isIOSDevice()) return "ios_not_installed";
+  if (isInAppWebView()) return "webview";
+  return "unsupported";
+}
+
+/** In-app browsers run a webview without ServiceWorker/push APIs; their UA
+ *  usually carries the host app's token (FBAN/FBAV, Instagram, WeChat's
+ *  MicroMessenger, …) or Android's "; wv)" marker. */
+function isInAppWebView(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const UA = navigator.userAgent;
+  return (
+    /(FBAN|FBAV|FB_IAB|FBSV|Instagram|MicroMessenger|KakaoTalk|Snapchat|Discord|TikTok|Pinterest|Electron)/i.test(UA) ||
+    (/Android/i.test(UA) && /; wv\)/i.test(UA))
+  );
+}
+
 /** How many times the permission card has been shown (for the 3-ask cap). */
 export function asksRemaining(): number {
   try {
@@ -90,7 +131,7 @@ export function pushSetupFailureCopy(reason: PushSetupFailureReason): string {
     case "key_failed":
       return "We couldn't reach the alert service. Check your connection and try again.";
     case "subscribe_failed":
-      return "Your browser didn't allow the alert subscription. On iPhone: open Safari → Share → \"Add to Home Screen\", open the app from your home screen, then try again.";
+      return "Your browser didn't allow the alert subscription. Try again — and on iPhone, make sure you opened Lightning Dispatch from the Home Screen icon (not Safari), then tap Allow.";
     case "save_failed":
       return "The alert service couldn't save this device. Sign out and back in, then try again.";
   }

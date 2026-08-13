@@ -24,8 +24,9 @@ import {
 import { driverLogout } from "~/data/driver-auth";
 import {
   ensurePushSubscription,
-  notificationsSupported,
+  notificationSupportStatus,
   pushSetupFailureCopy,
+  type NotificationSupportStatus,
 } from "~/lib/push-client";
 
 /**
@@ -530,11 +531,20 @@ function NotificationsLocationSheet({ title, onClose, onDone }: { title: string;
   const [notifState, setNotifState] = useState<"idle" | "busy" | "done" | "failed">("idle");
   const [locState, setLocState] = useState<"idle" | "busy" | "done" | "failed">("idle");
   const [error, setError] = useState("");
-  const supported = typeof window !== "undefined" && notificationsSupported();
+  // 2026-08-13 (owner-hit): iPhone/iPad Safari in a normal tab has NO push
+  // APIs until the site is added to the Home Screen (iOS 16.4+). Computed once
+  // here and re-evaluated by the "I've done that" button — never dead-end.
+  const [support, setSupport] = useState<NotificationSupportStatus>(() =>
+    typeof window === "undefined" ? "unsupported" : notificationSupportStatus(),
+  );
+  const [recheckNote, setRecheckNote] = useState("");
 
   const allowNotifications = async () => {
     setError("");
-    if (!supported) return setError("This browser can't receive alerts — use a recent Chrome, Safari or Edge.");
+    setRecheckNote("");
+    const status = notificationSupportStatus();
+    setSupport(status);
+    if (status !== "supported") return; // the guidance panel below teaches the fix
     setNotifState("busy");
     try {
       if (Notification.permission !== "granted") {
@@ -554,6 +564,19 @@ function NotificationsLocationSheet({ title, onClose, onDone }: { title: string;
       setNotifState("failed");
       setError(pushSetupFailureCopy("subscribe_failed"));
     }
+  };
+
+  /** "I've done that — re-check": after the driver adds the site to the Home
+   *  Screen and reopens it, the push APIs can appear WITHOUT a page reload —
+   *  re-evaluate and continue the normal allow flow when they do. */
+  const recheck = async () => {
+    setError("");
+    setRecheckNote("");
+    if (notificationSupportStatus() === "supported") {
+      await allowNotifications();
+      return;
+    }
+    setRecheckNote("Still not available — make sure you opened Lightning Dispatch from the Home Screen icon (not Safari), then tap again.");
   };
 
   const shareLocation = () => {
@@ -610,6 +633,8 @@ function NotificationsLocationSheet({ title, onClose, onDone }: { title: string;
             </div>
             {notifState === "done" ? (
               <CheckCircle2 className="size-5 shrink-0 text-success-600" aria-label="Done" />
+            ) : support === "ios_not_installed" ? (
+              <span className="shrink-0 rounded-full bg-brand-50 px-2.5 py-1.5 text-[11px] font-bold text-brand-600">Needs Home Screen</span>
             ) : (
               <Button size="sm" loading={notifState === "busy"} disabled={locState === "done"} onClick={() => void allowNotifications()}>
                 {notifState === "failed" ? "Try again" : "Allow"}
@@ -617,6 +642,57 @@ function NotificationsLocationSheet({ title, onClose, onDone }: { title: string;
             )}
           </div>
         </div>
+
+        {/* browser-guidance panel (2026-08-13, owner-hit): replaces the old
+            generic "can't receive alerts" dead-end with actionable next steps —
+            iOS teaches Add to Home Screen + re-check, webviews say use
+            Safari/Chrome, old browsers get a plain unsupported message. */}
+        {support !== "supported" && notifState !== "done" && (
+          <div className="rounded-2xl border border-brand-200 bg-brand-50/60 p-4" role="status">
+            {support === "ios_not_installed" && (
+              <>
+                <p className="text-sm font-bold text-ink-900">Add Lightning Dispatch to your Home Screen first</p>
+                <p className="mt-1 text-xs leading-relaxed text-ink-600">
+                  Apple only lets installed apps receive alerts — a normal Safari tab can&apos;t yet. It takes about 30 seconds:
+                </p>
+                <ol className="mt-3 space-y-2">
+                  {[
+                    <>Tap <b>Share</b> — the square with an up arrow at the bottom of Safari.</>,
+                    <>Tap <b>Add to Home Screen</b>.</>,
+                    <>Tap <b>Add</b>, then open <b>Lightning Dispatch</b> from your home screen.</>,
+                    <>Come back here and tap <b>Allow</b>.</>,
+                  ].map((step, i) => (
+                    <li key={i} className="flex items-start gap-2 text-xs leading-relaxed text-ink-700">
+                      <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-brand-500 text-[10px] font-bold text-white">{i + 1}</span>
+                      <span>{step}</span>
+                    </li>
+                  ))}
+                </ol>
+                {recheckNote && <p className="mt-3 text-xs font-medium text-ink-600" role="status">{recheckNote}</p>}
+                <Button variant="primary" size="md" className="mt-3 h-11 w-full" loading={notifState === "busy"} onClick={() => void recheck()}>
+                  I&apos;ve done that — re-check
+                </Button>
+              </>
+            )}
+            {support === "webview" && (
+              <>
+                <p className="text-sm font-bold text-ink-900">Open this page in Safari or Chrome</p>
+                <p className="mt-1 text-xs leading-relaxed text-ink-600">
+                  In-app browsers — like the ones inside Facebook, Instagram, or iMessage — can&apos;t receive job alerts. Copy the
+                  link into Safari or Chrome, then come back here to finish.
+                </p>
+              </>
+            )}
+            {support === "unsupported" && (
+              <>
+                <p className="text-sm font-bold text-ink-900">This browser can&apos;t receive job alerts</p>
+                <p className="mt-1 text-xs leading-relaxed text-ink-600">
+                  Use a recent version of Chrome, Safari, or Edge on your phone, then come back here to finish.
+                </p>
+              </>
+            )}
+          </div>
+        )}
 
         <div className="rounded-2xl border border-ink-200 bg-ink-50/40 p-3">
           <div className="flex items-center justify-between gap-2">
