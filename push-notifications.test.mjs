@@ -118,6 +118,8 @@ const SUB_AUTH = b64urlEncode(randomBytes(16));
 const payload = { callId: "279999001", callRequestId: "326999001", jobType: "Flatbed tow", location: "Main St & 5th Ave, 06606", etaMinutes: 12, jobUrl: "/driver" };
 const notifJson = buildPushNotificationJson(payload);
 check("spec A1: title exact", notifJson.title === "New job — Lightning Dispatch");
+check("sound: absolute same-origin URL (Android Chrome showNotification)", notifJson.sound === "/sounds/lightning-strike.mp3");
+check("trigger: notifyAssignedDriver is the single assignment trigger (fireAssignmentPush delegates)", typeof (await import("./src/data/push-core.ts")).notifyAssignedDriver === "function");
 check("spec A1: body = service · location · ETA", notifJson.body === "Flatbed tow · Main St & 5th Ave, 06606 · ETA ~12 min");
 check("spec A1: tag job-<callId>", notifJson.tag === "job-279999001");
 check("spec A1: data.url /driver", notifJson.data.url === "/driver");

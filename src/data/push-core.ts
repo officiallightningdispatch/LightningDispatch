@@ -211,7 +211,12 @@ export function buildPushNotificationJson(p: AssignmentPushPayload): Record<stri
     data: { url: p.jobUrl || "/driver" },
     icon: "/favicon.svg",
     badge: "/favicon.svg",
-    sound: "lightning-strike.mp3",
+    // ABSOLUTE same-origin URL — the SW's showNotification `sound` option needs
+    // a resolvable static path (public/sounds/lightning-strike.mp3, re-rendered
+    // to 98% FS by scripts/generate-strike.mjs). Android Chrome is the main
+    // beneficiary; iOS Safari ignores custom sound (OS limitation — the in-app
+    // WebAudio strike is the guaranteed-loud path there).
+    sound: "/sounds/lightning-strike.mp3",
     renotify: false,
   };
 }
@@ -350,11 +355,14 @@ export async function sendAssignmentPushByTowbookDriver(
 }
 
 /**
- * Assignment trigger used by the MANUAL dispatch path (assignJob in server.ts):
- * loads the dispatch_jobs row and sends the push for the assigned contractor.
+ * THE single assigned-job notification trigger (owner-reassign will call this
+ * too — same signature). Loads the dispatch_jobs row for the call, builds the
+ * payload, and sends to the assigned contractor (resolved by their LD user id;
+ * the AI-dispatcher seam additionally resolves by Towbook driver id via
+ * sendAssignmentPushByTowbookDriver, which funnels into the same send).
  * Never throws; never blocks the assignment. No job row → audit + skip.
  */
-export async function fireAssignmentPush(
+export async function notifyAssignedDriver(
   orgId: string,
   contractorUserId: string,
   jobId: string,
@@ -383,6 +391,16 @@ export async function fireAssignmentPush(
   return sendAssignmentPush(orgId, contractorUserId, payload, opts);
 }
 
+/** Back-compat alias — the manual assign path (assignJob in server.ts) and the
+ *  AI-dispatcher job-row path both route through notifyAssignedDriver. */
+export async function fireAssignmentPush(
+  orgId: string,
+  contractorUserId: string,
+  jobId: string,
+  opts: SendDeps = {},
+): Promise<PushSendOutcome> {
+  return notifyAssignedDriver(orgId, contractorUserId, jobId, opts);
+}
 /** Tiny local label map (server-side; client libs are off-limits here). */
 const JOB_TYPE_LABELS: Record<string, string> = {
   jump_start: "Jump start",

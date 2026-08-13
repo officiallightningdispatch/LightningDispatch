@@ -159,14 +159,16 @@ async function currentSubscription(reg: ServiceWorkerRegistration): Promise<Push
 
 /** Save (or replace) the given subscription through the contractor API. */
 export async function saveSubscriptionToServer(sub: PushSubscription): Promise<boolean> {
-  const res = await savePushSubscription({
-    data: {
-      endpoint: sub.endpoint,
-      p256dh: btoa(String.fromCharCode(...new Uint8Array(sub.getKey("p256dh")!))),
-      auth: btoa(String.fromCharCode(...new Uint8Array(sub.getKey("auth")!))),
-      userAgent: typeof navigator !== "undefined" ? navigator.userAgent.slice(0, 512) : undefined,
-    },
-  });
+  // Build the payload WITHOUT an undefined-valued userAgent prop (Seroval-safe:
+  // an undefined property in the server-fn input can drop the whole POST in
+  // some serializers — a silent save-loss on every browser that lacks a UA).
+  const data: { endpoint: string; p256dh: string; auth: string; userAgent?: string } = {
+    endpoint: sub.endpoint,
+    p256dh: btoa(String.fromCharCode(...new Uint8Array(sub.getKey("p256dh")!))),
+    auth: btoa(String.fromCharCode(...new Uint8Array(sub.getKey("auth")!))),
+  };
+  if (typeof navigator !== "undefined" && navigator.userAgent) data.userAgent = navigator.userAgent.slice(0, 512);
+  const res = await savePushSubscription({ data });
   return res.ok;
 }
 

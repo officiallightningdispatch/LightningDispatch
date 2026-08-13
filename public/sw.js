@@ -30,7 +30,7 @@ self.addEventListener("push", (event) => {
           data: parsed.data && typeof parsed.data === "object" && typeof parsed.data.url === "string" ? { url: parsed.data.url } : { url: "/driver" },
           icon: typeof parsed.icon === "string" ? parsed.icon : "/favicon.svg",
           badge: typeof parsed.badge === "string" ? parsed.badge : "/favicon.svg",
-          sound: typeof parsed.sound === "string" ? parsed.sound : "lightning-strike.mp3",
+          sound: typeof parsed.sound === "string" && parsed.sound ? parsed.sound : "/sounds/lightning-strike.mp3",
           renotify: false,
         };
       }
