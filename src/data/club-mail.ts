@@ -150,15 +150,61 @@ const PLAIN_AMOUNT = /\b(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)\b/;
 const CHARGE_KEYWORD = /\b(charged|payment|paid|invoice|debit|transaction|billed|authoriz(?:ed|ation)|processed|purchas(?:e|ed))\b/i;
 /** A message that says a charge did NOT happen must never stage. */
 const NOT_A_CHARGE = /\b(no charge|not charged|free|complimentary|no payment due|refund)\b/i;
-/** Card last-4: "ending in 4242", "xxxx 4242", "****4242", "card ending 4242",
- *  "last 4 digits 4242", or a bare 4-digit run that follows a card/ending hint. */
+/** Card last-4 hint: "ending in 4242", "xxxx 4242", "****4242",
+ *  "card ending 4242", "last 4 digits 4242". The hint WORDS are mandatory —
+ *  a bare 4-digit run ("$0.20", "Ref# 1134", an order number) is NEVER a card
+ *  (owner 2026-08-13: only actual card information may be scanned for). */
 const LAST4 = /(?:ending(?: in| with)?|xxxx|last 4(?: digits)?|\*\*\*\*)\s*:?\s*(\d{4})/i;
+/** Last-4 shown as "Card #: 9498" / "Card Number: 9498" (a bare 4-digit
+ *  display, NOT a full PAN — the negative lookahead rejects any digit-group
+ *  continuation, so "Card Number: 4242 4242 4242 4242" is left to PAN_GROUPED). */
+const CARD_LAST4_MARKER = /card\s*(?:#|no\.?|number)?\s*:?\s*(\d{4})(?![\s-]?\d)/i;
 /** Full-PAN fallback for last-4: PO emails often carry the complete card
  *  number ("Card Number: 4242 4242 4242 4242" or "4111-1111-1111-1111").
- *  Grouped-4 format first (unambiguous), then a plain 15-16 digit run. Only
- *  the LAST 4 digits are ever extracted/stored — never the PAN. */
+ *  Grouped-4 format first (unambiguous), then a plain 15-16 digit run. A PAN
+ *  only counts when it PASSES the Luhn check (luhnValid) — order numbers,
+ *  phone numbers and random 16-digit runs fail Luhn and are never taken.
+ *  Only the LAST 4 digits are ever extracted/stored — never the PAN. */
 const PAN_GROUPED = /\b(\d{4})[\s-](\d{4})[\s-](\d{4})[\s-](\d{4})\b/;
 const PAN_FLAT = /\b\d{15,16}\b/;
+/** Luhn checksum — the standard card-number validity check. Used to reject
+ *  non-card 15-16 digit runs (order numbers, phone numbers, random digits)
+ *  before their last 4 could ever be staged as a card. */
+export function luhnValid(digits: string): boolean {
+  const clean = digits.replace(/[\s-]/g, "");
+  if (!/^\d{12,19}$/.test(clean)) return false;
+  let sum = 0;
+  let double = false;
+  for (let i = clean.length - 1; i >= 0; i--) {
+    let d = clean.charCodeAt(i) - 48;
+    if (double) {
+      d *= 2;
+      if (d > 9) d -= 9;
+    }
+    sum += d;
+    double = !double;
+  }
+  return sum % 10 === 0;
+}
+/** Extract the card's last 4 from a message, or null when NO real card is
+ *  present. Priority: a Luhn-valid full PAN (grouped, then flat) is the most
+ *  authoritative source; card-context last-4 hints ("ending in 4242", "xxxx
+ *  4242", "Card #: 4242") come next. A bare 4-digit run with no card context
+ *  never counts (owner 2026-08-13). */
+function extractCardLast4(text: string): string | null {
+  const grouped = text.match(PAN_GROUPED);
+  if (grouped) {
+    const pan = grouped.slice(1).join("");
+    if (luhnValid(pan)) return pan.slice(-4);
+  }
+  const flat = text.match(PAN_FLAT);
+  if (flat && luhnValid(flat[0])) return flat[0].slice(-4);
+  const hint = text.match(LAST4);
+  if (hint) return hint[1];
+  const marker = text.match(CARD_LAST4_MARKER);
+  if (marker) return marker[1];
+  return null;
+}
 /** Card brand words in the email ("Visa", "Mastercard", "American Express",
  *  "Amex", "Discover"). Normalized display names via CARD_BRAND_NAMES. */
 const CARD_BRAND = /\b(visa|master\s?card|amex|american\s?express|discover)\b/i;
@@ -171,8 +217,11 @@ const CARD_BRAND_NAMES: Record<string, string> = {
   discover: "Discover",
 };
 /** Card expiry: "exp 12/27", "expires 01/2028", "valid thru 12/27",
- *  "good through 12/27". Normalized to MM/YY. */
-const CARD_EXPIRY = /(?:exp(?:iry|ires|iration)?|valid\s*(?:thru|through)|good\s*(?:thru|through))\s*:?\s*(\d{1,2})\s*[/\-.]\s*(\d{2,4})/i;
+ *  "good through 12/27". Tightened 2026-08-13 (owner): ONLY plausible card
+ *  expiries match — months 01-12 and years in the 2020s/2030s (2-digit 20-39
+ *  or 4-digit 2020-2039). "expires 08/16" (a promo date) must NOT parse.
+ *  Normalized to MM/YY. */
+const CARD_EXPIRY = /(?:exp(?:iry|ires|iration)?|valid\s*(?:thru|through)|good\s*(?:thru|through))\s*:?\s*((?:0[1-9]|1[0-2]))\s*[/\-.]\s*((?:202[0-9]|203[0-9])|[23][0-9])\b/i;
 /** Billing zip: "billing zip 06606", "zip code: 06606", "postal code 06606",
  *  "billing postal code 06606-1234" → first 5 digits. */
 const CARD_BILLING_ZIP = /(?:billing\s*)?(?:zip(?:\s*code)?|postal(?:\s*code)?)\s*:?\s*(\d{5}(?:-\d{4})?)/i;
@@ -194,30 +243,57 @@ function normalizeBrand(raw: string | null): string | null {
   return CARD_BRAND_NAMES[key] ?? null;
 }
 
-/** Normalize a raw expiry match ("12/27", "1/2028", "12-27") to MM/YY. */
+/** Normalize a raw expiry match ("12/27", "1/2028", "12-27") to MM/YY.
+ *  Rejects anything outside plausible card expiries (months 1-12, years
+ *  2020-2039) — the regex already constrains, this is belt-and-suspenders. */
 function normalizeExpiry(month: string, year: string): string | null {
   const mm = Number(month);
   const yyRaw = Number(year);
   if (!Number.isInteger(mm) || mm < 1 || mm > 12 || !Number.isInteger(yyRaw)) return null;
   let yy = yyRaw;
   if (yyRaw >= 100) yy = yyRaw % 100; // 2028 → 28
-  if (yy < 0 || yy > 99) return null;
+  if (yy < 20 || yy > 39) return null; // only 2020s/2030s are plausible card expiries
   return `${String(mm).padStart(2, "0")}/${String(yy).padStart(2, "0")}`;
 }
 
+/** Skip-reason constants — the scan UI surfaces these verbatim so the owner
+ *  knows why a message was NOT staged (owner 2026-08-13: junk staged rows
+ *  must stop; only real motor-club payment notifications with a real card
+ *  may be staged). */
+export const SKIP_NOT_CLUB = "not a motor-club payment notification";
+export const SKIP_NO_CARD = "no valid card in email (Luhn check failed)";
+export const SKIP_NO_AMOUNT = "no charge amount found (not a charge notification)";
+export const SKIP_NOT_CHARGE = "message says no charge/free/refund — not a charge notification";
+
 /** Parse a message's visible text into a club-charge candidate. PURE — no I/O,
- *  no side effects. Returns a skipReason when the message isn't a usable charge
- *  notification. Amount is REQUIRED (a club message without a dollar figure is
- *  not a charge to stage); cardLast4/clubName/poRef are best-effort. The card
- *  metadata (brand/expiry/zip) is parsed from the PO email for DISPLAY only —
- *  the full PAN never leaves this function. */
+ *  no side effects. A candidate is produced ONLY when ALL THREE hold
+ *  (owner 2026-08-13):
+ *    1. clubName resolves to a known motor club (Allied / Honk / Allstate),
+ *    2. a real charge amount is present,
+ *    3. a REAL card is present — a card-context last-4 hint ("ending in 4242",
+ *       "xxxx 4242", "Card #: 4242", …) or a full PAN that PASSES the Luhn
+ *       check.
+ *  Everything else returns a specific skipReason and is NEVER staged — a
+ *  marketing/spam email with a dollar amount and no club, or a club email
+ *  without a card, must not become an "unknown charge". Card metadata
+ *  (brand/expiry/zip) is parsed for DISPLAY only — the full PAN never leaves
+ *  this function. */
 export function parseClubChargeEmail(input: { from: string; subject: string; bodyText: string }): ParsedClubCharge {
   const { from, subject, bodyText } = input;
   const clubName = detectClub(from, subject, bodyText);
   const text = `${subject}\n${bodyText}`;
-  if (NOT_A_CHARGE.test(text)) {
-    return { amountCents: null, cardLast4: null, cardBrand: null, cardExpiry: null, cardBillingZip: null, clubName, poRef: null, skipReason: "message says no charge/free/refund — not a charge notification" };
+  const base = { amountCents: null as number | null, cardLast4: null as string | null, cardBrand: null as string | null, cardExpiry: null as string | null, cardBillingZip: null as string | null, clubName, poRef: null as string | null };
+  // Gate 1 — must be a motor-club payment notification (sender/subject/body
+  // mentions Allied / Honk / Allstate). A GoodRx ad, a CT filing service, an
+  // HP deal or Credit-One spam all carry dollar amounts — none may stage.
+  if (!clubName) {
+    return { ...base, skipReason: SKIP_NOT_CLUB };
   }
+  // A club message that says a charge did NOT happen must never stage.
+  if (NOT_A_CHARGE.test(text)) {
+    return { ...base, skipReason: SKIP_NOT_CHARGE };
+  }
+  // Gate 2 — a real charge amount.
   let amountCents: number | null = null;
   const cur = text.match(CURRENCY_AMOUNT);
   if (cur) {
@@ -227,19 +303,14 @@ export function parseClubChargeEmail(input: { from: string; subject: string; bod
     if (plain) amountCents = toCents(plain[1]);
   }
   if (amountCents == null) {
-    return { amountCents: null, cardLast4: null, cardBrand: null, cardExpiry: null, cardBillingZip: null, clubName, poRef: null, skipReason: "no charge amount found (not a charge notification)" };
+    return { ...base, skipReason: SKIP_NO_AMOUNT };
   }
-  const last4 = text.match(LAST4);
-  let cardLast4: string | null = last4 ? last4[1] : null;
+  // Gate 3 — a REAL card (card-context last-4 hint or Luhn-valid full PAN).
+  // Only the LAST 4 digits are ever extracted/kept; bare 4-digit runs and
+  // non-card 15-16 digit runs never count.
+  const cardLast4 = extractCardLast4(text);
   if (!cardLast4) {
-    // Full-PAN fallback (grouped format preferred, then a flat 15-16 digit
-    // run) — only the LAST 4 digits are kept.
-    const grouped = text.match(PAN_GROUPED);
-    if (grouped) cardLast4 = grouped[4];
-    else {
-      const flat = text.match(PAN_FLAT);
-      if (flat) cardLast4 = flat[0].slice(-4);
-    }
+    return { ...base, skipReason: SKIP_NO_CARD };
   }
   const brandRaw = text.match(CARD_BRAND);
   const exp = text.match(CARD_EXPIRY);

@@ -740,7 +740,11 @@ function ChargeCardForm({ txn, onCharged, onCancel, publicConfig }: {
   return (
     <div className="mt-3 rounded-xl border border-ink-200 bg-canvas/60 p-3">
       <p className="mb-2 text-xs font-semibold text-ink-700">
-        Enter the card from this PO's email — {cardLabel(txn) ?? "card details are in the email"}
+        {cardLabel(txn) ? (
+          <>Card on file from email: <span className="text-ink-900">{cardLabel(txn)}</span> — enter the full number below.</>
+        ) : (
+          <>No card was in this email — check the PO email or enter the card details manually.</>
+        )}
       </p>
       <div id={containerIdRef.current} className="min-h-[64px]" />
       {cardError && <p role="alert" className="mt-1.5 text-[11px] leading-snug text-danger-600">{cardError}</p>}
@@ -837,7 +841,7 @@ function PaymentsSection() {
         <div>
           <p className="font-semibold">How club charges work</p>
           <p className="mt-0.5 text-xs leading-relaxed opacity-90">
-            The scanner pulls motor-club charge notifications from <strong>lightroad29@gmail.com</strong> and stages them below with <strong>each PO's own card</strong> (brand, last 4, expiry, zip — read from that PO's email; the full card number never touches Lightning Dispatch). Nothing is ever auto-charged. To charge a row, open the card form and enter the card shown in the PO email — Square tokenizes it securely and charges your Square account (funds stay there, nothing is transferred out). Or charge it in your own Square dashboard and tap <strong>Mark charged</strong>.
+            The scanner pulls motor-club charge notifications from <strong>lightroad29@gmail.com</strong> and stages only real club payments that carry a card — each row shows that PO's own card hints (brand, last 4, expiry, zip — read from the email; the full card number never touches Lightning Dispatch). Nothing is ever auto-charged. To charge a row, open the card form — the card hints are shown right there, and you enter the full number into Square's secure form, which tokenizes it and charges your Square account (funds stay there, nothing is transferred out). Or charge it in your own Square dashboard and tap <strong>Mark charged</strong>.
           </p>
         </div>
       </Alert>
@@ -894,7 +898,7 @@ function PaymentsSection() {
                         <StatusBadge className={badge.cls} dot={badge.dot}>{badge.label}</StatusBadge>
                       </div>
                       <p className="mt-0.5 text-xs text-ink-400">
-                        {card ? <span className="font-medium text-ink-600">{card}</span> : <span className="text-ink-300">No card details in the email</span>}
+                        {card ? <span className="font-medium text-ink-600">{card}</span> : <span className="text-ink-300">No card from email — manual entry</span>}
                         {t.poRef ? <> · PO {t.poRef}</> : null}
                         {t.status === "charged" && (
                           <span className={t.chargePath === "outside" ? "text-ink-500" : "text-success-600"}>

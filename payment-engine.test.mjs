@@ -40,6 +40,11 @@ const {
   detectClub,
   extractPlainText,
   loadGmailConfig,
+  luhnValid,
+  SKIP_NOT_CLUB,
+  SKIP_NO_CARD,
+  SKIP_NO_AMOUNT,
+  SKIP_NOT_CHARGE,
 } = await import("./src/data/club-mail.ts");
 const {
   stageClubChargeCore,
@@ -61,12 +66,15 @@ const check = (name, cond, extra = "") => {
 const TAG = randomUUID().slice(0, 8);
 const ORG = `qa-payment-${TAG}`;    // full scan → stage → charge → mirror flow
 const ORG2 = `qa-payment2-${TAG}`;  // cross-org rails (charge/scan scope)
+const ORG3 = `qa-payment3-${TAG}`;  // real-Honk-email regression scan (1 row)
 const OWNER = `qa-payment-owner-${TAG}`;
 const OWNER2 = `qa-payment2-owner-${TAG}`;
+const OWNER3 = `qa-payment3-owner-${TAG}`;
 const ADMIN = `qa-payment-admin-${TAG}`;
 const CONTRACTOR = `qa-payment-driver-${TAG}`;
 const DRIVER = `qa-payment-driver2-${TAG}`; // completion_tips driver fixture
 const ACTOR = { orgId: ORG, id: OWNER, role: "owner" };
+const ACTOR3 = { orgId: ORG3, id: OWNER3, role: "owner" };
 const ADMIN_ACTOR = { orgId: ORG, id: ADMIN, role: "admin" };
 const WRONG_ACTOR = { orgId: ORG, id: CONTRACTOR, role: "contractor" };
 const OTHER_ACTOR = { orgId: ORG2, id: OWNER2, role: "owner" };
@@ -103,23 +111,35 @@ const MAIL = [
   },
 ];
 
+/** The REAL Honk payment email that was staged in production (2026-08-13):
+ *  subject "Your payment from HONK - Ref# 11343871391", $49.00, card ending
+ *  9498. CRITICAL regression: this MUST keep staging with clubName "Honk" and
+ *  cardLast4 "9498" — and the "Ref# 1134…" run must never be mistaken for a
+ *  card (bare 4-digit run, no card context). */
+const HONK_REAL = {
+  messageId: `honk-real-${TAG}@mail.gmail.com`,
+  from: "no-reply@honkmobile.com",
+  subject: "Your payment from HONK - Ref# 11343871391",
+  body: "Payment of $49.00 received for Ref# 11343871391. Your card ending in 9498 was used. Thanks for choosing HONK!",
+};
+
 const rawMessage = (m) => Buffer.from(
   `From: ${m.from}\r\nTo: owner@lightning.test\r\nSubject: ${m.subject}\r\nDate: Tue, 11 Aug 2026 10:00:00 +0000\r\nMessage-ID: <${m.messageId}>\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${m.body}`,
   "utf8",
 );
 
-/** Fake IMAP mailbox over the canned messages — records search/fetch calls and
- *  never opens a socket. */
-function makeMailbox() {
+/** Fake IMAP mailbox over ANY canned message list — records search/fetch
+ *  calls and never opens a socket. */
+function makeMailboxFor(messages) {
   const calls = [];
-  const uids = MAIL.map((_, i) => i + 1);
+  const uids = messages.map((_, i) => i + 1);
   const mailbox = {
     async connect() {},
     async mailboxOpen(name) { calls.push({ op: "open", name }); },
     async search(criteria) { calls.push({ op: "search", criteria }); return [...uids]; },
     async fetchOne(uid) {
       calls.push({ op: "fetch", uid });
-      const m = MAIL[uid - 1];
+      const m = messages[uid - 1];
       if (!m) return null;
       return {
         envelope: { messageId: m.messageId, date: new Date("2026-08-11T10:00:00Z"), from: [{ address: m.from }], subject: m.subject },
@@ -129,6 +149,11 @@ function makeMailbox() {
     async logout() { calls.push({ op: "logout" }); },
   };
   return { mailbox, calls };
+}
+
+/** Fake IMAP mailbox over the canned MAIL fixtures (see makeMailboxFor). */
+function makeMailbox() {
+  return makeMailboxFor(MAIL);
 }
 
 const resp = (status, { json } = {}) => ({
@@ -171,7 +196,7 @@ function makeSquare({ mode = "ok" } = {}) {
 
 async function setup() {
   await ensureSchema();
-  for (const [org, owner] of [[ORG, OWNER], [ORG2, OWNER2]]) {
+  for (const [org, owner] of [[ORG, OWNER], [ORG2, OWNER2], [ORG3, OWNER3]]) {
     await q`INSERT INTO organizations(id, name) VALUES(${org}, 'qa payment')`;
     await q`INSERT INTO users(id, name, email, password_hash) VALUES(${owner}, 'QA Payment Owner', ${`qa-payment-owner-${randomUUID()}@lightning.test`}, 'x')`;
     await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${org}, ${owner}, 'owner')`;
@@ -223,6 +248,48 @@ await setup();
   check("detectClub case-insensitive keyword", detectClub("ops@ALLIEDDISPATCH.com", "x", "y") === "Allied Dispatch");
   const txt = extractPlainText(rawMessage(MAIL[0]));
   check("extractPlainText pulls the body", txt.includes("charged $85.00"), JSON.stringify(txt));
+
+  /* ---- owner 2026-08-13: only REAL motor-club payments with a REAL card ---- */
+  // CRITICAL regression — the live Honk email (subject Ref# 11343871391, $49,
+  // card ending 9498) must parse with club + last4; "Ref# 1134…" is a bare
+  // 4-digit run and must never be taken as a card.
+  const honkReal = parseClubChargeEmail({ from: HONK_REAL.from, subject: HONK_REAL.subject, bodyText: HONK_REAL.body });
+  check("parse REAL Honk email: $49.00 → 4900, club Honk, last4 9498 (no skip)", honkReal.amountCents === 4900 && honkReal.clubName === "Honk" && honkReal.cardLast4 === "9498" && honkReal.skipReason == null, JSON.stringify(honkReal));
+  // Marketing email WITH an amount but no club → skipped, NEVER staged.
+  const goodRx = parseClubChargeEmail({ from: "news@goodrx.com", subject: "Your exclusive GoodRx Gold offer", bodyText: "Save up to $847.00 on prescriptions this year with GoodRx Gold." });
+  check("parse GoodRx ad ($847) → skipped as not a motor-club payment", goodRx.skipReason === SKIP_NOT_CLUB && goodRx.clubName === null && goodRx.amountCents === null, JSON.stringify(goodRx));
+  // Bill-collector spam with a card last4 but no club → skipped (club gate first).
+  const creditOne = parseClubChargeEmail({ from: "collections@halstedfinancial.com", subject: "Payment Required on Overdue Credit One Account", bodyText: "Your payment of $271.20 is required immediately. Card on file ending in 4799 was declined. Please call 800-555-0199." });
+  check("parse Credit-One spam ($271.20, last4 4799, NO club) → skipped, last4 never taken", creditOne.skipReason === SKIP_NOT_CLUB && creditOne.cardLast4 === null && creditOne.amountCents === null, JSON.stringify(creditOne));
+  // Full PAN grouped + Luhn pass → last4 extracted (never the PAN itself).
+  const panGrouped = parseClubChargeEmail({ from: "billing@allieddispatch.com", subject: "Allied Dispatch Payment — PO #11220", bodyText: "Visa 4242 4242 4242 4242 charged $112.75 for PO #11220. Exp 03/29. Billing zip 06606." });
+  check("parse full PAN grouped (4242…4242, Luhn pass) → last4 4242", panGrouped.cardLast4 === "4242" && panGrouped.clubName === "Allied Dispatch" && panGrouped.amountCents === 11275 && panGrouped.skipReason == null, JSON.stringify(panGrouped));
+  const panFlat = parseClubChargeEmail({ from: "billing@allieddispatch.com", subject: "Allied Dispatch Payment — PO #11221", bodyText: "Card Number: 4111111111111111 charged $33.10 for PO #11221." });
+  check("parse full PAN flat (4111…1111, Luhn pass) → last4 1111", panFlat.cardLast4 === "1111" && panFlat.skipReason == null, JSON.stringify(panFlat));
+  // Full PAN that FAILS Luhn (order number / phone number) → card-miss skip.
+  const panBadGrouped = parseClubChargeEmail({ from: "billing@honkmobile.com", subject: "Honk Invoice Paid", bodyText: "Payment of $50.00 received for order 1234 5678 9012 3456." });
+  check("parse PAN grouped Luhn FAIL (1234 5678 9012 3456) → skipped, no card", panBadGrouped.skipReason === SKIP_NO_CARD && panBadGrouped.cardLast4 === null, JSON.stringify(panBadGrouped));
+  const panBadFlat = parseClubChargeEmail({ from: "billing@allstate.com", subject: "Allstate Motor Club — Charge Notification", bodyText: "Your Allstate card 9999999999999999 was charged $60.00." });
+  check("parse PAN flat Luhn FAIL (9999…9999) → skipped, no card", panBadFlat.skipReason === SKIP_NO_CARD && panBadFlat.cardLast4 === null, JSON.stringify(panBadFlat));
+  // Bare 4-digit run with no card context → NOT a card, card-miss skip.
+  const bareRun = parseClubChargeEmail({ from: "billing@honkmobile.com", subject: "Your payment from HONK - Ref# 11343871391", bodyText: "Payment of $0.20 received for Ref# 11343871391. Total due: $0.20. No card details shown." });
+  check("parse club email with amount but ONLY bare 4-digit runs ($0.20, Ref# 1134) → skipped (no card)", bareRun.skipReason === SKIP_NO_CARD && bareRun.cardLast4 === null && bareRun.amountCents === null, JSON.stringify(bareRun));
+  // Promo "expires 08/16" must NOT parse as a card expiry (2020s/2030s only).
+  const quillPromo = parseClubChargeEmail({ from: "offers@quill.com", subject: "Starbucks Card Promo", bodyText: "Get a $25.00 Starbucks eGift Card — promo expires 08/16. Terms apply." });
+  check("parse promo email: no club → skipped (never staged)", quillPromo.skipReason === SKIP_NOT_CLUB, JSON.stringify(quillPromo));
+  const expiryTight = parseClubChargeEmail({ from: "billing@allieddispatch.com", subject: "Allied Dispatch Payment — PO #11222", bodyText: "Your Visa ending in 4242 was charged $25.00 for PO #11222. Card expires 08/16. Billing zip 06606." });
+  check("expiry '08/16' does NOT parse (year 16 outside 2020s/2030s)", expiryTight.cardLast4 === "4242" && expiryTight.cardExpiry === null && expiryTight.skipReason == null, JSON.stringify(expiryTight));
+  // Luhn unit checks (vectors verified against standard card test numbers).
+  check("luhnValid 4242424242424242 (Visa test) → true", luhnValid("4242424242424242") === true);
+  check("luhnValid 4111111111111111 → true", luhnValid("4111111111111111") === true);
+  check("luhnValid 378282246310005 (Amex test) → true", luhnValid("378282246310005") === true);
+  check("luhnValid 4012888888881881 (Visa) → true", luhnValid("4012888888881881") === true);
+  check("luhnValid 1234567890123456 → false", luhnValid("1234567890123456") === false);
+  check("luhnValid 9999999999999999 → false", luhnValid("9999999999999999") === false);
+  check("luhnValid rejects short/garbage input", luhnValid("1234") === false && luhnValid("abc") === false);
+  // Club email with a card but NO amount → existing amount gate.
+  const noAmount = parseClubChargeEmail({ from: "billing@allieddispatch.com", subject: "Allied Dispatch — statement", bodyText: "Your Visa ending in 4242 has no balance due." });
+  check("parse club email with card but no amount → skipped (no charge amount)", noAmount.skipReason === SKIP_NO_AMOUNT, JSON.stringify(noAmount));
 }
 
 /* ============ 1) scan dry-run: parses, writes NOTHING ============ */
@@ -242,6 +309,20 @@ await setup();
   // Scan is owner/admin only.
   const denied = await scanClubMailCore(WRONG_ACTOR, { dryRun: true }, { connectImpl: async () => (await makeMailbox()).mailbox });
   check("scan: contractor actor → error, zero writes", denied.ok === false && denied.error.includes("owner or an admin"), JSON.stringify(denied));
+}
+
+/* ============ 1b) REAL Honk email regression: scan → stage (1 row) ============ */
+{
+  const { mailbox } = makeMailboxFor([HONK_REAL]);
+  const r = await scanClubMailCore(ACTOR3, {}, { connectImpl: async () => mailbox });
+  check("real Honk scan: staged 1, skipped 0, 1 candidate", r.ok === true && r.staged === 1 && r.skipped === 0 && r.candidates === 1, JSON.stringify(r));
+  const rows = await q`SELECT * FROM payment_transactions WHERE org_id=${ORG3} AND kind='club_charge'`;
+  check("real Honk row staged: $49.00, club Honk, last4 9498, staged", rows.length === 1 && Number(rows[0].amount_cents) === 4900 && String(rows[0].club_name) === "Honk" && String(rows[0].card_last4) === "9498" && String(rows[0].status) === "staged" && String(rows[0].source_email_message_id) === HONK_REAL.messageId, JSON.stringify(rows[0]));
+  check("Ref# 1134… never taken as a card", !rows.some((r3) => String(r3.card_last4) === "1134"), JSON.stringify(rows));
+  const r2 = await scanClubMailCore(ACTOR3, {}, { connectImpl: async () => mailbox });
+  check("real Honk re-scan: already_staged 1, staged 0 (idempotent)", r2.ok === true && r2.alreadyStaged === 1 && r2.staged === 0, JSON.stringify(r2));
+  const count = await q`SELECT COUNT(*)::int AS n FROM payment_transactions WHERE org_id=${ORG3}`;
+  check("real Honk org still exactly 1 row", Number(count[0].n) === 1, JSON.stringify(count));
 }
 
 /* ============ 2) real scan: stages 3 with PER-PO card metadata ============ */
