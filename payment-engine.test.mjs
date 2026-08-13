@@ -57,6 +57,7 @@ const {
   getPaymentSquareConfigCore,
 } = await import("./src/data/payment-engine-core.ts");
 const { assertQaOrg } = await import("./src/data/db-guard.ts");
+const { squareIdempotencyKey } = await import("./src/data/square-client.ts");
 const checks = [];
 const check = (name, cond, extra = "") => {
   checks.push([name, Boolean(cond), extra]);
@@ -457,7 +458,7 @@ await setup();
   const dbRow = await q`SELECT status, attempt, idempotency_key FROM payment_transactions WHERE id=${txnId}`;
   check("blip → row STAYS staged, attempt unchanged (0)", String(dbRow[0].status) === "staged" && Number(dbRow[0].attempt) === 0 && dbRow[0].idempotency_key == null, JSON.stringify(dbRow));
   const r2 = await chargeStagedCore(ACTOR, { txnId, sourceId: "cnon:qa_nonce_blip" }, { fetchImpl });
-  check("retry after blip → charged (same attempt reused)", r2.ok === true && r2.data.attempt === 1 && r2.data.idempotencyKey === `club-${txnId}-1`, JSON.stringify(r2));
+  check("retry after blip → charged (same attempt reused)", r2.ok === true && r2.data.attempt === 1 && r2.data.idempotencyKey === squareIdempotencyKey("club-", txnId, 1), JSON.stringify(r2));
   check("BOTH Square calls used the SAME idempotency key (replay-safe)", squareCalls.length === 2 && squareCalls[0].body.idempotency_key === squareIdempotencyKey("club-", txnId, 1) && squareCalls[1].body.idempotency_key === squareIdempotencyKey("club-", txnId, 1), JSON.stringify(squareCalls.map((c) => c.body.idempotency_key)));
   check("same payment returned for the replayed key (no double charge)", paymentIds.get(squareIdempotencyKey("club-", txnId, 1)) === r2.data.squarePaymentId && squareCalls[0].body.idempotency_key === squareCalls[1].body.idempotency_key, JSON.stringify(r2.data.squarePaymentId));
 }
