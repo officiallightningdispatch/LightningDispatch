@@ -2,7 +2,7 @@
 // Towbook session self-healing (backlog #1, owner-directed 2026-08-11: "set up
 // Towbook and forget"). Covers the 2026-08-11 13:10Z incident: a real
 // motor-club offer arrived while the stored Towbook session had expired; the
-// engine's assignDrivers push failed and the offer was lost (5×
+// engine's dispatch push failed and the offer was lost (5×
 // escalated_contractor_push_failed). The suite proves:
 //   1. expired-session push → recovery → retry succeeds (decision NOT escalated,
 //      audit row exists, the retried assign used the recovered session)
@@ -102,13 +102,14 @@ const realRecoveryWith = (loginFetch, readCreds) => async (orgId) =>
 /** Mocked Towbook dispatch surface for runAutoDispatch. The stored session
  *  cookie ("xtl=session-A") works for the feed/drivers/accept, then the
  *  session DIES right after the accept (the exact 2026-08-11 13:10Z shape:
- *  accept succeeded, the assignDrivers push hit the expired session). Only
+ *  accept succeeded, the dispatch push hit the expired session). Only
  *  requests carrying the RECOVERED cookie ("fresh-cookie") succeed afterward,
- *  and a successful assignDrivers POST actually puts the driver on the call. */
+ *  and a successful assign PUT (PUT /api/calls/{id} — the current path)
+ *  actually puts the driver on the call. */
 function makeEngineFetch({ offers, drivers }) {
   const calls = [];
   let sessionDead = false; // flips after the accept POST
-  let call = { id: 279999999, status: { id: 2 }, assets: [{ driver: { id: 999999 } }] }; // chosen driver NOT on call
+  let call = { id: 279999999, status: { id: 2 }, assets: [{ id: 777001, driver: { id: 999999 } }] }; // chosen driver NOT on call (asset id present so the PUT assign can attach)
   const isFresh = (init) => String(init?.headers?.cookie || "").includes("fresh-cookie");
   const dead = (init) => !isFresh(init) && sessionDead;
   const fetchImpl = async (url, init = {}) => {
@@ -136,10 +137,15 @@ function makeEngineFetch({ offers, drivers }) {
       if (dead(init)) return jsonResponse(401, { error: "Invalid Security Token" });
       return jsonResponse(200, [call]);
     }
-    if (u.includes("/assignDrivers") && method === "POST") {
+    // The current assign path is PUT /api/calls/{id} (postAssignDriver — the
+    // old POST /assignDrivers guess 404s live, proven 2026-08-12 on five
+    // offers). Dead session → 401; recovered (fresh) session → apply the driver.
+    if (/\/api\/calls\/\d+$/.test(u) && method === "PUT") {
       if (dead(init)) return jsonResponse(401, { error: "Invalid Security Token. Please re-authenticate" });
       const body = JSON.parse(init.body);
-      call = { ...call, assets: [{ driver: { id: body.driverId } }] };
+      const assetId = Array.isArray(body.assets) && body.assets[0] ? body.assets[0].id : 777001;
+      const driverId = body.assets?.[0]?.drivers?.[0]?.driver?.id;
+      call = { ...call, assets: [{ id: assetId, driver: { id: driverId } }] };
       return jsonResponse(200, { ok: true });
     }
     throw new Error(`engine mock hit unexpected URL: ${method} ${u}`);
@@ -204,7 +210,7 @@ try {
     const r = await runAutoDispatch(ORG_PUSH, makeDeps(m.fetchImpl, realRecoveryWith(login, goodCreds)));
     check("push-heal: offer processed, NOT escalated (auto_accept_with_driver)", r.processed === 1 && r.decisions[0]?.decision === "auto_accept_with_driver" && r.decisions[0]?.escalated === false, JSON.stringify(r.decisions));
     check("push-heal: exactly ONE recovery login", login.posts() === 1, `posts=${login.posts()}`);
-    check("push-heal: the retried assignDrivers push used the RECOVERED session", m.calls.some((c) => c.url.includes("/assignDrivers") && c.fresh), JSON.stringify(m.calls.filter((c) => c.url.includes("/assignDrivers"))));
+    check("push-heal: the retried assign push (PUT /api/calls/{id}) used the RECOVERED session", m.calls.some((c) => c.method === "PUT" && c.url.includes("/api/calls/279999999") && c.fresh), JSON.stringify(m.calls.filter((c) => c.method === "PUT" && c.url.includes("/api/calls/279999999"))));
     const rows = await q`SELECT decision, escalated, reason FROM ai_dispatcher_decisions WHERE org_id=${ORG_PUSH} AND call_request_id='5001'`;
     check("push-heal: decision row present, not escalated, reason records the recovery", rows.length === 1 && String(rows[0].decision) === "auto_accept_with_driver" && rows[0].escalated === false && String(rows[0].reason).includes("session recovered; dispatch push retried"), JSON.stringify(rows[0]));
     const audit = await q`SELECT detail FROM audit_log WHERE org_id=${ORG_PUSH} AND action='towbook_session_recovered'`;
