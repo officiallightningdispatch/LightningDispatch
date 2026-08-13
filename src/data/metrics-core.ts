@@ -619,6 +619,14 @@ function coachRecommendations(
   }
   weak.sort((a, b) => b.deviation - a.deviation);
   const top = weak.slice(0, 2);
+  // On-Time Service Standards is a hard flag (owner-directed): a contractor with
+  // ANY job over the goal for a service they perform gets the course recommended,
+  // even when other weaknesses out-deviation it (the fleet row keeps top-2 order
+  // for the rest — this entry is appended when flagged).
+  if (m.serviceTimeOver != null && !top.some((w) => w.metricKey === "service_time")) {
+    const st = weak.find((w) => w.metricKey === "service_time");
+    if (st) top.push(st);
+  }
   return top.map((w) => {
     const lesson = lessons.find((l) => l.metricKey === w.metricKey);
     const status = progress.get(lesson?.id ?? "") ?? "not_started";
@@ -651,8 +659,9 @@ export type ServiceTimeBreakdown = {
   rows: ServiceTimeRow[];
   overGoal: number;
   underGoal: number;
-  /** Canonical service keys where the driver's average EXCEEDS the goal —
-   *  the Academy coach's On-Time Service Standards trigger. */
+  /** Canonical service keys where at least one job went over the goal
+   *  (row-level overGoal > 0) — the Academy coach's On-Time Service
+   *  Standards trigger. */
   overGoalServices: string[];
 };
 /** Per-driver actual-vs-goal per service type for the period: duration =
@@ -699,7 +708,7 @@ function computeServiceTime(
     rows.push(row);
     overGoal += a.over;
     underGoal += a.under;
-    if (avg != null && goal != null && avg > goal) overGoalServices.push(serviceKey);
+    if (a.over > 0) overGoalServices.push(serviceKey);
   }
   rows.sort((x, y) => (x.pctOfGoal ?? 0) - (y.pctOfGoal ?? 0));
   return { rows, overGoal, underGoal, overGoalServices };
