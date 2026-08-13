@@ -15,6 +15,8 @@ const {
 const { getOrgMetricsHandler } = await import("./src/data/metrics-core.ts");
 const { uploadJobPhotoCore, setVehicleMatchCore, completeJobCore } = await import("./src/data/driver-photos-core.ts");
 const { captureCompletionCore } = await import("./src/data/completion-core.ts");
+const { recordBatteryTestCore } = await import("./src/data/battery-sales-core.ts");
+const { H3Event } = await import("h3-v2");
 const checks = [];
 const check = (name, cond, extra = "") => { checks.push([name, Boolean(cond), extra]); if (!cond) throw new Error(`FAIL: ${name} ${extra}`); };
 const TAG = randomUUID().slice(0, 8);
@@ -29,8 +31,10 @@ const NOW = Date.now();
 const MIN = 60000;
 const iso = (ms) => new Date(ms).toISOString();
 await ensureSchema();
+const staleMembers = await q`SELECT DISTINCT m.user_id FROM organization_memberships m JOIN organizations o ON o.id=m.org_id WHERE o.name LIKE 'qa-cg-%'`;
 for (const org of await q`SELECT id, name FROM organizations WHERE name LIKE 'qa-cg-%'`) { assertQaOrg(org.id, org.name); await q`DELETE FROM organizations WHERE id=${org.id}`.catch(() => {}); }
-await q`DELETE FROM users WHERE email LIKE 'qa-cg-%-@lightning.test'`.catch(() => {});
+for (const m of staleMembers) await q`DELETE FROM users WHERE id=${m.user_id}`.catch(() => {});
+await q`DELETE FROM users WHERE email LIKE 'qa-cg-%@lightning.test'`.catch(() => {});
 await q`INSERT INTO organizations(id, name) VALUES(${ORG}, ${ORG})`;
 await q`INSERT INTO users(id, name, email, password_hash) VALUES(${OWNER}, 'CG Owner', ${email(OWNER)}, 'x'), (${DRIVER}, 'CG Driver', ${email(DRIVER)}, 'x'), (${OTHER}, 'CG Other', ${email(OTHER)}, 'x')`;
 await q`UPDATE users SET towbook_driver_id=${TB_DRIVER} WHERE id=${DRIVER}`;
@@ -44,14 +48,20 @@ await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, ar
   VALUES(${JOB}, ${ORG}, 'CG Customer', '', 0, 0, 'Bridgeport', 'jump_start', 'arrived', ${iso(NOW - 40 * MIN)}, '', ${TB_DRIVER}, 'CG Driver', ${iso(NOW - 5 * MIN)}, ${iso(NOW - 12 * MIN)}, '70 Pitt Street', ${JSON.stringify({ batterySaleId: null })}::jsonb)`;
 const eventStorage = globalThis[Symbol.for("tanstack-start:event-storage")];
 const startStorage = globalThis[Symbol.for("tanstack-start:start-storage-context")];
+// Standalone `bun completion-goals.test.mjs` runs don't boot the tanstack
+// server runtime — import start-server-core first (same bootstrap the other
+// passing suites use) so the request-context AsyncLocalStorage globals exist.
+if (!eventStorage || !startStorage) {
+  await import("@tanstack/start-server-core");
+}
 const withSession = (token, fn) => {
   const cookie = `ld_session_v2=${token}`;
-  const { H3Event } = await import("h3");
   const h3Event = new H3Event(new Request("http://localhost/", { headers: { cookie } }));
   const req = new Request("http://localhost/", { headers: { cookie } });
-  const store = new Map().set("h3Event", h3Event);
-  const res = eventStorage.run(store, () => startStorage.run({ request: req }, fn));
-  return res;
+  return globalThis[Symbol.for("tanstack-start:start-storage-context")].run(
+    { startOptions: {}, request: req, contextAfterGlobalMiddlewares: null, executedRequestMiddlewares: new Set() },
+    () => globalThis[Symbol.for("tanstack-start:event-storage")].run({ h3Event }, fn),
+  );
 };
 /* ============ 1) goal defaults + pure helpers ============ */
 {
@@ -114,8 +124,17 @@ const fetchImpl = async (url, init = {}) => {
 process.env.B2_KEY_ID = "004testkeyid"; process.env.B2_APPLICATION_KEY = "testsecret"; process.env.B2_BUCKET_NAME = "qa-bucket";
 const user = { orgId: ORG, id: DRIVER, role: "contractor", towbookDriverId: TB_DRIVER };
 {
-  for (const phase of PHASES) for (const side of SIDES) await uploadJobPhotoCore(user, { jobId: JOB, phase, side, dataUrl: photoDataUrl(phase) }, { fetchImpl, b2StableDir: `/tmp/b2-cg-${TAG}` });
+  for (const phase of PHASES) for (const side of SIDES) {
+    // NOTE: the base64 payload must stay in the base64 alphabet — phase names
+    // like "pre_arrival" contain `_`, which decodeDataUrl's regex rejects.
+    const up = await uploadJobPhotoCore(user, { jobId: JOB, phase, side, dataUrl: photoDataUrl("img") }, { fetchImpl, b2StableDir: `/tmp/b2-cg-${TAG}` });
+    check(`photo uploaded ${phase}/${side}`, up.ok === true, JSON.stringify(up));
+  }
   await setVehicleMatchCore(user, { jobId: JOB, confirmed: true }, { fetchImpl, b2StableDir: `/tmp/b2-cg-${TAG}` });
+  // Jumpstart completion gate (battery sales, owner-spec'd): the driver records
+  // the battery test BEFORE completing — mirror the real flow with result "ok".
+  const bt = await recordBatteryTestCore(user, { jobId: JOB, result: "ok" });
+  check("battery test recorded (jumpstart gate)", bt.ok === true, JSON.stringify(bt));
   await captureCompletionCore(user, { jobId: JOB, signatureDataUrl: sigDataUrl("S"), survey: { rating: 5, comment: "ok" } }, { fetchImpl, b2StableDir: `/tmp/b2-cg-${TAG}` });
   const before = await q`SELECT duration_seconds FROM dispatch_jobs WHERE id=${JOB}`;
   check("duration null before completion", before[0].duration_seconds == null);
@@ -164,11 +183,11 @@ if (failed.length) { console.error(failed.map(([n, , e]) => `  ${n} ${e}`).join(
 const memberIds = await q`SELECT DISTINCT m.user_id FROM organization_memberships m JOIN organizations o ON o.id=m.org_id WHERE o.name LIKE 'qa-cg-%'`;
 for (const org of await q`SELECT id, name FROM organizations WHERE name LIKE 'qa-cg-%'`) { assertQaOrg(org.id, org.name); await q`DELETE FROM organizations WHERE id=${org.id}`.catch(() => {}); }
 for (const m of memberIds) await q`DELETE FROM users WHERE id=${m.user_id}`.catch(() => {});
-await q`DELETE FROM users WHERE email LIKE 'qa-cg-%-@lightning.test'`.catch(() => {});
+await q`DELETE FROM users WHERE email LIKE 'qa-cg-%@lightning.test'`.catch(() => {});
 const leftover = await q`SELECT
   (SELECT COUNT(*)::int FROM organizations WHERE name LIKE 'qa-cg-%') AS orgs,
-  (SELECT COUNT(*)::int FROM users WHERE email LIKE 'qa-cg-%-@lightning.test') AS users,
-  (SELECT COUNT(*)::int FROM sessions s JOIN users u ON u.id=s.user_id WHERE u.email LIKE 'qa-cg-%-@lightning.test') AS sessions,
+  (SELECT COUNT(*)::int FROM users WHERE email LIKE 'qa-cg-%@lightning.test') AS users,
+  (SELECT COUNT(*)::int FROM sessions s JOIN users u ON u.id=s.user_id WHERE u.email LIKE 'qa-cg-%@lightning.test') AS sessions,
   (SELECT COUNT(*)::int FROM dispatch_jobs j JOIN organizations o ON o.id=j.org_id WHERE o.name LIKE 'qa-cg-%') AS jobs,
   (SELECT COUNT(*)::int FROM status_events e JOIN organizations o ON o.id=e.org_id WHERE o.name LIKE 'qa-cg-%') AS events,
   (SELECT COUNT(*)::int FROM job_photos p JOIN organizations o ON o.id=p.org_id WHERE o.name LIKE 'qa-cg-%') AS photos,

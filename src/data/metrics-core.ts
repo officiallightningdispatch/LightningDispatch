@@ -510,9 +510,6 @@ function enrichJobs(completed: JobRow[], data: OrgData, u: RosterRow): Map<strin
       assignedAt: j.assignedAt,
       quotedEtaMinutes: decision?.etaMinutes ?? null,
       decisionCreatedAt: decision?.createdAt ?? null,
-      serviceType: string;
-      durationSeconds: number | null;
-      assignedAt: number | null;
       arrivalMinutes, targetMinutes, lateBy,
       photos: photosMap,
       photosComplete12,
