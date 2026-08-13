@@ -297,6 +297,9 @@ function MoneyView() {
           />
         </div>
 
+        {/* ---------------------- battery sales (owner-spec'd 2026-08-13) ---------------------- */}
+        <BatterySalesSection />
+
         {/* ------------------------- tip cash-outs ------------------------- */}
         <section aria-label="Tip cash-outs" className="space-y-3">
           <div className="flex items-end justify-between gap-3">
@@ -1000,5 +1003,73 @@ function PaymentsSection() {
         Funds never leave your Square account — club charges settle into your Square balance like any other payment. Every charge runs only after you tap Charge on the staged row (or mark it after charging in your own dashboard). Weekly payday payouts are in the manifest above.
       </p>
     </div>
+  );
+}
+
+/* ------------------------- Battery sales (owner-spec'd 2026-08-13) ------------------------- */
+import { BatteryCharging } from "lucide-react";
+import { listBatterySales, type BatterySaleOwnerRow } from "~/data/battery-sales";
+const SALE_META: Record<string, { label: string; badge: string }> = {
+  quote: { label: "Quote", badge: "bg-ink-100 text-ink-600" },
+  approved: { label: "Approved", badge: "bg-accent-100 text-accent-700" },
+  paid: { label: "Paid", badge: "bg-success-100 text-success-700" },
+  voided: { label: "Declined", badge: "bg-ink-50 text-ink-500" },
+};
+function BatterySalesSection() {
+  const [sales, setSales] = useState<BatterySaleOwnerRow[] | null>(null);
+  const load = useCallback(() => {
+    void listBatterySales().then(setSales).catch(() => setSales([]));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  return (
+    <section aria-label="Battery sales" className="space-y-3">
+      <div className="flex items-end justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="text-base font-bold text-ink-800">Battery sales</h2>
+          <p className="mt-0.5 text-xs text-ink-500">
+            Jumpstart battery sales run on the contractor&apos;s phone — customer-present charge to your Square account, tax + admin fee on the battery price only.
+          </p>
+        </div>
+      </div>
+      {sales === null ? (
+        <div className="h-28 animate-pulse rounded-2xl bg-ink-100/70" aria-busy="true" />
+      ) : sales.length === 0 ? (
+        <EmptyState
+          icon={BatteryCharging}
+          title="No battery sales yet"
+          body="When a contractor records a faulty battery on a jumpstart job, the AI Battery Sales Agent runs the sale — paid sales land here."
+        />
+      ) : (
+        <Card className="divide-y divide-ink-100">
+          {sales.map((s) => {
+            const meta = SALE_META[s.status] ?? SALE_META.quote;
+            return (
+              <div key={s.id} className="space-y-1.5 px-4 py-3.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="min-w-0 text-sm font-bold text-ink-800">
+                    {s.vehicleYear} {s.vehicleMake} {s.vehicleModel}
+                    <span className="ml-2 font-normal text-ink-400">VIN {s.vin}</span>
+                  </p>
+                  <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${meta.badge}`}>{meta.label}</span>
+                </div>
+                <p className="text-[11px] text-ink-500">
+                  {s.contractorName} · job {s.jobLabel}
+                  {s.installJobId ? ` · install job ${s.installJobId}` : ""}
+                  {s.paidAt ? ` · paid ${new Date(s.paidAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : ""}
+                  {s.squareChargeId ? ` · Square ${s.squareChargeId.slice(0, 12)}` : ""}
+                </p>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] tabular-nums text-ink-500">
+                  <span>Battery {formatCents(s.batteryPriceCents ?? 0)}</span>
+                  <span>Install {formatCents(s.installFeeCents ?? 0)}</span>
+                  <span>Tax {formatCents(s.salesTaxCents ?? 0)}</span>
+                  <span>Admin {formatCents(s.adminFeeCents ?? 0)}</span>
+                  <span className="text-xs font-black text-ink-800">Total {formatCents(s.totalCents ?? 0)}</span>
+                </div>
+              </div>
+            );
+          })}
+        </Card>
+      )}
+    </section>
   );
 }

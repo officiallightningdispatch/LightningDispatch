@@ -983,6 +983,84 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     // type), so going online stays blocked until it's done.
     await q`ALTER TABLE contractor_doc_types ADD COLUMN IF NOT EXISTS requires_notifications_location BOOLEAN NOT NULL DEFAULT FALSE`;
   }],
+  [42, async (q) => {
+    // BATTERY SALES + TIRE-PLUG PHASE 1 (owner-spec'd 2026-08-13, formula
+    // owner-corrected; build 2026-08-13). Jumpstart jobs: the contractor
+    // REQUIRED battery test → if faulty, the AI Battery Sales Agent runs a
+    // guided sale (VIN → NHTSA decode → Autozone price → install type → live
+    // quote → customer approval → CUSTOMER-PRESENT Square card charge on the
+    // OWNER's Square account) → warehouse pickup + an auto-created "Battery
+    // installation" job in the contractor's queue. Pricing (NON-NEGOTIABLE):
+    // customerTotal = batteryPrice + installFee + salesTax + adminFee where
+    // salesTax = batteryPrice × taxRate AND adminFee = batteryPrice × 8.75% —
+    // tax + admin fee apply to the BATTERY PRICE ONLY; the install fee is
+    // neither taxed nor admin-fee'd. All rates configurable in owner settings.
+    // NO PAN storage anywhere (Square nonce-only; last4 max). No automated
+    // money movement — the charge is customer-present only.
+    await q`CREATE TABLE IF NOT EXISTS battery_sales (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      job_id TEXT NOT NULL REFERENCES dispatch_jobs(id) ON DELETE CASCADE,
+      contractor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      vin TEXT NOT NULL,
+      vehicle_make TEXT NOT NULL,
+      vehicle_model TEXT NOT NULL,
+      vehicle_year TEXT NOT NULL,
+      vehicle_manual BOOLEAN NOT NULL DEFAULT FALSE,
+      battery_price_cents INTEGER NOT NULL,
+      install_type TEXT NOT NULL CHECK (install_type IN ('standard','advanced')),
+      install_fee_cents INTEGER NOT NULL,
+      sales_tax_cents INTEGER NOT NULL,
+      admin_fee_cents INTEGER NOT NULL,
+      total_cents INTEGER NOT NULL,
+      currency TEXT NOT NULL DEFAULT 'USD',
+      status TEXT NOT NULL DEFAULT 'quote' CHECK (status IN ('quote','approved','paid','voided')),
+      square_charge_id TEXT,
+      declined_reason TEXT,
+      install_job_id TEXT REFERENCES dispatch_jobs(id) ON DELETE SET NULL,
+      charge_attempt INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      paid_at TIMESTAMPTZ
+    )`;
+    await q`CREATE INDEX IF NOT EXISTS battery_sales_org_created_idx ON battery_sales(org_id, created_at)`;
+    // One OPEN sale per jumpstart job — a job can never have two live quotes
+    // (a completed/voided sale frees the slot for a re-run).
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS battery_sales_org_job_open_uidx
+      ON battery_sales(org_id, job_id) WHERE status IN ('quote','approved')`;
+    // REQUIRED battery test gate: recorded on the job itself so completion can
+    // be gated even when no sale was ever started (battery OK path).
+    await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS battery_test_result TEXT CHECK (battery_test_result IN ('ok','faulty'))`;
+    await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS battery_tested_at TIMESTAMPTZ`;
+    // Rates config (owner Settings, defaults per owner-corrected formula):
+    // tax 6.35% (CT), admin fee 8.75%, install $45/$65, warehouse address.
+    await q`ALTER TABLE org_settings ADD COLUMN IF NOT EXISTS battery_tax_rate_bps INTEGER NOT NULL DEFAULT 635`;
+    await q`ALTER TABLE org_settings ADD COLUMN IF NOT EXISTS battery_admin_fee_bps INTEGER NOT NULL DEFAULT 875`;
+    await q`ALTER TABLE org_settings ADD COLUMN IF NOT EXISTS battery_install_standard_cents INTEGER NOT NULL DEFAULT 4500`;
+    await q`ALTER TABLE org_settings ADD COLUMN IF NOT EXISTS battery_install_advanced_cents INTEGER NOT NULL DEFAULT 6500`;
+    await q`ALTER TABLE org_settings ADD COLUMN IF NOT EXISTS warehouse_address TEXT NOT NULL DEFAULT ''`;
+  }],
+  [43, async (q) => {
+    // Battery sales schema correction (2026-08-13, found during verification):
+    // migration 42 declared the quote-price columns NOT NULL, but the agent
+    // fills them STEPWISE (price → install → quote), so a fresh sale row is
+    // created with NULLs in those columns. Append-only follow-up (42 already
+    // applied to prod): relax them. The agent step functions validate each
+    // input before it is written, so nullable columns are safe — a sale is
+    // never charged until total_cents is set (chargeBatterySaleCore requires
+    // status='approved' and total_cents != null).
+    await q`ALTER TABLE battery_sales ALTER COLUMN battery_price_cents DROP NOT NULL`;
+    await q`ALTER TABLE battery_sales ALTER COLUMN install_type DROP NOT NULL`;
+    await q`ALTER TABLE battery_sales ALTER COLUMN install_fee_cents DROP NOT NULL`;
+    await q`ALTER TABLE battery_sales ALTER COLUMN sales_tax_cents DROP NOT NULL`;
+    await q`ALTER TABLE battery_sales ALTER COLUMN admin_fee_cents DROP NOT NULL`;
+    await q`ALTER TABLE battery_sales ALTER COLUMN total_cents DROP NOT NULL`;
+    // Vehicle confirmation step: the VIN decode stores the vehicle, but the
+    // agent must show it to the driver and get a CONFIRM before the price step
+    // (brief: "agent shows the confirmed vehicle → prompts the Autozone price").
+    // Manual entry (vehicle_manual) sets it TRUE directly — the entry IS the
+    // confirmation.
+    await q`ALTER TABLE battery_sales ADD COLUMN IF NOT EXISTS vehicle_confirmed BOOLEAN NOT NULL DEFAULT FALSE`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

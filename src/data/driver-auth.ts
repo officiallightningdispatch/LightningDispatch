@@ -450,6 +450,52 @@ export type QueueResult =
   | { ok: true; calls: DriverCall[] }
   | { ok: false; expired: boolean; message: string };
 
+/** LD status → driver-portal statusId (mirror of STATUS_ID_TO_LIFECYCLE for
+ *  platform-only jobs: the battery-install job created on a paid battery sale
+ *  has NO Towbook call — it lives only in dispatch_jobs). 1=offer (Accept),
+ *  2=en route, 3=on scene, 5=completed, 255=cancelled. */
+const LD_STATUS_TO_ID: Readonly<Record<string, number>> = {
+  new: 1, offered: 1, accepted: 2, en_route: 2, arrived: 3, completed: 5, cancelled: 255,
+};
+
+/** Platform-created jobs (towbook_job_id IS NULL — e.g. the auto-created
+ *  "Battery installation" job from a paid battery sale, owner-spec'd 2026-08-13)
+ *  merged into the driver queue so they appear in the contractor's app
+ *  immediately. Card shape mirrors normalizeDriverCall. */
+async function platformOnlyCalls(user: { orgId: string; towbookDriverId: string }): Promise<DriverCall[]> {
+  try {
+    const q = await db();
+    const rows = await q`SELECT id, status, customer_name, phone, area, pickup, pickup_lat, pickup_lng, vehicle_desc, note, service_type, created_at, completed_at
+      FROM dispatch_jobs
+      WHERE org_id=${user.orgId} AND towbook_job_id IS NULL AND assigned_driver_towbook_id=${user.towbookDriverId}
+      ORDER BY created_at DESC LIMIT 100`;
+    return (rows as Record<string, unknown>[]).map((r) => {
+      const statusId = LD_STATUS_TO_ID[String(r.status ?? "new")] ?? 1;
+      const lat = Number(r.pickup_lat ?? 0);
+      const lng = Number(r.pickup_lng ?? 0);
+      const serviceType = String(r.service_type ?? "");
+      return {
+        id: String(r.id),
+        callNumber: String(r.id),
+        statusId,
+        serviceName: serviceType === "battery_install" ? "Battery installation" : "Service job",
+        pickupAddress: String(r.pickup ?? r.area ?? ""),
+        zip: "",
+        vehicle: String(r.vehicle_desc ?? ""),
+        arrivalETA: null,
+        purchaseOrderNumber: null,
+        customerName: String(r.customer_name ?? ""),
+        customerPhone: String(r.phone ?? ""),
+        pickupLat: Number.isFinite(lat) && lat !== 0 ? lat : null,
+        pickupLng: Number.isFinite(lng) && lng !== 0 ? lng : null,
+        updatedAtIso: r.completed_at != null ? new Date(String(r.completed_at)).toISOString() : new Date(String(r.created_at)).toISOString(),
+      };
+    });
+  } catch {
+    return []; // platform jobs must never break the Towbook queue
+  }
+}
+
 /** GET /api/calls with the driver's session. Server-side per-session scoping is
  *  expected; when other drivers' calls leak, filter to this driver's assignment. */
 async function fetchDriverQueue(user: { orgId: string; towbookDriverId: string }, opts: { fetchImpl?: typeof fetch } = {}): Promise<QueueResult> {
@@ -464,10 +510,12 @@ async function fetchDriverQueue(user: { orgId: string; towbookDriverId: string }
   const driverIdNum = Number(user.towbookDriverId);
   const scoped = raw.filter((c) => c && typeof c === "object" && callHasDriver(c, driverIdNum));
   const scopeApplies = raw.some((c) => c && typeof c === "object" && !callHasDriver(c, driverIdNum));
-  const cards = (scopeApplies ? scoped : raw)
+  const towbookCards = (scopeApplies ? scoped : raw)
     .map((c) => normalizeDriverCall(c as Record<string, unknown>))
     .filter((c): c is DriverCall => c !== null);
-  return { ok: true, calls: cards };
+  const platformCards = await platformOnlyCalls(user); // battery-install etc.
+  const seen = new Set(towbookCards.map((c) => c.id));
+  return { ok: true, calls: [...towbookCards, ...platformCards.filter((c) => !seen.has(c.id))] };
 }
 
 /* --------------------------------- status transitions --------------------------------- */
@@ -496,6 +544,46 @@ async function applyDriverTransition(
   const { callHasDriver, loadDriverSession } = await import("./driver-gps-core");
   const session = await loadDriverSession(user);
   if (!session) return { ok: false, expired: true, code: "no_session", message: "No active session — reconnect to keep working." };
+  // PLATFORM-ONLY jobs (towbook_job_id IS NULL — the auto-created "Battery
+  // installation" job from a paid battery sale) have NO Towbook call: the
+  // transition is applied to dispatch_jobs directly (owner-spec'd 2026-08-13).
+  // accept: offered/new → en_route; en_route: en_route → arrived.
+  {
+    const q = await db();
+    const ldRows = await q`SELECT id, status, towbook_job_id, assigned_driver_towbook_id
+      FROM dispatch_jobs WHERE org_id=${user.orgId} AND id=${callId} LIMIT 1`;
+    if (ldRows.length && ldRows[0].towbook_job_id == null) {
+      const ldJob = ldRows[0] as Record<string, unknown>;
+      const currentLd = String(ldJob.status ?? "");
+      const assignedTo = ldJob.assigned_driver_towbook_id != null ? String(ldJob.assigned_driver_towbook_id) : "";
+      if (assignedTo && assignedTo !== user.towbookDriverId) {
+        return { ok: false, code: "unauthorized", message: "This job is not assigned to you." };
+      }
+      const fromTo: Record<string, string | null> = { offered: "en_route", new: "en_route", en_route: "arrived" };
+      const next = fromTo[currentLd] ?? null;
+      if (next === null) {
+        return { ok: false, code: "invalid_state", message: `This job cannot be ${action === "accept" ? "accepted" : "moved en route"} from its current status.` };
+      }
+      if (next === "arrived" && action !== "en_route") {
+        return { ok: false, code: "invalid_state", message: "This job is already on the way." };
+      }
+      if (next === "en_route" && currentLd === "en_route") {
+        return { ok: true, changed: false, statusId: 2 };
+      }
+      const note = `driver ${action === "accept" ? "accepted" : "en route"} (Lightning Dispatch platform job)${actor.ownerInDriverView ? " (owner in driver view)" : ""}`;
+      await q`UPDATE dispatch_jobs SET status=${next}, assigned_at=COALESCE(assigned_at, NOW()),
+        arrived_at=CASE WHEN ${next}='arrived' THEN NOW() ELSE arrived_at END
+        WHERE id=${callId} AND org_id=${user.orgId}`;
+      await q`INSERT INTO status_events(id, org_id, job_id, from_status, to_status, actor_user_id, actor_role, note)
+        SELECT gen_random_uuid()::text, ${user.orgId}, ${callId}, ${currentLd}, ${next}, ${actor.userId}, ${actor.role}, ${note}`;
+      try {
+        await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
+          SELECT gen_random_uuid()::text, ${user.orgId}, ${actor.userId}, ${actor.role}, 'driver_status_change', 'job', ${callId},
+            ${JSON.stringify({ platformOnly: true, from: currentLd, to: next, actorRole: actor.role })}::jsonb, 'driver-portal'`;
+      } catch { /* best-effort audit */ }
+      return { ok: true, changed: true, statusId: next === "arrived" ? 3 : 2 };
+    }
+  }
   const fetchImpl = opts.fetchImpl ?? fetch;
   const numericId = Number(callId);
   const idForBody = Number.isInteger(numericId) && numericId > 0 ? numericId : callId;

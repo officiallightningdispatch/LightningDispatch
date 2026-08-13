@@ -26,6 +26,7 @@ function OwnerSettings() {
     {success&&<p className="mt-5 rounded-xl bg-success-50 p-3 text-sm text-success-700">Towbook connected securely. The background puller can now use this session.</p>}{error&&!open&&<p className="mt-5 flex gap-2 rounded-xl bg-danger-50 p-3 text-sm text-danger-700"><AlertTriangle className="size-4 shrink-0"/>{error}</p>}</Card>
     <div className="mt-6"><DriverAccountCard /></div>
     <div className="mt-6"><GeofenceSettingsCard /></div>
+    <div className="mt-6"><BatteryRatesCard /></div>
     {open&&<div className="fixed inset-0 z-50 grid place-items-center bg-ink-950/40 p-4" role="dialog" aria-modal="true" aria-labelledby="towbook-title"><Card className="w-full max-w-md p-6"><div className="flex items-start justify-between gap-4"><div><span className="grid size-10 place-items-center rounded-xl bg-brand-50 text-brand-600"><Plug className="size-5"/></span><h2 id="towbook-title" className="mt-4 text-xl font-bold">Connect Towbook</h2></div><button className="grid size-11 place-items-center rounded-xl text-ink-400 hover:bg-ink-50" aria-label="Close" onClick={()=>setOpen(false)}><X className="size-5"/></button></div><p className="mt-4 text-sm leading-relaxed text-ink-600">Enter your Towbook login once. Your password is used only to establish an encrypted session and is never stored.</p><form onSubmit={submit} className="mt-5 space-y-4"><label className="block text-sm font-semibold">Towbook username<input required type="text" value={username} onChange={e=>setUsername(e.target.value)} placeholder="e.g. mjohnson — often your email" className="mt-1 h-11 w-full rounded-xl border border-ink-200 px-3"/></label><label className="block text-sm font-semibold">Towbook password<input required type="password" value={password} onChange={e=>setPassword(e.target.value)} className="mt-1 h-11 w-full rounded-xl border border-ink-200 px-3"/></label>{error&&<p className="flex gap-2 rounded-xl bg-danger-50 p-3 text-sm text-danger-700"><AlertTriangle className="size-4 shrink-0"/>{error}</p>}<Button type="submit" className="w-full" loading={pending}>Connect securely</Button></form></Card></div>}
   </AppShell>;
 }
@@ -259,3 +260,74 @@ function DriverAccountCard() {
   );
 }
 
+
+/* ------------------- Battery sale rates (owner-spec'd 2026-08-13) ------------------- */
+import { Zap } from "lucide-react";
+import { getBatteryRates, updateBatteryRates } from "~/data/battery-sales";
+function BatteryRatesCard() {
+  const [loaded, setLoaded] = useState(false);
+  const [tax, setTax] = useState("6.35");
+  const [admin, setAdmin] = useState("8.75");
+  const [std, setStd] = useState("45");
+  const [adv, setAdv] = useState("65");
+  const [warehouse, setWarehouse] = useState("");
+  const [pending, setPending] = useState(false);
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  useEffect(() => {
+    void (async () => {
+      const r = await getBatteryRates();
+      if (r.ok) {
+        setTax((r.rates.taxRateBps / 100).toFixed(2));
+        setAdmin((r.rates.adminFeeBps / 100).toFixed(2));
+        setStd((r.rates.installStandardCents / 100).toFixed(2));
+        setAdv((r.rates.installAdvancedCents / 100).toFixed(2));
+        setWarehouse(r.rates.warehouseAddress);
+      }
+      setLoaded(true);
+    })();
+  }, []);
+  const save = async () => {
+    const taxN = Number(tax), adminN = Number(admin), stdN = Number(std), advN = Number(adv);
+    if (![taxN, adminN, stdN, advN].every((n) => Number.isFinite(n) && n >= 0) || taxN > 50 || adminN > 50 || stdN > 1000 || advN > 1000) {
+      setMessage({ ok: false, text: "Enter valid values — tax and admin fee as %, install fees in dollars." });
+      return;
+    }
+    setPending(true);
+    setMessage(null);
+    const r = await updateBatteryRates({ data: { taxRateBps: Math.round(taxN * 100), adminFeeBps: Math.round(adminN * 100), installStandardCents: Math.round(stdN * 100), installAdvancedCents: Math.round(advN * 100), warehouseAddress: warehouse.trim() } });
+    setPending(false);
+    if (r.ok) setMessage({ ok: true, text: "Saved — new battery rates are live for the next quote." });
+    else setMessage({ ok: false, text: r.message });
+  };
+  return (
+    <Card className="p-6 sm:p-8">
+      <div className="flex gap-4">
+        <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-brand-500 text-white"><Zap className="size-6" /></span>
+        <div>
+          <p className="text-xs font-bold uppercase tracking-wider text-ink-500">Battery sales</p>
+          <h2 className="mt-1 text-xl font-bold">Battery sale rates</h2>
+          <p className="mt-1 max-w-lg text-sm text-ink-500">
+            Tax and admin fee apply to the BATTERY PRICE ONLY — the install fee is never taxed and carries no admin fee (owner-corrected formula).
+          </p>
+        </div>
+      </div>
+      {!loaded ? (
+        <div className="mt-5 h-10 animate-pulse rounded-xl bg-ink-100/70" />
+      ) : (
+        <div className="mt-5 grid gap-4 sm:max-w-lg">
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block text-sm font-semibold">Sales tax %<input type="number" step="0.01" min={0} max={50} value={tax} onChange={(e) => setTax(e.target.value)} className="mt-1 h-11 w-full rounded-xl border border-ink-200 px-3" /></label>
+            <label className="block text-sm font-semibold">Admin fee %<input type="number" step="0.01" min={0} max={50} value={admin} onChange={(e) => setAdmin(e.target.value)} className="mt-1 h-11 w-full rounded-xl border border-ink-200 px-3" /></label>
+            <label className="block text-sm font-semibold">Standard install ($)<input type="number" step="1" min={0} max={1000} value={std} onChange={(e) => setStd(e.target.value)} className="mt-1 h-11 w-full rounded-xl border border-ink-200 px-3" /></label>
+            <label className="block text-sm font-semibold">Advanced install ($)<input type="number" step="1" min={0} max={1000} value={adv} onChange={(e) => setAdv(e.target.value)} className="mt-1 h-11 w-full rounded-xl border border-ink-200 px-3" /></label>
+          </div>
+          <label className="block text-sm font-semibold">Warehouse pickup address
+            <input type="text" value={warehouse} onChange={(e) => setWarehouse(e.target.value)} placeholder="Where contractors pick up sold batteries" className="mt-1 h-11 w-full rounded-xl border border-ink-200 px-3" />
+          </label>
+          <Button onClick={() => void save()} loading={pending}>Save rates</Button>
+          {message && <p className={`rounded-xl p-3 text-sm ${message.ok ? "bg-success-50 text-success-700" : "bg-danger-50 text-danger-600"}`}>{message.text}</p>}
+        </div>
+      )}
+    </Card>
+  );
+}

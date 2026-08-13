@@ -12,7 +12,8 @@ export type ServiceType =
   | "tire_change"
   | "lockout"
   | "flatbed_tow"
-  | "fuel_delivery";
+  | "fuel_delivery"
+  | "battery_install";
 
 export interface Location {
   lat: number;

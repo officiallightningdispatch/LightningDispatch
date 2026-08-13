@@ -34,6 +34,7 @@ const DEMO_RATE: Record<ServiceType, number> = {
   lockout: 85,
   flatbed_tow: 160,
   fuel_delivery: 160,
+  battery_install: 45,
 };
 
 /** Contextual primary action for the current step of an active job. */

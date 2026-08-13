@@ -118,23 +118,27 @@ async function resolvePhotoUser(): Promise<PhotoUser | null> {
 const isSide = (s: string): s is PhotoSide => (PHOTO_SIDES as readonly string[]).includes(s);
 const isPhase = (p: string): p is PhotoPhase => (PHOTO_PHASES as readonly string[]).includes(p);
 
-type ResolvedJob = { id: string; status: string | null; towbookJobId: string | null; raw: Record<string, unknown> | null; assignedContractorId: string | null };
+type ResolvedJob = { id: string; status: string | null; towbookJobId: string | null; raw: Record<string, unknown> | null; assignedContractorId: string | null; assignedDriverTowbookId: string | null; serviceType: string | null; batteryTestResult: "ok" | "faulty" | null };
 
 /** Resolve the LD dispatch_jobs row for a job identifier that may be either the
  *  LD job id or the Towbook call id (the driver portal works with call ids). */
 export async function resolveJob(orgId: string, jobId: string): Promise<ResolvedJob | null> {
   await ensure();
   const q = await db();
-  const rows = await q`SELECT id, status, towbook_job_id, raw_json, assigned_contractor_id
+  const rows = await q`SELECT id, status, towbook_job_id, raw_json, assigned_contractor_id, assigned_driver_towbook_id, service_type, battery_test_result
     FROM dispatch_jobs WHERE org_id=${orgId} AND (id=${jobId} OR towbook_job_id=${jobId}) LIMIT 1`;
   if (!rows.length) return null;
   const r = rows[0] as Record<string, unknown>;
+  const t = r.battery_test_result != null ? String(r.battery_test_result) : null;
   return {
     id: String(r.id),
     status: r.status != null ? String(r.status) : null,
     towbookJobId: r.towbook_job_id != null ? String(r.towbook_job_id) : null,
     raw: r.raw_json && typeof r.raw_json === "object" ? (r.raw_json as Record<string, unknown>) : null,
     assignedContractorId: r.assigned_contractor_id != null ? String(r.assigned_contractor_id) : null,
+    assignedDriverTowbookId: r.assigned_driver_towbook_id != null ? String(r.assigned_driver_towbook_id) : null,
+    serviceType: r.service_type != null ? String(r.service_type) : null,
+    batteryTestResult: t === "ok" || t === "faulty" ? t : null,
   };
 }
 
@@ -145,6 +149,13 @@ export async function isAssignedDriver(orgId: string, userId: string, towbookDri
     const q = await db();
     const rows = await q`SELECT contractor_id FROM organization_memberships WHERE org_id=${orgId} AND user_id=${userId} LIMIT 1`;
     if (rows.length && rows[0].contractor_id != null && String(rows[0].contractor_id) === job.assignedContractorId) return true;
+  }
+  // assigned_driver_towbook_id is the platform's primary assignment signal
+  // (AI dispatcher, manual assign, and platform-only jobs like "Battery
+  // installation" that have no Towbook raw call). When set, it is
+  // authoritative; when NULL the raw Towbook call is the fallback.
+  if (job.assignedDriverTowbookId) {
+    return job.assignedDriverTowbookId === String(towbookDriverId);
   }
   const driverIdNum = Number(towbookDriverId);
   if (job.raw && driverIdNum > 0 && Number.isFinite(driverIdNum)) return callHasDriver(job.raw, driverIdNum);
@@ -467,6 +478,23 @@ export async function completeJobCore(user: PhotoUser, data: unknown, opts: { fe
     const q = await db();
     const assigned = await isAssignedDriver(user.orgId, user.id, user.towbookDriverId, job);
     if (!assigned) return { ok: false, code: "unauthorized", message: "This job is not assigned to you." };
+
+    // Gate (battery sales, owner-spec'd 2026-08-13): jumpstart jobs REQUIRED
+    // battery test before completion. If the test was 'faulty', the battery
+    // sale must have reached a terminal decision (paid = battery sold; voided
+    // = customer declined) — otherwise the job stays arrived.
+    if (job.serviceType === "jump_start") {
+      if (!job.batteryTestResult) {
+        return { ok: false, code: "battery_test_required", message: "Record the battery test result before completing this job." };
+      }
+      if (job.batteryTestResult === "faulty") {
+        const saleRows = await q`SELECT status FROM battery_sales WHERE org_id=${user.orgId} AND job_id=${job.id} ORDER BY created_at DESC LIMIT 1`;
+        const saleStatus = saleRows.length ? String(saleRows[0].status) : null;
+        if (saleStatus !== "paid" && saleStatus !== "voided") {
+          return { ok: false, code: "battery_test_required", message: "The battery is faulty — finish the battery sale (paid or customer declined) before completing the job." };
+        }
+      }
+    }
 
     // Gate (completion flow): the customer completion capture — signature + survey —
     // must be on file BEFORE complete. The tip is OPTIONAL and never blocks.

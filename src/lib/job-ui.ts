@@ -4,6 +4,7 @@ import {
   Fuel,
   KeyRound,
   Truck,
+  Wrench,
   type LucideIcon,
 } from "lucide-react";
 import type { Contractor, JobStatus, ServiceType } from "~/data/seed";
@@ -89,6 +90,7 @@ export const SERVICE_LABELS: Record<ServiceType, string> = {
   lockout: "Lockout",
   flatbed_tow: "Flatbed tow",
   fuel_delivery: "Fuel delivery",
+  battery_install: "Battery installation",
 };
 
 /** Lucide icon components per service type (design-spec §4 — no emoji). */
@@ -98,6 +100,7 @@ export const SERVICE_ICONS: Record<ServiceType, LucideIcon> = {
   lockout: KeyRound,
   flatbed_tow: Truck,
   fuel_delivery: Fuel,
+  battery_install: Wrench,
 };
 
 export const CONFIDENCE_META: Record<
