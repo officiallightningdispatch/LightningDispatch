@@ -41,6 +41,7 @@
  * Imported ONLY by the server-only completion core (src/data/completion-core.ts)
  * and hermetic tests — never by client-reachable modules.
  */
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { findSiteRoot } from "./towbook-key";
@@ -56,6 +57,23 @@ const STABLE_DIR = join(dirname(SITE_ROOT), ".secrets");
 const ARTIFACT_DIRS = [join(SITE_ROOT, "dist", ".secrets"), join(SITE_ROOT, ".secrets")];
 
 export type SquareConfig = { accessToken: string; locationId: string; applicationId: string };
+/**
+ * SQUARE IDEMPOTENCY-KEY HELPER (fix 2026-08-13, production incident: every
+ * club charge failed "HTTP 400 VALUE_TOO_LONG — field idempotency_key, must
+ * not be greater than 45 length"; the key `club-<ptx-uuid>-<attempt>` was
+ * 47 chars). Square's CreatePayment requires idempotency_key ≤ 45 chars;
+ * long natural keys (prefixed UUIDs + attempt counters) exceed it. This
+ * helper deterministically hashes the natural key into a STABLE ≤45-char
+ * key (sha1 hex is deterministic — a retried attempt replays the SAME key,
+ * so Square's idempotency guarantee is preserved and a retry can never
+ * double-charge). prefix length + hash ≤ 45 always.
+ */
+export function squareIdempotencyKey(prefix: string, ...parts: Array<string | number>): string {
+  const safePrefix = prefix.slice(0, 8);
+  const maxHash = 45 - safePrefix.length;
+  const digest = createHash("sha1").update(parts.join("|")).digest("hex").slice(0, maxHash);
+  return `${safePrefix}${digest}`;
+}
 
 const readEnvOrFile = async (env: string | undefined, envFile: string | undefined, stableFiles: string[]): Promise<string | null> => {
   if (env && env.trim() !== "") return env.trim();

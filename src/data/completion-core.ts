@@ -31,7 +31,7 @@
  */
 import { z } from "zod";
 import { loadB2Config, authorizeAccount, putObject } from "./b2-client";
-import { loadSquareConfig, loadSquarePublicConfig, createPaymentLink, createCardPayment } from "./square-client";
+import { loadSquareConfig, loadSquarePublicConfig, createPaymentLink, createCardPayment, squareIdempotencyKey } from "./square-client";
 import { resolveJob, isAssignedDriver, decodeDataUrl } from "./driver-photos-core";
 import type { PhotoUser } from "./driver-photos-core";
 
@@ -360,7 +360,11 @@ export async function chargeTipCore(user: PhotoUser, data: unknown, opts: { fetc
     const names = await q`SELECT name FROM users WHERE id=${user.id} LIMIT 1`;
     const driverName = names.length && names[0].name ? String(names[0].name) : `Driver ${user.towbookDriverId}`;
     const currency = "USD";
-    const idempotencyKey = `tip-${job.id}-${user.towbookDriverId || user.id}-${v.data.attempt}`;
+    // SQUARE KEY LENGTH FIX (2026-08-13): `tip-<job>-<driver>-<attempt>` could
+    // exceed Square's 45-char idempotency_key limit when the driver id is a
+    // 36-char user UUID (HTTP 400 VALUE_TOO_LONG — same incident as the club
+    // charges). Deterministic hash: a replayed attempt replays the SAME key.
+    const idempotencyKey = squareIdempotencyKey("tip-", job.id, user.towbookDriverId || user.id, v.data.attempt);
     let payment;
     try {
       payment = await createCardPayment({

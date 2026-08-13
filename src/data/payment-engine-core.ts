@@ -60,7 +60,7 @@
  * gate is enforced at the core, not just the handler.
  */
 import { z } from "zod";
-import { loadSquareConfig, loadSquarePublicConfig, createCardPayment } from "./square-client";
+import { loadSquareConfig, loadSquarePublicConfig, createCardPayment, squareIdempotencyKey } from "./square-client";
 import { scanGmail, type ClubChargeCandidate } from "./club-mail";
 import { randomUUID } from "node:crypto";
 
@@ -355,7 +355,13 @@ export async function chargeStagedCore(actor: PaymentEngineActor, data: unknown,
     // The attempt to record: confirmed failures bump it; transport errors do
     // NOT (see the module header — same key must be replayable).
     const attempt = Number.isFinite(Number(row.attempt)) ? Number(row.attempt) + 1 : 1;
-    const idempotencyKey = `club-${String(row.id)}-${attempt}`;
+    // SQUARE KEY LENGTH FIX (2026-08-13 incident): `club-<ptx-uuid>-<attempt>`
+    // exceeded Square's 45-char idempotency_key limit (HTTP 400 VALUE_TOO_LONG
+    // on EVERY club charge — see audit_log payment_charge_failed). The hashed
+    // key is deterministic per (row, attempt), so a replayed attempt still
+    // carries the SAME key (Square's no-double-charge guarantee holds) and the
+    // key always fits under the limit.
+    const idempotencyKey = squareIdempotencyKey("club-", String(row.id), attempt);
     const note = `Club charge — ${clubName || "motor club"}${poRef ? ` — PO ${poRef}` : ""}${jobRef ? ` — job ${jobRef}` : ""}`.slice(0, 500);
 
     let payment;

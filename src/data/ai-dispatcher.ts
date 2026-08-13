@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { parseStateFromAddress, reverseGeocodeState, driverStateCacheKey } from "./state-guard-core";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { sql } from "~/db";
@@ -202,7 +203,9 @@ export type AiDispatcherDecision =
   | "escalated_driver_lookup_failed"
   | "escalated_accept_failed"
   | "escalated_unexpected_shape"
-  | "escalated_dispatch_failed";
+  | "escalated_dispatch_failed"
+  | "escalated_state_unknown"
+  | "escalated_cross_state";
 
 export type AutoDispatchRunResult = {
   gated: boolean; // ai_dispatcher_enabled=false → engine did nothing
@@ -1390,6 +1393,33 @@ export type ChosenDriverEta = {
  *  engine behaves exactly as before (payload-GPS origins, no area filter).
  *  The manual-reassign path passes NO anchors (the human's choice is
  *  authoritative — never area-filtered), only fixes. */
+/** SAME-STATE GUARD context (owner rule 2026-08-13: "No cross-state
+ *  assignments"). When `stateGuard` is present on the AreaContext, ONLY
+ *  drivers whose CURRENT state (resolved by the caller from real driver
+ *  location data) equals the JOB's state are eligible; a driver whose state
+ *  cannot be resolved is EXCLUDED (fail closed); a null jobState means the
+ *  job's state is unresolvable and NO candidate may be chosen (the caller
+ *  escalates instead of assigning). Opt-in: callers that omit it keep the
+ *  pre-guard behavior exactly. */
+export type StateGuardContext = {
+  /** Uppercase 2-letter job state ("TX"); null = unresolvable → fail closed. */
+  jobState: string | null;
+  /** Resolve a driver's CURRENT state from its ETA-origin coordinates. */
+  resolveDriverState: (driverId: number, lat: number, lng: number) => Promise<string | null>;
+};
+/** What the guard decided during one chooseBestDriverByRoad call (the caller
+ *  passes an out-object to learn WHY selection was blocked — the return null
+ *  alone cannot distinguish "no driver" from "guard refused"). */
+export type StateGuardOutcome = {
+  active: boolean;
+  jobState: string | null;
+  blocked: boolean;
+  /** "job_state_unknown" | "no_in_state_driver" | null. */
+  blockedReason: string | null;
+  checked: number;
+  inState: number;
+  excluded: Array<{ driverId: number; state: string | null; reason: string }>;
+};
 export type AreaContext = {
   anchors?: Map<string, DriverAnchor>;
   gpsFixes?: Map<string, DriverGpsFix>;
@@ -1397,6 +1427,8 @@ export type AreaContext = {
   anchorRadiusMiles?: number;
   /** "Now" for the fresh/stale fix decision (defaults to new Date()). */
   now?: Date;
+  /** Same-state assignment guard (owner-directed 2026-08-13). */
+  stateGuard?: StateGuardContext;
 };
 
 /** Workload-aware arrival model (owner-directed 2026-08-11): a driver with
@@ -1546,6 +1578,7 @@ export async function chooseBestDriverByRoad(
   roadRouter: RoadRouter | null,
   driverQueues?: Map<string, DriverQueue>,
   area?: AreaContext,
+  out?: { stateGuard?: StateGuardOutcome },
 ): Promise<ChosenDriverEta | null> {
   const queues = driverQueues ?? new Map<string, DriverQueue>();
   const baseEligible = drivers.filter((d): d is NearestDriver => {
@@ -1600,8 +1633,52 @@ export async function chooseBestDriverByRoad(
     return { lat: Number(d.latitude), lng: Number(d.longitude), basis: "payload", fixAgeMinutes: fixAge };
   };
 
-  const underCap = pool.filter((d) => driverActiveCount(d, queues) < MAX_DRIVER_QUEUE);
-  const pickCandidates = underCap.length ? underCap : pool;
+  // --- SAME-STATE GUARD (owner-directed 2026-08-13): when configured, only
+  // drivers whose CURRENT state equals the job's state are eligible. Job state
+  // comes from the offer ADDRESS (never the offer coords — production offers
+  // carried Bridgeport placeholder coords with Texas addresses); driver state
+  // comes from reverse geocoding the driver's ETA origin (freshest app GPS
+  // fix → payload lat/lng → anchor center). Fail closed: an unresolvable
+  // driver state excludes the driver; an unresolvable JOB state blocks all
+  // candidates (the caller escalates rather than assigning cross-state). ---
+  let statePool = pool;
+  const guardOut = out?.stateGuard;
+  if (guardOut && area?.stateGuard) {
+    guardOut.active = true;
+    guardOut.jobState = area.stateGuard.jobState;
+    if (!area.stateGuard.jobState) {
+      guardOut.blocked = true;
+      guardOut.blockedReason = "job_state_unknown";
+      return null;
+    }
+    const kept: NearestDriver[] = [];
+    const excluded: StateGuardOutcome["excluded"] = [];
+    for (const d of statePool) {
+      const did = Number(d.driverId);
+      const origin = originFor(d);
+      guardOut.checked++;
+      const st = await area.stateGuard.resolveDriverState(did, origin.lat, origin.lng);
+      if (st && st.toUpperCase() === area.stateGuard.jobState.toUpperCase()) {
+        kept.push(d);
+        guardOut.inState++;
+      } else {
+        excluded.push({
+          driverId: did,
+          state: st ? st.toUpperCase() : null,
+          reason: st ? `driver state ${st.toUpperCase()} ≠ job state ${area.stateGuard.jobState.toUpperCase()}` : "driver state unknown (reverse geocode unavailable)",
+        });
+      }
+    }
+    guardOut.excluded = excluded;
+    statePool = kept;
+    if (!kept.length) {
+      guardOut.blocked = true;
+      guardOut.blockedReason = "no_in_state_driver";
+      return null;
+    }
+  }
+  const underCap = statePool.filter((d) => driverActiveCount(d, queues) < MAX_DRIVER_QUEUE);
+  const pickCandidates = underCap.length ? underCap : statePool;
   const routeOne = async (d: NearestDriver): Promise<ChosenDriverEta | null> => {
     const straightLineMinutes = Math.max(1, Math.ceil(Number(d.estimatedTimeSeconds) / 60));
     const pingAge = gpsPingAgeMinutes(d);
@@ -2524,9 +2601,34 @@ async function runAutoDispatchInternal(
       // anchors — the human's choice is authoritative and must never be
       // area-filtered ("do not touch the manual assign path"); the fresh-fix
       // origin still improves the ETA for the human-chosen driver.
+      // SAME-STATE GUARD (owner rule: no cross-state assignments; production
+      // evidence 2026-08-13: offers with Bridgeport placeholder coords but
+      // Georgetown/Austin TX addresses were auto-accepted and dispatched to CT
+      // drivers). Job state from the offer's ADDRESS text (never the coords);
+      // driver states reverse-geocoded from each driver's CURRENT location,
+      // cached per run. Unknown on either side FAILS CLOSED (escalate, no
+      // accept) — the engine never assigns a driver it cannot prove is in the
+      // job's state.
+      const rawStarting = startingLocationOf(rawOffer as Record<string, unknown>);
+      const jobState = rawStarting ? (stateCityOf(rawStarting)?.state ?? parseStateFromAddress(rawStarting)) : null;
+      const tomtomKeyForGuard = resolveTomtomKey(deps.env ?? process.env);
+      const reverseStateCache = new Map<string, string | null>();
+      const stateGuardCtx: StateGuardContext | null = (tomtomKeyForGuard || jobState)
+        ? {
+            jobState: jobState ? jobState.toUpperCase() : null,
+            resolveDriverState: async (driverId, lat, lng) => {
+              const key = driverStateCacheKey(driverId, lat, lng);
+              if (reverseStateCache.has(key)) return reverseStateCache.get(key) ?? null;
+              const st = tomtomKeyForGuard ? await reverseGeocodeState(lat, lng, tomtomKeyForGuard, fetchImpl) : null;
+              reverseStateCache.set(key, st);
+              return st;
+            },
+          }
+        : null;
+      const guardOutcome: StateGuardOutcome = { active: false, jobState: null, blocked: false, blockedReason: null, checked: 0, inState: 0, excluded: [] };
       const areaCtx: AreaContext = humanReassigned
-        ? { gpsFixes: driverGpsFixes }
-        : { anchors: driverAnchors, gpsFixes: driverGpsFixes };
+        ? { gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx ?? undefined }
+        : { anchors: driverAnchors, gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx ?? undefined };
       const chosen = await chooseBestDriverByRoad(
         candidates,
         offer.startLocationLatitude,
@@ -2534,7 +2636,22 @@ async function runAutoDispatchInternal(
         resolved.router,
         driverQueues,
         areaCtx,
+        { stateGuard: guardOutcome },
       );
+      if (guardOutcome.blocked) {
+        const isUnknownJob = guardOutcome.blockedReason === "job_state_unknown";
+        const reason = isUnknownJob
+          ? `job state UNKNOWN (offer address ${rawStarting ? `"${rawStarting}"` : "missing"} did not resolve to a US state) — same-state rule cannot be verified, offer NOT auto-accepted (no cross-state dispatch)`
+          : `no driver currently in state ${jobState?.toUpperCase()} — ${guardOutcome.excluded.length} candidate(s) checked, ${guardOutcome.inState} in-state, ${guardOutcome.excluded.filter((e) => !e.state).length} with unknown state; offer NOT auto-accepted (no cross-state dispatch)`;
+        await record({
+          decision: isUnknownJob ? "escalated_state_unknown" : "escalated_cross_state",
+          driverId: null, driverName: null, etaMinutes: null, reason,
+          rawResponse: { offer, stateGuard: guardOutcome.excluded },
+        });
+        result.processed++;
+        result.decisions.push({ callRequestId: offer.callRequestId, decision: isUnknownJob ? "escalated_state_unknown" : "escalated_cross_state", escalated: true, reason });
+        continue;
+      }
       const driver = chosen?.driver ?? null;
       const effectiveMaxEta = Math.min(settings.maxEtaMinutes, offer.maxEta ?? settings.maxEtaMinutes);
       // The driver the accept POST carries: the human-chosen driver when a
