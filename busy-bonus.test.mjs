@@ -173,10 +173,10 @@ await job(`qa-bb-j-${randomUUID()}`, TB2, "completed", E + 900_000, E + 900_000,
 
 // D3 — real-data shape: THREE jobs with NO assigned_at/completed_at, carrying
 //      raw_json dispatchTime/completionTime (Z-less UTC) all inside hour F →
-//      busy hour from raw dispatchTimes, +$1 × 3 from raw completionTimes.
-//      PLUS one normal completed job (completed_at) so the record exists in the
-//      manifest (a bonus-only contractor with zero completed_at rows is not
-//      manifest-material — same rule as payday: jobs OR tips in period).
+//      busy hour from raw dispatchTimes. The 3 raw jobs AND the normal
+//      completed job all complete inside hour F (14:00–15:00Z) → +$1 × 4.
+//      The normal job exists so the record is manifest-material (a bonus-only
+//      contractor with zero completed_at rows is not — same rule as payday).
 await job(`qa-bb-j-${randomUUID()}`, TB3, "completed", F - 60_000, null, F + 1_000_000); // normal, completed in hour F too
 await job(`qa-bb-j-${randomUUID()}`, TB3, "completed", F - 60_000, null, null, { dispatchTime: "2026-07-16T14:05:00", completionTime: "2026-07-16T14:40:00" });
 await job(`qa-bb-j-${randomUUID()}`, TB3, "completed", F - 60_000, null, null, { dispatchTime: "2026-07-16T14:10:00", completionTime: "2026-07-16T14:45:00" });
@@ -202,10 +202,10 @@ let detail;
   check("compute: D2 exactly 2 assigned → no bonus (0)", d2 && d2.busyBonusCents === 0 && d2.busyBonusJobs === 0 && d2.busyBonusHours === null, JSON.stringify(d2));
   check("compute: D2 total unchanged ($300.00)", d2 && d2.totalCents === 30000, JSON.stringify(d2));
   const d3 = detail.records.find((r) => r.contractorId === D3);
-  check("compute: D3 raw dispatchTime/completionTime path → +$3", d3 && d3.busyBonusCents === 300 && d3.busyBonusJobs === 3
-    && d3.busyBonusHours && d3.busyBonusHours.length === 1 && d3.busyBonusHours[0].startsAtIso === iso(F) && d3.busyBonusHours[0].completedJobs === 3, JSON.stringify(d3));
-  check("compute: D3 jobCount = 1 (only the completed_at row counts toward gross)", d3 && d3.jobCount === 1 && d3.grossCents === 10000 && d3.totalCents === 10300, JSON.stringify(d3));
-  check("compute: totals.busyBonusCents = $8 across the manifest", detail && detail.totals.busyBonusCents === 800 && detail.totals.totalCents === 81500 + 30000 + 10300, JSON.stringify(detail?.totals));
+  check("compute: D3 raw dispatchTime/completionTime path → +$4 (3 raw + 1 normal all complete in hour F)", d3 && d3.busyBonusCents === 400 && d3.busyBonusJobs === 4
+    && d3.busyBonusHours && d3.busyBonusHours.length === 1 && d3.busyBonusHours[0].startsAtIso === iso(F) && d3.busyBonusHours[0].completedJobs === 4, JSON.stringify(d3));
+  check("compute: D3 jobCount = 1 (only the completed_at row counts toward gross)", d3 && d3.jobCount === 1 && d3.grossCents === 10000 && d3.totalCents === 10400, JSON.stringify(d3));
+  check("compute: totals.busyBonusCents = $9 across the manifest", detail && detail.totals.busyBonusCents === 900 && detail.totals.totalCents === 81500 + 30000 + 10400, JSON.stringify(detail?.totals));
   // payment_transactions mirror includes the bonus (the amount the owner sends)
   const mirror = await q`SELECT amount_cents FROM payment_transactions WHERE org_id=${ORG} AND idempotency_key=${`payout-pr-${PERIOD}-${D1}`}`;
   check("mirror: D1 payout mirror = 81500 (gross + tips + busy bonus)", mirror.length === 1 && Number(mirror[0].amount_cents) === 81500, JSON.stringify(mirror));
@@ -216,7 +216,7 @@ let detail;
   const res = await computePaydayCore(ACTOR, PERIOD);
   check("recompute: ok", res.ok, JSON.stringify(res));
   check("recompute: D1 bonus unchanged ($5)", res.ok && res.data.records.find((r) => r.contractorId === D1)?.busyBonusCents === 500, JSON.stringify(res.data?.records));
-  check("recompute: totals unchanged (800 bonus, 121800 total)", res.ok && res.data.totals.busyBonusCents === 800 && res.data.totals.totalCents === 121800, JSON.stringify(res.data?.totals));
+  check("recompute: totals unchanged (900 bonus, 121900 total)", res.ok && res.data.totals.busyBonusCents === 900 && res.data.totals.totalCents === 121900, JSON.stringify(res.data?.totals));
   const rows = await q`SELECT COUNT(*)::int AS c FROM payout_records WHERE org_id=${ORG} AND period_id=${PERIOD}`;
   check("recompute: no duplicate records (3)", Number(rows[0].c) === 3, JSON.stringify(rows));
 }
@@ -236,7 +236,7 @@ let detail;
   const res = await getPayPeriodDetailCore(ACTOR, PERIOD);
   check("detail: manifest read carries busyBonusHours + totals.busyBonusCents", res.ok && res.data
     && res.data.records.find((r) => r.contractorId === D1)?.busyBonusHours != null
-    && res.data.totals.busyBonusCents === 800, JSON.stringify(res.data?.totals));
+    && res.data.totals.busyBonusCents === 900, JSON.stringify(res.data?.totals));
 }
 
 /* ============================== summary + cleanup ============================== */
