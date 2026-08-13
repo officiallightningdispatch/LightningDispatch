@@ -48,33 +48,24 @@
 export const BUSY_BONUS_PER_JOB_CENTS = 100;
 export const BUSY_THRESHOLD_ASSIGNMENTS = 3;
 const ET_TZ = "America/New_York";
-const HOUR_MS = 3600_000;
 
 /** The wall-clock hour start (America/New_York) containing `ms`, in epoch ms.
- *  Verifies by round-tripping the ET wall clock against both candidate
- *  offsets (EST -5 / EDT -4) — DST-safe like payouts-core.etMidnight. */
+ *  Exact for DST: reads the instant's ET wall clock (Y-M-D H) AND its real
+ *  offset (timeZoneName GMT±H — disambiguates the fall-back 01:00 hour, where
+ *  a round-trip hour-only check cannot tell 01:00 EDT from 01:00 EST). */
 export function hourStartET(ms: number): number {
-  const fmt = () =>
-    new Intl.DateTimeFormat("en-US", { timeZone: ET_TZ, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hour12: false });
-  const read = (f: Intl.DateTimeFormat, t: string): number => {
-    const v = f.formatToParts(new Date(ms)).find((p) => p.type === t)?.value ?? "";
-    return Number(t === "hour" && v === "24" ? "0" : v);
-  };
-  const f = fmt();
-  const year = read(f, "year"), month = read(f, "month"), day = read(f, "day"), hour = read(f, "hour");
-  const g = (cand: Date, t: string): number => {
-    const v = new Intl.DateTimeFormat("en-US", { timeZone: ET_TZ, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hour12: false })
-      .formatToParts(cand).find((p) => p.type === t)?.value ?? "";
-    return Number(t === "hour" && v === "24" ? "0" : v);
-  };
-  for (const offHours of [-4, -5]) {
-    const cand = new Date(Date.UTC(year, month - 1, day, hour - offHours));
-    if (g(cand, "year") === year && g(cand, "month") === month && g(cand, "day") === day && g(cand, "hour") === hour) return cand.getTime();
-  }
-  // Nonexistent DST-gap hour (e.g. 02:00 on spring-forward) — floor to the
-  // nearest valid instant; deterministic, and no real assignment can land in a
-  // nonexistent hour anyway.
-  return Math.floor(ms / HOUR_MS) * HOUR_MS;
+  const d = new Date(ms);
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: ET_TZ, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hour12: false, timeZoneName: "shortOffset",
+  });
+  const parts = fmt.formatToParts(d);
+  const get = (t: string): string => parts.find((p) => p.type === t)?.value ?? "";
+  const year = Number(get("year")), month = Number(get("month")), day = Number(get("day"));
+  let hour = Number(get("hour")); if (hour === 24) hour = 0;
+  const tzName = get("timeZoneName"); // e.g. "GMT-4" (EDT) / "GMT-5" (EST)
+  const offMatch = /^GMT([+-]\d{1,2})$/.exec(tzName);
+  const offHours = offMatch ? Number(offMatch[1]) : -5;
+  return Date.UTC(year, month - 1, day, hour - offHours);
 }
 
 /** Parse the Z-less ISO timestamps Towbook stores in raw_json (dispatchTime /

@@ -96,11 +96,13 @@ try {
   // two separate busy hours
   const b2h = busyHourStartsFor([H + 600_000, H + 1_200_000, H + 1_800_000, Hp1 + 600_000, Hp1 + 1_200_000, Hp1 + 1_800_000]);
   check("busy: 3+3 across two hours → two busy hours", b2h.length === 2 && b2h[0] === H && b2h[1] === Hp1, JSON.stringify(b2h));
-  // 3rd assignment lands at 14:59:59 vs 15:00:00 → different hours
+  // 3rd assignment lands at 14:59:59 vs 15:00:00 → different hours; a
+  // 15:00:00.000 3rd assignment lands in an hour that only has ONE assignment
+  // (the 14:00 hour has just 2) → NO busy hour at all (correct boundary math).
   const late = busyHourStartsFor([H + 600_000, H + 1_200_000, H + 3_599_999]);
   const early = busyHourStartsFor([H + 600_000, H + 1_200_000, Hp1]);
   check("busy: 3rd at 14:59:59.999 keeps the 14:00Z hour", late.length === 1 && late[0] === H, JSON.stringify(late));
-  check("busy: 3rd at 15:00:00.000 starts the NEXT hour", early.length === 1 && early[0] === Hp1, JSON.stringify(early));
+  check("busy: 3rd at 15:00:00.000 leaves no busy hour (15:00 has only 1)", early.length === 0, JSON.stringify(early));
   // computeBusyBonus: +$1 per completion inside the busy hour
   const bonus = computeBusyBonus([H + 600_000, H + 1_200_000, H + 1_800_000], [H + 2_000_000, H + 2_500_000, Hp1 + 60_000, H - 60_000]);
   check("bonus: 2 completions inside busy hour → $2", bonus.bonusJobs === 2 && bonus.bonusCents === 2 * BUSY_BONUS_PER_JOB_CENTS, JSON.stringify(bonus));
@@ -192,8 +194,10 @@ let detail;
   check("compute: D1 busy hours line items (A:3, C:2)", d1 && d1.busyBonusHours && d1.busyBonusHours.length === 2
     && d1.busyBonusHours.some((h) => h.startsAtIso === iso(A) && h.completedJobs === 3)
     && d1.busyBonusHours.some((h) => h.startsAtIso === iso(C) && h.completedJobs === 2), JSON.stringify(d1?.busyBonusHours));
-  // D1 gross = 7 completed_at jobs × $100 = 70000, tips 1000, bonus 500 → 71500
-  check("compute: D1 total includes bonus ($715.00)", d1 && d1.jobCount === 7 && d1.grossCents === 70000 && d1.tipsCents === 1000 && d1.totalCents === 71500, JSON.stringify(d1));
+  // D1 gross = 8 completed_at jobs × $100 = 80000 (OUT completes Wed 09:00Z —
+  // still inside the period, so it counts toward jobCount but not the bonus),
+  // tips 1000, bonus 500 → 81500
+  check("compute: D1 total includes bonus ($815.00)", d1 && d1.jobCount === 8 && d1.grossCents === 80000 && d1.tipsCents === 1000 && d1.totalCents === 81500, JSON.stringify(d1));
   const d2 = detail.records.find((r) => r.contractorId === D2);
   check("compute: D2 exactly 2 assigned → no bonus (0)", d2 && d2.busyBonusCents === 0 && d2.busyBonusJobs === 0 && d2.busyBonusHours === null, JSON.stringify(d2));
   check("compute: D2 total unchanged ($300.00)", d2 && d2.totalCents === 30000, JSON.stringify(d2));
@@ -201,10 +205,10 @@ let detail;
   check("compute: D3 raw dispatchTime/completionTime path → +$3", d3 && d3.busyBonusCents === 300 && d3.busyBonusJobs === 3
     && d3.busyBonusHours && d3.busyBonusHours.length === 1 && d3.busyBonusHours[0].startsAtIso === iso(F) && d3.busyBonusHours[0].completedJobs === 3, JSON.stringify(d3));
   check("compute: D3 jobCount = 1 (only the completed_at row counts toward gross)", d3 && d3.jobCount === 1 && d3.grossCents === 10000 && d3.totalCents === 10300, JSON.stringify(d3));
-  check("compute: totals.busyBonusCents = $8 across the manifest", detail && detail.totals.busyBonusCents === 800 && detail.totals.totalCents === 71500 + 30000 + 10300, JSON.stringify(detail?.totals));
+  check("compute: totals.busyBonusCents = $8 across the manifest", detail && detail.totals.busyBonusCents === 800 && detail.totals.totalCents === 81500 + 30000 + 10300, JSON.stringify(detail?.totals));
   // payment_transactions mirror includes the bonus (the amount the owner sends)
   const mirror = await q`SELECT amount_cents FROM payment_transactions WHERE org_id=${ORG} AND idempotency_key=${`payout-pr-${PERIOD}-${D1}`}`;
-  check("mirror: D1 payout mirror = 71500 (gross + tips + busy bonus)", mirror.length === 1 && Number(mirror[0].amount_cents) === 71500, JSON.stringify(mirror));
+  check("mirror: D1 payout mirror = 81500 (gross + tips + busy bonus)", mirror.length === 1 && Number(mirror[0].amount_cents) === 81500, JSON.stringify(mirror));
 }
 
 /* ===================== 4) RECOMPUTE STABILITY ===================== */
@@ -212,7 +216,7 @@ let detail;
   const res = await computePaydayCore(ACTOR, PERIOD);
   check("recompute: ok", res.ok, JSON.stringify(res));
   check("recompute: D1 bonus unchanged ($5)", res.ok && res.data.records.find((r) => r.contractorId === D1)?.busyBonusCents === 500, JSON.stringify(res.data?.records));
-  check("recompute: totals unchanged (800 bonus, 111800 total)", res.ok && res.data.totals.busyBonusCents === 800 && res.data.totals.totalCents === 111800, JSON.stringify(res.data?.totals));
+  check("recompute: totals unchanged (800 bonus, 121800 total)", res.ok && res.data.totals.busyBonusCents === 800 && res.data.totals.totalCents === 121800, JSON.stringify(res.data?.totals));
   const rows = await q`SELECT COUNT(*)::int AS c FROM payout_records WHERE org_id=${ORG} AND period_id=${PERIOD}`;
   check("recompute: no duplicate records (3)", Number(rows[0].c) === 3, JSON.stringify(rows));
 }
@@ -221,7 +225,7 @@ let detail;
 {
   const res = await markPayoutPaidCore(ACTOR, { recordId: `pr-${PERIOD}-${D1}`, note: "venmo sent" });
   check("paid: D1 marked paid", res.ok && res.data.records.find((r) => r.contractorId === D1)?.status === "paid", JSON.stringify(res.data?.records));
-  check("paid: D1 paid row keeps the busy bonus snapshot", res.ok && res.data.records.find((r) => r.contractorId === D1)?.busyBonusCents === 500 && res.data.records.find((r) => r.contractorId === D1)?.totalCents === 71500, JSON.stringify(res.data?.records));
+  check("paid: D1 paid row keeps the busy bonus snapshot", res.ok && res.data.records.find((r) => r.contractorId === D1)?.busyBonusCents === 500 && res.data.records.find((r) => r.contractorId === D1)?.totalCents === 81500, JSON.stringify(res.data?.records));
   const recomputed = await computePaydayCore(ACTOR, PERIOD);
   check("paid: recompute leaves paid D1 row untouched (bonus + total immutable)", recomputed.ok && recomputed.data.records.find((r) => r.contractorId === D1)?.status === "paid"
     && recomputed.data.records.find((r) => r.contractorId === D1)?.busyBonusCents === 500, JSON.stringify(recomputed.data?.records));
@@ -258,3 +262,5 @@ const z = Object.values(leftover[0]).every((n) => Number(n) === 0);
 console.log(`cleanup: ${JSON.stringify(leftover[0])}`);
 if (!z) { console.error("FAIL: QA cleanup left rows behind"); process.exit(1); }
 console.log("busy-bonus.test.mjs: cleanup verified — zero QA rows left");
+}
+catch (e) { console.error("FATAL:", e); await cleanup().catch(() => {}); process.exit(1); }
