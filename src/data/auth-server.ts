@@ -184,7 +184,7 @@ export async function currentUser(): Promise<AuthUser | null> {
   if (!tokens.length) return null;
   const q = sql();
   for (const token of tokens) {
-    const rows = await q`SELECT u.id,u.name,u.email,u.towbook_driver_id,u.linked_driver_user_id,m.org_id,m.role,m.contractor_id FROM sessions s JOIN users u ON u.id=s.user_id JOIN organization_memberships m ON m.user_id=u.id WHERE s.id=${token} AND s.expires_at > NOW() AND u.deactivated_at IS NULL`;
+    const rows = await q`SELECT u.id,u.name,u.email,u.towbook_driver_id,u.linked_driver_user_id,m.org_id,m.role,m.contractor_id FROM sessions s JOIN users u ON u.id=s.user_id JOIN organization_memberships m ON m.user_id=u.id WHERE s.id=${token} AND s.expires_at > NOW() AND u.deactivated_at IS NULL ORDER BY (m.org_id LIKE 'qa-%') ASC, m.org_id ASC`;
     if (!rows.length) continue;
     const r = rows[0] as Record<string, unknown>;
     // Seroval rejects object properties whose value is undefined. Owner/admin

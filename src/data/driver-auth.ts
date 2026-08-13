@@ -136,8 +136,17 @@ function ensure() {
 const db = () => import("~/db").then((m) => m.sql());
 async function resolveOwnerOrgId(): Promise<string | null> {
   const q = await db();
-  const rows = await q`SELECT org_id FROM organization_memberships WHERE role='owner' LIMIT 1`;
-  return rows.length ? String(rows[0].org_id) : null;
+  // Owner sign-in must land in the real (non-QA) workspace. QA fixture orgs
+  // (qa-lifecycle.mjs) all carry an owner membership, so a bare `LIMIT 1`
+  // returns whichever row the planner hits first — live incident 2026-08-13:
+  // owner login landed in `qa-completion-8bc5783d…`, so every org-scoped
+  // query (required doc types, contractor docs) ran against an empty QA org.
+  // Deterministic: prefer a non-`qa-` org, oldest-created first; fall back to
+  // any owner org (tests with only QA orgs).
+  const rows = await q`SELECT org_id FROM organization_memberships WHERE role='owner' AND org_id NOT LIKE 'qa-%' ORDER BY org_id LIMIT 1`;
+  if (rows.length) return String(rows[0].org_id);
+  const fallback = await q`SELECT org_id FROM organization_memberships WHERE role='owner' ORDER BY org_id LIMIT 1`;
+  return fallback.length ? String(fallback[0].org_id) : null;
 }
 
 /** The session's driver identity (owner↔contractor view toggle, 2026-08-12).
