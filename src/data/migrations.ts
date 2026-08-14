@@ -1190,6 +1190,10 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`ALTER TABLE driver_availability_log ADD COLUMN IF NOT EXISTS zone_changed_at TIMESTAMPTZ`;
     await q`ALTER TABLE driver_availability_log ADD COLUMN IF NOT EXISTS zone_change_count INTEGER NOT NULL DEFAULT 0`;
   }],
+  [52, async (q) => {
+    await q`CREATE TABLE IF NOT EXISTS driver_region_preferences (org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, driver_id TEXT NOT NULL, config JSONB NOT NULL DEFAULT '{}'::jsonb, enabled BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(org_id, driver_id))`;
+    await q`CREATE INDEX IF NOT EXISTS driver_region_preferences_org_idx ON driver_region_preferences(org_id, enabled)`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

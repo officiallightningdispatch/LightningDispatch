@@ -383,6 +383,16 @@ export async function loadDriverAnchors(orgId: string, now: Date = new Date()): 
  *  24h on write, so any row here is recent; the caller decides freshness via
  *  STALE_GPS_FIX_MINUTES against captured_at. Never throws — a DB error
  *  returns an empty map so the engine degrades to payload-GPS origins. */
+export async function loadRegionalPreferenceMatches(orgId: string, candidates: unknown[], lat: number, lng: number, queues = new Map<string, DriverQueue>()): Promise<Map<string, number>> {
+  const out = new Map<string, number>(); for (const d of candidates) out.set(String((d as Record<string, unknown>).driverId ?? ""), 0);
+  try {
+    const rows = await sql()`SELECT driver_id, config FROM driver_region_preferences WHERE org_id=${orgId} AND enabled=TRUE` as Array<Record<string, unknown>>;
+    const miles=(a:number,b:number,c:number,d:number)=>{const r=Math.PI/180,p=Math.sin((c-a)*r/2)**2+Math.cos(a*r)*Math.cos(c*r)*Math.sin((d-b)*r/2)**2;return 3958.7613*2*Math.atan2(Math.sqrt(p),Math.sqrt(1-p));};
+    for (const d of candidates) { const id=String((d as Record<string, unknown>).driverId??""); const row=rows.find(r=>String(r.driver_id)===id); if(!row) continue; const c=(row.config&&typeof row.config==='object'?row.config:{}) as Record<string,unknown>; if(driverActiveCount(d as NearestDriver,queues)>Number(c.max_backlog_before_waive??2)) continue; const centers=[...(Array.isArray(c.core_centers)?c.core_centers:[]),...(Array.isArray(c.nearby_centers)?c.nearby_centers:[])].filter(x=>x&&typeof x==='object') as Array<Record<string,unknown>>; if(centers.some(x=>miles(lat,lng,Number(x.lat),Number(x.lng))<=Number(x.radius_miles??3))) out.set(id,Number(c.priority_weight??1)); }
+  } catch {}
+  return out;
+}
+
 export async function loadZoneMatches(orgId: string, candidates: unknown[], lat: number, lng: number, now = new Date()): Promise<Map<string, boolean>> {
   const out = new Map<string, boolean>(); for (const d of candidates) out.set(String((d as Record<string, unknown>).driverId ?? ''), false);
   try {
@@ -1540,6 +1550,7 @@ export type AreaContext = {
   serviceType?: string | null;
   serviceQualification?: ServiceQualificationOutcome;
   zoneMatches?: Map<string, boolean>;
+  regionalPreference?: Map<string, number>;
 };
 
 /** Workload-aware arrival model (owner-directed 2026-08-11): a driver with
@@ -1961,6 +1972,7 @@ export async function chooseBestDriverByRoad(
     (a.distanceMiles - b.distanceMiles > 0.01 ? 1 : b.distanceMiles - a.distanceMiles > 0.01 ? -1 : 0) ||
     a.baseMinutes - b.baseMinutes ||
     (area?.zoneMatches?.get(String(b.driver.driverId)) ? 1 : 0) - (area?.zoneMatches?.get(String(a.driver.driverId)) ? 1 : 0) ||
+    (area?.regionalPreference?.get(String(b.driver.driverId)) ?? 0) - (area?.regionalPreference?.get(String(a.driver.driverId)) ?? 0) ||
     String(a.driver.driverId ?? "").localeCompare(String(b.driver.driverId ?? ""));
   winners.sort(rank);
   return winners[0];
@@ -2778,9 +2790,10 @@ async function runAutoDispatchInternal(
       const serviceType = typeof (rawOffer as Record<string, unknown>).serviceType === "string" ? String((rawOffer as Record<string, unknown>).serviceType) : null;
       const serviceQualification: ServiceQualificationOutcome = { serviceType, assessed: Boolean(serviceType?.trim()), excluded: [] };
       const zoneMatches = await loadZoneMatches(orgId, candidates, offer.startLocationLatitude, offer.startLocationLongitude);
+      const regionalPreference = await loadRegionalPreferenceMatches(orgId, candidates, offer.startLocationLatitude, offer.startLocationLongitude, driverQueues);
       const areaCtx: AreaContext = humanReassigned
-        ? { gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches }
-        : { anchors: driverAnchors, gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches };
+        ? { gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches, regionalPreference }
+        : { anchors: driverAnchors, gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches, regionalPreference };
       let chosen = await chooseBestDriverByRoad(
         candidates,
         offer.startLocationLatitude,
@@ -2973,7 +2986,7 @@ async function runAutoDispatchInternal(
             offer.startLocationLongitude,
             resolved.router,
             driverQueues,
-            { anchors: driverAnchors, gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches },
+            { anchors: driverAnchors, gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches, regionalPreference },
             { stateGuard: recalcGuard },
           );
           if (recalculated) {
