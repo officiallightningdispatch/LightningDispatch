@@ -311,9 +311,10 @@ export function JobPhotoFlow({ callId, jobStatus, onCompleted }: { callId: strin
           onFileError={(side) => readError("pre_arrival", side)}
           busy={actionBusy === "match"}
           onMatchConfirm={() => void confirmMatch()}
-          actionLabel={null}
-          actionBusy={false}
-          onAction={() => {}}
+          actionLabel="Continue to service photos"
+          actionBusy={actionBusy === "soft"}
+          onAction={() => void softComplete()}
+          actionDisabled={!status.complete.pre_arrival || !(matchChecked || status.matchConfirmed) || PHOTO_SIDES.some((side) => slot("pre_arrival", side).busy)}
         />
       )}
       {showService && (
@@ -825,6 +826,7 @@ function PhasePanel({
   actionLabel,
   actionBusy,
   onAction,
+  actionDisabled = false,
 }: {
   phase: PhotoPhase;
   status: JobPhotoStatus;
@@ -837,6 +839,7 @@ function PhasePanel({
   actionLabel: string | null;
   actionBusy: boolean;
   onAction: () => void;
+  actionDisabled?: boolean;
 }) {
   const done = status.complete[phase];
   return (
@@ -885,12 +888,19 @@ function PhasePanel({
         </label>
       )}
       {actionLabel && (
-        <Button className="mt-3 w-full" loading={actionBusy} disabled={!done} onClick={onAction}>
+        <Button className="mt-3 w-full" loading={actionBusy} disabled={!done || actionDisabled} onClick={onAction} aria-describedby={`${phase}-next-step-help`}>
           {done ? <Check className="size-5" /> : <Camera className="size-5" />} {actionLabel}
         </Button>
       )}
       {actionLabel && !done && (
-        <p className="mt-1.5 text-center text-[11px] text-ink-400">Needs all 4 photos ({status.counts[phase]}/4).</p>
+        <p id={`${phase}-next-step-help`} className="mt-1.5 text-center text-[11px] text-ink-400">Needs all 4 photos ({status.counts[phase]}/4).</p>
+      )}
+      {actionLabel && done && actionDisabled && phase === "pre_arrival" && (
+        <p id="pre_arrival-next-step-help" role="status" className="mt-1.5 text-center text-[11px] text-ink-500">
+          {PHOTO_SIDES.some((side) => slot(phase, side).busy)
+            ? "Uploads are still finishing — keep this screen open."
+            : "Confirm the vehicle match above to continue."}
+        </p>
       )}
     </div>
   );
