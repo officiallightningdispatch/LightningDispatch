@@ -4,15 +4,22 @@
  * (server.ts) and the AI-dispatcher engine via dynamic import inside private
  * functions, so it never leaks into the client bundle (client-graph rule).
  *
- * Tables: push_subscriptions (migration 35) — one row per browser endpoint,
- * UNIQUE on endpoint so a re-subscribe (endpoint changed) REPLACES the old row
- * (upsert). Scoped to (org_id, user_id); role 'contractor' users may
- * save/list/delete their own — and so may any OTHER org member who has a valid
- * driver identity (owner-in-driver-view, al0101 fix 2026-08-13: owner
- * membership + Towbook driver link). Everyone else refused (owner/admin without
- * a driver identity, dispatcher, unauthenticated — owner-directed, task
- * contract).
- *
+ * Tables: push_subscriptions (migration 35, uniqueness corrected by migration
+ * 46) — one row per (org, user, browser endpoint). Migration 35 made endpoint
+ * globally UNIQUE and the upsert re-parented the row when a DIFFERENT user
+ * re-saved the same endpoint (proven live: 24hourbattery's Apple endpoint was
+ * stolen by another driver's save, leaving 24hourbattery with zero rows).
+ * Migration 46 REPLACED the endpoint-global unique constraint with an
+ * ACCOUNT-SCOPED unique index (org_id, user_id, endpoint): the same endpoint
+ * may exist once per (org, user), so another user's save inserts their OWN
+ * row (no re-parenting), while the same user's re-save still replaces in
+ * place (re-subscribe / PushSubscriptionChange → new endpoint → new row;
+ * SAME endpoint re-saved → refresh p256dh/auth/last_seen_at). Scoped to
+ * (org, user); role 'contractor' users may save/list/delete their own — and
+ * so may any OTHER org member who has a valid driver identity
+ * (owner-in-driver-view, al0101 fix 2026-08-13: owner membership + Towbook
+ * driver link). Everyone else refused (owner/admin without a driver identity,
+ * dispatcher, unauthenticated — owner-directed, task contract).
  * sendAssignmentPush loads the contractor's subscriptions, encrypts the
  * notification payload (webpush.ts, RFC 8188/8291/8292 — no provider account),
  * POSTs each endpoint, removes stale 404/410 subscriptions, and ALWAYS writes
@@ -170,11 +177,15 @@ const subSchema = z.object({
 
 export type SavePushSubscriptionResult = { ok: true; subscription: PushSubscriptionRow } | { ok: false; error: string };
 
-/** Upsert the actor's own subscription. The endpoint UNIQUE index is the
- *  re-subscribe key: a changed endpoint (PushSubscriptionChange) replaces the
- *  old row; the SAME endpoint re-saves refresh last_seen_at. Only the
- *  contractor themselves may write their row (org+user forced from the actor,
- *  never from the client). */
+/** Upsert the actor's OWN subscription (account-scoped uniqueness, migration
+ *  46 — REPAIR of the re-parenting bug where endpoint was globally UNIQUE and
+ *  a different user's save stole the row). Conflict key is (org_id, user_id,
+ *  endpoint): the arbiter unique index, so a re-save by ANOTHER user inserts
+ *  that user's OWN row (the same endpoint may exist once per org+user), and a
+ *  re-save by the SAME user refreshes p256dh/auth/last_seen_at in place
+ *  (same-user idempotency preserved — count stays 1). Only the contractor
+ *  themselves may write their row (org+user forced from the actor, never from
+ *  the client). */
 export async function savePushSubscriptionCore(
   actor: PushActor,
   input: unknown,
@@ -188,8 +199,7 @@ export async function savePushSubscriptionCore(
   const id = `sub-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
   const rows = await q`INSERT INTO push_subscriptions(id, org_id, user_id, endpoint, p256dh, auth, user_agent, last_seen_at)
     VALUES(${id}, ${actor.orgId}, ${actor.id}, ${endpoint}, ${p256dh}, ${auth}, ${userAgent ?? null}, NOW())
-    ON CONFLICT (endpoint) DO UPDATE SET
-      org_id = EXCLUDED.org_id, user_id = EXCLUDED.user_id,
+    ON CONFLICT (org_id, user_id, endpoint) DO UPDATE SET
       p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth,
       user_agent = EXCLUDED.user_agent, last_seen_at = NOW()
     RETURNING id, org_id, user_id, endpoint, p256dh, auth, user_agent, created_at, last_seen_at`;

@@ -1113,6 +1113,33 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
        'WHY IT MATTERS: The owner tracks how long each service takes from arrival to completion — a 5-minute jump start goal, 15 minutes for a tire change, 5 minutes for fuel and lockouts, 1 hour for a standard battery install and 2 for an advanced one. Members and motor clubs notice the wait.\\n\\nCHECKLIST:\\n- Stage your truck the night before: cables, fuel cans, and tools where you can grab them in seconds\\n- Arrive prepared — know the service before you knock, so the member is not waiting while you hunt for equipment\\n- Call ahead on the way so the member has the car unlocked and clear\\n- Jump starts: clamp, crank, disconnect in order — no re-staging mid-job\\n- Tire changes: lay out the spare, jack, and lug wrench before lifting\\n- Battery installs: confirm the size and terminal layout before you start, keep the new battery within reach, and torque the terminals once\\n- If a service will run long, tell the member and update dispatch — never let the clock surprise you', 4, 11, TRUE)
       ON CONFLICT (slug) DO NOTHING`;
   }],
+  [46, async (q) => {
+    // PUSH-SUBSCRIPTION OWNERSHIP REPAIR (2026-08-14, root cause proven
+    // read-only). Migration 35 declared `endpoint TEXT NOT NULL UNIQUE` — a
+    // GLOBAL unique constraint — and savePushSubscriptionCore upserted with
+    // `ON CONFLICT (endpoint) DO UPDATE SET org_id=EXCLUDED.org_id,
+    // user_id=EXCLUDED.user_id`, so when a DIFFERENT user re-saved the same
+    // endpoint (shared phone / sign-in switch) the row silently RE-PARENTED to
+    // the last saver. Live proof: 24hourbattery's Apple endpoint was later
+    // saved by another driver — 24hourbattery was left with ZERO rows, and the
+    // self-test delivered to the endpoint under the wrong account. Fix:
+    // uniqueness becomes ACCOUNT-SCOPED — (org_id, user_id, endpoint). The
+    // same endpoint may now exist ONCE PER (org, user): a save by another user
+    // INSERTS their own row (cannot steal), while a re-save by the SAME user
+    // still upserts in place (idempotent refresh of p256dh/auth/last_seen_at —
+    // same-user idempotency preserved). Drop the endpoint-global constraint
+    // (auto-named push_subscriptions_endpoint_key by the inline UNIQUE in
+    // migration 35 — verified in prod) and create the account-scoped unique
+    // index. Safe on existing data: endpoint was globally unique, so
+    // (org_id, user_id, endpoint) cannot collide. The org_user index from 35
+    // stays (list/send lookups). NOTE: the row already re-parented in prod is
+    // NOT rewritten here (no data modification in this pass) — the true owner
+    // gets their own row back on the device's next save, and the stale owner's
+    // row remains until 404/410 or the owner's own delete.
+    await q`ALTER TABLE push_subscriptions DROP CONSTRAINT IF EXISTS push_subscriptions_endpoint_key`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS push_subscriptions_org_user_endpoint_uidx
+      ON push_subscriptions(org_id, user_id, endpoint)`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

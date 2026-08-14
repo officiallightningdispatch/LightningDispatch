@@ -21,7 +21,8 @@ const passthrough = (x: unknown) => x;
 
 export type PushCommandResult<T> = { ok: true; data: T } | { ok: false; error: string };
 
-/** Upsert the contractor's own subscription (endpoint UNIQUE → replace). */
+/** Upsert the contractor's own subscription (account-scoped (org,user,endpoint)
+ *  uniqueness — migration 46; a different user's save can never steal the row). */
 export const savePushSubscription = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<PushCommandResult<PushSubscriptionRow>> => {
   const core = await import("./push-core");
   const { currentUser } = await import("./auth-server");
