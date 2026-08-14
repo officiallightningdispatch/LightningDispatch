@@ -1148,7 +1148,7 @@ try {
       check("engine all-loaded: accept posts driverId 3002 + workload ETA 135", p.length === 1 && p[0]?.body?.driverId === 3002 && p[0]?.body?.ETA === 135, JSON.stringify(p[0]?.body));
       const rows = await q`SELECT call_request_id, decision, driver_id, eta_minutes, reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG4} AND call_request_id='8031'`;
       const row = rows[0];
-      check("engine all-loaded: reason names winner + chain math (3 active jobs ≈ 115 min; ETA 135 min)", row && String(row.driver_id) === "3002" && Number(row.eta_minutes) === 135 && String(row.reason).includes("3 active jobs ≈ 110 min") && String(row.reason).includes("final leg 15") && String(row.reason).includes("ETA 135 min"), String(row?.reason));
+      check("engine all-loaded: reason names winner + chain math (3 active jobs ≈ 115 min; ETA 135 min)", row && String(row.driver_id) === "3002" && Number(row.eta_minutes) === 135 && String(row.reason).includes("3 active jobs ≈ 115 min") && String(row.reason).includes("final leg 15") && String(row.reason).includes("ETA 135 min"), String(row?.reason));
       check("engine all-loaded: raw_response.eta chain facts recorded", row && row.raw_response?.eta?.queueInclusive === true && row.raw_response?.eta?.queueMinutes === 115 && row.raw_response?.eta?.queuedJobCount === 3 && row.raw_response?.eta?.finalLegMinutes === 15 && row.raw_response?.eta?.startedOnScene === false && row.raw_response?.eta?.unlocatedJobs === 0 && row.raw_response?.eta?.finalMinutes === 135, JSON.stringify(row?.raw_response?.eta));
     }
     // (a/b) engine: under-cap driver beats an over-cap driver, even when
