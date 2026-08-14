@@ -1067,9 +1067,9 @@ try {
       "41.28,-73.28": 900, // B J3 → offer (final leg from the LAST job, not GPS)
     });
     const pickAll = await chooseBestDriverByRoad([dA, dB], 41.2, -73.2, Rq3, new Map([...qA3, ...qB3]));
-    check("all-loaded: chain-aware arrival picks A (120 min < 130 min)", pickAll?.driver.driverId === 3001 && pickAll?.queueInclusive === true, JSON.stringify(pickAll));
-    check("all-loaded: chain math recorded (3 jobs ≈ 110 min + final leg 10; arrival 120)", pickAll?.queueMinutes === 110 && pickAll?.queuedJobCount === 3 && pickAll?.finalLegMinutes === 10 && pickAll?.baseMinutes === 120, JSON.stringify(pickAll));
-    check("all-loaded: quoted ETA includes queue time (ceil(120)+5 = 125)", finalEtaMinutes(pickAll.baseMinutes, 5, 5, 180) === 125, String(finalEtaMinutes(pickAll.baseMinutes, 5, 5, 180)));
+    check("all-loaded: closest driver B wins over farther A despite A's better chain ETA", pickAll?.driver.driverId === 3002 && pickAll?.queueInclusive === true, JSON.stringify(pickAll));
+    check("all-loaded: chain math recorded for closest B (3 jobs ≈ 115 min + final leg 15; arrival 130)", pickAll?.queueMinutes === 115 && pickAll?.queuedJobCount === 3 && pickAll?.finalLegMinutes === 15 && pickAll?.baseMinutes === 130, JSON.stringify(pickAll));
+    check("all-loaded: quoted ETA includes queue time (ceil(130)+5 = 135)", finalEtaMinutes(pickAll.baseMinutes, 5, 5, 180) === 135, String(finalEtaMinutes(pickAll.baseMinutes, 5, 5, 180)));
     check("all-loaded: clamps at the ceiling (45 default) — floor/ceiling rails kept", finalEtaMinutes(pickAll.baseMinutes, 5, 5, 45) === 45, String(finalEtaMinutes(pickAll.baseMinutes, 5, 5, 45)));
     // workloadAwareArrivalMinutes directly: fallback factor when routing fails
     const dirQ = await workloadAwareArrivalMinutes(dA, qA3.get("3001").queuedJobs, 41.2, -73.2, makeRouter({ "41.15,-73.10": null, "41.16,-73.11": null, "41.17,-73.12": null }));
@@ -1536,8 +1536,8 @@ try {
       pickFlex?.driver.driverId === 717660 && pickFlex?.areaFallback === false && pickFlex?.anchor === null,
       JSON.stringify(pickFlex && { d: pickFlex.driver.driverId, anchor: pickFlex.anchor }));
     const pickBothFlex = await chooseBestDriverByRoad([jayden, levi], NEW_HAVEN.lat, NEW_HAVEN.lng, geoRouter, undefined, {});
-    check("no anchors configured → pre-geography behavior (shortest road ETA wins, payload origin, no area note)",
-      pickBothFlex?.driver.driverId === 703785 && pickBothFlex?.areaFallback === false && pickBothFlex?.originBasis === "payload" &&
+    check("no anchors configured → closest driver wins on distance (payload origins, no area note)",
+      pickBothFlex?.driver.driverId === 717660 && pickBothFlex?.areaFallback === false && pickBothFlex?.originBasis === "payload" &&
       areaSelectionNote(pickBothFlex, NEW_HAVEN.lat, NEW_HAVEN.lng) === null,
       JSON.stringify(pickBothFlex && { d: pickBothFlex.driver.driverId, basis: pickBothFlex.originBasis }));
 
