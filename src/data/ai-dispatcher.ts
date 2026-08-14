@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { resolveStateFromAddress, reverseGeocodeState, driverStateCacheKey } from "./state-guard-core";
+import { resolveStateFromAddress, reverseGeocodeState, driverStateCacheKey, isAgeroPlaceholderCoords } from "./state-guard-core";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { sql } from "~/db";
@@ -1124,6 +1124,71 @@ const purchaseOrderOf = (o: Record<string, unknown>): string | null => {
 };
 
 type DbCoordsHit = { lat: number; lng: number; detail: string };
+type AuthoritativeStateRow = { id: string; pickup: string; lat: number; lng: number };
+type JobStateResolution = {
+  state: string | null;
+  source: "address" | "zip" | "authoritative" | "unknown";
+  mismatch: boolean;
+  note: string | null;
+  authoritativeId: string | null;
+};
+
+/** Resolve job state without trusting Towbook's known placeholder coordinates.
+ * The synced call is org-scoped and tied by PO; its pickup address and real
+ * pickup coordinates must agree. A non-placeholder offer coordinate that
+ * disagrees with the authoritative/address state is a genuine discrepancy and
+ * remains fail-closed. */
+async function resolveJobState(
+  orgId: string,
+  offer: Record<string, unknown>,
+  address: string | null,
+  apiKey: string,
+  fetchImpl: typeof fetch,
+): Promise<JobStateResolution> {
+  const addressResolution = address ? resolveStateFromAddress(address) : { state: null, source: "unknown" as const, mismatch: false };
+  const lat = Number(offer.startLocationLatitude);
+  const lng = Number(offer.startLocationLongitude);
+  const placeholder = isAgeroPlaceholderCoords(lat, lng);
+  const po = purchaseOrderOf(offer);
+  let authoritative: AuthoritativeStateRow | null = null;
+  if (po) {
+    const rows = await sql()`SELECT towbook_job_id, pickup, pickup_lat, pickup_lng
+      FROM dispatch_jobs WHERE org_id=${orgId} AND raw_json->>'purchaseOrderNumber'=${po}
+      ORDER BY created_at DESC LIMIT 1`;
+    const r = rows[0] as Record<string, unknown> | undefined;
+    if (r) {
+      const rLat = Number(r.pickup_lat), rLng = Number(r.pickup_lng);
+      if (typeof r.pickup === "string" && Number.isFinite(rLat) && rLat !== 0 && Number.isFinite(rLng) && rLng !== 0)
+        authoritative = { id: String(r.towbook_job_id ?? po), pickup: r.pickup, lat: rLat, lng: rLng };
+    }
+  }
+  if (authoritative) {
+    const pickupState = resolveStateFromAddress(authoritative.pickup);
+    const callState = await reverseGeocodeState(authoritative.lat, authoritative.lng, apiKey, fetchImpl);
+    if (!pickupState.state || !callState || pickupState.state !== callState) {
+      return { state: null, source: "unknown", mismatch: true,
+        note: `authoritative pickup discrepancy (call ${authoritative.id}: address=${pickupState.state ?? "UNKNOWN"}, coords=${callState ?? "UNKNOWN"})`, authoritativeId: authoritative.id };
+    }
+    const state = pickupState.state;
+    const note = placeholder
+      ? `offer coordinates are known Agero CT placeholder (${lat},${lng}); authoritative pickup record ${authoritative.id} / address resolves to ${state}`
+      : `authoritative pickup record ${authoritative.id} resolves to ${state}`;
+    return { state, source: "authoritative", mismatch: false, note, authoritativeId: authoritative.id };
+  }
+  if (placeholder) {
+    return { state: addressResolution.state, source: addressResolution.source, mismatch: addressResolution.mismatch,
+      note: `offer coordinates are known Agero CT placeholder (${lat},${lng}); no authoritative call record, address-only resolution retained`, authoritativeId: null };
+  }
+  if (addressResolution.state && Number.isFinite(lat) && Number.isFinite(lng)) {
+    const offerState = await reverseGeocodeState(lat, lng, apiKey, fetchImpl);
+    if (offerState && offerState !== addressResolution.state) {
+      return { state: null, source: "unknown", mismatch: true,
+        note: `genuine location discrepancy (offer coords resolve to ${offerState}, address resolves to ${addressResolution.state})`, authoritativeId: null };
+    }
+  }
+  return { state: addressResolution.state, source: addressResolution.source, mismatch: addressResolution.mismatch, note: null, authoritativeId: null };
+}
+
 
 /** DB-first leg of coordinate resolution (owner-directed 2026-08-13): the sync
  *  already imported this call into dispatch_jobs with real coords (pickup_lat/
@@ -2683,9 +2748,10 @@ async function runAutoDispatchInternal(
       // accept) — the engine never assigns a driver it cannot prove is in the
       // job's state.
       const rawStarting = startingLocationOf(rawOffer as Record<string, unknown>);
-      const addressResolution = rawStarting ? resolveStateFromAddress(rawStarting) : { state: null, source: "unknown" as const, mismatch: false };
-      const jobState = addressResolution.state;
       const tomtomKeyForGuard = resolveTomtomKey(deps.env ?? process.env);
+      const jobStateResolution = await resolveJobState(orgId, rawOffer as Record<string, unknown>, rawStarting, tomtomKeyForGuard, fetchImpl);
+      const addressResolution = jobStateResolution;
+      const jobState = jobStateResolution.state;
       const reverseStateCache = new Map<string, string | null>();
       // ALWAYS active (fail-closed): a null jobState (unresolvable address)
       // blocks selection and the caller escalates — the guard must NEVER
@@ -2720,8 +2786,8 @@ async function runAutoDispatchInternal(
       if (guardOutcome.blocked) {
         const isUnknownJob = guardOutcome.blockedReason === "job_state_unknown";
         const reason = isUnknownJob
-          ? `job state UNKNOWN (offer address ${rawStarting ? `"${rawStarting}"` : "missing"} did not resolve to a US state; state_resolution=unknown) — same-state rule cannot be verified, offer NOT auto-accepted (no cross-state dispatch)`
-          : `no driver currently in state ${jobState?.toUpperCase()} (state_resolution=${addressResolution.source}${addressResolution.mismatch ? ",address_zip_mismatch" : ""}) — ${guardOutcome.excluded.length} candidate(s) checked, ${guardOutcome.inState} in-state, ${guardOutcome.excluded.filter((e) => !e.state).length} with unknown state; offer NOT auto-accepted (no cross-state dispatch)`;
+          ? `job state UNKNOWN (offer address ${rawStarting ? `"${rawStarting}"` : "missing"} did not resolve to a US state; state_resolution=unknown${jobStateResolution.note ? `; ${jobStateResolution.note}` : ""}) — same-state rule cannot be verified, offer NOT auto-accepted (no cross-state dispatch)`
+          : `no driver currently in state ${jobState?.toUpperCase() ?? "UNKNOWN"} (state_resolution=${addressResolution.source}${addressResolution.mismatch ? ",address_zip_mismatch" : ""}${jobStateResolution.note ? `; ${jobStateResolution.note}` : ""}) — ${guardOutcome.excluded.length} candidate(s) checked, ${guardOutcome.inState} in-state, ${guardOutcome.excluded.filter((e) => !e.state).length} with unknown state; offer NOT auto-accepted (no cross-state dispatch)`;
         await record({
           decision: isUnknownJob ? "escalated_state_unknown" : "escalated_cross_state",
           driverId: null, driverName: null, etaMinutes: null, reason,

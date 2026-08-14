@@ -61,6 +61,16 @@ export function normalizeUsState(raw: unknown): string | null {
   return US_STATE_CODES.has(t) ? t : (STATE_NAMES[t] ?? null);
 }
 export type AddressStateResolution = { state: string | null; source: "address" | "zip" | "unknown"; mismatch: boolean };
+/** Known Agero/Bridgeport starting-location placeholder cluster. Towbook has
+ * historically put these CT coordinates on otherwise out-of-state offers.
+ * This is deliberately narrow: it identifies provenance, it never authorizes a
+ * state and callers must resolve the pickup record/address independently. */
+export function isAgeroPlaceholderCoords(lat: number, lng: number): boolean {
+  return Number.isFinite(lat) && Number.isFinite(lng)
+    && Math.abs(lat - 41.17) <= 0.12
+    && Math.abs(lng - (-73.19)) <= 0.12;
+}
+
 export function resolveStateFromAddress(value: string): AddressStateResolution {
   if (!value || typeof value !== "string") return { state: null, source: "unknown", mismatch: false };
   const normalized = value.replace(/[^A-Za-z0-9 ]/g, " ").split(/\s+/).filter(Boolean);
