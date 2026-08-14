@@ -2691,7 +2691,7 @@ async function runAutoDispatchInternal(
       const areaCtx: AreaContext = humanReassigned
         ? { gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification }
         : { anchors: driverAnchors, gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification };
-      const chosen = await chooseBestDriverByRoad(
+      let chosen = await chooseBestDriverByRoad(
         candidates,
         offer.startLocationLatitude,
         offer.startLocationLongitude,
@@ -2719,15 +2719,15 @@ async function runAutoDispatchInternal(
       // The driver the accept POST carries: the human-chosen driver when a
       // manual reassignment was respected (even offline — their driverId IS the
       // assignment), else the road-aware choice. Zero = no driver.
-      const dispatchDriverId = (manualDriverId > 0 && manualEligible) ? manualDriverId : (driver ? Number(driver.driverId) || 0 : 0);
-      const dispatchDriverName = humanReassigned
+      let dispatchDriverId = (manualDriverId > 0 && manualEligible) ? manualDriverId : (driver ? Number(driver.driverId) || 0 : 0);
+      let dispatchDriverName = humanReassigned
         ? (humanReassigned.driverName ?? String(manualDriverId))
         : driver ? String(driver.driverName ?? "") : null;
       // Final quoted ETA: ceil(road minutes) + buffer, clamped to [floor, ceiling].
       // NO road-ETA candidate → no ETA is computed (the accept body still needs
       // the field — quote the club's SLA ceiling, an honest "not yet assigned"
       // worst case, never a fabricated 1-minute promise).
-      const etaMinutes = driver && chosen
+      let etaMinutes = driver && chosen
         ? finalEtaMinutes(chosen.baseMinutes, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta)
         : null;
       const postEta = etaMinutes ?? effectiveMaxEta;
@@ -2849,10 +2849,69 @@ async function runAutoDispatchInternal(
         // hits an expired session (the 2026-08-11 13:10Z incident), recover the
         // session and RETRY the push once with the fresh session — the owner's
         // alert fires only if recovery or the retry fails.
+        // Verify the selected driver without mutating the call first.  A call can
+        // change between nearestDrivers selection and accept/verification (driver
+        // stopped, disappeared from Towbook, or another dispatcher won the race).
+        // In that case, immediately rank the remaining live candidates and retry
+        // verification for the next-best driver.  Only the normal no-alternative
+        // path reaches the existing assign/repair flow, preserving its wiring.
         let verification = await verifyDispatch(fetchImpl, baseUrl, cookies, offer, callIdFromAcceptResponse(accept.raw), dispatchDriverId, {
           retryDelayMs: deps.verifyRetryDelayMs ?? 5000,
-          allowAssign: true,
+          allowAssign: false,
         });
+        let recalculationNote: string | null = null;
+        if (!verification.ok && verification.found && dispatchDriverId > 0
+          && !humanReassigned) {
+          const firstChoice = dispatchDriverId;
+          // Re-read the authoritative Towbook nearestDrivers payload at the
+          // race point: this removes a driver who went offline/disappeared and
+          // preserves the offer's explicit eligible-id restriction.
+          const latestNd = await towbookFetch(
+            fetchImpl,
+            `${baseUrl}/api/nearestDrivers?latitude=${offer.startLocationLatitude}&longitude=${offer.startLocationLongitude}&checkInForAllDrivers=true`,
+            cookies,
+          );
+          const livePool = latestNd.ok && Array.isArray(latestNd.body) ? latestNd.body as unknown[] : [];
+          const remainingCandidates = (livePool.length ? livePool : candidates).filter((d) => {
+            const id = Number((d as Record<string, unknown>).driverId);
+            return id !== firstChoice && (!eligibleIds || eligibleIds.has(id));
+          });
+          const recalcGuard: StateGuardOutcome = { active: false, jobState: null, blocked: false, blockedReason: null, checked: 0, inState: 0, excluded: [] };
+          const recalculated = await chooseBestDriverByRoad(
+            remainingCandidates,
+            offer.startLocationLatitude,
+            offer.startLocationLongitude,
+            resolved.router,
+            driverQueues,
+            { anchors: driverAnchors, gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification },
+            { stateGuard: recalcGuard },
+          );
+          if (recalculated) {
+            chosen = recalculated;
+            dispatchDriverId = Number(recalculated.driver.driverId) || 0;
+            dispatchDriverName = String(recalculated.driver.driverName ?? dispatchDriverId);
+            etaMinutes = finalEtaMinutes(recalculated.baseMinutes, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta);
+            recalculationNote = `first choice ${firstChoice} became unavailable (verification saw ${verification.driverOnCall == null ? "no eligible driver" : `driver ${verification.driverOnCall}`}) → recalculated to ${dispatchDriverId}`;
+            verification = await verifyDispatch(fetchImpl, baseUrl, cookies, offer, callIdFromAcceptResponse(accept.raw), dispatchDriverId, {
+              retryDelayMs: deps.verifyRetryDelayMs ?? 5000,
+              allowAssign: true,
+            });
+          } else {
+            // No remaining eligible driver: run the established repair path for
+            // the original choice, which will escalate honestly if it is gone.
+            verification = await verifyDispatch(fetchImpl, baseUrl, cookies, offer, callIdFromAcceptResponse(accept.raw), firstChoice, {
+              retryDelayMs: deps.verifyRetryDelayMs ?? 5000,
+              allowAssign: true,
+            });
+          }
+        } else if (!verification.ok) {
+          // Existing verification/assign repair path, unchanged for races where
+          // no replacement can be selected (including missing call evidence).
+          verification = await verifyDispatch(fetchImpl, baseUrl, cookies, offer, callIdFromAcceptResponse(accept.raw), dispatchDriverId, {
+            retryDelayMs: deps.verifyRetryDelayMs ?? 5000,
+            allowAssign: true,
+          });
+        }
         let verificationRecoveryNote: string | null = null;
         if (!verification.ok && hasSessionExpiredVerification(verification.attempts)) {
           const recovery = await recoverSession(orgId);

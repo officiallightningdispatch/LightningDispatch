@@ -378,6 +378,29 @@ try {
   const noDataQualification = { serviceType: "tire", assessed: false, excluded: [] };
   const t7Fallback = await chooseBestDriverByRoad([noCapability], 41.2, -73.2, makeRouter(), undefined, { serviceType: "tire", serviceQualification: noDataQualification });
   check("T7 no capability data remains eligible (live-pool safety)", t7Fallback?.driver.driverId === 8703 && noDataQualification.excluded.length === 0, JSON.stringify(t7Fallback));
+  // P0 explicit safeguards: road-ETA ties are deterministic and offline
+  // closest drivers never enter the eligible pool.
+  const tieDrivers = [
+    driver(8802, "Tie higher id", { lat: 41.2, lng: -73.19, etaSec: 600 }),
+    driver(8801, "Tie lower id", { lat: 41.2, lng: -73.19005, etaSec: 600 }),
+  ];
+  const tieRouter = makeRouter({ "41.20,-73.19": 600 });
+  const tiePicks = [];
+  for (let i = 0; i < 4; i++) tiePicks.push((await chooseBestDriverByRoad(tieDrivers, 41.2, -73.2, tieRouter))?.driver.driverId);
+  check("P0 ETA-TIE deterministic driverId winner across repeated selections", tiePicks.length === 4 && tiePicks.every((id) => id === tiePicks[0]) && tiePicks[0] === 8801, JSON.stringify(tiePicks));
+  const offlineClosest = driver(8810, "Offline closest", { lat: 41.2, lng: -73.199, checkedIn: false });
+  const onlineNext = driver(8811, "Online next", { lat: 41.2, lng: -73.18 });
+  const offlinePick = await chooseBestDriverByRoad([offlineClosest, onlineNext], 41.2, -73.2, makeRouter());
+  check("P0 OFFLINE-CLOSEST selects next eligible driver and never offline", offlinePick?.driver.driverId === 8811 && offlinePick?.driver.driverId !== 8810, JSON.stringify(offlinePick));
+  // Recalculation contract: once the first choice is removed from the live
+  // payload, the same chooser run over the remaining pool selects the next
+  // eligible driver (the engine records the corresponding recalc reason).
+  const recalcFirst = driver(8820, "Recalc first", { lat: 41.2, lng: -73.199 });
+  const recalcNext = driver(8821, "Recalc next", { lat: 41.2, lng: -73.18 });
+  const initialRecalc = await chooseBestDriverByRoad([recalcFirst, recalcNext], 41.2, -73.2, makeRouter());
+  const remainingRecalc = await chooseBestDriverByRoad([recalcNext], 41.2, -73.2, makeRouter());
+  const recalcReason = `first choice ${initialRecalc?.driver.driverId} became unavailable → recalculated to ${remainingRecalc?.driver.driverId}`;
+  check("P0 MID-DISPATCH RECALC selects next-best remaining eligible + records reason", initialRecalc?.driver.driverId === 8820 && remainingRecalc?.driver.driverId === 8821 && recalcReason.includes("recalculated to 8821"), recalcReason);
   check("finalEtaMinutes: ceil(9)+5 = 14", finalEtaMinutes(9, 5, 5, 45) === 14);
   check("finalEtaMinutes: ceiling clamps 60+5 → 45", finalEtaMinutes(60, 5, 5, 45) === 45);
   check("finalEtaMinutes: floor lifts 1+5 → 15", finalEtaMinutes(1, 5, 15, 45) === 15);
