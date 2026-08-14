@@ -2668,17 +2668,38 @@ async function runAutoDispatchInternal(
           rawResponse: d.rawResponse ?? null,
         });
 
-      // --- zone check (haversine vs the 06606 centroid) ---
+      // --- multi-zone check (dispatch_zones; org_settings centroid is deprecated) ---
       if (offer.startLocationLatitude === 0 || offer.startLocationLongitude === 0) {
         const reason = `no usable pickup coordinates (lat=${offer.startLocationLatitude}, lng=${offer.startLocationLongitude}) — cannot verify zone (no accept)`;
         await record({ decision: "escalated_missing_coords", reason, rawResponse: { offer } });
         result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_missing_coords", escalated: true, reason });
         continue;
       }
-      const zoneDistance = haversineMiles(offer.startLocationLatitude, offer.startLocationLongitude, settings.zoneLat, settings.zoneLng);
-      if (zoneDistance > settings.zoneRadiusMiles) {
-        const reason = `pickup ${zoneDistance.toFixed(1)} mi from zone center — outside the ${settings.zoneRadiusMiles}-mile radius (no accept)`;
-        await record({ decision: "escalated_out_of_zone", zoneDistanceMiles: zoneDistance, reason, rawResponse: { offer } });
+      const rawStartingForZone = startingLocationOf(rawOffer as Record<string, unknown>);
+      const zoneState = await resolveJobState(orgId, rawOffer as Record<string, unknown>, rawStartingForZone, resolveTomTomKey(deps.env ?? process.env), fetchImpl);
+      if (!zoneState.state) {
+        const reason = `job state UNKNOWN (offer address ${rawStartingForZone ? `"${rawStartingForZone}"` : "missing"} did not resolve to a US state; state_resolution=unknown${zoneState.note ? `; ${zoneState.note}` : ""}) — cannot verify zone (no accept)`;
+        await record({ decision: "escalated_state_unknown", reason, rawResponse: { offer } });
+        result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_state_unknown", escalated: true, reason });
+        continue;
+      }
+      const zoneRows = await sql()`SELECT id,lat,lng,radius_miles,zip_codes FROM dispatch_zones WHERE org_id=${orgId} AND active=TRUE AND state=${zoneState.state.toUpperCase()}` as Array<Record<string, unknown>>;
+      const jobZip = rawStartingForZone ? zipOf(rawStartingForZone) : null;
+      const lat = Number(offer.startLocationLatitude), lng = Number(offer.startLocationLongitude);
+      const usableZones = zoneRows.map((z) => {
+        const zLat = Number(z.lat), zLng = Number(z.lng), radius = Number(z.radius_miles);
+        const zips = Array.isArray(z.zip_codes) ? z.zip_codes.map(String) : [];
+        const zipMatch = Boolean(jobZip && zips.includes(jobZip));
+        const latDelta = radius / 69;
+        const lngDelta = radius / (69 * Math.max(0.1, Math.cos(zLat * Math.PI / 180)));
+        const inBox = Math.abs(lat - zLat) <= latDelta && Math.abs(lng - zLng) <= lngDelta;
+        const distance = haversineMiles(lat, lng, zLat, zLng);
+        return { id: String(z.id), distance, matched: zipMatch || (inBox && distance <= radius) };
+      }).filter((z) => z.matched).sort((a, b) => a.distance - b.distance);
+      const zoneDistance = usableZones[0]?.distance ?? null;
+      if (!usableZones.length) {
+        const reason = `pickup does not resolve to an active ${zoneState.state.toUpperCase()} dispatch zone (no accept)`;
+        await record({ decision: "escalated_out_of_zone", zoneDistanceMiles: null, reason, rawResponse: { offer, state: zoneState, zonesChecked: zoneRows.length } });
         result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_out_of_zone", escalated: true, reason });
         continue;
       }
