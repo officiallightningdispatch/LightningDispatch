@@ -1331,6 +1331,10 @@ type NearestDriver = Record<string, unknown>;
 /** One candidate's road-aware ETA facts (everything the decision row needs). */
 export type ChosenDriverEta = {
   driver: NearestDriver;
+  /** Geographic distance from the selected ETA origin to pickup, in miles. */
+  distanceMiles: number;
+  /** GPS is primary-truth; anchor/payload origins are honest fallbacks. */
+  distanceBasis: "gps" | "fallback";
   /** Route seconds from the road router; null when routing failed (fallback used). */
   roadSeconds: number | null;
   /** Minutes used for ranking + the ETA formula: road minutes when routing
@@ -1712,6 +1716,8 @@ export async function chooseBestDriverByRoad(
       if (chain) {
         return {
           driver: d,
+          distanceMiles: haversineMiles(origin.lat, origin.lng, pickupLat, pickupLng),
+          distanceBasis: origin.basis === "gps" ? "gps" : "fallback",
           roadSeconds: null,
           baseMinutes: Math.max(1, chain.arrivalMinutes),
           straightLineMinutes,
@@ -1741,6 +1747,8 @@ export async function chooseBestDriverByRoad(
     if (result && Number.isFinite(result.seconds) && result.seconds > 0) {
       return {
         driver: d,
+        distanceMiles: haversineMiles(origin.lat, origin.lng, pickupLat, pickupLng),
+        distanceBasis: origin.basis === "gps" ? "gps" : "fallback",
         roadSeconds: result.seconds,
         baseMinutes: Math.ceil(result.seconds / 60),
         straightLineMinutes,
@@ -1767,6 +1775,8 @@ export async function chooseBestDriverByRoad(
     );
     return {
       driver: d,
+      distanceMiles: haversineMiles(origin.lat, origin.lng, pickupLat, pickupLng),
+      distanceBasis: origin.basis === "gps" ? "gps" : "fallback",
       roadSeconds: null,
       baseMinutes: fallback,
       straightLineMinutes,
@@ -1791,6 +1801,8 @@ export async function chooseBestDriverByRoad(
   if (underCap.length) {
     const routed = (await Promise.all(pickCandidates.map(routeOne))).filter((r): r is ChosenDriverEta => r != null);
     routed.sort((a, b) =>
+      (a.distanceBasis === "gps" ? 0 : 1) - (b.distanceBasis === "gps" ? 0 : 1) ||
+      (a.distanceMiles - b.distanceMiles > 0.01 ? 1 : b.distanceMiles - a.distanceMiles > 0.01 ? -1 : 0) ||
       a.baseMinutes - b.baseMinutes ||
       String(a.driver.driverId ?? "").localeCompare(String(b.driver.driverId ?? "")));
     return routed[0] ?? null;
@@ -1807,6 +1819,8 @@ export async function chooseBestDriverByRoad(
     const anchor = area?.anchors?.get(String(d.driverId)) ?? null;
     return {
       driver: d,
+      distanceMiles: haversineMiles(origin.lat, origin.lng, pickupLat, pickupLng),
+      distanceBasis: origin.basis === "gps" ? "gps" : "fallback",
       roadSeconds: null,
       baseMinutes: arrival.arrivalMinutes,
       straightLineMinutes,
@@ -1829,9 +1843,16 @@ export async function chooseBestDriverByRoad(
   }));
   const winners = modeled.filter((m): m is ChosenDriverEta => m != null);
   if (!winners.length) return null;
-  winners.sort((a, b) =>
+  // Proximity is the owner-directed primary rank. GPS-backed origins always
+  // outrank fallback origins; within the same tier, geographic distance wins,
+  // then road ETA and deterministic driver id. This prevents route/provider,
+  // payload, or database ordering from selecting the winner.
+  const rank = (a: ChosenDriverEta, b: ChosenDriverEta): number =>
+    (a.distanceBasis === "gps" ? 0 : 1) - (b.distanceBasis === "gps" ? 0 : 1) ||
+    (a.distanceMiles - b.distanceMiles > 0.01 ? 1 : b.distanceMiles - a.distanceMiles > 0.01 ? -1 : 0) ||
     a.baseMinutes - b.baseMinutes ||
-    String(a.driver.driverId ?? "").localeCompare(String(b.driver.driverId ?? "")));
+    String(a.driver.driverId ?? "").localeCompare(String(b.driver.driverId ?? ""));
+  winners.sort(rank);
   return winners[0];
 }
 
