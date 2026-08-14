@@ -335,11 +335,40 @@ try {
   const noGps = driver(103665, "Brittani Simms", { lat: 0, lng: 0, etaSec: 5 });
   const offline = driver(717660, "Levi C Martin", { checkedIn: false, etaSec: 10 });
   const pick2 = await chooseBestDriverByRoad([freeSlow, freeFast, busy, noGps, offline], 41.2, -73.2, R);
-  check("chooseBestDriverByRoad picks min ROAD ETA (Antone 600s road beats Jayden 3600s road)", pick2?.driver.driverId === 603482 && pick2.baseMinutes === 10 && pick2.usedFallback === false && pick2.roadSeconds === 600, JSON.stringify(pick2));
+  check("chooseBestDriverByRoad picks closer Antone (10-min road ETA)", pick2?.driver.driverId === 603482 && pick2.baseMinutes === 10 && pick2.usedFallback === false && pick2.roadSeconds === 600, JSON.stringify(pick2));
   check("chooseBestDriverByRoad excludes busy/no-GPS/offline", (await chooseBestDriverByRoad([freeFast, busy], 41.2, -73.2, R))?.driver.driverId === 703785 && (await chooseBestDriverByRoad([busy, noGps, offline], 41.2, -73.2, R))?.driver.driverId === 668209);
   check("chooseBestDriverByRoad([]) = null", (await chooseBestDriverByRoad([], 41.2, -73.2, R)) === null);
   const fb = await chooseBestDriverByRoad([driver(703785, "Jayden Fountain", { lat: 41.19, lng: -73.15, etaSec: 604 })], 41.2, -73.2, R);
   check("chooseBestDriverByRoad: router null → fallback factor model flagged", fb?.driver.driverId === 703785 && fb.usedFallback === true && fb.roadSeconds === null && fb.baseMinutes === fallbackRoadMinutes(haversineMiles(41.19, -73.15, 41.2, -73.2)), JSON.stringify(fb));
+  // T1–T6 proximity-first hermetic contract tests. Routing is mocked; these
+  // deliberately make road ETA disagree with geographic proximity.
+  const t1a = driver(8101, "T1 close", { lat: 41.195, lng: -73.195, etaSec: 1200 });
+  const t1b = driver(8102, "T1 far/fast", { lat: 41.10, lng: -73.00, etaSec: 1200 });
+  const t1 = await chooseBestDriverByRoad([t1a, t1b], 41.2, -73.2, makeRouter({ "41.20,-73.19": 3600, "41.10,-73.00": 60 }));
+  check("T1 closest GPS wins despite farther driver's lower road ETA", t1?.driver.driverId === 8101 && t1?.distanceBasis === "fallback" && t1?.baseMinutes === 60, JSON.stringify(t1));
+  const t2a = driver(8201, "T2 near", { lat: 41.19, lng: -73.19, etaSec: 600 });
+  const t2b = driver(8202, "T2 farther/fast", { lat: 41.13, lng: -73.13, etaSec: 600 });
+  const t2 = await chooseBestDriverByRoad([t2a, t2b], 41.2, -73.2, makeRouter({ "41.19,-73.19": 2400, "41.13,-73.13": 60 }));
+  check("T2 farther road-faster driver cannot steal from nearer eligible driver", t2?.driver.driverId === 8201, JSON.stringify(t2));
+  const t3ds = [
+    driver(8301, "T3 closest", { lat: 41.198, lng: -73.198, etaSec: 1200 }),
+    driver(8302, "T3 middle", { lat: 41.16, lng: -73.16, etaSec: 1200 }),
+    driver(8303, "T3 far", { lat: 41.10, lng: -73.00, etaSec: 1200 }),
+  ];
+  const t3 = await chooseBestDriverByRoad(t3ds, 41.2, -73.2, makeRouter({ "41.20,-73.20": 3600, "41.16,-73.16": 120, "41.10,-73.00": 60 }));
+  check("T3 three eligible drivers: closest wins regardless of ETA ordering", t3?.driver.driverId === 8301, JSON.stringify(t3));
+  const t4fresh = driver(8401, "T4 fresh GPS", { lat: 41.195, lng: -73.195, etaSec: 1200 });
+  const t4stale = { ...driver(8402, "T4 stale", { lat: 41.10, lng: -73.00, etaSec: 60 }), gpsUpdatedAtUtc: new Date(Date.now() - 30 * 60000).toISOString() };
+  const t4 = await chooseBestDriverByRoad([t4fresh, t4stale], 41.2, -73.2, makeRouter({ "41.20,-73.19": 3600, "41.10,-73.00": 60 }), undefined, { gpsFixes: new Map([["8401", { lat: 41.195, lng: -73.195, capturedAt: new Date().toISOString() }]]), anchors: new Map([["8402", { driverTowbookId: "8402", lat: 41.10, lng: -73.00, jobId: "t4", assignedAt: new Date().toISOString() }]]) });
+  check("T4 GPS-backed tier beats stale/fallback tier and preserves truthful ETA flags", t4?.driver.driverId === 8401 && t4.distanceBasis === "gps" && t4.usedFallback === false && t4.baseMinutes === 60, JSON.stringify(t4));
+  const t5eligible = driver(8502, "T5 farther eligible", { lat: 41.15, lng: -73.15, etaSec: 600 });
+  const t5 = await chooseBestDriverByRoad([t5eligible], 41.2, -73.2, makeRouter({ "41.15,-73.15": 600 }));
+  check("T5 Towbook eligibility filters closest non-listed driver before proximity ranking", t5?.driver.driverId === 8502, JSON.stringify(t5));
+  const t6driver = driver(8601, "T6 payload origin", { lat: 41.10, lng: -73.00, etaSec: 1200 });
+  const t6fix = { lat: 41.195, lng: -73.195, capturedAt: new Date().toISOString() };
+  const t6 = await chooseBestDriverByRoad([t6driver], 41.2, -73.2, makeRouter({ "41.20,-73.19": 300, "41.10,-73.00": 3600 }), undefined, { gpsFixes: new Map([["8601", t6fix]]) });
+  check("T6 selected driver's GPS origin supplies distance/base/straight-line fields", t6?.driver.driverId === 8601 && t6.originBasis === "gps" && Math.abs(t6.originLat - t6fix.lat) < 1e-9 && t6.baseMinutes === 5 && t6.roadSeconds === 300 && t6.distanceMiles < 1, JSON.stringify(t6));
+  check("T6 no eligible driver preserves null choice (driverId 0/SLA no-driver path)", (await chooseBestDriverByRoad([driver(8602, "T6 offline", { checkedIn: false })], 41.2, -73.2, makeRouter())) === null, "");
   check("finalEtaMinutes: ceil(9)+5 = 14", finalEtaMinutes(9, 5, 5, 45) === 14);
   check("finalEtaMinutes: ceiling clamps 60+5 → 45", finalEtaMinutes(60, 5, 5, 45) === 45);
   check("finalEtaMinutes: floor lifts 1+5 → 15", finalEtaMinutes(1, 5, 15, 45) === 15);
@@ -967,7 +996,6 @@ try {
     } finally {
       removeArtifact(artifactPath, { force: true });
       if (hadArtifact) { copyFileSync(artifactBackup, artifactPath); unlinkSync(artifactBackup); }
-      rmSync(dir, { recursive: true, force: true });
     }
     const routerViaFile = resolveRouter({ TOMTOM_KEY_FILE: f }, makeRouterFetch().fetchImpl);
     check("resolveRouter: key from file → tomtom provider + keyConfigured true", routerViaFile.provider === "tomtom" && routerViaFile.tomtomKeyConfigured === true && typeof routerViaFile.router === "function");
