@@ -16,6 +16,7 @@ import { DriverNotificationBanners, SoundToggle } from "~/components/notify-bann
 import { Button, Card, useToast } from "~/components/ui";
 import { driverJobAction, driverJobs, driverLogout, driverReconnect, driverReconnectContext, type DriverCall } from "~/data/driver-auth";
 import { orderDriverQueue } from "~/lib/driver-queue-core";
+import { PUSH_RECEIVED_MESSAGE_TYPE } from "~/lib/push-received";
 import { pingDriverLocation } from "~/data/driver-gps";
 
 export const STATUS_META: Record<number, { label: string; badge: string; dot: string }> = {
@@ -134,8 +135,20 @@ export function useDriverQueue() {
   }, [driverLocation]);
   useEffect(() => {
     void load();
-    const t = setInterval(() => void load(true), 20000); // keep the queue live
-    return () => clearInterval(t);
+    const t = setInterval(() => void load(true), 20000); // fallback safety net
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
+      return () => clearInterval(t);
+    }
+    const onPushReceived = (event: MessageEvent) => {
+      const data = event.data as { type?: unknown } | null | undefined;
+      if (!data || data.type !== PUSH_RECEIVED_MESSAGE_TYPE) return;
+      void load(true);
+    };
+    navigator.serviceWorker.addEventListener("message", onPushReceived);
+    return () => {
+      clearInterval(t);
+      navigator.serviceWorker.removeEventListener("message", onPushReceived);
+    };
   }, [load]);
   const act = async (callId: string, action: "accept" | "en_route") => {
     if (acting) return;
