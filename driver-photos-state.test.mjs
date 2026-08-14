@@ -26,6 +26,15 @@ const ui = await readFile(new URL("./src/components/driver-photos-ui.tsx", impor
 check("Continue to service photos is exposed", ui.includes('actionLabel="Continue to service photos"'));
 check("Continue is disabled while uploads are pending", ui.includes('PHOTO_SIDES.some((side) => slot("pre_arrival", side).busy)'));
 check("failed upload remains blocked (slot error + no uploaded row)", ui.includes('error={s.error}') && ui.includes('uploaded={s.uploaded}') && ui.includes('onFileError={() => onFileError(side)}'));
-check("Continue invokes existing softCompleteJob/server gate", ui.includes('onAction={() => void softComplete()}') && ui.includes("softCompleteJob"));
+check("arrival Continue invokes existing softCompleteJob/server gate", ui.includes('actionLabel="Continue to service photos"') && ui.includes('onAction={() => void softComplete()}') && ui.includes("softCompleteJob"));
+// Regression: once the service set is complete, the service panel must advance
+// through finalCompleteJob. Calling softCompleteJob here leaves the phase at
+// service forever, so the final/completion-photo panel can never become visible.
+const servicePanel = ui.slice(ui.indexOf('phase="service"'), ui.indexOf('phase="final"'));
+check("service Continue advances with finalCompleteJob", servicePanel.includes('onAction={() => void finalComplete()}') && servicePanel.includes('actionBusy={actionBusy === "final"}'));
+check("service Continue is not wired to softCompleteJob", !servicePanel.includes('onAction={() => void softComplete()}'));
+const finalPanel = ui.slice(ui.indexOf('phase="final"'), ui.indexOf('{canComplete &&'));
+check("completion-photo panel has no stale transition gate", finalPanel.includes('actionLabel={null}') && !finalPanel.includes('onAction={() => void finalComplete()}'));
+check("phase transition contract exposes finalizing after complete final set", derivePhase("arrived", { pre_arrival: true, service: true, final: true }, true) === "finalizing");
 
 console.log(`driver-photos-state.test.mjs: ${checks.length}/${checks.length} passed`);

@@ -324,9 +324,9 @@ export function JobPhotoFlow({ callId, jobStatus, onCompleted }: { callId: strin
           slot={slot}
           onUpload={(side, d) => void upload("service", side, d)}
           onFileError={(side) => readError("service", side)}
-          actionLabel="Soft complete — service done"
-          actionBusy={actionBusy === "soft"}
-          onAction={() => void softComplete()}
+          actionLabel="Final complete — service done"
+          actionBusy={actionBusy === "final"}
+          onAction={() => void finalComplete()}
         />
       )}
       {showFinal && (
@@ -336,9 +336,9 @@ export function JobPhotoFlow({ callId, jobStatus, onCompleted }: { callId: strin
           slot={slot}
           onUpload={(side, d) => void upload("final", side, d)}
           onFileError={(side) => readError("final", side)}
-          actionLabel="Final complete — job finished"
-          actionBusy={actionBusy === "final"}
-          onAction={() => void finalComplete()}
+          actionLabel={null}
+          actionBusy={false}
+          onAction={() => undefined}
         />
       )}
       {canComplete && (
