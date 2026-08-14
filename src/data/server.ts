@@ -228,6 +228,62 @@ export const setJobStatus=createServerFn({method:"POST"}).validator(passthrough)
 });
 
 
+export type StatusEvent = { jobId: string; fromStatus: string | null; toStatus: string; actorRole: string | null; note: string | null; occurredAt: string };
+/** Org-scoped status timeline (real history only). Powers the history tab and
+ *  the performance tab's avg time-to-complete. */
+export const getStatusEvents=createServerFn({method:"GET"}).handler(async()=>{ if(!configured())return []; const { currentUser } = await import("./auth-server"); const u=await currentUser(); if(!u)return []; if(!can(u,["owner","admin","dispatcher"]))return []; try { await prepare(); const q=sql(); const rows=await q`SELECT job_id,from_status,to_status,actor_role,note,occurred_at FROM status_events WHERE org_id=${u.orgId} ORDER BY occurred_at DESC LIMIT 1000`; return rows.map((r: Record<string,unknown>)=>({jobId:String(r.job_id),fromStatus:r.from_status?String(r.from_status):null,toStatus:String(r.to_status),actorRole:r.actor_role?String(r.actor_role):null,note:r.note?String(r.note):null,occurredAt:new Date(String(r.occurred_at)).toISOString()})); } catch { return []; } });
+
+const towbookFail = (code: "invalid_credentials"|"towbook_unreachable"|"towbook_blocked", message: string) => ({ok:false as const,error:{code,message}});
+// --- Towbook session persistence ------------------------------------------
+// The login ITSELF (page GET → token → form POST → redirect follow → cookie
+// jar) lives in the shared towbook-login.ts helper — the SAME code path the
+// driver portal uses (driver-auth.ts), so owner connect and driver login can
+// never drift apart. These two functions persist/update the OWNER session row
+// (session_kind='owner'); driver sessions are stored by driver-auth.ts.
+async function persistTowbookSession(orgId: string, fullJar: string) {
+  await prepare();
+  await sql()`INSERT INTO towbook_sessions(org_id,encrypted_session,status,session_kind,error,updated_at) VALUES(${orgId},${await encryptSession(JSON.stringify({cookies:fullJar,baseUrl:TOWBOOK_ORIGIN}))},'connected','owner',NULL,NOW()) ON CONFLICT (org_id) WHERE session_kind='owner' DO UPDATE SET encrypted_session=EXCLUDED.encrypted_session,status='connected',error=NULL,updated_at=NOW()`;
+}
+async function persistTowbookFailure(orgId: string, f: TowbookFacts) {
+  try {
+    await prepare();
+    await sql()`INSERT INTO towbook_sessions(org_id,encrypted_session,status,session_kind,error,updated_at) VALUES(${orgId},'','error','owner',${towbookDetail(f)},NOW()) ON CONFLICT (org_id) WHERE session_kind='owner' DO UPDATE SET status='error',error=EXCLUDED.error,updated_at=NOW(),encrypted_session=towbook_sessions.encrypted_session`;
+  } catch { /* never mask the real connect result with a diagnostics-write failure */ }
+}
+export const towbookStatus=createServerFn({method:"GET"}).handler(async()=>{ if(!configured()) return {ok:true as const,connected:false,lastSyncAt:null,lastResult:null}; const {currentUser}=await import("./auth-server"); const u=await currentUser(); if(!u)return towbookFail("towbook_unreachable","Sign in required."); if(!can(u,["owner","admin"]))return towbookFail("towbook_blocked","You cannot view Towbook status."); try { await prepare(); const r=await sql()`SELECT status,last_sync_at,last_result FROM towbook_sessions WHERE org_id=${u.orgId} AND session_kind='owner'`; const row=r[0] as Record<string,unknown>|undefined; let lastResult: TowbookSyncResult | null = null; if(row?.last_result){ try { const p=row.last_result as Record<string,unknown>; lastResult={ok:String(p.code)==="ok",code:p.code as TowbookSyncCode,message:String(p.message??""),added:Number(p.added??0),updated:Number(p.updated??0),failed:Number(p.failed??0),diagnostics:Array.isArray(p.diagnostics)?p.diagnostics as TowbookSyncDiag[]:[],ranAt:String(p.ranAt??""),...(Array.isArray(p.sample)?{sample:p.sample as Record<string, unknown>[]}:{}),...(Array.isArray(p.statusShapes)?{statusShapes:p.statusShapes as string[]}:{}),...(p.sampleByStatus&&typeof p.sampleByStatus==="object"&&!Array.isArray(p.sampleByStatus)?{sampleByStatus:p.sampleByStatus as Record<string, Record<string, unknown>>}:{})}; } catch { lastResult=null; } } return {ok:true as const,connected:Boolean(row && row.status==='connected'),lastSyncAt:row&&row.last_sync_at?new Date(String(row.last_sync_at)).toISOString():null,lastResult}; } catch { return towbookFail("towbook_unreachable","Towbook status unavailable."); }});
+export const connectTowbook=createServerFn({method:"POST"}).validator(passthrough).handler(async({data})=>{
+  const e=invalid(data,z.object({username:z.string().min(1).max(256),password:z.string().min(1).max(256)}).strict());
+  if(e)return e;
+  if(!configured())return towbookFail("towbook_unreachable","Towbook connection requires database mode.");
+  const {currentUser}=await import("./auth-server");
+  const u=await currentUser();
+  if(!u)return towbookFail("towbook_blocked","Sign in required.");
+  if(!can(u,["owner","admin"]))return towbookFail("towbook_blocked","Only owners and admins can connect Towbook.");
+  const d=data as {username:string;password:string};
+  const result=await towbookLogin(d.username,d.password);
+  if(!result.ok){ await persistTowbookFailure(u.orgId,result.facts); return towbookFail(result.error.code,result.error.message); }
+  await persistTowbookSession(u.orgId,result.cookies);
+  // Owner-driver link (owner-reported bug batch 2026-08-11, BUG 2): resolve the
+  // Towbook DRIVER record behind this session (the owner logs in with their
+  // Towbook username — which IS a driver login on this account) and store the
+  // driver id on the owner-kind session row, so the Contractors roster counts
+  // the owner's own driver row as signed in (the roster's session join is
+  // keyed by towbook_driver_id across ALL session kinds). Best-effort: a
+  // resolution failure never fails the connect itself.
+  try {
+    const { identifyDriver } = await import("./driver-auth");
+    const identity = await identifyDriver({ cookies: result.cookies, baseUrl: TOWBOOK_ORIGIN });
+    // Type mapping (2026-08-12): only a type-1 (driver) Towbook account carries
+    // a roster driver id; a type-2 (manager) account has none to link.
+    const driverId = identity.ok && identity.kind === "driver" ? identity.identity.driverId : null;
+    if (driverId) {
+      await sql()`UPDATE towbook_sessions SET towbook_driver_id=${driverId} WHERE org_id=${u.orgId} AND session_kind='owner'`;
+    }
+  } catch { /* best-effort — the session is stored; the link can be retried on next connect */ }
+  return {ok:true as const};
+});
+export const disconnectTowbook=createServerFn({method:"POST"}).handler(async()=>{if(!configured())return {ok:true as const};const {currentUser}=await import("./auth-server");const u=await currentUser();if(!u||!can(u,["owner","admin"]))return towbookFail("towbook_blocked","You cannot disconnect Towbook.");try{await prepare();await sql()`DELETE FROM towbook_sessions WHERE org_id=${u.orgId} AND session_kind='owner'`;return {ok:true as const};}catch{return towbookFail("towbook_unreachable","Unable to disconnect Towbook.");}});
+
 /* ============================ Towbook job puller (slice 2) ============================
  * Self-discovering authenticated sync: uses the org's stored Towbook session cookie jar
  * (encrypted at rest via towbook-key.ts) to fetch likely job-list surfaces, parse job
