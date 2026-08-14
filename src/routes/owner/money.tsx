@@ -25,7 +25,6 @@
  * owner's explicit approval per charge, enforced server-side by
  * chargeStagedCore) is the gate; the card entered into Square's secure form is
  * tokenized and charged only AFTER the owner taps Charge on a staged row.
- * DemoChip until real money moves.
  * Seroval rule: every client-visible field null, never undefined.
  */
 import { createFileRoute } from "@tanstack/react-router";
@@ -36,7 +35,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "~/components/app-shell";
 import { formatCents } from "~/components/contractor-admin";
-import { Alert, Avatar, BoardSkeleton, Button, Card, DemoChip, EmptyState, StatCard, StatusBadge, useToast } from "~/components/ui";
+import { Alert, Avatar, BoardSkeleton, Button, Card, EmptyState, StatCard, StatusBadge, useToast } from "~/components/ui";
 import { OwnerPayoutMethodEditor } from "~/components/owner-payout-method";
 import {
   computePayday, editPayoutMethod, getContractorPayoutMethod, getMoneyOverview, getPayPeriodDetail, listPayPeriods, markPayoutPaid,
@@ -297,7 +296,7 @@ function MoneyView() {
     <AppShell portal="owner" title="Payments" description="Payday manifest, motor-club card charges, and driver tips — all money settles in your Square account, nothing is ever transferred out.">
       <div className="space-y-5">
         {!overview.hasRealMoney && (
-          <DemoChip>demo — no real money has moved yet</DemoChip>
+          <Alert variant="info">No payments processed yet — Stripe onboarding not complete.</Alert>
         )}
 
         {/* stat cards */}
