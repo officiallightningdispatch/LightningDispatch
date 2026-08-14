@@ -17,7 +17,7 @@ import { DriverClaimReviewCard } from "~/components/claims-ui";
 import { AvailabilityPill, useAvailability } from "~/components/driver-availability";
 import { useRequoteFlash } from "~/components/driver-eta";
 import { HomeSheet, MapChips, type HomeEarnings } from "~/components/driver-sheets";
-import { useDriverQueue } from "~/components/driver-queue";
+import { DriverReconnectSheet, useDriverQueue } from "~/components/driver-queue";
 import { LiveMap } from "~/components/live-map";
 import { DriverNotificationBanners } from "~/components/notify-banners";
 import { PushNotificationSetup, PushPermissionCard } from "~/components/push-setup";
@@ -82,7 +82,7 @@ const ACTIVE_STATUSES = [2, 3, 4];
 
 export function RealDriverPortal() {
   const nav = useNavigate();
-  const { calls, error, expired, loading, acting, load, act, signOut, gpsState } = useDriverQueue();
+  const { calls, error, expired, loading, acting, load, act, signOut, gpsState, reconnectOpen, openReconnect, closeReconnect, onReconnected } = useDriverQueue();
   const { online, pending, toggle } = useAvailability();
   const [snap, setSnap] = useState(0);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -114,7 +114,7 @@ export function RealDriverPortal() {
   const flash = useRequoteFlash(primary);
 
   const chips: { kind: "error" | "expired"; text: string; onAction?: () => void }[] = [];
-  if (expired) chips.push({ kind: "expired", text: "Your session expired — tap to reconnect.", onAction: () => void signOut() });
+  if (expired) chips.push({ kind: "expired", text: "Your session expired — tap to reconnect.", onAction: () => void openReconnect() });
   else if (error) chips.push({ kind: "error", text: error });
 
   return (
@@ -167,6 +167,7 @@ export function RealDriverPortal() {
       />
       <DriverNotificationBanners calls={calls} showSoundToggle />
       <PushNotificationSetup />
+      <DriverReconnectSheet open={reconnectOpen} onClose={closeReconnect} onReconnected={onReconnected} onSignOut={() => void signOut()} />
     </AppShell>
   );
 }

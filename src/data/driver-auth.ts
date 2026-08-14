@@ -374,17 +374,10 @@ async function upsertDriverUser(orgId: string, username: string, identity: Drive
   return { userId, created: true };
 }
 
-/** Store (or refresh) the driver's encrypted Towbook session row:
- *  session_kind='driver', keyed by (org_id, towbook_driver_id). */
-async function persistDriverSession(orgId: string, driverId: string, session: DriverSession): Promise<void> {
-  await ensure();
-  const q = await db();
-  const { encryptSession } = await import("./towbook-key");
-  await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status, session_kind, towbook_driver_id, error, updated_at)
-    VALUES(${orgId}, ${await encryptSession(JSON.stringify({ cookies: session.cookies, baseUrl: session.baseUrl }))}, 'connected', 'driver', ${driverId}, NULL, NOW())
-    ON CONFLICT (org_id, towbook_driver_id) WHERE session_kind='driver' AND towbook_driver_id IS NOT NULL
-    DO UPDATE SET encrypted_session=EXCLUDED.encrypted_session, status='connected', error=NULL, updated_at=NOW()`;
-}
+/** persistDriverSession lives in driver-gps-core.ts (server-only) — callers
+ *  here dynamic-import it from inside serverFn handler bodies (client-graph
+ *  rule: a plain export in this client-reachable module must never
+ *  dynamic-import towbook-key/auth-server). */
 
 /** Load a driver's stored session from their LD user (role contractor +
  *  towbook_driver_id). Returns null when no session row exists. Lives in
@@ -830,7 +823,7 @@ export const driverLogin = createServerFn({ method: "POST" }).validator(passthro
     // re-created via an id shift: isDriverDeactivated matches on BOTH
     // towbook_driver_id and towbook_user_id, so the roster-fallback resolution
     // and any id drift still refuse).
-    const { isDriverDeactivated } = await import("./driver-gps-core");
+    const { isDriverDeactivated, persistDriverSession } = await import("./driver-gps-core");
     if (await isDriverDeactivated(orgId, identity.identity.driverId)) {
       return { ok: false as const, error: "This driver account was removed in Lightning Dispatch — contact the owner." };
     }
@@ -861,6 +854,59 @@ export const driverLogin = createServerFn({ method: "POST" }).validator(passthro
     };
   } catch (err) {
     return { ok: false as const, error: err instanceof Error ? err.message : "Driver sign-in failed. Try again." };
+  }
+});
+
+/* ------------------------------- driver reconnect ------------------------------- */
+export type { DriverReconnectResult } from "./driver-reconnect-core";
+/** driverReconnectCore lives in ./driver-reconnect-core (SERVER-ONLY module —
+ *  client-graph rule: a plain export in this client-reachable module must
+ *  never dynamic-import towbook-login/auth-server — that pulled node:crypto
+ *  into the client bundle, "randomBytes is not exported by
+ *  __vite-browser-external"). The handler below dynamic-imports the core from
+ *  inside its body (stripped client-side); hermetic tests import the core
+ *  module directly. The type above is a compile-time-only re-export. */
+/** Reconnect handler: refreshes ONLY the driver's Towbook session (never the
+ *  LD session). Any signed-in user with an effective driver identity may call
+ *  it (contractor re-authing themselves; owner/admin re-authing their own or
+ *  linked driver) — the identity guard inside driverReconnectCore keeps it
+ *  scoped to the session's own driver. */
+export const driverReconnect = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }) => {
+  const v = z.object({ username: z.string().min(1).max(256), password: z.string().min(1).max(256) }).safeParse(data);
+  if (!v.success) return { ok: false as const, message: "Enter the driver's dispatch username and password." };
+  if (!configured()) return { ok: false as const, message: "Driver reconnect requires database mode." };
+  const ctx = await resolveEffectiveDriver();
+  if (!ctx) return { ok: false as const, message: "Sign in as a driver first." };
+  try {
+    await ensure();
+    const { driverReconnectCore } = await import("./driver-reconnect-core");
+    const r = await driverReconnectCore(
+      { orgId: ctx.u.orgId, towbookDriverId: ctx.identity.towbookDriverId },
+      v.data.username,
+      v.data.password,
+    );
+    if (!r.ok) return r;
+    return { ok: true as const, driverId: r.driverId };
+  } catch (err) {
+    return { ok: false as const, message: err instanceof Error ? err.message : "Reconnect failed. Try again." };
+  }
+});
+
+/** Reconnect-screen context: the effective driver's TOWBOOK USERNAME
+ *  (users.login_handle — the exact handle the driver signs into dispatch with)
+ *  so the reconnect form can pre-fill it. The driver's own login_handle is
+ *  safe to expose to the session's own driver view (it is the driver's own
+ *  identity); no password or cookie material is ever returned. */
+export const driverReconnectContext = createServerFn({ method: "GET" }).handler(async () => {
+  if (!configured()) return { ok: false as const, message: "Driver reconnect requires database mode." };
+  const ctx = await resolveEffectiveDriver();
+  if (!ctx) return { ok: false as const, message: "Sign in as a driver first." };
+  try {
+    const q = await db();
+    const rows = await q`SELECT login_handle FROM users WHERE id=${ctx.identity.userRowId} LIMIT 1`;
+    return { ok: true as const, username: rows.length ? String(rows[0].login_handle ?? "") : "" };
+  } catch {
+    return { ok: false as const, message: "Unable to load reconnect details — try again." };
   }
 });
 

@@ -89,6 +89,19 @@ export async function loadDriverSession(user: { orgId: string; towbookDriverId: 
   }
 }
 
+/** Store (or refresh) the driver's encrypted Towbook session row:
+ *  session_kind='driver', keyed by (org_id, towbook_driver_id). Server-only
+ *  home (moved out of the client-reachable driver-auth.ts per the client-graph
+ *  rule): driverLogin and driverReconnectCore persist sessions from here. */
+export async function persistDriverSession(orgId: string, driverId: string, session: DriverSession): Promise<void> {
+  await ensure();
+  const q = await db();
+  const { encryptSession } = await import("./towbook-key");
+  await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status, session_kind, towbook_driver_id, error, updated_at)
+    VALUES(${orgId}, ${await encryptSession(JSON.stringify({ cookies: session.cookies, baseUrl: session.baseUrl }))}, 'connected', 'driver', ${driverId}, NULL, NOW())
+    ON CONFLICT (org_id, towbook_driver_id) WHERE session_kind='driver' AND towbook_driver_id IS NOT NULL
+    DO UPDATE SET encrypted_session=EXCLUDED.encrypted_session, status='connected', error=NULL, updated_at=NOW()`;
+}
 /** True when the LD users row for a driver is soft-deactivated (removed by the
  *  owner — contractor edit/remove feature). driverLogin refuses deactivated
  *  drivers BEFORE persisting a session, so a removed contractor cannot sign in

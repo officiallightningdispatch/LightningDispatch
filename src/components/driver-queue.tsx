@@ -7,14 +7,14 @@
  * createServerFn wrappers (driver-auth), never server-only modules.
  */
 import { useNavigate } from "@tanstack/react-router";
-import { Check, LogOut, MapPin, Navigation, Radar, RefreshCw, ThumbsUp, Truck } from "lucide-react";
+import { Check, LogOut, MapPin, Navigation, Radar, RefreshCw, ThumbsUp, Truck, Unplug, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BatterySalesAgent, isJumpstartService } from "~/components/battery-agent-ui";
 import { JobDetailDisclosure } from "~/components/job-detail";
 import { JobPhotoFlow } from "~/components/driver-photos-ui";
 import { DriverNotificationBanners, SoundToggle } from "~/components/notify-banners";
 import { Button, Card, useToast } from "~/components/ui";
-import { driverJobAction, driverJobs, driverLogout, type DriverCall } from "~/data/driver-auth";
+import { driverJobAction, driverJobs, driverLogout, driverReconnect, driverReconnectContext, type DriverCall } from "~/data/driver-auth";
 import { pingDriverLocation } from "~/data/driver-gps";
 
 export const STATUS_META: Record<number, { label: string; badge: string; dot: string }> = {
@@ -112,6 +112,7 @@ export function useDriverQueue() {
   const [expired, setExpired] = useState(false);
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState<string | null>(null);
+  const [reconnectOpen, setReconnectOpen] = useState(false);
   const gpsState = useDriverGps(calls);
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -147,7 +148,100 @@ export function useDriverQueue() {
     await driverLogout(); // best-effort Towbook checkout so we're not left "online"
     void nav({ to: "/login", replace: true });
   };
-  return { calls, error, expired, loading, acting, load, act, signOut, gpsState };
+  /** Reconnect (auth incident 2026-08-13): the expired chip used to sign the
+   *  whole LD session out and dump the user on /login — a dead end for
+   *  owner-with-linked-driver sessions (re-login as the owner never refreshes
+   *  the linked driver's stored Towbook session, so the driver view stayed
+   *  expired forever). Now the chip opens an IN-PLACE reconnect sheet that
+   *  re-authenticates the driver against Towbook and refreshes the stored
+   *  driver session without touching the LD session. After a successful
+   *  reconnect the queue reloads and the expired state clears. */
+  const openReconnect = useCallback(() => setReconnectOpen(true), []);
+  const closeReconnect = useCallback(() => setReconnectOpen(false), []);
+  const onReconnected = useCallback(() => { void load(true); }, [load]);
+  return { calls, error, expired, loading, acting, load, act, signOut, gpsState, reconnectOpen, openReconnect, closeReconnect, onReconnected };
+}
+
+/** In-place driver-session reconnect sheet (auth incident 2026-08-13). Shown
+ *  when the queue reports the stored Towbook session is dead. The driver's
+ *  dispatch username is pre-filled (from the effective driver's login_handle —
+ *  for an owner in driver view this is the LINKED driver's username, e.g.
+ *  24hourbattery); the user enters that driver's dispatch password and the
+ *  server re-authenticates + persists a fresh session. The LD session is never
+ *  touched, so the owner stays signed in — reconnect retains the intended
+ *  portal. "Sign out instead" remains as the escape hatch. */
+export function DriverReconnectSheet({ open, onClose, onReconnected, onSignOut }: {
+  open: boolean;
+  onClose: () => void;
+  onReconnected: () => void;
+  onSignOut: () => void;
+}) {
+  const toast = useToast();
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!open) return;
+    setPassword(""); setError(""); setBusy(false);
+    void driverReconnectContext().then((r) => { if (r.ok && r.username) setUsername(r.username); }).catch(() => { /* empty username is still editable */ });
+  }, [open]);
+  if (!open) return null;
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (busy) return;
+    setBusy(true); setError("");
+    try {
+      const r = await driverReconnect({ data: { username: username.trim(), password } });
+      if (r.ok) {
+        toast("Driver session reconnected.");
+        onReconnected();
+        onClose();
+      } else {
+        setError(r.message);
+      }
+    } catch {
+      setError("Reconnect failed — check your connection and try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="fixed inset-0 z-40 bg-ink-950/40 backdrop-blur-[2px]" role="dialog" aria-modal="true" aria-label="Reconnect driver session" onClick={onClose}>
+      <div className="absolute inset-x-0 bottom-0 max-h-[88dvh] overflow-y-auto rounded-t-3xl bg-surface p-4 pb-6 shadow-[0_-8px_24px_rgba(14,14,17,0.16)]" onClick={(e) => e.stopPropagation()}>
+        <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-ink-200" aria-hidden="true" />
+        <div className="mb-3 flex items-start justify-between gap-2">
+          <div className="flex items-center gap-2.5">
+            <span className="grid size-9 place-items-center rounded-xl bg-amber-100 text-amber-700"><Unplug className="size-4" aria-hidden="true" /></span>
+            <div>
+              <p className="text-base font-bold text-ink-800">Reconnect your driver session</p>
+              <p className="text-xs text-ink-500">Your dispatch session expired — jobs and actions are paused until you reconnect.</p>
+            </div>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close" className="grid size-9 shrink-0 place-items-center rounded-full text-ink-400 hover:bg-ink-50"><X className="size-4" /></button>
+        </div>
+        <form onSubmit={submit} className="space-y-3">
+          <label className="block text-sm font-semibold text-ink-700">
+            Dispatch username
+            <input required type="text" autoCapitalize="none" autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)}
+              placeholder="e.g. 24hourbattery"
+              className="mt-1 h-11 w-full rounded-xl border border-ink-200 px-3 text-sm" />
+          </label>
+          <label className="block text-sm font-semibold text-ink-700">
+            Dispatch password
+            <input required type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)}
+              placeholder="Your dispatch password"
+              className="mt-1 h-11 w-full rounded-xl border border-ink-200 px-3 text-sm" />
+          </label>
+          {error && <p role="alert" className="rounded-xl bg-danger-50 p-3 text-sm text-danger-600">{error}</p>}
+          <Button type="submit" loading={busy} className="w-full"><Unplug className="size-4" /> Reconnect</Button>
+          <button type="button" onClick={onSignOut} className="flex w-full items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold text-ink-500 hover:bg-ink-50">
+            <LogOut className="size-3.5" /> Sign out instead
+          </button>
+        </form>
+      </div>
+    </div>
+  );
 }
 
 /** Refresh + sound + sign-out row shared by every driver page. */

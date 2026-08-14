@@ -10,7 +10,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { ChevronDown, LifeBuoy, Phone, Wallet } from "lucide-react";
 import { useState } from "react";
 import { AppShell } from "~/components/app-shell";
-import { useDriverQueue } from "~/components/driver-queue";
+import { DriverReconnectSheet, useDriverQueue } from "~/components/driver-queue";
 import { Button, Card } from "~/components/ui";
 import { submitDriverIssue } from "~/data/driver-support";
 
@@ -29,7 +29,7 @@ type KindId = (typeof KINDS)[number]["id"];
 
 function HelpView() {
   const nav = useNavigate();
-  const { calls, expired, signOut } = useDriverQueue();
+  const { calls, expired, signOut, reconnectOpen, openReconnect, closeReconnect, onReconnected } = useDriverQueue();
   const [kind, setKind] = useState<KindId>("job_issue");
   const [jobId, setJobId] = useState("");
   const [message, setMessage] = useState("");
@@ -158,7 +158,7 @@ function HelpView() {
               {expired && (
                 <p className="rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-800">
                   Your session expired — reports still reach dispatch, but reconnect to keep getting jobs.{" "}
-                  <button type="button" onClick={() => void signOut()} className="font-bold underline">Reconnect</button>
+                  <button type="button" onClick={() => void openReconnect()} className="font-bold underline">Reconnect</button>
                 </p>
               )}
             </div>
@@ -181,6 +181,7 @@ function HelpView() {
           </div>
         </Card>
       </div>
+      <DriverReconnectSheet open={reconnectOpen} onClose={closeReconnect} onReconnected={onReconnected} onSignOut={() => void signOut()} />
     </AppShell>
   );
 }

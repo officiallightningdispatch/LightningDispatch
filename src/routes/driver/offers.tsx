@@ -6,6 +6,7 @@ import { etaMinutesLabel } from "~/components/driver-eta";
 import {
   DriverBanners,
   DriverEmptyState,
+  DriverReconnectSheet,
   DriverToolbar,
   GpsStatusChip,
   QueueSkeleton,
@@ -27,11 +28,11 @@ import type { DriverCall } from "~/data/driver-auth";
 export const Route = createFileRoute("/driver/offers")({ component: OffersView });
 
 function OffersView() {
-  const { calls, error, expired, loading, acting, load, act, signOut, gpsState } = useDriverQueue();
+  const { calls, error, expired, loading, acting, load, act, signOut, gpsState, reconnectOpen, openReconnect, closeReconnect, onReconnected } = useDriverQueue();
   const offers = calls?.filter((c) => c.statusId === 1) ?? null;
   return (
     <AppShell portal="driver" title="Offers" description="New jobs waiting on your thumbs-up — accept to claim them.">
-      <DriverBanners calls={calls} expired={expired} error={error} onReconnect={() => void signOut()} />
+      <DriverBanners calls={calls} expired={expired} error={error} onReconnect={() => void openReconnect()} />
       <DriverToolbar loading={loading} onRefresh={() => void load(false)} onSignOut={() => void signOut()} />
       <GpsStatusChip state={gpsState} />
       {loading && calls === null ? (
@@ -49,6 +50,7 @@ function OffersView() {
           ))}
         </div>
       )}
+      <DriverReconnectSheet open={reconnectOpen} onClose={closeReconnect} onReconnected={onReconnected} onSignOut={() => void signOut()} />
     </AppShell>
   );
 }

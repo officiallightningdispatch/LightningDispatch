@@ -4,7 +4,7 @@ import { useState } from "react";
 import { AppShell } from "~/components/app-shell";
 import { useRequoteFlash, EtaHero } from "~/components/driver-eta";
 import { MapChips, TripSheet } from "~/components/driver-sheets";
-import { useDriverQueue } from "~/components/driver-queue";
+import { DriverReconnectSheet, useDriverQueue } from "~/components/driver-queue";
 import { LiveMap } from "~/components/live-map";
 import { DriverNotificationBanners } from "~/components/notify-banners";
 
@@ -37,7 +37,7 @@ function HelpIcon({ className = "" }: { className?: string }) {
 
 function ActiveView() {
   const nav = useNavigate();
-  const { calls, error, expired, loading, acting, load, act, signOut, gpsState } = useDriverQueue();
+  const { calls, error, expired, loading, acting, load, act, signOut, gpsState, reconnectOpen, openReconnect, closeReconnect, onReconnected } = useDriverQueue();
   const [snap, setSnap] = useState(0);
   const active = calls?.filter((c) => ACTIVE_STATUSES.includes(c.statusId)) ?? null;
   const current = active && active.length > 0 ? active[0] : null;
@@ -46,7 +46,7 @@ function ActiveView() {
   const flash = useRequoteFlash(sheetCall);
 
   const chips: { kind: "error" | "expired"; text: string; onAction?: () => void }[] = [];
-  if (expired) chips.push({ kind: "expired", text: "Your session expired — tap to reconnect.", onAction: () => void signOut() });
+  if (expired) chips.push({ kind: "expired", text: "Your session expired — tap to reconnect.", onAction: () => void openReconnect() });
   else if (error) chips.push({ kind: "error", text: error });
 
   const headerActions = (
@@ -116,6 +116,7 @@ function ActiveView() {
         </div>
       )}
       <DriverNotificationBanners calls={calls} />
+      <DriverReconnectSheet open={reconnectOpen} onClose={closeReconnect} onReconnected={onReconnected} onSignOut={() => void signOut()} />
     </AppShell>
   );
 }
