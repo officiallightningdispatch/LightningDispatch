@@ -32,7 +32,7 @@ const ZIP3_RANGES: Array<[number, number, string]> = [
   [430, 459, "OH"], [460, 479, "IN"], [480, 499, "MI"], [500, 528, "IA"],
   [530, 532, "WI"], [534, 535, "WI"], [537, 539, "WI"], [540, 549, "WI"],
   [550, 567, "MN"], [570, 577, "SD"], [580, 588, "ND"], [590, 599, "MT"],
-  [600, 629, "IL"], [630, 637, "IL"], [640, 658, "MO"], [660, 662, "KS"],
+  [060, 069, "CT"], [600, 629, "IL"], [630, 637, "IL"], [640, 658, "MO"], [660, 662, "KS"],
   [664, 679, "KS"], [680, 693, "NE"], [700, 714, "LA"], [716, 729, "AR"],
   [730, 731, "OK"], [733, 735, "TX"], [739, 749, "OK"], [750, 799, "TX"],
   [800, 816, "CO"], [820, 831, "WY"], [832, 838, "ID"], [840, 847, "UT"],
@@ -45,52 +45,57 @@ const stateFromZip3 = (zip3: number): string | null => {
   return null;
 };
 
-/** Parse a 2-letter US state from an address line. Sources, in order:
- *  1. a 5-digit ZIP (or ZIP+4) → ZIP3 range table (the reliable evidence);
- *  2. a trailing 2-letter token ("…, Georgetown, TX") — must not be a common
- *     non-state abbreviation (RD/ST/AVE/USA/NW…).
- * Returns the UPPERCASE state code or null when unresolvable (caller fails
- * closed). Never throws. */
+/** US state names → postal abbreviations. */
+const STATE_NAMES: Record<string, string> = {
+  ALABAMA: "AL", ALASKA: "AK", ARIZONA: "AZ", ARKANSAS: "AR", CALIFORNIA: "CA", COLORADO: "CO", CONNECTICUT: "CT", DELAWARE: "DE", "DISTRICT OF COLUMBIA": "DC", FLORIDA: "FL", GEORGIA: "GA", HAWAII: "HI", IDAHO: "ID", ILLINOIS: "IL", INDIANA: "IN", IOWA: "IA", KANSAS: "KS", KENTUCKY: "KY", LOUISIANA: "LA", MAINE: "ME", MARYLAND: "MD", MASSACHUSETTS: "MA", MICHIGAN: "MI", MINNESOTA: "MN", MISSISSIPPI: "MS", MISSOURI: "MO", MONTANA: "MT", NEBRASKA: "NE", NEVADA: "NV", "NEW HAMPSHIRE": "NH", "NEW JERSEY": "NJ", "NEW MEXICO": "NM", "NEW YORK": "NY", "NORTH CAROLINA": "NC", "NORTH DAKOTA": "ND", OHIO: "OH", OKLAHOMA: "OK", OREGON: "OR", PENNSYLVANIA: "PA", "RHODE ISLAND": "RI", "SOUTH CAROLINA": "SC", "SOUTH DAKOTA": "SD", TENNESSEE: "TN", TEXAS: "TX", UTAH: "UT", VERMONT: "VT", VIRGINIA: "VA", WASHINGTON: "WA", "WEST VIRGINIA": "WV", WISCONSIN: "WI", WYOMING: "WY",
+};
+
+/** Parse and normalize a US state from address text. Explicit state names/codes
+ * win over ZIP inference, so an address cannot silently change state because a
+ * ZIP or placeholder coordinate disagrees. Unknown codes are rejected. */
 const NON_STATE_TOKENS = new Set(["RD", "ST", "AVE", "BLVD", "DR", "LN", "PKWY", "USA", "US", "NW", "NE", "SW", "SE", "N", "S", "E", "W", "CTR", "CIR", "HWY", "STE", "UNIT", "APT"]);
-export function parseStateFromAddress(value: string): string | null {
-  if (!value || typeof value !== "string") return null;
+const US_STATE_CODES = new Set(Object.values(STATE_NAMES));
+export function normalizeUsState(raw: unknown): string | null {
+  const t = String(raw ?? "").trim().toUpperCase().replace(/[.,]/g, "");
+  if (!t) return null;
+  return US_STATE_CODES.has(t) ? t : (STATE_NAMES[t] ?? null);
+}
+export type AddressStateResolution = { state: string | null; source: "address" | "zip" | "unknown"; mismatch: boolean };
+export function resolveStateFromAddress(value: string): AddressStateResolution {
+  if (!value || typeof value !== "string") return { state: null, source: "unknown", mismatch: false };
+  const normalized = value.replace(/[^A-Za-z0-9 ]/g, " ").split(/\s+/).filter(Boolean);
+  const compact = normalized.join(" ").toUpperCase();
+  let explicit: string | null = null;
+  for (const [name, code] of Object.entries(STATE_NAMES)) {
+    if (new RegExp(`(^| )${name}( |$)`).test(compact)) { explicit = code; break; }
+  }
+  if (!explicit) {
+    // Accept punctuation-separated postal forms such as "C.T." deterministically.
+    const rawUpper = value.toUpperCase();
+    for (const [code, name] of Object.entries(STATE_NAMES).map(([name, code]) => [code, name] as const)) {
+      const letters = code.split("");
+      if (new RegExp(`(^|[^A-Z])${letters[0]}[^A-Z]*${letters[1]}([^A-Z]|$)`).test(rawUpper)) { explicit = code; break; }
+    }
+  }
+  if (!explicit) {
+    for (let i = normalized.length - 1; i >= 0; i--) {
+      const token = normalized[i]!.toUpperCase().replace(/[^A-Z]/g, "");
+      const candidate = normalizeUsState(token);
+      if (candidate && token.length === 2 && !NON_STATE_TOKENS.has(token)) { explicit = candidate; break; }
+    }
+  }
   const zip = value.match(/\b(\d{5})(?:-\d{4})?\b/);
-  if (zip) {
-    const st = stateFromZip3(Number(zip[1].slice(0, 3)));
-    if (st) return st;
-  }
-  const tokens = value.replace(/[^A-Za-z0-9 ]/g, " ").split(/\s+/).filter(Boolean);
-  for (let i = tokens.length - 1; i >= 0; i--) {
-    const t = tokens[i]!.toUpperCase();
-    if (/^[A-Z]{2}$/.test(t) && !NON_STATE_TOKENS.has(t)) return t;
-  }
-  return null;
+  const zipState = zip ? stateFromZip3(Number(zip[1]!.slice(0, 3))) : null;
+  if (explicit) return { state: explicit, source: "address", mismatch: Boolean(zipState && zipState !== explicit) };
+  if (zipState) return { state: zipState, source: "zip", mismatch: false };
+  return { state: null, source: "unknown", mismatch: false };
+}
+export function parseStateFromAddress(value: string): string | null {
+  return resolveStateFromAddress(value).state;
 }
 
-/** TomTom full state names → abbreviation (reverse geocode returns the FULL
- *  subdivision name, e.g. "Texas", in address.countrySubdivision and
- *  adminDistrict; the 2-letter code is NOT guaranteed). */
-const STATE_NAMES: Record<string, string> = {
-  ALABAMA: "AL", ALASKA: "AK", ARIZONA: "AZ", ARKANSAS: "AR", CALIFORNIA: "CA",
-  COLORADO: "CO", CONNECTICUT: "CT", DELAWARE: "DE", "DISTRICT OF COLUMBIA": "DC",
-  FLORIDA: "FL", GEORGIA: "GA", HAWAII: "HI", IDAHO: "ID", ILLINOIS: "IL",
-  INDIANA: "IN", IOWA: "IA", KANSAS: "KS", KENTUCKY: "KY", LOUISIANA: "LA",
-  MAINE: "ME", MARYLAND: "MD", MASSACHUSETTS: "MA", MICHIGAN: "MI",
-  MINNESOTA: "MN", MISSISSIPPI: "MS", MISSOURI: "MO", MONTANA: "MT",
-  NEBRASKA: "NE", NEVADA: "NV", "NEW HAMPSHIRE": "NH", "NEW JERSEY": "NJ",
-  "NEW MEXICO": "NM", "NEW YORK": "NY", "NORTH CAROLINA": "NC",
-  "NORTH DAKOTA": "ND", OHIO: "OH", OKLAHOMA: "OK", OREGON: "OR",
-  PENNSYLVANIA: "PA", "RHODE ISLAND": "RI", "SOUTH CAROLINA": "SC",
-  "SOUTH DAKOTA": "SD", TENNESSEE: "TN", TEXAS: "TX", UTAH: "UT",
-  VERMONT: "VT", VIRGINIA: "VA", WASHINGTON: "WA", "WEST VIRGINIA": "WV",
-  WISCONSIN: "WI", WYOMING: "WY",
-};
-const normalizeState = (raw: string): string | null => {
-  const t = (raw ?? "").trim().toUpperCase();
-  if (!t) return null;
-  if (/^[A-Z]{2}$/.test(t)) return t;
-  return STATE_NAMES[t] ?? null;
-};
+/** Normalize reverse-geocoder state output (full name or postal code). */
+const normalizeState = (raw: string): string | null => normalizeUsState(raw);
 
 export const TOMTOM_REVERSE_ENDPOINT = "https://api.tomtom.com/search/2/reverseGeocode";
 /** Reverse-geocode a lat/lng to a 2-letter US state via TomTom Search v2.

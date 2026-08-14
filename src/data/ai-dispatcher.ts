@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { parseStateFromAddress, reverseGeocodeState, driverStateCacheKey } from "./state-guard-core";
+import { resolveStateFromAddress, reverseGeocodeState, driverStateCacheKey } from "./state-guard-core";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { sql } from "~/db";
@@ -2624,7 +2624,8 @@ async function runAutoDispatchInternal(
       // accept) — the engine never assigns a driver it cannot prove is in the
       // job's state.
       const rawStarting = startingLocationOf(rawOffer as Record<string, unknown>);
-      const jobState = rawStarting ? (stateCityOf(rawStarting)?.state ?? parseStateFromAddress(rawStarting)) : null;
+      const addressResolution = rawStarting ? resolveStateFromAddress(rawStarting) : { state: null, source: "unknown" as const, mismatch: false };
+      const jobState = addressResolution.state;
       const tomtomKeyForGuard = resolveTomtomKey(deps.env ?? process.env);
       const reverseStateCache = new Map<string, string | null>();
       // ALWAYS active (fail-closed): a null jobState (unresolvable address)
@@ -2657,8 +2658,8 @@ async function runAutoDispatchInternal(
       if (guardOutcome.blocked) {
         const isUnknownJob = guardOutcome.blockedReason === "job_state_unknown";
         const reason = isUnknownJob
-          ? `job state UNKNOWN (offer address ${rawStarting ? `"${rawStarting}"` : "missing"} did not resolve to a US state) — same-state rule cannot be verified, offer NOT auto-accepted (no cross-state dispatch)`
-          : `no driver currently in state ${jobState?.toUpperCase()} — ${guardOutcome.excluded.length} candidate(s) checked, ${guardOutcome.inState} in-state, ${guardOutcome.excluded.filter((e) => !e.state).length} with unknown state; offer NOT auto-accepted (no cross-state dispatch)`;
+          ? `job state UNKNOWN (offer address ${rawStarting ? `"${rawStarting}"` : "missing"} did not resolve to a US state; state_resolution=unknown) — same-state rule cannot be verified, offer NOT auto-accepted (no cross-state dispatch)`
+          : `no driver currently in state ${jobState?.toUpperCase()} (state_resolution=${addressResolution.source}${addressResolution.mismatch ? ",address_zip_mismatch" : ""}) — ${guardOutcome.excluded.length} candidate(s) checked, ${guardOutcome.inState} in-state, ${guardOutcome.excluded.filter((e) => !e.state).length} with unknown state; offer NOT auto-accepted (no cross-state dispatch)`;
         await record({
           decision: isUnknownJob ? "escalated_state_unknown" : "escalated_cross_state",
           driverId: null, driverName: null, etaMinutes: null, reason,
