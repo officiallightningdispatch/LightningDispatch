@@ -1204,7 +1204,7 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`ALTER TABLE dispatch_zones ADD COLUMN IF NOT EXISTS parent_zone_id TEXT REFERENCES dispatch_zones(id) ON DELETE SET NULL`;
     await q`UPDATE dispatch_zones SET state='CT', market='', zone_type='market', zip_codes='{}'::text[], parent_zone_id=NULL WHERE state IS NULL OR market IS NULL OR zone_type IS NULL OR zip_codes IS NULL`;
     await q`ALTER TABLE dispatch_zones ALTER COLUMN state SET NOT NULL`;
-    await q`ALTER TABLE dispatch_zones ADD CONSTRAINT dispatch_zones_zone_type_check CHECK (zone_type IN ('market','submarket','rural','corridor','coverage'))`;
+    await q`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='dispatch_zones_zone_type_check') THEN ALTER TABLE dispatch_zones ADD CONSTRAINT dispatch_zones_zone_type_check CHECK (zone_type IN ('market','submarket','rural','corridor','coverage')); END IF; END $$`;
     await q`CREATE INDEX IF NOT EXISTS dispatch_zones_org_state_active_idx ON dispatch_zones(org_id,state,active)`;
     await q`CREATE INDEX IF NOT EXISTS dispatch_zones_zip_codes_gin_idx ON dispatch_zones USING GIN(zip_codes)`;
     await q`CREATE INDEX IF NOT EXISTS dispatch_zones_parent_idx ON dispatch_zones(parent_zone_id)`;
