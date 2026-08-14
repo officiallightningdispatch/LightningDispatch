@@ -1164,6 +1164,13 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
   [49, async (q) => {
     await q`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS active_org_id TEXT REFERENCES organizations(id) ON DELETE CASCADE`;
   }],
+  [50, async (q) => {
+    // Global Towbook identity: one account maps to one LD user row. Empty and
+    // legacy-unset identities remain allowed for manually-created users.
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS users_towbook_user_id_uidx
+      ON users(towbook_user_id)
+      WHERE towbook_user_id IS NOT NULL AND towbook_user_id <> ''`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();
