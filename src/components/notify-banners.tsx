@@ -265,12 +265,11 @@ export function OwnerNotificationLayer() {
         const items: BannerItem[] = [];
         for (const j of newJobs) {
           const raw = (data?.jobs ?? []).find((candidate) => candidate.id === j.id);
-          const eta = (raw as { etaMinutes?: number | null } | undefined)?.etaMinutes;
           items.push({
             id: `job:${j.id}`,
             kind: "job",
             title: `New job${raw?.towbookJobId ? ` #${raw.towbookJobId}` : raw?.id ? ` #${raw.id}` : ""}`,
-            body: `${j.customerName ?? "Customer"} · ${SERVICE_LABELS[j.serviceType as keyof typeof SERVICE_LABELS] ?? "Service"} · ${j.area ?? "—"}${raw?.assignedDriverName ? ` · ${raw.assignedDriverName}` : ""}${eta != null ? ` · ETA ${etaMinutesLabel({ etaMinutes: eta })}` : ""}`,
+            body: `${j.customerName ?? "Customer"} · ${SERVICE_LABELS[j.serviceType as keyof typeof SERVICE_LABELS] ?? "Service"} · ${j.area ?? "—"}${raw?.assignedDriverName ? ` · ${raw.assignedDriverName}` : ""}`,
             to: "/owner/queue",
           });
         }
