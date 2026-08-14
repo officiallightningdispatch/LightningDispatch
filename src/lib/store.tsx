@@ -13,7 +13,6 @@ import type { Contractor, Job, JobStatus } from "~/data/seed";
 import {
   advanceJob as advanceJobServer,
   assignJob as assignJobServer,
-  canSetJobStatus,
   declineJob as declineJobServer,
   getDispatchData,
   reassignJob as reassignJobServer,
@@ -22,7 +21,6 @@ import {
   type DispatchData,
   type StatusPushOutcome,
 } from "~/data/server";
-import { JOB_LIFECYCLE } from "~/lib/job-ui";
 
 /**
  * Shared client-side store for the database-backed dispatch UI (dispatcher, contractor, owner).
@@ -48,20 +46,7 @@ export interface DispatchState {
   jobs: Job[];
 }
 
-type DispatchAction =
-  | { type: "hydrate"; payload: DispatchState }
-  | { type: "assignJob"; jobId: string; contractorId: string }
-  | { type: "reassignJob"; jobId: string; contractorId: string }
-  | { type: "advanceJob"; jobId: string }
-  | { type: "setJobStatus"; jobId: string; status: JobStatus }
-  | { type: "declineJob"; jobId: string }
-  | { type: "clear" };
-
 const EMPTY: DispatchState = { contractors: [], jobs: [] };
-
-function nowIso() {
-  return new Date().toISOString();
-}
 
 /** Shift every job timestamp by the same delta so the newest job is ~2 min old. */
 /* ------------------------- mutation key helpers ------------------------- */
@@ -113,7 +98,11 @@ export interface DispatchStoreValue {
 const DispatchStoreContext = createContext<DispatchStoreValue | null>(null);
 
 export function DispatchStoreProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(reducer, EMPTY);
+  const [state, dispatch] = useReducer(
+    (current: DispatchState, action: { type: "hydrate"; payload: DispatchState }) =>
+      action.type === "hydrate" ? action.payload : current,
+    EMPTY,
+  );
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState<Record<string, boolean>>({});
   const [errors, setErrors] = useState<Record<string, string | null>>({});
@@ -179,8 +168,8 @@ export function DispatchStoreProvider({ children }: { children: ReactNode }) {
           hydrateFromServer(res.data);
           return true;
         }
-        dispatch({ type: "assignJob", jobId, contractorId });
-        return true;
+        fail(mutationKey.assign(jobId), "Database mode is not active — this action is unavailable.");
+        return false;
       }),
     [run, hydrateFromServer, fail],
   );
@@ -194,8 +183,8 @@ export function DispatchStoreProvider({ children }: { children: ReactNode }) {
           hydrateFromServer(res.data);
           return true;
         }
-        dispatch({ type: "reassignJob", jobId, contractorId });
-        return true;
+        fail(mutationKey.reassign(jobId), "Database mode is not active — this action is unavailable.");
+        return false;
       }),
     [run, hydrateFromServer, fail],
   );
@@ -209,8 +198,8 @@ export function DispatchStoreProvider({ children }: { children: ReactNode }) {
           hydrateFromServer(res.data);
           return true;
         }
-        dispatch({ type: "advanceJob", jobId });
-        return true;
+        fail(mutationKey.advance(jobId), "Database mode is not active — this action is unavailable.");
+        return false;
       }),
     [run, hydrateFromServer, fail],
   );
@@ -230,13 +219,8 @@ export function DispatchStoreProvider({ children }: { children: ReactNode }) {
           hydrateFromServer(res.data);
           return true;
         }
-        if (!job) { fail(mutationKey.setStatus(jobId), "Job not found — refresh to resync."); return false; }
-        if (!canSetJobStatus(job.status, status)) {
-          fail(mutationKey.setStatus(jobId), `This job is ${job.status} — it can only move forward in the lifecycle (or stay put).`);
-          return false;
-        }
-        dispatch({ type: "setJobStatus", jobId, status });
-        return true;
+        fail(mutationKey.setStatus(jobId), "Database mode is not active — this action is unavailable.");
+        return false;
       }),
     [run, hydrateFromServer, fail],
   );
@@ -247,6 +231,7 @@ export function DispatchStoreProvider({ children }: { children: ReactNode }) {
     (jobId: string) =>
       run(mutationKey.decline(jobId), async () => {
         if (dbMode.current) {
+          const job = state.jobs.find((candidate) => candidate.id === jobId);
           const contractorId = job?.assignedContractorId;
           if (!contractorId) { fail(mutationKey.decline(jobId), "This job has no assigned contractor, so it cannot be declined."); return false; }
           const res: CommandResult = await declineJobServer({ data: { jobId, contractorId } });
@@ -254,8 +239,8 @@ export function DispatchStoreProvider({ children }: { children: ReactNode }) {
           hydrateFromServer(res.data);
           return true;
         }
-        dispatch({ type: "declineJob", jobId });
-        return true;
+        fail(mutationKey.decline(jobId), "Database mode is not active — this action is unavailable.");
+        return false;
       }),
     [run, hydrateFromServer, fail],
   );

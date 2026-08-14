@@ -11,7 +11,7 @@
 // DB-backed against a throwaway QA org deleted at the end (zero rows left).
 //   DATABASE_URL=... bun roster-source.test.mjs
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 const { neon } = await import("@neondatabase/serverless");
 const q = neon(process.env.DATABASE_URL);
 const { ensureSchema } = await import("./src/data/migrations.ts");
@@ -116,9 +116,11 @@ try {
   check("BUG1: setContractorStatus never writes the legacy dispatch_contractors table", !statusSource.includes("dispatch_contractors"), statusSource);
   check("BUG1: assignJob writes the real driver columns (name + Towbook id, FK stays NULL)", assignSource.includes("assigned_driver_name") && assignSource.includes("assigned_driver_towbook_id") && assignSource.includes("assigned_contractor_id=NULL"), "assign columns missing");
 
-  const dispatch = readFileSync(new URL("./src/routes/dispatch.tsx", import.meta.url), "utf8");
+  // Phase A intentionally removed the legacy demo dispatch route. Guard against
+  // its accidental return rather than reading a file that must not exist.
+  check("PHASE A: legacy /dispatch route is absent", !existsSync(new URL("./src/routes/dispatch.tsx", import.meta.url)), "legacy dispatch route must remain deleted");
+  check("PHASE A: legacy /contractor route is absent", !existsSync(new URL("./src/routes/contractor.tsx", import.meta.url)), "legacy contractor route must remain deleted");
   const ops = readFileSync(new URL("./src/components/ops-views.tsx", import.meta.url), "utf8");
-  check("BUG2: dispatch console renders a clear state when no contractors are available", dispatch.includes("No contractors available — add contractors to the roster before dispatching.") || dispatch.includes("No contractors available"), "dispatch guard missing");
   check("BUG2: ops console renders a clear state when no contractors are available", ops.includes("No contractors available"), "ops guard missing");
 
   const core = readFileSync(new URL("./src/data/contractor-management-core.ts", import.meta.url), "utf8");
