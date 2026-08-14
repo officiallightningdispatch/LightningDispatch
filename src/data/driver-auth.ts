@@ -903,7 +903,7 @@ export const driverReconnectContext = createServerFn({ method: "GET" }).handler(
   if (!ctx) return { ok: false as const, message: "Sign in as a driver first." };
   try {
     const q = await db();
-    const rows = await q`SELECT login_handle FROM users WHERE id=${ctx.identity.userRowId} LIMIT 1`;
+    const rows = await q`SELECT u.login_handle FROM users u JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${ctx.u.orgId} WHERE u.id=${ctx.identity.userRowId} LIMIT 1`;
     return { ok: true as const, username: rows.length ? String(rows[0].login_handle ?? "") : "" };
   } catch {
     return { ok: false as const, message: "Unable to load reconnect details — try again." };
@@ -925,7 +925,7 @@ export const driverLogout = createServerFn({ method: "POST" }).handler(async () 
       const identity = await effectiveDriverIdentity(u);
       if (identity && !identity.deactivated) {
         const q = await db();
-        const rows = await q`SELECT towbook_driver_id, towbook_user_id FROM users WHERE id=${identity.userRowId}`;
+        const rows = await q`SELECT u.towbook_driver_id, u.towbook_user_id FROM users u JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${u.orgId} WHERE u.id=${identity.userRowId}`;
         if (rows.length && rows[0].towbook_driver_id != null) {
           const { loadDriverSession } = await import("./driver-gps-core");
           const session = await loadDriverSession({ orgId: u.orgId, towbookDriverId: String(rows[0].towbook_driver_id) });
@@ -1043,7 +1043,7 @@ export const driverSetAvailability = createServerFn({ method: "POST" }).validato
       if (!gate.ok) return { ok: false as const, message: gate.message };
     }
     const q = await db();
-    const rows = await q`SELECT towbook_driver_id, towbook_user_id FROM users WHERE id=${ctx.identity.userRowId}`;
+    const rows = await q`SELECT u.towbook_driver_id, u.towbook_user_id FROM users u JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${ctx.u.orgId} WHERE u.id=${ctx.identity.userRowId}`;
     const driverId = rows.length ? String(rows[0].towbook_driver_id ?? "") : "";
     const towbookUserId = rows.length ? String(rows[0].towbook_user_id ?? "") : "";
     if (!driverId) return { ok: false as const, message: "Your account isn't linked to a driver yet — reconnect." };
@@ -1113,7 +1113,8 @@ export const driverEarnings = createServerFn({ method: "GET" }).handler(async ()
     // Payrate joins contractor_profiles (part 1/3) so the Earnings screen can
     // show "+$rate" per completed job and the honest per-job math.
     const rows = await q`SELECT u.name, u.email, u.towbook_driver_id, cp.payrate_cents
-      FROM users u LEFT JOIN contractor_profiles cp ON cp.org_id = ${ctx.u.orgId} AND cp.user_id = u.id
+      FROM users u JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${ctx.u.orgId}
+      LEFT JOIN contractor_profiles cp ON cp.org_id = ${ctx.u.orgId} AND cp.user_id = u.id
       WHERE u.id=${ctx.identity.userRowId}`;
     const driverId = rows.length ? String(rows[0].towbook_driver_id ?? "") : "";
     if (!driverId) return { ok: false as const, expired: true, message: "Your account isn't linked to a driver yet — reconnect." };
@@ -1199,7 +1200,7 @@ export const driverProfile = createServerFn({ method: "GET" }).handler(async ():
   try {
     await ensure();
     const q = await db();
-    const rows = await q`SELECT name, email, towbook_driver_id FROM users WHERE id=${ctx.identity.userRowId}`;
+    const rows = await q`SELECT u.name, u.email, u.towbook_driver_id FROM users u JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${ctx.u.orgId} WHERE u.id=${ctx.identity.userRowId}`;
     if (!rows.length) return { ok: false as const, message: "Driver account not found." };
     return {
       ok: true as const,

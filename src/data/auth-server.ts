@@ -163,10 +163,17 @@ export async function effectiveDriverIdentity(u: AuthUser): Promise<DriverIdenti
   const own = u.towbookDriverId;
   if (u.role === "contractor" || own) {
     if (!own) return null; // contractor row without a driver id — no identity yet
-    return { userRowId: u.id, towbookDriverId: own, driverName: u.name, deactivated: false };
+    const ownRows = await sql()`SELECT u.name, u.towbook_driver_id, u.deactivated_at
+      FROM users u JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${u.orgId}
+      WHERE u.id=${u.id} AND u.towbook_driver_id=${own} LIMIT 1`;
+    if (!ownRows.length) return null;
+    const ownRow = ownRows[0] as Record<string, unknown>;
+    return { userRowId: u.id, towbookDriverId: String(ownRow.towbook_driver_id), driverName: String(ownRow.name ?? u.name), deactivated: ownRow.deactivated_at != null };
   }
   if (u.linkedDriverUserId) {
-    const rows = await sql()`SELECT name, towbook_driver_id, deactivated_at FROM users WHERE id=${u.linkedDriverUserId} LIMIT 1`;
+    const rows = await sql()`SELECT u.name, u.towbook_driver_id, u.deactivated_at
+      FROM users u JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${u.orgId} AND m.role='contractor'
+      WHERE u.id=${u.linkedDriverUserId} LIMIT 1`;
     if (!rows.length) return null;
     const r = rows[0] as Record<string, unknown>;
     if (r.towbook_driver_id == null) return null;
@@ -336,7 +343,9 @@ export async function listLinkableDriversCore(): Promise<DriverLinkStatusResult>
   if (!u) return { ok: false, error: "Owner access required." };
   const q = sql();
   const linkedRow = u.linkedDriverUserId
-    ? (await q`SELECT id, name, towbook_driver_id, deactivated_at FROM users WHERE id=${u.linkedDriverUserId} LIMIT 1`)[0] as Record<string, unknown> | undefined
+    ? (await q`SELECT d.id, d.name, d.towbook_driver_id, d.deactivated_at
+        FROM users d JOIN organization_memberships m ON m.user_id=d.id AND m.org_id=${u.orgId} AND m.role='contractor'
+        WHERE d.id=${u.linkedDriverUserId} LIMIT 1`)[0] as Record<string, unknown> | undefined
     : undefined;
   const linked = linkedRow && linkedRow.towbook_driver_id != null
     ? {
@@ -396,10 +405,12 @@ export async function linkDriverAccountCore(driverUserId: unknown): Promise<{ ok
   if (typeof driverUserId !== "string" || !driverUserId.trim()) return { ok: false, error: "Choose a driver to link." };
   const q = sql();
   if (u.towbookDriverId) return { ok: false, error: "Your account is already a driver — the Driver view switch is on in your header." };
-  const target = (await q`SELECT id, name, towbook_driver_id, deactivated_at FROM users WHERE id=${driverUserId} LIMIT 1`)[0] as Record<string, unknown> | undefined;
+  const target = (await q`SELECT d.id, d.name, d.towbook_driver_id, d.deactivated_at
+    FROM users d JOIN organization_memberships m ON m.user_id=d.id AND m.org_id=${u.orgId} AND m.role='contractor'
+    WHERE d.id=${driverUserId} LIMIT 1`)[0] as Record<string, unknown> | undefined;
+  // The join is the authorization check, before any link write: a driver from
+  // another org is indistinguishable from a missing account to this caller.
   if (!target) return { ok: false, error: "That driver isn't on this account." };
-  const member = await q`SELECT 1 FROM organization_memberships m WHERE m.org_id=${u.orgId} AND m.user_id=${driverUserId} AND m.role='contractor' LIMIT 1`;
-  if (!member.length) return { ok: false, error: "That driver isn't on this account." };
   if (target.deactivated_at != null) return { ok: false, error: "This driver was removed — reactivate them first." };
   if (target.towbook_driver_id == null) return { ok: false, error: "That driver has no dispatch id yet — have them sign in once from their phone." };
   if (u.linkedDriverUserId) return { ok: false, error: "You're already linked to a driver — unlink first." };
@@ -432,8 +443,13 @@ export async function unlinkDriverAccountCore(): Promise<{ ok: true } | { ok: fa
   const u = await requireRole(DRIVER_LINK_ROLES);
   if (!u) return { ok: false, error: "Owner access required." };
   const q = sql();
-  const before = (await q`SELECT linked_driver_user_id FROM users WHERE id=${u.id} LIMIT 1`)[0] as Record<string, unknown> | undefined;
+  const before = (await q`SELECT s.linked_driver_user_id
+    FROM users s JOIN organization_memberships m ON m.user_id=s.id AND m.org_id=${u.orgId} AND m.role IN ('owner','admin')
+    WHERE s.id=${u.id} LIMIT 1`)[0] as Record<string, unknown> | undefined;
   if (!before || before.linked_driver_user_id == null) return { ok: false, error: "No driver account is linked." };
+  // Refuse to mutate a link whose target is not a contractor in this org.
+  const target = await q`SELECT 1 FROM users d JOIN organization_memberships m ON m.user_id=d.id AND m.org_id=${u.orgId} AND m.role='contractor' WHERE d.id=${before.linked_driver_user_id} LIMIT 1`;
+  if (!target.length) return { ok: false, error: "The linked driver is not in this account." };
   await q`UPDATE users SET linked_driver_user_id=NULL WHERE id=${u.id}`;
   await writeLinkAudit(u, "driver_link_unset", String(before.linked_driver_user_id), { driverUserId: String(before.linked_driver_user_id) });
   return { ok: true };
