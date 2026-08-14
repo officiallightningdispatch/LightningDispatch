@@ -56,8 +56,8 @@ try {
     assert.equal((await selectZoneCore(a,ZONE_IN,new Date('2026-08-16T10:00:00Z'))).ok,true);
   });
   await check("BUSYNESS: production getZonesCore exact buckets/raw values", async () => {
-    await q`UPDATE driver_availability_log SET session_started_at=NOW(), zone_id=${ZONE_IN}, day=(CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')::date WHERE org_id=${ORG} AND user_id=${DRIVER_A} AND day=${DAY}`;
-    await q`INSERT INTO driver_availability_log(org_id,user_id,day,session_started_at,zone_id) VALUES(${ORG},${DRIVER_B},(CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')::date,NOW(),${ZONE_IN}) ON CONFLICT DO NOTHING`;
+    await q`UPDATE driver_availability_log SET session_started_at=NOW(), heartbeat_at=NOW(), zone_id=${ZONE_IN}, day=(CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')::date WHERE org_id=${ORG} AND user_id=${DRIVER_A} AND day=${DAY}`;
+    await q`INSERT INTO driver_availability_log(org_id,user_id,day,session_started_at,heartbeat_at,zone_id) VALUES(${ORG},${DRIVER_B},(CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')::date,NOW(),NOW(),${ZONE_IN}) ON CONFLICT DO NOTHING`;
     const base={org_id:ORG,customer_name:'QA',phone:'',area:'',service_type:'jump',note:''};
     await q`INSERT INTO dispatch_jobs(id,org_id,customer_name,phone,lat,lng,pickup_lat,pickup_lng,area,service_type,status,created_at,note) VALUES
       (${`j-${randomUUID()}`},${ORG},'a','',41.208862,-73.207253,41.208862,-73.207253,'','jump','assigned',NOW(),''),
@@ -69,7 +69,7 @@ try {
   });
   await check("DISPATCH PREFERENCE: real loadZoneMatches + comparator uses nested driver", async () => {
     await q`DELETE FROM driver_availability_log WHERE org_id=${ORG}`;
-    await q`INSERT INTO driver_availability_log(org_id,user_id,day,session_started_at,zone_id) VALUES(${ORG},${DRIVER_A},(CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')::date,NOW(),${ZONE_IN})`;
+    await q`INSERT INTO driver_availability_log(org_id,user_id,day,session_started_at,heartbeat_at,zone_id) VALUES(${ORG},${DRIVER_A},(CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')::date,NOW(),NOW(),${ZONE_IN})`;
     const candidates=[driver('910001',41.208862,-73.207253),driver('910002',41.208862,-73.207253)];
     const matches=await loadZoneMatches(ORG,candidates,41.208862,-73.207253,new Date());
     assert.equal(matches.get('910001'),true); assert.equal(matches.get('910002'),false);
@@ -126,7 +126,7 @@ try {
     // Deterministic latest-day fixture: DRIVER_A online today (fixed future day sorts last);
     // DRIVER_B has no availability rows.
     await q`DELETE FROM driver_availability_log WHERE org_id=${ORG} AND user_id=${DRIVER_B}`;
-    await q`INSERT INTO driver_availability_log(org_id,user_id,day,zone_id,session_started_at,zone_change_count) VALUES(${ORG},${DRIVER_A},'2026-08-20',${ZONE_IN},NOW(),1) ON CONFLICT ON CONSTRAINT driver_availability_log_pkey DO UPDATE SET zone_id=${ZONE_IN},session_started_at=NOW(),zone_change_count=1`;
+    await q`INSERT INTO driver_availability_log(org_id,user_id,day,zone_id,session_started_at,heartbeat_at,zone_change_count) VALUES(${ORG},${DRIVER_A},'2026-08-20',${ZONE_IN},NOW(),NOW(),1) ON CONFLICT ON CONSTRAINT driver_availability_log_pkey DO UPDATE SET zone_id=${ZONE_IN},session_started_at=NOW(),heartbeat_at=NOW(),zone_change_count=1`;
     const res=await getOwnerZoneDriverRosterCore(actor);
     assert.equal(res.ok,true);
     const a=res.drivers.find(d=>d.userId===DRIVER_A);

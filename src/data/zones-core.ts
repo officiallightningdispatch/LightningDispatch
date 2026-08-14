@@ -15,7 +15,7 @@ export async function selectZoneCore(a:ZoneActor, zoneId:string, now=new Date())
  return {ok:true as const,zoneId};
 }
 async function stats(q:any, z:any, day=localDate(String(z.tz))){
- const drivers=await q`SELECT COUNT(*)::int n FROM driver_availability_log WHERE org_id=${z.org_id} AND day=${day} AND session_started_at IS NOT NULL AND (heartbeat_at IS NULL OR heartbeat_at > NOW() - INTERVAL '90 seconds') AND zone_id=${String(z.id)}`;
+ const drivers=await q`SELECT COUNT(*)::int n FROM driver_availability_log WHERE org_id=${z.org_id} AND day=${day} AND session_started_at IS NOT NULL AND heartbeat_at > NOW() - INTERVAL '90 seconds' AND zone_id=${String(z.id)}`;
  const jobs=await q`SELECT status,lat,lng,pickup_lat,pickup_lng FROM dispatch_jobs WHERE org_id=${z.org_id} AND created_at>=NOW()-INTERVAL '24 hours' AND (pickup_lat IS NOT NULL AND pickup_lng IS NOT NULL OR lat IS NOT NULL AND lng IS NOT NULL)`;
  const inside=(j:any)=>{const la=Number(j.pickup_lat??j.lat),ln=Number(j.pickup_lng??j.lng);const x=(la-Number(z.lat))*69,y=(ln-Number(z.lng))*69*Math.cos(Number(z.lat)*Math.PI/180);return Math.sqrt(x*x+y*y)<=Number(z.radius_miles)};
  const inJobs=jobs.filter(inside), active=inJobs.filter((j:any)=>['offered','assigned','in_progress'].includes(String(j.status))).length, unassigned=inJobs.filter((j:any)=>j.status==='new').length, av=Number(drivers[0]?.n??0), ratio=(active+unassigned)/Math.max(av,1), busyness=av===0&&(active+unassigned)>0?'Busy':ratio>=2?'Busy':ratio>=1?'Moderate':'Low';
