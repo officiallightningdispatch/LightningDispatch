@@ -31,10 +31,8 @@ import { JobDetailDisclosure } from "~/components/job-detail";
 export const Route = createFileRoute("/owner/")({ component: OwnerDashboard });
 
 function OwnerDashboard() {
-  const { state, loading, resetDemo, isDemoMode, isPending, getError } = useDispatchStore();
+  const { state, loading } = useDispatchStore();
   const toast = useToast();
-  const resetPending = isPending(mutationKey.reset());
-  const resetError = getError(mutationKey.reset());
   const active = state.jobs.filter((j) => ACTIVE_STATUSES.includes(j.status));
   const completed = state.jobs.filter((j) => j.status === "completed");
   const online = state.contractors.filter((c) => c.status === "online").length;
@@ -53,11 +51,6 @@ function OwnerDashboard() {
 
   if (loading) return <BoardSkeleton rows={3} />;
 
-  const reset = async () => {
-    if (!confirm("Reset all demo data back to the seeded state?")) return;
-    const ok = await resetDemo();
-    if (ok) toast("Demo data reset to the seeded state");
-  };
 
   return (
     <AppShell portal="owner"
@@ -185,13 +178,6 @@ function OwnerDashboard() {
             </Card>
           )}
         </section>
-
-        {isDemoMode && <div className="flex flex-col items-end gap-2">
-          {resetError && <InlineError message={resetError} className="max-w-sm" />}
-          <Button variant="ghost" size="md" onClick={() => void reset()} loading={resetPending}>
-            {resetPending ? "Resetting…" : "Reset demo data"}
-          </Button>
-        </div>}
       </div>
     </AppShell>
   );

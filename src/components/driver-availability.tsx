@@ -16,6 +16,9 @@ import { driverSetAvailability } from "~/data/driver-auth";
 import { useToast } from "~/components/ui";
 
 const AVAIL_KEY = "lightning-driver-availability-v1";
+function driverKey(): string {
+  try { return `${AVAIL_KEY}:${localStorage.getItem("lightning-contractor-identity-v1") ?? "current"}`; } catch { return `${AVAIL_KEY}:current`; }
+}
 
 export function useAvailability() {
   const toast = useToast();
@@ -24,7 +27,7 @@ export function useAvailability() {
 
   useEffect(() => {
     try {
-      if (localStorage.getItem(AVAIL_KEY) === "off") setOnline(false);
+      if (localStorage.getItem(driverKey()) === "off") setOnline(false);
     } catch { /* ignore */ }
   }, []);
 
@@ -45,7 +48,7 @@ export function useAvailability() {
       setPending(false);
     }
     try {
-      localStorage.setItem(AVAIL_KEY, target ? "on" : "off");
+      localStorage.setItem(driverKey(), target ? "on" : "off");
     } catch { /* ignore */ }
   }, [online, toast]);
 

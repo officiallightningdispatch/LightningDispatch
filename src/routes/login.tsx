@@ -33,7 +33,7 @@ function useGeoFix(): GeoFix {
 }
 
 function Login(){ const nav=useNavigate(); const search=useSearch({from:"/login" as any}) as {next?:string}; const [first,setFirst]=useState(false); const [name,setName]=useState(""); const [identifier,setIdentifier]=useState(""); const [password,setPassword]=useState(""); const [error,setError]=useState(""); const [driverNotice,setDriverNotice]=useState(""); const [busy,setBusy]=useState(false); const [checking,setChecking]=useState(true); const geo = useGeoFix();
- useEffect(()=>{void authStatus().then((s)=>{if(s.mode!=="demo" && s.user) void nav({to:s.user.role==="contractor"?"/driver":s.user.role==="dispatcher"?"/ops":"/owner",replace:true}); else if(s.mode!=="demo") setFirst(!!s.needsOwner);}).catch(()=>{ /* keep login available when auth check fails */ }).finally(()=>setChecking(false));},[nav]);
+ useEffect(()=>{void authStatus().then((s)=>{if(s.mode==="database" && s.user) void nav({to:s.user.role==="contractor"?"/driver":s.user.role==="dispatcher"?"/ops":"/owner",replace:true}); else if(s.mode==="database") setFirst(!!s.needsOwner);}).catch(()=>{ /* keep login available when auth check fails */ }).finally(()=>setChecking(false));},[nav]);
  // One login routes every role to its own workspace — the server decides the role.
  const portal=(role:string)=>role==="contractor"?"/driver":role==="dispatcher"?"/ops":"/owner";
  async function submit(e:React.FormEvent){e.preventDefault();setBusy(true);setError("");setDriverNotice(""); try {

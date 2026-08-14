@@ -10,7 +10,7 @@
  * the editor is read-only with a "Set by owner" notice and saves are refused
  * server-side too.
  */
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { CalendarClock, ChevronLeft, Lock, Save } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AppShell } from "~/components/app-shell";
@@ -36,6 +36,7 @@ type Row = Day & { on: boolean };
 
 function ScheduleView() {
   const toast = useToast();
+  const navigate = useNavigate();
   const [rows, setRows] = useState<Row[] | null>(null);
   const [ownerOverride, setOwnerOverride] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -88,7 +89,7 @@ function ScheduleView() {
 
   return (
     <AppShell portal="driver" title="Schedule" description="When you're typically available — a weekly template, not a shift list.">
-      <DriverToolbar loading={loading} onRefresh={() => void load()} onSignOut={() => void driverLogout()} />
+      <DriverToolbar loading={loading} onRefresh={() => void load()} onSignOut={async () => { await driverLogout(); await navigate({ to: "/login", replace: true }); }} />
       <div className="space-y-4">
         <a href="/driver/profile" className="inline-flex items-center gap-1 text-sm font-semibold text-ink-500 hover:text-ink-700">
           <ChevronLeft className="size-4" /> Profile

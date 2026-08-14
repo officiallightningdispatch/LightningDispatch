@@ -1,10 +1,11 @@
-import { HeadContent, Outlet, Scripts, createRootRoute, Link } from "@tanstack/react-router";
+import { HeadContent, Outlet, Scripts, createRootRoute, Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { Route as RouteIcon } from "lucide-react";
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { EmptyState } from "~/components/ui";
 import { ToastProvider } from "~/components/ui";
 import { DispatchStoreProvider } from "~/lib/store";
 import { installPushReceivedListener } from "~/lib/push-received";
+import { authStatus } from "~/data/auth";
 import appCss from "~/styles/app.css?url";
 
 export const Route = createRootRoute({
@@ -58,7 +59,21 @@ function RootComponent() {
   );
 }
 
-function AuthGate({children}:{children:ReactNode}) { return <>{children}</>; }
+function AuthGate({ children }: { children: ReactNode }) {
+  const loc = useLocation(); const nav = useNavigate();
+  const [ready, setReady] = useState(false);
+  useEffect(() => { let live = true; void authStatus().then((s) => {
+    if (!live) return;
+    const publicPath = loc.pathname === "/" || loc.pathname === "/login" || loc.pathname === "/403" || loc.pathname === "/logout";
+    if (!publicPath && s.mode !== "database") { void nav({ to: "/login", search: { next: loc.pathname } as any, replace: true }); return; }
+    if (!publicPath && !s.user) { void nav({ to: "/login", search: { next: loc.pathname } as any, replace: true }); return; }
+    setReady(true);
+  }).catch(() => { if (live && loc.pathname !== "/" && loc.pathname !== "/login") void nav({ to: "/login", replace: true }); }); return () => { live = false; }; }, [loc.pathname, nav]);
+  if (!ready && loc.pathname !== "/" && loc.pathname !== "/login") return <GateSkeleton />;
+  return <>{children}</>;
+}
+
+function GateSkeleton() { return <main className="grid min-h-dvh place-items-center bg-canvas"><p className="text-sm text-ink-500">Checking your session…</p></main>; }
 
 function RootDocument({ children }: { children: ReactNode }) {
   return (

@@ -314,36 +314,14 @@ export function DispatchStoreProvider({ children }: { children: ReactNode }) {
       try {
         response = await getDispatchData();
       } catch {
-        // Server unreachable — fall back to any persisted demo state, else empty.
-        try {
-          const raw = localStorage.getItem(STORAGE_KEY);
-          if (raw) {
-            const parsed = JSON.parse(raw) as DispatchState;
-            if (Array.isArray(parsed.contractors) && Array.isArray(parsed.jobs)) {
-              dispatch({ type: "hydrate", payload: { contractors: parsed.contractors, jobs: reanchorTimes(parsed.jobs) } });
-              setLoading(false);
-              return;
-            }
-          }
-        } catch { /* ignore */ }
+        dbMode.current = true;
+        setIsDemoMode(false);
         setLoading(false);
         return;
       }
       dbMode.current = response.mode === "database";
-      setIsDemoMode(!dbMode.current);
-      if (!dbMode.current) {
-        try {
-          const raw = localStorage.getItem(STORAGE_KEY);
-          if (raw) {
-            const parsed = JSON.parse(raw) as DispatchState;
-            if (Array.isArray(parsed.contractors) && Array.isArray(parsed.jobs)) {
-              dispatch({ type: "hydrate", payload: { contractors: parsed.contractors, jobs: reanchorTimes(parsed.jobs) } });
-              setLoading(false);
-              return;
-            }
-          }
-        } catch { /* corrupt local state falls through to seed */ }
-      }
+      setIsDemoMode(false);
+      if (response.mode !== "database") { dbMode.current = true; setLoading(false); return; }
       hydrateFromServer(response.data);
       setLoading(false);
     })();

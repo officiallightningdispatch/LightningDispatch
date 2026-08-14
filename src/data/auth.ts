@@ -9,7 +9,7 @@ export type AuthUser = { id: string; name: string; email: string; role: Role; co
 // Resolve the Node-only implementation at request time. Keep the specifier literal
 // so Rollup rewrites it to the emitted hashed server chunk in production.
 const server=()=>import("./auth-server");
-export const authStatus=createServerFn({method:"GET"}).handler(async()=>{const s=await server();if(!process.env.DATABASE_URL)return {mode:"demo" as const,user:null};await s.ensureAuthSchema();const q=(await import("~/db")).sql();const count=await q`SELECT count(*)::int AS count FROM users WHERE id IN (SELECT user_id FROM organization_memberships WHERE role='owner')`;return {mode:"database" as const,needsOwner:Number((count[0] as Record<string,unknown>).count)===0,user:await s.currentUser()};});
+export const authStatus=createServerFn({method:"GET"}).handler(async()=>{const s=await server();if(!process.env.DATABASE_URL)return {mode:"unavailable" as const,user:null,error:"Database is not configured."};await s.ensureAuthSchema();const q=(await import("~/db")).sql();const count=await q`SELECT count(*)::int AS count FROM users WHERE id IN (SELECT user_id FROM organization_memberships WHERE role='owner')`;return {mode:"database" as const,needsOwner:Number((count[0] as Record<string,unknown>).count)===0,user:await s.currentUser()};});
 const credentials=(x:unknown)=>{const v=x as Record<string,unknown>;if(typeof v.email!=="string"||typeof v.password!=="string"||v.password.length<10)return null;return {email:v.email.trim().toLowerCase(),password:v.password,name:typeof v.name==="string"?v.name.trim():""};};
 // Sign-in takes a plain username OR an email (the AI dispatcher logs in with a
 // username). Non-empty identifier; emails are matched case-insensitively on the

@@ -38,8 +38,8 @@ export function PortalGate({ children, roles, allowDriverIdentity }: { children:
     // bounced after a transient first read. A failed auth check is still an
     // infrastructure error, not proof of sign-out — retain the portal on error.
     void authStatus().then((s) => {
-      if (s.mode !== "demo" && !s.user) void nav({ to: "/login", search: { next: loc.pathname } as any, replace: true });
-      else if (s.mode !== "demo" && s.user && !roles.includes(s.user.role)) {
+      if (s.mode !== "database" && !s.user) void nav({ to: "/login", search: { next: loc.pathname } as any, replace: true });
+      else if (s.mode === "database" && s.user && !roles.includes(s.user.role)) {
         // DriverGate extension: staff with an effective driver identity may
         // enter the driver portal (view toggle). Everything else → 403 with a
         // reason so the copy can explain the no-driver case.
