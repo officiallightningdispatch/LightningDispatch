@@ -57,6 +57,7 @@ const NAV: Record<Portal, PortalNav> = {
       { to: "/owner/money", label: "Payments", icon: Wallet },
       { to: "/owner/ai-dispatcher", label: "AI Dispatcher", icon: Bot },
       { to: "/owner/settings", label: "Settings", icon: Settings },
+      { to: "/owner/zones", label: "Zones", icon: Map },
     ],
     // Bottom bar on phones — OWNER DECISION 2026-08-12 (locked): 5 primary
     // (Dashboard, Queue, Active, Contractors, Payments) + a "More" sheet
@@ -75,6 +76,7 @@ const NAV: Record<Portal, PortalNav> = {
       { to: "/owner/claims", label: "Claims", icon: FileWarning },
       { to: "/owner/ai-dispatcher", label: "AI Dispatcher", icon: Bot },
       { to: "/owner/settings", label: "Settings", icon: Settings },
+      { to: "/owner/zones", label: "Zones", icon: Map },
     ],
   },
   ops: {

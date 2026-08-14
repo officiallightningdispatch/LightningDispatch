@@ -24,6 +24,8 @@ import { PushNotificationSetup, PushPermissionCard } from "~/components/push-set
 import { getMyCompliance } from "~/data/contractor-admin";
 import { driverEarnings } from "~/data/driver-auth";
 import { NativeContractorStatus } from "~/components/native-contractor-status";
+import { DriverZonePicker, type DriverZoneState } from "~/components/driver-zone-picker";
+import { getMyZoneState } from "~/data/zones";
 
 /** Home compliance chip (contractor-admin part 3, owner-directed 2026-08-12):
  *  over the map hero when required docs aren't all approved — yellow "N docs
@@ -84,7 +86,11 @@ const ACTIVE_STATUSES = [2, 3, 4];
 export function RealDriverPortal() {
   const nav = useNavigate();
   const { calls, error, expired, loading, acting, load, act, signOut, gpsState, reconnectOpen, openReconnect, closeReconnect, onReconnected } = useDriverQueue();
-  const { online, pending, toggle } = useAvailability();
+  const [zone, setZone] = useState<DriverZoneState | null>(null);
+  const [zoneOpen, setZoneOpen] = useState(false);
+  const loadZone = () => { void getMyZoneState().then((r) => setZone(r as DriverZoneState)).catch(() => setZone(null)); };
+  useEffect(() => { loadZone(); }, []);
+  const { online, pending, toggle } = useAvailability(zone?.ok ? zone : null, () => setZoneOpen(true));
   const [snap, setSnap] = useState(0);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [earnings, setEarnings] = useState<HomeEarnings>(null);
@@ -126,6 +132,7 @@ export function RealDriverPortal() {
       description=""
       headerActions={
         <>
+          <button type="button" onClick={() => setZoneOpen(true)} className="hidden max-w-[10rem] truncate rounded-full border border-ink-200 bg-surface px-3 py-2 text-xs font-bold text-ink-700 sm:block">{zone?.ok && zone.zoneName ? zone.zoneName : "Choose zone"}</button>
           <AvailabilityPill online={online} pending={pending} onToggle={() => void toggle()} />
           <HelpIcon />
         </>
@@ -170,6 +177,7 @@ export function RealDriverPortal() {
       <DriverNotificationBanners calls={calls} showSoundToggle />
       <PushNotificationSetup />
       <DriverReconnectSheet open={reconnectOpen} onClose={closeReconnect} onReconnected={onReconnected} onSignOut={() => void signOut()} />
+      <DriverZonePicker open={zoneOpen} onClose={() => setZoneOpen(false)} state={zone?.ok ? zone : null} onSelected={loadZone} />
     </AppShell>
   );
 }

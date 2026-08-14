@@ -20,7 +20,7 @@ function driverKey(): string {
   try { return `${AVAIL_KEY}:${localStorage.getItem("lightning-contractor-identity-v1") ?? "current"}`; } catch { return `${AVAIL_KEY}:current`; }
 }
 
-export function useAvailability() {
+export function useAvailability(zone: { zoneId: string | null } | null, onNeedZone?: () => void) {
   const toast = useToast();
   const [online, setOnline] = useState(true);
   const [pending, setPending] = useState(false);
@@ -33,10 +33,11 @@ export function useAvailability() {
 
   const toggle = useCallback(async () => {
     const target = !online;
+    if (target && !zone?.zoneId) { onNeedZone?.(); toast("Pick a zone before going online."); return; }
     setOnline(target);
     setPending(true);
     try {
-      const r = await driverSetAvailability({ data: { online: target } });
+      const r = await driverSetAvailability({ data: target ? { online: true, zoneId: zone.zoneId } : { online: false } });
       if (!r.ok) {
         setOnline(!target);
         toast(r.message ?? "Couldn't update availability — try again.");
