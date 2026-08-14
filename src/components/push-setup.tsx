@@ -90,7 +90,10 @@ export function PushPermissionCard() {
           return;
         }
         // 2026-08-13: REAL failure — keep the card up with the reason + retry.
-        setFailure({ reason: result.reason, message: pushSetupFailureCopy(result.reason) });
+        setFailure({
+          reason: result.reason,
+          message: `${pushSetupFailureCopy(result.reason)}${result.detail ? ` (${result.detail.slice(0, 180)})` : ""}`,
+        });
         return;
       }
       // 'denied' (or 'default' if the user dismissed the browser prompt):

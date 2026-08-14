@@ -116,7 +116,7 @@ export type PushSetupFailureReason =
   | "subscribe_failed" // pushManager.subscribe threw (iOS needs home-screen install)
   | "save_failed";     // the server refused the subscription (auth gate / validation)
 
-export type PushSetupResult = { ok: true } | { ok: false; reason: PushSetupFailureReason };
+export type PushSetupResult = { ok: true } | { ok: false; reason: PushSetupFailureReason; detail?: string };
 
 /** Driver-readable copy for each failure reason (white-label, no backend
  *  jargon; iOS keeps its real limitation visible so the driver knows WHY). */
@@ -182,7 +182,7 @@ async function currentSubscription(reg: ServiceWorkerRegistration): Promise<Push
 }
 
 /** Save (or replace) the given subscription through the contractor API. */
-export async function saveSubscriptionToServer(sub: PushSubscription): Promise<boolean> {
+export async function saveSubscriptionToServer(sub: PushSubscription): Promise<{ ok: boolean; detail?: string }> {
   // Build the payload WITHOUT an undefined-valued userAgent prop (Seroval-safe:
   // an undefined property in the server-fn input can drop the whole POST in
   // some serializers — a silent save-loss on every browser that lacks a UA).
@@ -192,8 +192,12 @@ export async function saveSubscriptionToServer(sub: PushSubscription): Promise<b
     auth: btoa(String.fromCharCode(...new Uint8Array(sub.getKey("auth")!))),
   };
   if (typeof navigator !== "undefined" && navigator.userAgent) data.userAgent = navigator.userAgent.slice(0, 512);
-  const res = await savePushSubscription({ data });
-  return res.ok;
+  try {
+    const res = await savePushSubscription({ data });
+    return res.ok ? { ok: true } : { ok: false, detail: res.error };
+  } catch (error) {
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 /** Subscribe with the server's VAPID key. Returns null on failure (the
@@ -233,7 +237,7 @@ export async function ensurePushSubscription(): Promise<PushSetupResult> {
       return { ok: false, reason: keyRes.ok ? "subscribe_failed" : "key_failed" };
     }
     const saved = await saveSubscriptionToServer(sub);
-    return saved ? { ok: true } : { ok: false, reason: "save_failed" };
+    return saved.ok ? { ok: true } : { ok: false, reason: "save_failed", detail: saved.detail };
   } catch {
     return { ok: false, reason: "subscribe_failed" };
   }
