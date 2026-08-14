@@ -1161,6 +1161,9 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE UNIQUE INDEX IF NOT EXISTS outbound_write_ledger_request_key_uidx ON outbound_write_ledger(request_key)`;
     await q`CREATE INDEX IF NOT EXISTS outbound_write_ledger_org_job_idx ON outbound_write_ledger(org_id, job_id)`;
   }],
+  [49, async (q) => {
+    await q`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS active_org_id TEXT REFERENCES organizations(id) ON DELETE CASCADE`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

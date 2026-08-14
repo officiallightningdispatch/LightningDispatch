@@ -356,7 +356,7 @@ async function upsertDriverUser(orgId: string, username: string, identity: Drive
   const q = await db();
   const emailLike = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(handle);
   const email = emailLike ? handle : `${handle.replace(/[^a-z0-9._-]/g, "") || "driver"}@towbook.driver`;
-  const existing = await q`SELECT u.id FROM users u WHERE u.towbook_driver_id=${identity.driverId} OR LOWER(u.login_handle)=${handle} LIMIT 1`;
+  const existing = await q`SELECT u.id FROM users u WHERE u.towbook_driver_id=${identity.driverId} OR u.towbook_user_id=${identity.userId} OR LOWER(u.login_handle)=${handle} LIMIT 1`;
   if (existing.length) {
     const userId = String(existing[0].id);
     await q`UPDATE users SET name=${identity.driverName}, towbook_driver_id=${identity.driverId}, towbook_user_id=${identity.userId} WHERE id=${userId}`;

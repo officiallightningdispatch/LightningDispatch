@@ -52,6 +52,9 @@ export async function ensureAuthSchema() {
   await q`ALTER TABLE users ADD COLUMN IF NOT EXISTS linked_driver_user_id TEXT`;
   await q`CREATE TABLE IF NOT EXISTS organization_memberships (org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, role TEXT NOT NULL CHECK (role IN ('owner','admin','dispatcher','contractor')), contractor_id TEXT, PRIMARY KEY(org_id,user_id))`;
   await q`CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at TIMESTAMPTZ NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
+  // Migration 49 owns this additive column; keep auth-schema startup safe for
+  // legacy/fresh databases where the migration runner has not run yet.
+  await q`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS active_org_id TEXT REFERENCES organizations(id) ON DELETE CASCADE`;
   // One-time idempotent migration (owner batch 2026-08-12): legacy 'manager'
   // memberships become 'owner' — every manager gets owner access. Safe to run
   // repeatedly (idempotent); no-op when no 'manager' rows exist.
@@ -201,8 +204,16 @@ export async function currentUser(): Promise<AuthUser | null> {
   if (!tokens.length) return null;
   const q = sql();
   for (const token of tokens) {
-    const rows = await q`SELECT u.id,u.name,u.email,u.towbook_driver_id,u.linked_driver_user_id,m.org_id,m.role,m.contractor_id FROM sessions s JOIN users u ON u.id=s.user_id JOIN organization_memberships m ON m.user_id=u.id WHERE s.id=${token} AND s.expires_at > NOW() AND u.deactivated_at IS NULL ORDER BY (m.org_id LIKE 'qa-%') ASC, m.org_id ASC`;
+    // Active org is session-bound. Legacy sessions are repaired once using the
+    // historical deterministic ordering, preserving the pre-49 selection rule.
+    let rows = await q`SELECT u.id,u.name,u.email,u.towbook_driver_id,u.linked_driver_user_id,m.org_id,m.role,m.contractor_id,s.active_org_id FROM sessions s JOIN users u ON u.id=s.user_id JOIN organization_memberships m ON m.user_id=u.id AND (s.active_org_id IS NULL OR m.org_id=s.active_org_id) WHERE s.id=${token} AND s.expires_at > NOW() AND u.deactivated_at IS NULL ORDER BY (m.org_id LIKE 'qa-%') ASC, m.org_id ASC`;
     if (!rows.length) continue;
+    const first = rows[0] as Record<string, unknown>;
+    if (first.active_org_id == null) {
+      await q`UPDATE sessions SET active_org_id=${String(first.org_id)} WHERE id=${token} AND active_org_id IS NULL`;
+      rows = await q`SELECT u.id,u.name,u.email,u.towbook_driver_id,u.linked_driver_user_id,m.org_id,m.role,m.contractor_id,s.active_org_id FROM sessions s JOIN users u ON u.id=s.user_id JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=s.active_org_id WHERE s.id=${token} AND s.expires_at > NOW() AND u.deactivated_at IS NULL LIMIT 1`;
+      if (!rows.length) continue;
+    }
     const r = rows[0] as Record<string, unknown>;
     // Seroval rejects object properties whose value is undefined. Owner/admin
     // memberships have no contractor_id, so only include this optional field
@@ -289,7 +300,11 @@ async function clearLegacyCookies() {
 
 export async function startSession(userId: string) {
   const token = id();
-  await sql()`INSERT INTO sessions(id,user_id,expires_at) VALUES(${token},${userId},NOW()+INTERVAL '30 days')`;
+  const q = sql();
+  // Bind the same deterministic first membership used by legacy currentUser.
+  const memberships = await q`SELECT org_id FROM organization_memberships WHERE user_id=${userId} ORDER BY (org_id LIKE 'qa-%') ASC, org_id ASC LIMIT 1`;
+  const activeOrgId = memberships.length ? String((memberships[0] as Record<string, unknown>).org_id) : null;
+  await q`INSERT INTO sessions(id,user_id,active_org_id,expires_at) VALUES(${token},${userId},${activeOrgId}::text,NOW()+INTERVAL '30 days')`;
   await writeCookie(cookieName, token, 60 * 60 * 24 * 30);
   await clearLegacyCookies();
 }
