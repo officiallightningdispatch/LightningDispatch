@@ -369,6 +369,15 @@ try {
   const t6 = await chooseBestDriverByRoad([t6driver], 41.2, -73.2, makeRouter({ "41.20,-73.19": 300, "41.10,-73.00": 3600 }), undefined, { gpsFixes: new Map([["8601", t6fix]]) });
   check("T6 selected driver's GPS origin supplies distance/base/straight-line fields", t6?.driver.driverId === 8601 && t6.originBasis === "gps" && Math.abs(t6.originLat - t6fix.lat) < 1e-9 && t6.baseMinutes === 5 && t6.roadSeconds === 300 && t6.distanceMiles < 1, JSON.stringify(t6));
   check("T6 no eligible driver preserves null choice (driverId 0/SLA no-driver path)", (await chooseBestDriverByRoad([driver(8602, "T6 offline", { checkedIn: false })], 41.2, -73.2, makeRouter())) === null, "");
+  const serviceQualification = { serviceType: "tire", assessed: false, excluded: [] };
+  const incompatible = { ...driver(8701, "T7 incompatible", { lat: 41.195, lng: -73.195 }), serviceExclusions: ["tire"] };
+  const noCapability = driver(8703, "T7 no capability data", { lat: 41.19, lng: -73.19 });
+  const compatible = driver(8702, "T7 compatible", { lat: 41.1, lng: -73.0 });
+  const t7 = await chooseBestDriverByRoad([incompatible, compatible], 41.2, -73.2, makeRouter(), undefined, { serviceType: "tire", serviceQualification });
+  check("T7 service-incompatible closer driver excluded; next eligible selected and exclusion recorded", t7?.driver.driverId === 8702 && serviceQualification.excluded.some((e) => e.driverId === 8701 && e.reason.includes("explicitly does not perform service type 'tire'")), JSON.stringify({ choice: t7?.driver.driverId, excluded: serviceQualification.excluded }));
+  const noDataQualification = { serviceType: "tire", assessed: false, excluded: [] };
+  const t7Fallback = await chooseBestDriverByRoad([noCapability], 41.2, -73.2, makeRouter(), undefined, { serviceType: "tire", serviceQualification: noDataQualification });
+  check("T7 no capability data remains eligible (live-pool safety)", t7Fallback?.driver.driverId === 8703 && noDataQualification.excluded.length === 0, JSON.stringify(t7Fallback));
   check("finalEtaMinutes: ceil(9)+5 = 14", finalEtaMinutes(9, 5, 5, 45) === 14);
   check("finalEtaMinutes: ceiling clamps 60+5 → 45", finalEtaMinutes(60, 5, 5, 45) === 45);
   check("finalEtaMinutes: floor lifts 1+5 → 15", finalEtaMinutes(1, 5, 15, 45) === 15);

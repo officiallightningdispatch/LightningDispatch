@@ -1432,6 +1432,16 @@ export type StateGuardOutcome = {
   inState: number;
   excluded: Array<{ driverId: number; state: string | null; reason: string }>;
 };
+export type ServiceQualificationOutcome = { serviceType: string | null; assessed: boolean; excluded: Array<{ driverId: number; reason: string }> };
+
+function serviceTypeQualification(driver: NearestDriver, serviceType: string | null): { eligible: boolean; reason: string } {
+  if (!serviceType?.trim()) return { eligible: true, reason: "service type could not be assessed (missing/unknown)" };
+  const wanted = serviceType.trim().toLowerCase();
+  const values: unknown[] = ["serviceExclusions", "excludedServices", "excludedServiceTypes", "serviceTypeExclusions"].flatMap((k) => Array.isArray(driver[k]) ? driver[k] : []);
+  const excluded = values.some((v) => { const x = typeof v === "string" ? v : v && typeof v === "object" ? (v as Record<string, unknown>).serviceType ?? (v as Record<string, unknown>).service : null; return typeof x === "string" && x.trim().toLowerCase() === wanted; });
+  return excluded ? { eligible: false, reason: `excluded: driver explicitly does not perform service type '${serviceType}'` } : { eligible: true, reason: "service type eligible (no explicit exclusion)" };
+}
+
 export type AreaContext = {
   anchors?: Map<string, DriverAnchor>;
   gpsFixes?: Map<string, DriverGpsFix>;
@@ -1441,6 +1451,8 @@ export type AreaContext = {
   now?: Date;
   /** Same-state assignment guard (owner-directed 2026-08-13). */
   stateGuard?: StateGuardContext;
+  serviceType?: string | null;
+  serviceQualification?: ServiceQualificationOutcome;
 };
 
 /** Workload-aware arrival model (owner-directed 2026-08-11): a driver with
@@ -1618,9 +1630,19 @@ export async function chooseBestDriverByRoad(
     if (!anchor) return true; // no anchor → flexible candidate
     return haversineMiles(pickupLat, pickupLng, anchor.lat, anchor.lng) <= radius;
   };
-  const areaPool = baseEligible.filter(inArea);
+  const qualification = area?.serviceQualification;
+  const servicePool = baseEligible.filter((d) => {
+    const result = serviceTypeQualification(d, area?.serviceType ?? null);
+    if (!result.eligible && qualification) qualification.excluded.push({ driverId: Number(d.driverId), reason: result.reason });
+    return result.eligible;
+  });
+  if (qualification) {
+    qualification.serviceType = area?.serviceType?.trim() || null;
+    qualification.assessed = Boolean(area?.serviceType?.trim());
+  }
+  const areaPool = servicePool.filter(inArea);
   const usedAreaFallback = areaPool.length === 0;
-  const pool = usedAreaFallback ? baseEligible : areaPool;
+  const pool = usedAreaFallback ? servicePool : areaPool;
 
   // ETA origin per driver: freshest app GPS fix when fresh (≤ 15 min); a
   // STALE fix falls back to the anchor center (basis noted — the offer/audit
@@ -2664,9 +2686,11 @@ async function runAutoDispatchInternal(
         }),
       };
       const guardOutcome: StateGuardOutcome = { active: false, jobState: null, blocked: false, blockedReason: null, checked: 0, inState: 0, excluded: [] };
+      const serviceType = typeof (rawOffer as Record<string, unknown>).serviceType === "string" ? String((rawOffer as Record<string, unknown>).serviceType) : null;
+      const serviceQualification: ServiceQualificationOutcome = { serviceType, assessed: Boolean(serviceType?.trim()), excluded: [] };
       const areaCtx: AreaContext = humanReassigned
-        ? { gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx }
-        : { anchors: driverAnchors, gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx };
+        ? { gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification }
+        : { anchors: driverAnchors, gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification };
       const chosen = await chooseBestDriverByRoad(
         candidates,
         offer.startLocationLatitude,
@@ -2853,7 +2877,10 @@ async function runAutoDispatchInternal(
             ? ` — ${etaDetailLabel(chosen, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta, etaMinutes)}`
             : " — no road ETA quoted (driver not in the live nearestDrivers payload; ETA at the SLA ceiling)";
           const areaNote = chosen ? areaSelectionNote(chosen, offer.startLocationLatitude, offer.startLocationLongitude) : null;
-          const reason = `accepted and dispatched to ${dispatchDriverName ?? dispatchDriverId} (driver ${dispatchDriverId}, VERIFIED on call ${verification.callId})${verificationRecoveryNote ? `; ${verificationRecoveryNote}` : ""}${manualNote ? `; ${manualNote}` : ""}${etaLabel}${areaNote ?? ""}`;
+          const qualificationNote = serviceQualification.excluded.length
+            ? `; service-type '${serviceQualification.serviceType}' excluded ${serviceQualification.excluded.map((e) => `driver ${e.driverId}: ${e.reason}`).join("; ")}`
+            : `; service-type ${serviceQualification.assessed ? `'${serviceQualification.serviceType}' assessed; no explicit exclusions` : "could not be assessed (missing/unknown); no driver removed"}`;
+          const reason = `accepted and dispatched to ${dispatchDriverName ?? dispatchDriverId} (driver ${dispatchDriverId}, VERIFIED on call ${verification.callId})${verificationRecoveryNote ? `; ${verificationRecoveryNote}` : ""}${manualNote ? `; ${manualNote}` : ""}${qualificationNote}${etaLabel}${areaNote ?? ""}`;
           await record({
             decision: "auto_accept_with_driver",
             callId: verification.callId,
