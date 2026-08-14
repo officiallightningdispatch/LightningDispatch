@@ -20,7 +20,7 @@
     "lat": 32.3777,
     "lng": -86.3,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -32,7 +32,7 @@
     "lat": 58.3019,
     "lng": -134.4197,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Anchorage",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -44,7 +44,7 @@
     "lat": 33.4481,
     "lng": -112.0969,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Phoenix",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -56,7 +56,7 @@
     "lat": 34.7466,
     "lng": -92.2889,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -68,7 +68,7 @@
     "lat": 38.5767,
     "lng": -121.4944,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Los_Angeles",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -80,7 +80,7 @@
     "lat": 39.7392,
     "lng": -104.9903,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Denver",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -140,7 +140,7 @@
     "lat": 21.307,
     "lng": -157.858,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "Pacific/Honolulu",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -152,7 +152,7 @@
     "lat": 43.617,
     "lng": -116.2,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Denver",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -164,7 +164,7 @@
     "lat": 39.798,
     "lng": -89.654,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -176,7 +176,7 @@
     "lat": 39.7686,
     "lng": -86.162,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Indiana/Indianapolis",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -188,7 +188,7 @@
     "lat": 41.5911,
     "lng": -93.6037,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -200,7 +200,7 @@
     "lat": 39.0482,
     "lng": -95.6779,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -224,7 +224,7 @@
     "lat": 30.4571,
     "lng": -91.1874,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -284,7 +284,7 @@
     "lat": 44.9551,
     "lng": -93.1022,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -296,7 +296,7 @@
     "lat": 32.3038,
     "lng": -90.1821,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -308,7 +308,7 @@
     "lat": 38.5792,
     "lng": -92.1729,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -320,7 +320,7 @@
     "lat": 46.5857,
     "lng": -112.0184,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Denver",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -332,7 +332,7 @@
     "lat": 40.8081,
     "lng": -96.6997,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -344,7 +344,7 @@
     "lat": 39.1639,
     "lng": -119.7661,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Los_Angeles",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -380,7 +380,7 @@
     "lat": 35.6822,
     "lng": -105.9397,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Denver",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -416,7 +416,7 @@
     "lat": 46.8208,
     "lng": -100.7833,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -440,7 +440,7 @@
     "lat": 35.4922,
     "lng": -97.5033,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -452,7 +452,7 @@
     "lat": 44.9385,
     "lng": -123.0304,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Los_Angeles",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -500,7 +500,7 @@
     "lat": 44.367,
     "lng": -100.3464,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -512,7 +512,7 @@
     "lat": 36.1658,
     "lng": -86.7842,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -524,7 +524,7 @@
     "lat": 30.2747,
     "lng": -97.7403,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -536,7 +536,7 @@
     "lat": 40.7774,
     "lng": -111.8882,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Denver",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -572,7 +572,7 @@
     "lat": 47.0358,
     "lng": -122.905,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Los_Angeles",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -596,7 +596,7 @@
     "lat": 43.0747,
     "lng": -89.3844,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -608,7 +608,7 @@
     "lat": 41.1403,
     "lng": -104.8202,
     "radius_miles": 180,
-    "tz": "America/New_York",
+    "tz": "America/Denver",
     "parent": "US|coverage|ROOT"
   },
   {
@@ -632,7 +632,7 @@
     "lat": 32.3777,
     "lng": -86.3,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "AL|coverage|STATE"
   },
   {
@@ -644,7 +644,7 @@
     "lat": 58.3019,
     "lng": -134.4197,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Anchorage",
     "parent": "AK|coverage|STATE"
   },
   {
@@ -656,7 +656,7 @@
     "lat": 33.4481,
     "lng": -112.0969,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Phoenix",
     "parent": "AZ|coverage|STATE"
   },
   {
@@ -668,7 +668,7 @@
     "lat": 34.7466,
     "lng": -92.2889,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "AR|coverage|STATE"
   },
   {
@@ -680,7 +680,7 @@
     "lat": 38.5767,
     "lng": -121.4944,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Los_Angeles",
     "parent": "CA|coverage|STATE"
   },
   {
@@ -692,7 +692,7 @@
     "lat": 39.7392,
     "lng": -104.9903,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Denver",
     "parent": "CO|coverage|STATE"
   },
   {
@@ -752,7 +752,7 @@
     "lat": 21.307,
     "lng": -157.858,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "Pacific/Honolulu",
     "parent": "HI|coverage|STATE"
   },
   {
@@ -764,7 +764,7 @@
     "lat": 43.617,
     "lng": -116.2,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Denver",
     "parent": "ID|coverage|STATE"
   },
   {
@@ -776,7 +776,7 @@
     "lat": 39.798,
     "lng": -89.654,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "IL|coverage|STATE"
   },
   {
@@ -788,7 +788,7 @@
     "lat": 39.7686,
     "lng": -86.162,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Indiana/Indianapolis",
     "parent": "IN|coverage|STATE"
   },
   {
@@ -800,7 +800,7 @@
     "lat": 41.5911,
     "lng": -93.6037,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "IA|coverage|STATE"
   },
   {
@@ -812,7 +812,7 @@
     "lat": 39.0482,
     "lng": -95.6779,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "KS|coverage|STATE"
   },
   {
@@ -836,7 +836,7 @@
     "lat": 30.4571,
     "lng": -91.1874,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "LA|coverage|STATE"
   },
   {
@@ -896,7 +896,7 @@
     "lat": 44.9551,
     "lng": -93.1022,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "MN|coverage|STATE"
   },
   {
@@ -908,7 +908,7 @@
     "lat": 32.3038,
     "lng": -90.1821,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "MS|coverage|STATE"
   },
   {
@@ -920,7 +920,7 @@
     "lat": 38.5792,
     "lng": -92.1729,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "MO|coverage|STATE"
   },
   {
@@ -932,7 +932,7 @@
     "lat": 46.5857,
     "lng": -112.0184,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Denver",
     "parent": "MT|coverage|STATE"
   },
   {
@@ -944,7 +944,7 @@
     "lat": 40.8081,
     "lng": -96.6997,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "NE|coverage|STATE"
   },
   {
@@ -956,7 +956,7 @@
     "lat": 39.1639,
     "lng": -119.7661,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Los_Angeles",
     "parent": "NV|coverage|STATE"
   },
   {
@@ -992,7 +992,7 @@
     "lat": 35.6822,
     "lng": -105.9397,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Denver",
     "parent": "NM|coverage|STATE"
   },
   {
@@ -1028,7 +1028,7 @@
     "lat": 46.8208,
     "lng": -100.7833,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "ND|coverage|STATE"
   },
   {
@@ -1052,7 +1052,7 @@
     "lat": 35.4922,
     "lng": -97.5033,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "OK|coverage|STATE"
   },
   {
@@ -1064,7 +1064,7 @@
     "lat": 44.9385,
     "lng": -123.0304,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Los_Angeles",
     "parent": "OR|coverage|STATE"
   },
   {
@@ -1112,7 +1112,7 @@
     "lat": 44.367,
     "lng": -100.3464,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "SD|coverage|STATE"
   },
   {
@@ -1124,7 +1124,7 @@
     "lat": 36.1658,
     "lng": -86.7842,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "TN|coverage|STATE"
   },
   {
@@ -1136,7 +1136,7 @@
     "lat": 30.2747,
     "lng": -97.7403,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "TX|coverage|STATE"
   },
   {
@@ -1148,7 +1148,7 @@
     "lat": 40.7774,
     "lng": -111.8882,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Denver",
     "parent": "UT|coverage|STATE"
   },
   {
@@ -1184,7 +1184,7 @@
     "lat": 47.0358,
     "lng": -122.905,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Los_Angeles",
     "parent": "WA|coverage|STATE"
   },
   {
@@ -1208,7 +1208,7 @@
     "lat": 43.0747,
     "lng": -89.3844,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Chicago",
     "parent": "WI|coverage|STATE"
   },
   {
@@ -1220,7 +1220,7 @@
     "lat": 41.1403,
     "lng": -104.8202,
     "radius_miles": 35,
-    "tz": "America/New_York",
+    "tz": "America/Denver",
     "parent": "WY|coverage|STATE"
   },
   {
@@ -1417,9 +1417,9 @@
   },
   {
     "key": "TX|corridor|Austin-Georgetown",
-    "name": "Austin\u2013Georgetown Corridor",
+    "name": "Austin–Georgetown Corridor",
     "state": "TX",
-    "market": "Austin\u2013Georgetown",
+    "market": "Austin–Georgetown",
     "zone_type": "corridor",
     "lat": 30.5552,
     "lng": -97.6897,
@@ -1432,5 +1432,2466 @@
       "78664",
       "78701"
     ]
+  },
+  {
+    "key": "AL|market|Birmingham",
+    "name": "Birmingham",
+    "state": "AL",
+    "market": "Birmingham",
+    "zone_type": "market",
+    "lat": 33.5186,
+    "lng": -86.8104,
+    "radius_miles": 25,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "35203",
+      "35209"
+    ],
+    "parent": "AL|coverage|STATE"
+  },
+  {
+    "key": "AL|market|Mobile",
+    "name": "Mobile",
+    "state": "AL",
+    "market": "Mobile",
+    "zone_type": "market",
+    "lat": 30.6954,
+    "lng": -88.0399,
+    "radius_miles": 18,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "36602",
+      "36608"
+    ],
+    "parent": "AL|coverage|STATE"
+  },
+  {
+    "key": "AL|market|Huntsville",
+    "name": "Huntsville",
+    "state": "AL",
+    "market": "Huntsville",
+    "zone_type": "market",
+    "lat": 34.7304,
+    "lng": -86.5861,
+    "radius_miles": 20,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "35801",
+      "35806"
+    ],
+    "parent": "AL|coverage|STATE"
+  },
+  {
+    "key": "AK|market|Anchorage",
+    "name": "Anchorage",
+    "state": "AK",
+    "market": "Anchorage",
+    "zone_type": "market",
+    "lat": 61.2181,
+    "lng": -149.9003,
+    "radius_miles": 35,
+    "tz": "America/Anchorage",
+    "zip_codes": [
+      "99501",
+      "99503"
+    ],
+    "parent": "AK|coverage|STATE"
+  },
+  {
+    "key": "AK|market|Fairbanks",
+    "name": "Fairbanks",
+    "state": "AK",
+    "market": "Fairbanks",
+    "zone_type": "market",
+    "lat": 64.8378,
+    "lng": -147.7164,
+    "radius_miles": 30,
+    "tz": "America/Anchorage",
+    "zip_codes": [
+      "99701"
+    ],
+    "parent": "AK|coverage|STATE"
+  },
+  {
+    "key": "AZ|market|Phoenix",
+    "name": "Phoenix",
+    "state": "AZ",
+    "market": "Phoenix",
+    "zone_type": "market",
+    "lat": 33.4484,
+    "lng": -112.074,
+    "radius_miles": 35,
+    "tz": "America/Phoenix",
+    "zip_codes": [
+      "85003",
+      "85016",
+      "85032"
+    ],
+    "parent": "AZ|coverage|STATE"
+  },
+  {
+    "key": "AZ|market|Tucson",
+    "name": "Tucson",
+    "state": "AZ",
+    "market": "Tucson",
+    "zone_type": "market",
+    "lat": 32.2226,
+    "lng": -110.9747,
+    "radius_miles": 25,
+    "tz": "America/Phoenix",
+    "zip_codes": [
+      "85701",
+      "85705"
+    ],
+    "parent": "AZ|coverage|STATE"
+  },
+  {
+    "key": "AZ|market|Mesa",
+    "name": "Mesa",
+    "state": "AZ",
+    "market": "Mesa",
+    "zone_type": "market",
+    "lat": 33.4152,
+    "lng": -111.8315,
+    "radius_miles": 18,
+    "tz": "America/Phoenix",
+    "zip_codes": [
+      "85201",
+      "85204"
+    ],
+    "parent": "AZ|coverage|STATE"
+  },
+  {
+    "key": "AR|market|Little Rock",
+    "name": "Little Rock",
+    "state": "AR",
+    "market": "Little Rock",
+    "zone_type": "market",
+    "lat": 34.7465,
+    "lng": -92.2896,
+    "radius_miles": 22,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "72201",
+      "72205"
+    ],
+    "parent": "AR|coverage|STATE"
+  },
+  {
+    "key": "AR|market|Fayetteville",
+    "name": "Fayetteville",
+    "state": "AR",
+    "market": "Fayetteville",
+    "zone_type": "market",
+    "lat": 36.0626,
+    "lng": -94.1574,
+    "radius_miles": 18,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "72701"
+    ],
+    "parent": "AR|coverage|STATE"
+  },
+  {
+    "key": "AR|market|Fort Smith",
+    "name": "Fort Smith",
+    "state": "AR",
+    "market": "Fort Smith",
+    "zone_type": "market",
+    "lat": 35.3859,
+    "lng": -94.3985,
+    "radius_miles": 15,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "72901"
+    ],
+    "parent": "AR|coverage|STATE"
+  },
+  {
+    "key": "CA|market|Los Angeles",
+    "name": "Los Angeles",
+    "state": "CA",
+    "market": "Los Angeles",
+    "zone_type": "market",
+    "lat": 34.0522,
+    "lng": -118.2437,
+    "radius_miles": 40,
+    "tz": "America/Los_Angeles",
+    "zip_codes": [
+      "90012",
+      "90024",
+      "90045"
+    ],
+    "parent": "CA|coverage|STATE"
+  },
+  {
+    "key": "CA|market|San Francisco",
+    "name": "San Francisco",
+    "state": "CA",
+    "market": "San Francisco",
+    "zone_type": "market",
+    "lat": 37.7749,
+    "lng": -122.4194,
+    "radius_miles": 25,
+    "tz": "America/Los_Angeles",
+    "zip_codes": [
+      "94102",
+      "94107"
+    ],
+    "parent": "CA|coverage|STATE"
+  },
+  {
+    "key": "CA|market|San Diego",
+    "name": "San Diego",
+    "state": "CA",
+    "market": "San Diego",
+    "zone_type": "market",
+    "lat": 32.7157,
+    "lng": -117.1611,
+    "radius_miles": 30,
+    "tz": "America/Los_Angeles",
+    "zip_codes": [
+      "92101",
+      "92109"
+    ],
+    "parent": "CA|coverage|STATE"
+  },
+  {
+    "key": "CA|market|San Jose",
+    "name": "San Jose",
+    "state": "CA",
+    "market": "San Jose",
+    "zone_type": "market",
+    "lat": 37.3382,
+    "lng": -121.8863,
+    "radius_miles": 22,
+    "tz": "America/Los_Angeles",
+    "zip_codes": [
+      "95112",
+      "95126"
+    ],
+    "parent": "CA|coverage|STATE"
+  },
+  {
+    "key": "CA|market|Sacramento",
+    "name": "Sacramento",
+    "state": "CA",
+    "market": "Sacramento",
+    "zone_type": "market",
+    "lat": 38.5816,
+    "lng": -121.4944,
+    "radius_miles": 25,
+    "tz": "America/Los_Angeles",
+    "zip_codes": [
+      "95814",
+      "95825"
+    ],
+    "parent": "CA|coverage|STATE"
+  },
+  {
+    "key": "CA|market|Fresno",
+    "name": "Fresno",
+    "state": "CA",
+    "market": "Fresno",
+    "zone_type": "market",
+    "lat": 36.7378,
+    "lng": -119.7871,
+    "radius_miles": 20,
+    "tz": "America/Los_Angeles",
+    "zip_codes": [
+      "93721",
+      "93720"
+    ],
+    "parent": "CA|coverage|STATE"
+  },
+  {
+    "key": "CO|market|Denver",
+    "name": "Denver",
+    "state": "CO",
+    "market": "Denver",
+    "zone_type": "market",
+    "lat": 39.7392,
+    "lng": -104.9903,
+    "radius_miles": 30,
+    "tz": "America/Denver",
+    "zip_codes": [
+      "80202",
+      "80220"
+    ],
+    "parent": "CO|coverage|STATE"
+  },
+  {
+    "key": "CO|market|Colorado Springs",
+    "name": "Colorado Springs",
+    "state": "CO",
+    "market": "Colorado Springs",
+    "zone_type": "market",
+    "lat": 38.8339,
+    "lng": -104.8214,
+    "radius_miles": 22,
+    "tz": "America/Denver",
+    "zip_codes": [
+      "80903"
+    ],
+    "parent": "CO|coverage|STATE"
+  },
+  {
+    "key": "CO|market|Fort Collins",
+    "name": "Fort Collins",
+    "state": "CO",
+    "market": "Fort Collins",
+    "zone_type": "market",
+    "lat": 40.5853,
+    "lng": -105.0844,
+    "radius_miles": 18,
+    "tz": "America/Denver",
+    "zip_codes": [
+      "80521"
+    ],
+    "parent": "CO|coverage|STATE"
+  },
+  {
+    "key": "DE|market|Wilmington",
+    "name": "Wilmington",
+    "state": "DE",
+    "market": "Wilmington",
+    "zone_type": "market",
+    "lat": 39.7391,
+    "lng": -75.5398,
+    "radius_miles": 20,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "19801",
+      "19802"
+    ],
+    "parent": "DE|coverage|STATE"
+  },
+  {
+    "key": "DE|market|Dover",
+    "name": "Dover",
+    "state": "DE",
+    "market": "Dover",
+    "zone_type": "market",
+    "lat": 39.1573,
+    "lng": -75.5197,
+    "radius_miles": 15,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "19901"
+    ],
+    "parent": "DE|coverage|STATE"
+  },
+  {
+    "key": "FL|market|Miami–Fort Lauderdale",
+    "name": "Miami–Fort Lauderdale",
+    "state": "FL",
+    "market": "Miami–Fort Lauderdale",
+    "zone_type": "market",
+    "lat": 25.7617,
+    "lng": -80.1918,
+    "radius_miles": 38,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "33101",
+      "33130",
+      "33301"
+    ],
+    "parent": "FL|coverage|STATE"
+  },
+  {
+    "key": "FL|market|Tampa–St. Petersburg",
+    "name": "Tampa–St. Petersburg",
+    "state": "FL",
+    "market": "Tampa–St. Petersburg",
+    "zone_type": "market",
+    "lat": 27.9506,
+    "lng": -82.4572,
+    "radius_miles": 32,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "33602",
+      "33701"
+    ],
+    "parent": "FL|coverage|STATE"
+  },
+  {
+    "key": "FL|market|Orlando",
+    "name": "Orlando",
+    "state": "FL",
+    "market": "Orlando",
+    "zone_type": "market",
+    "lat": 28.5383,
+    "lng": -81.3792,
+    "radius_miles": 30,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "32801",
+      "32819"
+    ],
+    "parent": "FL|coverage|STATE"
+  },
+  {
+    "key": "FL|market|Jacksonville",
+    "name": "Jacksonville",
+    "state": "FL",
+    "market": "Jacksonville",
+    "zone_type": "market",
+    "lat": 30.3322,
+    "lng": -81.6557,
+    "radius_miles": 28,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "32202",
+      "32207"
+    ],
+    "parent": "FL|coverage|STATE"
+  },
+  {
+    "key": "GA|market|Atlanta",
+    "name": "Atlanta",
+    "state": "GA",
+    "market": "Atlanta",
+    "zone_type": "market",
+    "lat": 33.749,
+    "lng": -84.388,
+    "radius_miles": 35,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "30303",
+      "30318"
+    ],
+    "parent": "GA|coverage|STATE"
+  },
+  {
+    "key": "GA|market|Savannah",
+    "name": "Savannah",
+    "state": "GA",
+    "market": "Savannah",
+    "zone_type": "market",
+    "lat": 32.0809,
+    "lng": -81.0912,
+    "radius_miles": 18,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "31401"
+    ],
+    "parent": "GA|coverage|STATE"
+  },
+  {
+    "key": "GA|market|Augusta",
+    "name": "Augusta",
+    "state": "GA",
+    "market": "Augusta",
+    "zone_type": "market",
+    "lat": 33.4735,
+    "lng": -82.0105,
+    "radius_miles": 15,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "30901"
+    ],
+    "parent": "GA|coverage|STATE"
+  },
+  {
+    "key": "HI|market|Honolulu",
+    "name": "Honolulu",
+    "state": "HI",
+    "market": "Honolulu",
+    "zone_type": "market",
+    "lat": 21.3069,
+    "lng": -157.8583,
+    "radius_miles": 25,
+    "tz": "Pacific/Honolulu",
+    "zip_codes": [
+      "96813",
+      "96817"
+    ],
+    "parent": "HI|coverage|STATE"
+  },
+  {
+    "key": "HI|market|Hilo",
+    "name": "Hilo",
+    "state": "HI",
+    "market": "Hilo",
+    "zone_type": "market",
+    "lat": 19.707,
+    "lng": -155.081,
+    "radius_miles": 15,
+    "tz": "Pacific/Honolulu",
+    "zip_codes": [
+      "96720"
+    ],
+    "parent": "HI|coverage|STATE"
+  },
+  {
+    "key": "ID|market|Boise",
+    "name": "Boise",
+    "state": "ID",
+    "market": "Boise",
+    "zone_type": "market",
+    "lat": 43.615,
+    "lng": -116.2023,
+    "radius_miles": 25,
+    "tz": "America/Denver",
+    "zip_codes": [
+      "83702",
+      "83704"
+    ],
+    "parent": "ID|coverage|STATE"
+  },
+  {
+    "key": "ID|market|Idaho Falls",
+    "name": "Idaho Falls",
+    "state": "ID",
+    "market": "Idaho Falls",
+    "zone_type": "market",
+    "lat": 43.4917,
+    "lng": -112.0339,
+    "radius_miles": 15,
+    "tz": "America/Denver",
+    "zip_codes": [
+      "83401"
+    ],
+    "parent": "ID|coverage|STATE"
+  },
+  {
+    "key": "ID|market|Coeur d’Alene",
+    "name": "Coeur d’Alene",
+    "state": "ID",
+    "market": "Coeur d’Alene",
+    "zone_type": "market",
+    "lat": 47.6777,
+    "lng": -116.7805,
+    "radius_miles": 15,
+    "tz": "America/Denver",
+    "zip_codes": [
+      "83814"
+    ],
+    "parent": "ID|coverage|STATE"
+  },
+  {
+    "key": "IL|market|Chicago",
+    "name": "Chicago",
+    "state": "IL",
+    "market": "Chicago",
+    "zone_type": "market",
+    "lat": 41.8781,
+    "lng": -87.6298,
+    "radius_miles": 40,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "60601",
+      "60614"
+    ],
+    "parent": "IL|coverage|STATE"
+  },
+  {
+    "key": "IL|market|Rockford",
+    "name": "Rockford",
+    "state": "IL",
+    "market": "Rockford",
+    "zone_type": "market",
+    "lat": 42.2711,
+    "lng": -89.094,
+    "radius_miles": 18,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "61101"
+    ],
+    "parent": "IL|coverage|STATE"
+  },
+  {
+    "key": "IL|market|Peoria",
+    "name": "Peoria",
+    "state": "IL",
+    "market": "Peoria",
+    "zone_type": "market",
+    "lat": 40.6936,
+    "lng": -89.589,
+    "radius_miles": 15,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "61602"
+    ],
+    "parent": "IL|coverage|STATE"
+  },
+  {
+    "key": "IN|market|Indianapolis",
+    "name": "Indianapolis",
+    "state": "IN",
+    "market": "Indianapolis",
+    "zone_type": "market",
+    "lat": 39.7684,
+    "lng": -86.1581,
+    "radius_miles": 30,
+    "tz": "America/Indiana/Indianapolis",
+    "zip_codes": [
+      "46204",
+      "46220"
+    ],
+    "parent": "IN|coverage|STATE"
+  },
+  {
+    "key": "IN|market|Fort Wayne",
+    "name": "Fort Wayne",
+    "state": "IN",
+    "market": "Fort Wayne",
+    "zone_type": "market",
+    "lat": 41.0793,
+    "lng": -85.1394,
+    "radius_miles": 18,
+    "tz": "America/Indiana/Indianapolis",
+    "zip_codes": [
+      "46802"
+    ],
+    "parent": "IN|coverage|STATE"
+  },
+  {
+    "key": "IN|market|Evansville",
+    "name": "Evansville",
+    "state": "IN",
+    "market": "Evansville",
+    "zone_type": "market",
+    "lat": 37.9716,
+    "lng": -87.5711,
+    "radius_miles": 15,
+    "tz": "America/Indiana/Indianapolis",
+    "zip_codes": [
+      "47708"
+    ],
+    "parent": "IN|coverage|STATE"
+  },
+  {
+    "key": "IA|market|Des Moines",
+    "name": "Des Moines",
+    "state": "IA",
+    "market": "Des Moines",
+    "zone_type": "market",
+    "lat": 41.5868,
+    "lng": -93.625,
+    "radius_miles": 22,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "50309",
+      "50312"
+    ],
+    "parent": "IA|coverage|STATE"
+  },
+  {
+    "key": "IA|market|Cedar Rapids",
+    "name": "Cedar Rapids",
+    "state": "IA",
+    "market": "Cedar Rapids",
+    "zone_type": "market",
+    "lat": 41.9779,
+    "lng": -91.6656,
+    "radius_miles": 15,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "52401"
+    ],
+    "parent": "IA|coverage|STATE"
+  },
+  {
+    "key": "IA|market|Davenport",
+    "name": "Davenport",
+    "state": "IA",
+    "market": "Davenport",
+    "zone_type": "market",
+    "lat": 41.5236,
+    "lng": -90.5776,
+    "radius_miles": 15,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "52801"
+    ],
+    "parent": "IA|coverage|STATE"
+  },
+  {
+    "key": "KS|market|Wichita",
+    "name": "Wichita",
+    "state": "KS",
+    "market": "Wichita",
+    "zone_type": "market",
+    "lat": 37.6872,
+    "lng": -97.3301,
+    "radius_miles": 22,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "67202",
+      "67212"
+    ],
+    "parent": "KS|coverage|STATE"
+  },
+  {
+    "key": "KS|market|Kansas City",
+    "name": "Kansas City",
+    "state": "KS",
+    "market": "Kansas City",
+    "zone_type": "market",
+    "lat": 39.0997,
+    "lng": -94.5786,
+    "radius_miles": 20,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "66101"
+    ],
+    "parent": "KS|coverage|STATE"
+  },
+  {
+    "key": "KS|market|Topeka",
+    "name": "Topeka",
+    "state": "KS",
+    "market": "Topeka",
+    "zone_type": "market",
+    "lat": 39.0473,
+    "lng": -95.6772,
+    "radius_miles": 12,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "66603"
+    ],
+    "parent": "KS|coverage|STATE"
+  },
+  {
+    "key": "KY|market|Louisville",
+    "name": "Louisville",
+    "state": "KY",
+    "market": "Louisville",
+    "zone_type": "market",
+    "lat": 38.2527,
+    "lng": -85.7585,
+    "radius_miles": 25,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "40202",
+      "40207"
+    ],
+    "parent": "KY|coverage|STATE"
+  },
+  {
+    "key": "KY|market|Lexington",
+    "name": "Lexington",
+    "state": "KY",
+    "market": "Lexington",
+    "zone_type": "market",
+    "lat": 37.9887,
+    "lng": -84.4777,
+    "radius_miles": 18,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "40507"
+    ],
+    "parent": "KY|coverage|STATE"
+  },
+  {
+    "key": "KY|market|Bowling Green",
+    "name": "Bowling Green",
+    "state": "KY",
+    "market": "Bowling Green",
+    "zone_type": "market",
+    "lat": 36.9685,
+    "lng": -86.4808,
+    "radius_miles": 12,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "42101"
+    ],
+    "parent": "KY|coverage|STATE"
+  },
+  {
+    "key": "LA|market|New Orleans",
+    "name": "New Orleans",
+    "state": "LA",
+    "market": "New Orleans",
+    "zone_type": "market",
+    "lat": 29.9511,
+    "lng": -90.0715,
+    "radius_miles": 28,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "70112",
+      "70118"
+    ],
+    "parent": "LA|coverage|STATE"
+  },
+  {
+    "key": "LA|market|Baton Rouge",
+    "name": "Baton Rouge",
+    "state": "LA",
+    "market": "Baton Rouge",
+    "zone_type": "market",
+    "lat": 30.4515,
+    "lng": -91.1871,
+    "radius_miles": 20,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "70802"
+    ],
+    "parent": "LA|coverage|STATE"
+  },
+  {
+    "key": "LA|market|Shreveport",
+    "name": "Shreveport",
+    "state": "LA",
+    "market": "Shreveport",
+    "zone_type": "market",
+    "lat": 32.5252,
+    "lng": -93.7502,
+    "radius_miles": 15,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "71101"
+    ],
+    "parent": "LA|coverage|STATE"
+  },
+  {
+    "key": "ME|market|Portland",
+    "name": "Portland",
+    "state": "ME",
+    "market": "Portland",
+    "zone_type": "market",
+    "lat": 43.6591,
+    "lng": -70.2568,
+    "radius_miles": 20,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "04101",
+      "04103"
+    ],
+    "parent": "ME|coverage|STATE"
+  },
+  {
+    "key": "ME|market|Bangor",
+    "name": "Bangor",
+    "state": "ME",
+    "market": "Bangor",
+    "zone_type": "market",
+    "lat": 44.8016,
+    "lng": -68.7712,
+    "radius_miles": 15,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "04401"
+    ],
+    "parent": "ME|coverage|STATE"
+  },
+  {
+    "key": "MD|market|Baltimore",
+    "name": "Baltimore",
+    "state": "MD",
+    "market": "Baltimore",
+    "zone_type": "market",
+    "lat": 39.2904,
+    "lng": -76.6122,
+    "radius_miles": 30,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "21201",
+      "21218"
+    ],
+    "parent": "MD|coverage|STATE"
+  },
+  {
+    "key": "MD|market|Frederick",
+    "name": "Frederick",
+    "state": "MD",
+    "market": "Frederick",
+    "zone_type": "market",
+    "lat": 39.4143,
+    "lng": -77.4105,
+    "radius_miles": 15,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "21701"
+    ],
+    "parent": "MD|coverage|STATE"
+  },
+  {
+    "key": "MD|market|Salisbury",
+    "name": "Salisbury",
+    "state": "MD",
+    "market": "Salisbury",
+    "zone_type": "market",
+    "lat": 38.3607,
+    "lng": -75.5994,
+    "radius_miles": 12,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "21801"
+    ],
+    "parent": "MD|coverage|STATE"
+  },
+  {
+    "key": "MA|market|Boston",
+    "name": "Boston",
+    "state": "MA",
+    "market": "Boston",
+    "zone_type": "market",
+    "lat": 42.3601,
+    "lng": -71.0589,
+    "radius_miles": 35,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "02108",
+      "02116"
+    ],
+    "parent": "MA|coverage|STATE"
+  },
+  {
+    "key": "MA|market|Worcester",
+    "name": "Worcester",
+    "state": "MA",
+    "market": "Worcester",
+    "zone_type": "market",
+    "lat": 42.2626,
+    "lng": -71.8023,
+    "radius_miles": 18,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "01608"
+    ],
+    "parent": "MA|coverage|STATE"
+  },
+  {
+    "key": "MA|market|Springfield",
+    "name": "Springfield",
+    "state": "MA",
+    "market": "Springfield",
+    "zone_type": "market",
+    "lat": 42.1015,
+    "lng": -72.5898,
+    "radius_miles": 15,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "01103"
+    ],
+    "parent": "MA|coverage|STATE"
+  },
+  {
+    "key": "MI|market|Detroit",
+    "name": "Detroit",
+    "state": "MI",
+    "market": "Detroit",
+    "zone_type": "market",
+    "lat": 42.3314,
+    "lng": -83.0458,
+    "radius_miles": 35,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "48201",
+      "48226"
+    ],
+    "parent": "MI|coverage|STATE"
+  },
+  {
+    "key": "MI|market|Grand Rapids",
+    "name": "Grand Rapids",
+    "state": "MI",
+    "market": "Grand Rapids",
+    "zone_type": "market",
+    "lat": 42.9634,
+    "lng": -85.6681,
+    "radius_miles": 20,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "49503"
+    ],
+    "parent": "MI|coverage|STATE"
+  },
+  {
+    "key": "MI|market|Lansing",
+    "name": "Lansing",
+    "state": "MI",
+    "market": "Lansing",
+    "zone_type": "market",
+    "lat": 42.7325,
+    "lng": -84.5555,
+    "radius_miles": 15,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "48906"
+    ],
+    "parent": "MI|coverage|STATE"
+  },
+  {
+    "key": "MI|market|Ann Arbor",
+    "name": "Ann Arbor",
+    "state": "MI",
+    "market": "Ann Arbor",
+    "zone_type": "market",
+    "lat": 42.2808,
+    "lng": -83.743,
+    "radius_miles": 12,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "48104"
+    ],
+    "parent": "MI|coverage|STATE"
+  },
+  {
+    "key": "MN|market|Minneapolis–Saint Paul",
+    "name": "Minneapolis–Saint Paul",
+    "state": "MN",
+    "market": "Minneapolis–Saint Paul",
+    "zone_type": "market",
+    "lat": 44.9778,
+    "lng": -93.265,
+    "radius_miles": 35,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "55401",
+      "55102"
+    ],
+    "parent": "MN|coverage|STATE"
+  },
+  {
+    "key": "MN|market|Duluth",
+    "name": "Duluth",
+    "state": "MN",
+    "market": "Duluth",
+    "zone_type": "market",
+    "lat": 46.7867,
+    "lng": -92.1005,
+    "radius_miles": 15,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "55802"
+    ],
+    "parent": "MN|coverage|STATE"
+  },
+  {
+    "key": "MN|market|Rochester",
+    "name": "Rochester",
+    "state": "MN",
+    "market": "Rochester",
+    "zone_type": "market",
+    "lat": 44.0121,
+    "lng": -92.4802,
+    "radius_miles": 15,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "55901"
+    ],
+    "parent": "MN|coverage|STATE"
+  },
+  {
+    "key": "MS|market|Jackson",
+    "name": "Jackson",
+    "state": "MS",
+    "market": "Jackson",
+    "zone_type": "market",
+    "lat": 32.2988,
+    "lng": -90.1848,
+    "radius_miles": 22,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "39201",
+      "39211"
+    ],
+    "parent": "MS|coverage|STATE"
+  },
+  {
+    "key": "MS|market|Gulfport",
+    "name": "Gulfport",
+    "state": "MS",
+    "market": "Gulfport",
+    "zone_type": "market",
+    "lat": 30.3674,
+    "lng": -89.0928,
+    "radius_miles": 15,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "39501"
+    ],
+    "parent": "MS|coverage|STATE"
+  },
+  {
+    "key": "MS|market|Hattiesburg",
+    "name": "Hattiesburg",
+    "state": "MS",
+    "market": "Hattiesburg",
+    "zone_type": "market",
+    "lat": 31.3271,
+    "lng": -89.2903,
+    "radius_miles": 12,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "39401"
+    ],
+    "parent": "MS|coverage|STATE"
+  },
+  {
+    "key": "MO|market|Kansas City",
+    "name": "Kansas City",
+    "state": "MO",
+    "market": "Kansas City",
+    "zone_type": "market",
+    "lat": 39.0997,
+    "lng": -94.5786,
+    "radius_miles": 28,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "64106",
+      "64111"
+    ],
+    "parent": "MO|coverage|STATE"
+  },
+  {
+    "key": "MO|market|St. Louis",
+    "name": "St. Louis",
+    "state": "MO",
+    "market": "St. Louis",
+    "zone_type": "market",
+    "lat": 38.627,
+    "lng": -90.1994,
+    "radius_miles": 30,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "63101",
+      "63116"
+    ],
+    "parent": "MO|coverage|STATE"
+  },
+  {
+    "key": "MO|market|Springfield",
+    "name": "Springfield",
+    "state": "MO",
+    "market": "Springfield",
+    "zone_type": "market",
+    "lat": 37.209,
+    "lng": -93.2923,
+    "radius_miles": 15,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "65802"
+    ],
+    "parent": "MO|coverage|STATE"
+  },
+  {
+    "key": "MT|market|Billings",
+    "name": "Billings",
+    "state": "MT",
+    "market": "Billings",
+    "zone_type": "market",
+    "lat": 45.7833,
+    "lng": -108.5007,
+    "radius_miles": 22,
+    "tz": "America/Denver",
+    "zip_codes": [
+      "59101"
+    ],
+    "parent": "MT|coverage|STATE"
+  },
+  {
+    "key": "MT|market|Missoula",
+    "name": "Missoula",
+    "state": "MT",
+    "market": "Missoula",
+    "zone_type": "market",
+    "lat": 46.8721,
+    "lng": -113.994,
+    "radius_miles": 18,
+    "tz": "America/Denver",
+    "zip_codes": [
+      "59801"
+    ],
+    "parent": "MT|coverage|STATE"
+  },
+  {
+    "key": "MT|market|Bozeman",
+    "name": "Bozeman",
+    "state": "MT",
+    "market": "Bozeman",
+    "zone_type": "market",
+    "lat": 45.677,
+    "lng": -111.0429,
+    "radius_miles": 15,
+    "tz": "America/Denver",
+    "zip_codes": [
+      "59715"
+    ],
+    "parent": "MT|coverage|STATE"
+  },
+  {
+    "key": "MT|market|Great Falls",
+    "name": "Great Falls",
+    "state": "MT",
+    "market": "Great Falls",
+    "zone_type": "market",
+    "lat": 47.5,
+    "lng": -111.3,
+    "radius_miles": 15,
+    "tz": "America/Denver",
+    "zip_codes": [
+      "59401"
+    ],
+    "parent": "MT|coverage|STATE"
+  },
+  {
+    "key": "NE|market|Omaha",
+    "name": "Omaha",
+    "state": "NE",
+    "market": "Omaha",
+    "zone_type": "market",
+    "lat": 41.2565,
+    "lng": -95.9345,
+    "radius_miles": 25,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "68102",
+      "68114"
+    ],
+    "parent": "NE|coverage|STATE"
+  },
+  {
+    "key": "NE|market|Lincoln",
+    "name": "Lincoln",
+    "state": "NE",
+    "market": "Lincoln",
+    "zone_type": "market",
+    "lat": 40.8136,
+    "lng": -96.7026,
+    "radius_miles": 15,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "68508"
+    ],
+    "parent": "NE|coverage|STATE"
+  },
+  {
+    "key": "NE|market|Grand Island",
+    "name": "Grand Island",
+    "state": "NE",
+    "market": "Grand Island",
+    "zone_type": "market",
+    "lat": 40.9264,
+    "lng": -98.342,
+    "radius_miles": 12,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "68801"
+    ],
+    "parent": "NE|coverage|STATE"
+  },
+  {
+    "key": "NV|market|Las Vegas",
+    "name": "Las Vegas",
+    "state": "NV",
+    "market": "Las Vegas",
+    "zone_type": "market",
+    "lat": 36.1699,
+    "lng": -115.1398,
+    "radius_miles": 35,
+    "tz": "America/Los_Angeles",
+    "zip_codes": [
+      "89101",
+      "89109"
+    ],
+    "parent": "NV|coverage|STATE"
+  },
+  {
+    "key": "NV|market|Reno",
+    "name": "Reno",
+    "state": "NV",
+    "market": "Reno",
+    "zone_type": "market",
+    "lat": 39.5296,
+    "lng": -119.8138,
+    "radius_miles": 22,
+    "tz": "America/Los_Angeles",
+    "zip_codes": [
+      "89501"
+    ],
+    "parent": "NV|coverage|STATE"
+  },
+  {
+    "key": "NV|market|Henderson",
+    "name": "Henderson",
+    "state": "NV",
+    "market": "Henderson",
+    "zone_type": "market",
+    "lat": 36.0395,
+    "lng": -114.9817,
+    "radius_miles": 18,
+    "tz": "America/Los_Angeles",
+    "zip_codes": [
+      "89002"
+    ],
+    "parent": "NV|coverage|STATE"
+  },
+  {
+    "key": "NH|market|Manchester",
+    "name": "Manchester",
+    "state": "NH",
+    "market": "Manchester",
+    "zone_type": "market",
+    "lat": 42.9956,
+    "lng": -71.4548,
+    "radius_miles": 20,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "03101"
+    ],
+    "parent": "NH|coverage|STATE"
+  },
+  {
+    "key": "NH|market|Nashua",
+    "name": "Nashua",
+    "state": "NH",
+    "market": "Nashua",
+    "zone_type": "market",
+    "lat": 42.7654,
+    "lng": -71.4676,
+    "radius_miles": 15,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "03060"
+    ],
+    "parent": "NH|coverage|STATE"
+  },
+  {
+    "key": "NJ|market|Newark",
+    "name": "Newark",
+    "state": "NJ",
+    "market": "Newark",
+    "zone_type": "market",
+    "lat": 40.7357,
+    "lng": -74.1724,
+    "radius_miles": 28,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "07102",
+      "07103"
+    ],
+    "parent": "NJ|coverage|STATE"
+  },
+  {
+    "key": "NJ|market|Jersey City",
+    "name": "Jersey City",
+    "state": "NJ",
+    "market": "Jersey City",
+    "zone_type": "market",
+    "lat": 40.7178,
+    "lng": -74.0431,
+    "radius_miles": 22,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "07302"
+    ],
+    "parent": "NJ|coverage|STATE"
+  },
+  {
+    "key": "NJ|market|Trenton",
+    "name": "Trenton",
+    "state": "NJ",
+    "market": "Trenton",
+    "zone_type": "market",
+    "lat": 40.2171,
+    "lng": -74.7429,
+    "radius_miles": 15,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "08608"
+    ],
+    "parent": "NJ|coverage|STATE"
+  },
+  {
+    "key": "NJ|market|Atlantic City",
+    "name": "Atlantic City",
+    "state": "NJ",
+    "market": "Atlantic City",
+    "zone_type": "market",
+    "lat": 39.3643,
+    "lng": -74.4229,
+    "radius_miles": 12,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "08401"
+    ],
+    "parent": "NJ|coverage|STATE"
+  },
+  {
+    "key": "NM|market|Albuquerque",
+    "name": "Albuquerque",
+    "state": "NM",
+    "market": "Albuquerque",
+    "zone_type": "market",
+    "lat": 35.0844,
+    "lng": -106.6504,
+    "radius_miles": 28,
+    "tz": "America/Denver",
+    "zip_codes": [
+      "87102",
+      "87110"
+    ],
+    "parent": "NM|coverage|STATE"
+  },
+  {
+    "key": "NM|market|Santa Fe",
+    "name": "Santa Fe",
+    "state": "NM",
+    "market": "Santa Fe",
+    "zone_type": "market",
+    "lat": 35.687,
+    "lng": -105.9378,
+    "radius_miles": 15,
+    "tz": "America/Denver",
+    "zip_codes": [
+      "87501"
+    ],
+    "parent": "NM|coverage|STATE"
+  },
+  {
+    "key": "NM|market|Las Cruces",
+    "name": "Las Cruces",
+    "state": "NM",
+    "market": "Las Cruces",
+    "zone_type": "market",
+    "lat": 32.3199,
+    "lng": -106.7637,
+    "radius_miles": 15,
+    "tz": "America/Denver",
+    "zip_codes": [
+      "88001"
+    ],
+    "parent": "NM|coverage|STATE"
+  },
+  {
+    "key": "NY|market|New York City",
+    "name": "New York City",
+    "state": "NY",
+    "market": "New York City",
+    "zone_type": "market",
+    "lat": 40.7128,
+    "lng": -74.006,
+    "radius_miles": 45,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "10001",
+      "10019"
+    ],
+    "parent": "NY|coverage|STATE"
+  },
+  {
+    "key": "NY|market|Buffalo",
+    "name": "Buffalo",
+    "state": "NY",
+    "market": "Buffalo",
+    "zone_type": "market",
+    "lat": 42.8864,
+    "lng": -78.8784,
+    "radius_miles": 22,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "14202"
+    ],
+    "parent": "NY|coverage|STATE"
+  },
+  {
+    "key": "NY|market|Albany",
+    "name": "Albany",
+    "state": "NY",
+    "market": "Albany",
+    "zone_type": "market",
+    "lat": 42.6526,
+    "lng": -73.7562,
+    "radius_miles": 15,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "12207"
+    ],
+    "parent": "NY|coverage|STATE"
+  },
+  {
+    "key": "NY|market|Rochester",
+    "name": "Rochester",
+    "state": "NY",
+    "market": "Rochester",
+    "zone_type": "market",
+    "lat": 43.1566,
+    "lng": -77.6088,
+    "radius_miles": 18,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "14604"
+    ],
+    "parent": "NY|coverage|STATE"
+  },
+  {
+    "key": "NY|market|Syracuse",
+    "name": "Syracuse",
+    "state": "NY",
+    "market": "Syracuse",
+    "zone_type": "market",
+    "lat": 43.0481,
+    "lng": -76.1474,
+    "radius_miles": 15,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "13202"
+    ],
+    "parent": "NY|coverage|STATE"
+  },
+  {
+    "key": "NC|market|Charlotte",
+    "name": "Charlotte",
+    "state": "NC",
+    "market": "Charlotte",
+    "zone_type": "market",
+    "lat": 35.2271,
+    "lng": -80.8431,
+    "radius_miles": 30,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "28202",
+      "28211"
+    ],
+    "parent": "NC|coverage|STATE"
+  },
+  {
+    "key": "NC|market|Raleigh–Durham",
+    "name": "Raleigh–Durham",
+    "state": "NC",
+    "market": "Raleigh–Durham",
+    "zone_type": "market",
+    "lat": 35.7796,
+    "lng": -78.6382,
+    "radius_miles": 28,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "27601",
+      "27701"
+    ],
+    "parent": "NC|coverage|STATE"
+  },
+  {
+    "key": "NC|market|Greensboro",
+    "name": "Greensboro",
+    "state": "NC",
+    "market": "Greensboro",
+    "zone_type": "market",
+    "lat": 36.0726,
+    "lng": -79.792,
+    "radius_miles": 18,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "27401"
+    ],
+    "parent": "NC|coverage|STATE"
+  },
+  {
+    "key": "NC|market|Wilmington",
+    "name": "Wilmington",
+    "state": "NC",
+    "market": "Wilmington",
+    "zone_type": "market",
+    "lat": 34.2257,
+    "lng": -77.9447,
+    "radius_miles": 15,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "28401"
+    ],
+    "parent": "NC|coverage|STATE"
+  },
+  {
+    "key": "ND|market|Fargo",
+    "name": "Fargo",
+    "state": "ND",
+    "market": "Fargo",
+    "zone_type": "market",
+    "lat": 46.8772,
+    "lng": -96.7898,
+    "radius_miles": 18,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "58102"
+    ],
+    "parent": "ND|coverage|STATE"
+  },
+  {
+    "key": "ND|market|Bismarck",
+    "name": "Bismarck",
+    "state": "ND",
+    "market": "Bismarck",
+    "zone_type": "market",
+    "lat": 46.8083,
+    "lng": -100.7837,
+    "radius_miles": 15,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "58501"
+    ],
+    "parent": "ND|coverage|STATE"
+  },
+  {
+    "key": "ND|market|Grand Forks",
+    "name": "Grand Forks",
+    "state": "ND",
+    "market": "Grand Forks",
+    "zone_type": "market",
+    "lat": 47.9253,
+    "lng": -97.0329,
+    "radius_miles": 12,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "58201"
+    ],
+    "parent": "ND|coverage|STATE"
+  },
+  {
+    "key": "OH|market|Columbus",
+    "name": "Columbus",
+    "state": "OH",
+    "market": "Columbus",
+    "zone_type": "market",
+    "lat": 39.9612,
+    "lng": -82.9988,
+    "radius_miles": 30,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "43215",
+      "43220"
+    ],
+    "parent": "OH|coverage|STATE"
+  },
+  {
+    "key": "OH|market|Cleveland",
+    "name": "Cleveland",
+    "state": "OH",
+    "market": "Cleveland",
+    "zone_type": "market",
+    "lat": 41.4993,
+    "lng": -81.6944,
+    "radius_miles": 28,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "44114"
+    ],
+    "parent": "OH|coverage|STATE"
+  },
+  {
+    "key": "OH|market|Cincinnati",
+    "name": "Cincinnati",
+    "state": "OH",
+    "market": "Cincinnati",
+    "zone_type": "market",
+    "lat": 39.1031,
+    "lng": -84.512,
+    "radius_miles": 25,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "45202"
+    ],
+    "parent": "OH|coverage|STATE"
+  },
+  {
+    "key": "OH|market|Toledo",
+    "name": "Toledo",
+    "state": "OH",
+    "market": "Toledo",
+    "zone_type": "market",
+    "lat": 41.6528,
+    "lng": -83.5379,
+    "radius_miles": 15,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "43604"
+    ],
+    "parent": "OH|coverage|STATE"
+  },
+  {
+    "key": "OH|market|Akron",
+    "name": "Akron",
+    "state": "OH",
+    "market": "Akron",
+    "zone_type": "market",
+    "lat": 41.0814,
+    "lng": -81.519,
+    "radius_miles": 15,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "44308"
+    ],
+    "parent": "OH|coverage|STATE"
+  },
+  {
+    "key": "OK|market|Oklahoma City",
+    "name": "Oklahoma City",
+    "state": "OK",
+    "market": "Oklahoma City",
+    "zone_type": "market",
+    "lat": 35.4676,
+    "lng": -97.5164,
+    "radius_miles": 30,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "73102",
+      "73120"
+    ],
+    "parent": "OK|coverage|STATE"
+  },
+  {
+    "key": "OK|market|Tulsa",
+    "name": "Tulsa",
+    "state": "OK",
+    "market": "Tulsa",
+    "zone_type": "market",
+    "lat": 36.154,
+    "lng": -95.9928,
+    "radius_miles": 25,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "74103"
+    ],
+    "parent": "OK|coverage|STATE"
+  },
+  {
+    "key": "OK|market|Norman",
+    "name": "Norman",
+    "state": "OK",
+    "market": "Norman",
+    "zone_type": "market",
+    "lat": 35.2226,
+    "lng": -97.4395,
+    "radius_miles": 15,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "73069"
+    ],
+    "parent": "OK|coverage|STATE"
+  },
+  {
+    "key": "OR|market|Portland",
+    "name": "Portland",
+    "state": "OR",
+    "market": "Portland",
+    "zone_type": "market",
+    "lat": 45.5152,
+    "lng": -122.6784,
+    "radius_miles": 30,
+    "tz": "America/Los_Angeles",
+    "zip_codes": [
+      "97205",
+      "97209"
+    ],
+    "parent": "OR|coverage|STATE"
+  },
+  {
+    "key": "OR|market|Eugene",
+    "name": "Eugene",
+    "state": "OR",
+    "market": "Eugene",
+    "zone_type": "market",
+    "lat": 44.0521,
+    "lng": -123.0868,
+    "radius_miles": 18,
+    "tz": "America/Los_Angeles",
+    "zip_codes": [
+      "97401"
+    ],
+    "parent": "OR|coverage|STATE"
+  },
+  {
+    "key": "OR|market|Salem",
+    "name": "Salem",
+    "state": "OR",
+    "market": "Salem",
+    "zone_type": "market",
+    "lat": 44.9429,
+    "lng": -123.0351,
+    "radius_miles": 15,
+    "tz": "America/Los_Angeles",
+    "zip_codes": [
+      "97301"
+    ],
+    "parent": "OR|coverage|STATE"
+  },
+  {
+    "key": "OR|market|Bend",
+    "name": "Bend",
+    "state": "OR",
+    "market": "Bend",
+    "zone_type": "market",
+    "lat": 44.0582,
+    "lng": -121.3153,
+    "radius_miles": 15,
+    "tz": "America/Los_Angeles",
+    "zip_codes": [
+      "97701"
+    ],
+    "parent": "OR|coverage|STATE"
+  },
+  {
+    "key": "PA|market|Philadelphia",
+    "name": "Philadelphia",
+    "state": "PA",
+    "market": "Philadelphia",
+    "zone_type": "market",
+    "lat": 39.9526,
+    "lng": -75.1652,
+    "radius_miles": 35,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "19102",
+      "19103"
+    ],
+    "parent": "PA|coverage|STATE"
+  },
+  {
+    "key": "PA|market|Pittsburgh",
+    "name": "Pittsburgh",
+    "state": "PA",
+    "market": "Pittsburgh",
+    "zone_type": "market",
+    "lat": 40.4406,
+    "lng": -79.9959,
+    "radius_miles": 28,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "15222"
+    ],
+    "parent": "PA|coverage|STATE"
+  },
+  {
+    "key": "PA|market|Allentown",
+    "name": "Allentown",
+    "state": "PA",
+    "market": "Allentown",
+    "zone_type": "market",
+    "lat": 40.6023,
+    "lng": -75.4714,
+    "radius_miles": 18,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "18101"
+    ],
+    "parent": "PA|coverage|STATE"
+  },
+  {
+    "key": "PA|market|Harrisburg",
+    "name": "Harrisburg",
+    "state": "PA",
+    "market": "Harrisburg",
+    "zone_type": "market",
+    "lat": 40.2732,
+    "lng": -76.8867,
+    "radius_miles": 15,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "17101"
+    ],
+    "parent": "PA|coverage|STATE"
+  },
+  {
+    "key": "RI|market|Providence",
+    "name": "Providence",
+    "state": "RI",
+    "market": "Providence",
+    "zone_type": "market",
+    "lat": 41.824,
+    "lng": -71.4128,
+    "radius_miles": 25,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "02903",
+      "02906"
+    ],
+    "parent": "RI|coverage|STATE"
+  },
+  {
+    "key": "RI|market|Warwick",
+    "name": "Warwick",
+    "state": "RI",
+    "market": "Warwick",
+    "zone_type": "market",
+    "lat": 41.7001,
+    "lng": -71.4162,
+    "radius_miles": 15,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "02886"
+    ],
+    "parent": "RI|coverage|STATE"
+  },
+  {
+    "key": "SC|market|Charleston",
+    "name": "Charleston",
+    "state": "SC",
+    "market": "Charleston",
+    "zone_type": "market",
+    "lat": 32.7765,
+    "lng": -79.9311,
+    "radius_miles": 22,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "29401",
+      "29414"
+    ],
+    "parent": "SC|coverage|STATE"
+  },
+  {
+    "key": "SC|market|Columbia",
+    "name": "Columbia",
+    "state": "SC",
+    "market": "Columbia",
+    "zone_type": "market",
+    "lat": 34.0007,
+    "lng": -81.0348,
+    "radius_miles": 20,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "29201"
+    ],
+    "parent": "SC|coverage|STATE"
+  },
+  {
+    "key": "SC|market|Greenville",
+    "name": "Greenville",
+    "state": "SC",
+    "market": "Greenville",
+    "zone_type": "market",
+    "lat": 34.8526,
+    "lng": -82.394,
+    "radius_miles": 18,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "29601"
+    ],
+    "parent": "SC|coverage|STATE"
+  },
+  {
+    "key": "SD|market|Sioux Falls",
+    "name": "Sioux Falls",
+    "state": "SD",
+    "market": "Sioux Falls",
+    "zone_type": "market",
+    "lat": 43.5446,
+    "lng": -96.7311,
+    "radius_miles": 20,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "57104"
+    ],
+    "parent": "SD|coverage|STATE"
+  },
+  {
+    "key": "SD|market|Rapid City",
+    "name": "Rapid City",
+    "state": "SD",
+    "market": "Rapid City",
+    "zone_type": "market",
+    "lat": 44.0805,
+    "lng": -103.231,
+    "radius_miles": 18,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "57701"
+    ],
+    "parent": "SD|coverage|STATE"
+  },
+  {
+    "key": "SD|market|Aberdeen",
+    "name": "Aberdeen",
+    "state": "SD",
+    "market": "Aberdeen",
+    "zone_type": "market",
+    "lat": 45.4647,
+    "lng": -98.4865,
+    "radius_miles": 12,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "57401"
+    ],
+    "parent": "SD|coverage|STATE"
+  },
+  {
+    "key": "TN|market|Nashville",
+    "name": "Nashville",
+    "state": "TN",
+    "market": "Nashville",
+    "zone_type": "market",
+    "lat": 36.1627,
+    "lng": -86.7816,
+    "radius_miles": 30,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "37201",
+      "37209"
+    ],
+    "parent": "TN|coverage|STATE"
+  },
+  {
+    "key": "TN|market|Memphis",
+    "name": "Memphis",
+    "state": "TN",
+    "market": "Memphis",
+    "zone_type": "market",
+    "lat": 35.1495,
+    "lng": -90.049,
+    "radius_miles": 28,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "38103"
+    ],
+    "parent": "TN|coverage|STATE"
+  },
+  {
+    "key": "TN|market|Knoxville",
+    "name": "Knoxville",
+    "state": "TN",
+    "market": "Knoxville",
+    "zone_type": "market",
+    "lat": 35.9606,
+    "lng": -83.9207,
+    "radius_miles": 18,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "37902"
+    ],
+    "parent": "TN|coverage|STATE"
+  },
+  {
+    "key": "TN|market|Chattanooga",
+    "name": "Chattanooga",
+    "state": "TN",
+    "market": "Chattanooga",
+    "zone_type": "market",
+    "lat": 35.0456,
+    "lng": -85.3097,
+    "radius_miles": 15,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "37402"
+    ],
+    "parent": "TN|coverage|STATE"
+  },
+  {
+    "key": "TX|market|Houston",
+    "name": "Houston",
+    "state": "TX",
+    "market": "Houston",
+    "zone_type": "market",
+    "lat": 29.7604,
+    "lng": -95.3698,
+    "radius_miles": 40,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "77002",
+      "77024"
+    ],
+    "parent": "TX|coverage|STATE"
+  },
+  {
+    "key": "TX|market|Dallas–Fort Worth",
+    "name": "Dallas–Fort Worth",
+    "state": "TX",
+    "market": "Dallas–Fort Worth",
+    "zone_type": "market",
+    "lat": 32.7767,
+    "lng": -96.797,
+    "radius_miles": 42,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "75201",
+      "76102"
+    ],
+    "parent": "TX|coverage|STATE"
+  },
+  {
+    "key": "TX|market|San Antonio",
+    "name": "San Antonio",
+    "state": "TX",
+    "market": "San Antonio",
+    "zone_type": "market",
+    "lat": 29.4241,
+    "lng": -98.4936,
+    "radius_miles": 32,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "78205",
+      "78216"
+    ],
+    "parent": "TX|coverage|STATE"
+  },
+  {
+    "key": "TX|market|El Paso",
+    "name": "El Paso",
+    "state": "TX",
+    "market": "El Paso",
+    "zone_type": "market",
+    "lat": 31.7619,
+    "lng": -106.485,
+    "radius_miles": 25,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "79901"
+    ],
+    "parent": "TX|coverage|STATE"
+  },
+  {
+    "key": "TX|market|Corpus Christi",
+    "name": "Corpus Christi",
+    "state": "TX",
+    "market": "Corpus Christi",
+    "zone_type": "market",
+    "lat": 27.8006,
+    "lng": -97.3964,
+    "radius_miles": 20,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "78401"
+    ],
+    "parent": "TX|coverage|STATE"
+  },
+  {
+    "key": "UT|market|Salt Lake City",
+    "name": "Salt Lake City",
+    "state": "UT",
+    "market": "Salt Lake City",
+    "zone_type": "market",
+    "lat": 40.7608,
+    "lng": -111.891,
+    "radius_miles": 28,
+    "tz": "America/Denver",
+    "zip_codes": [
+      "84101",
+      "84111"
+    ],
+    "parent": "UT|coverage|STATE"
+  },
+  {
+    "key": "UT|market|Provo",
+    "name": "Provo",
+    "state": "UT",
+    "market": "Provo",
+    "zone_type": "market",
+    "lat": 40.2338,
+    "lng": -111.6585,
+    "radius_miles": 15,
+    "tz": "America/Denver",
+    "zip_codes": [
+      "84601"
+    ],
+    "parent": "UT|coverage|STATE"
+  },
+  {
+    "key": "UT|market|St. George",
+    "name": "St. George",
+    "state": "UT",
+    "market": "St. George",
+    "zone_type": "market",
+    "lat": 37.0965,
+    "lng": -113.5684,
+    "radius_miles": 15,
+    "tz": "America/Denver",
+    "zip_codes": [
+      "84770"
+    ],
+    "parent": "UT|coverage|STATE"
+  },
+  {
+    "key": "VT|market|Burlington",
+    "name": "Burlington",
+    "state": "VT",
+    "market": "Burlington",
+    "zone_type": "market",
+    "lat": 44.4759,
+    "lng": -73.2121,
+    "radius_miles": 18,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "05401"
+    ],
+    "parent": "VT|coverage|STATE"
+  },
+  {
+    "key": "VT|market|Rutland",
+    "name": "Rutland",
+    "state": "VT",
+    "market": "Rutland",
+    "zone_type": "market",
+    "lat": 43.6106,
+    "lng": -72.9726,
+    "radius_miles": 12,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "05701"
+    ],
+    "parent": "VT|coverage|STATE"
+  },
+  {
+    "key": "VA|market|Virginia Beach–Norfolk",
+    "name": "Virginia Beach–Norfolk",
+    "state": "VA",
+    "market": "Virginia Beach–Norfolk",
+    "zone_type": "market",
+    "lat": 36.8529,
+    "lng": -75.978,
+    "radius_miles": 30,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "23451",
+      "23510"
+    ],
+    "parent": "VA|coverage|STATE"
+  },
+  {
+    "key": "VA|market|Richmond",
+    "name": "Richmond",
+    "state": "VA",
+    "market": "Richmond",
+    "zone_type": "market",
+    "lat": 37.5407,
+    "lng": -77.436,
+    "radius_miles": 22,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "23219"
+    ],
+    "parent": "VA|coverage|STATE"
+  },
+  {
+    "key": "VA|market|Roanoke",
+    "name": "Roanoke",
+    "state": "VA",
+    "market": "Roanoke",
+    "zone_type": "market",
+    "lat": 37.2709,
+    "lng": -79.9414,
+    "radius_miles": 15,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "24011"
+    ],
+    "parent": "VA|coverage|STATE"
+  },
+  {
+    "key": "VA|market|Charlottesville",
+    "name": "Charlottesville",
+    "state": "VA",
+    "market": "Charlottesville",
+    "zone_type": "market",
+    "lat": 38.0293,
+    "lng": -78.4767,
+    "radius_miles": 12,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "22902"
+    ],
+    "parent": "VA|coverage|STATE"
+  },
+  {
+    "key": "WA|market|Seattle",
+    "name": "Seattle",
+    "state": "WA",
+    "market": "Seattle",
+    "zone_type": "market",
+    "lat": 47.6062,
+    "lng": -122.3321,
+    "radius_miles": 35,
+    "tz": "America/Los_Angeles",
+    "zip_codes": [
+      "98101",
+      "98109"
+    ],
+    "parent": "WA|coverage|STATE"
+  },
+  {
+    "key": "WA|market|Spokane",
+    "name": "Spokane",
+    "state": "WA",
+    "market": "Spokane",
+    "zone_type": "market",
+    "lat": 47.6588,
+    "lng": -117.426,
+    "radius_miles": 22,
+    "tz": "America/Los_Angeles",
+    "zip_codes": [
+      "99201"
+    ],
+    "parent": "WA|coverage|STATE"
+  },
+  {
+    "key": "WA|market|Tacoma",
+    "name": "Tacoma",
+    "state": "WA",
+    "market": "Tacoma",
+    "zone_type": "market",
+    "lat": 47.2529,
+    "lng": -122.4443,
+    "radius_miles": 20,
+    "tz": "America/Los_Angeles",
+    "zip_codes": [
+      "98402"
+    ],
+    "parent": "WA|coverage|STATE"
+  },
+  {
+    "key": "WA|market|Bellevue",
+    "name": "Bellevue",
+    "state": "WA",
+    "market": "Bellevue",
+    "zone_type": "market",
+    "lat": 47.6101,
+    "lng": -122.2015,
+    "radius_miles": 15,
+    "tz": "America/Los_Angeles",
+    "zip_codes": [
+      "98004"
+    ],
+    "parent": "WA|coverage|STATE"
+  },
+  {
+    "key": "WV|market|Charleston",
+    "name": "Charleston",
+    "state": "WV",
+    "market": "Charleston",
+    "zone_type": "market",
+    "lat": 38.3498,
+    "lng": -81.6326,
+    "radius_miles": 18,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "25301"
+    ],
+    "parent": "WV|coverage|STATE"
+  },
+  {
+    "key": "WV|market|Huntington",
+    "name": "Huntington",
+    "state": "WV",
+    "market": "Huntington",
+    "zone_type": "market",
+    "lat": 38.4192,
+    "lng": -82.4452,
+    "radius_miles": 15,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "25701"
+    ],
+    "parent": "WV|coverage|STATE"
+  },
+  {
+    "key": "WV|market|Morgantown",
+    "name": "Morgantown",
+    "state": "WV",
+    "market": "Morgantown",
+    "zone_type": "market",
+    "lat": 39.6295,
+    "lng": -79.9559,
+    "radius_miles": 12,
+    "tz": "America/New_York",
+    "zip_codes": [
+      "26505"
+    ],
+    "parent": "WV|coverage|STATE"
+  },
+  {
+    "key": "WI|market|Milwaukee",
+    "name": "Milwaukee",
+    "state": "WI",
+    "market": "Milwaukee",
+    "zone_type": "market",
+    "lat": 43.0389,
+    "lng": -87.9065,
+    "radius_miles": 28,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "53202",
+      "53211"
+    ],
+    "parent": "WI|coverage|STATE"
+  },
+  {
+    "key": "WI|market|Madison",
+    "name": "Madison",
+    "state": "WI",
+    "market": "Madison",
+    "zone_type": "market",
+    "lat": 43.0731,
+    "lng": -89.4012,
+    "radius_miles": 20,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "53703"
+    ],
+    "parent": "WI|coverage|STATE"
+  },
+  {
+    "key": "WI|market|Green Bay",
+    "name": "Green Bay",
+    "state": "WI",
+    "market": "Green Bay",
+    "zone_type": "market",
+    "lat": 44.5133,
+    "lng": -88.0133,
+    "radius_miles": 15,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "54301"
+    ],
+    "parent": "WI|coverage|STATE"
+  },
+  {
+    "key": "WI|market|Appleton",
+    "name": "Appleton",
+    "state": "WI",
+    "market": "Appleton",
+    "zone_type": "market",
+    "lat": 44.2619,
+    "lng": -88.4154,
+    "radius_miles": 12,
+    "tz": "America/Chicago",
+    "zip_codes": [
+      "54911"
+    ],
+    "parent": "WI|coverage|STATE"
+  },
+  {
+    "key": "WY|market|Cheyenne",
+    "name": "Cheyenne",
+    "state": "WY",
+    "market": "Cheyenne",
+    "zone_type": "market",
+    "lat": 41.14,
+    "lng": -104.8202,
+    "radius_miles": 15,
+    "tz": "America/Denver",
+    "zip_codes": [
+      "82001"
+    ],
+    "parent": "WY|coverage|STATE"
+  },
+  {
+    "key": "WY|market|Casper",
+    "name": "Casper",
+    "state": "WY",
+    "market": "Casper",
+    "zone_type": "market",
+    "lat": 42.8501,
+    "lng": -106.3252,
+    "radius_miles": 15,
+    "tz": "America/Denver",
+    "zip_codes": [
+      "82601"
+    ],
+    "parent": "WY|coverage|STATE"
+  },
+  {
+    "key": "WY|market|Jackson",
+    "name": "Jackson",
+    "state": "WY",
+    "market": "Jackson",
+    "zone_type": "market",
+    "lat": 43.4799,
+    "lng": -110.7624,
+    "radius_miles": 12,
+    "tz": "America/Denver",
+    "zip_codes": [
+      "83001"
+    ],
+    "parent": "WY|coverage|STATE"
   }
 ]

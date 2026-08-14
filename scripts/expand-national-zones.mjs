@@ -1,0 +1,61 @@
+import fs from 'node:fs';
+const path=new URL('../src/data/national-zones.json',import.meta.url); const data=JSON.parse(fs.readFileSync(path));
+const tz={AL:'America/Chicago',AK:'America/Anchorage',AZ:'America/Phoenix',AR:'America/Chicago',CA:'America/Los_Angeles',CO:'America/Denver',CT:'America/New_York',DE:'America/New_York',FL:'America/New_York',GA:'America/New_York',HI:'Pacific/Honolulu',ID:'America/Denver',IL:'America/Chicago',IN:'America/Indiana/Indianapolis',IA:'America/Chicago',KS:'America/Chicago',KY:'America/New_York',LA:'America/Chicago',ME:'America/New_York',MD:'America/New_York',MA:'America/New_York',MI:'America/New_York',MN:'America/Chicago',MS:'America/Chicago',MO:'America/Chicago',MT:'America/Denver',NE:'America/Chicago',NV:'America/Los_Angeles',NH:'America/New_York',NJ:'America/New_York',NM:'America/Denver',NY:'America/New_York',NC:'America/New_York',ND:'America/Chicago',OH:'America/New_York',OK:'America/Chicago',OR:'America/Los_Angeles',PA:'America/New_York',RI:'America/New_York',SC:'America/New_York',SD:'America/Chicago',TN:'America/Chicago',TX:'America/Chicago',UT:'America/Denver',VT:'America/New_York',VA:'America/New_York',WA:'America/Los_Angeles',WV:'America/New_York',WI:'America/Chicago',WY:'America/Denver',DC:'America/New_York'};
+// name, latitude, longitude, population-aware radius, representative ZIPs (curated major ZIPs)
+const M={
+AL:[['Birmingham',33.5186,-86.8104,25,['35203','35209']],['Mobile',30.6954,-88.0399,18,['36602','36608']],['Huntsville',34.7304,-86.5861,20,['35801','35806']]],
+AK:[['Anchorage',61.2181,-149.9003,35,['99501','99503']],['Fairbanks',64.8378,-147.7164,30,['99701']]],
+AZ:[['Phoenix',33.4484,-112.074,35,['85003','85016','85032']],['Tucson',32.2226,-110.9747,25,['85701','85705']],['Mesa',33.4152,-111.8315,18,['85201','85204']]],
+AR:[['Little Rock',34.7465,-92.2896,22,['72201','72205']],['Fayetteville',36.0626,-94.1574,18,['72701']],['Fort Smith',35.3859,-94.3985,15,['72901']]],
+CA:[['Los Angeles',34.0522,-118.2437,40,['90012','90024','90045']],['San Francisco',37.7749,-122.4194,25,['94102','94107']],['San Diego',32.7157,-117.1611,30,['92101','92109']],['San Jose',37.3382,-121.8863,22,['95112','95126']],['Sacramento',38.5816,-121.4944,25,['95814','95825']],['Fresno',36.7378,-119.7871,20,['93721','93720']]],
+CO:[['Denver',39.7392,-104.9903,30,['80202','80220']],['Colorado Springs',38.8339,-104.8214,22,['80903']],['Fort Collins',40.5853,-105.0844,18,['80521']]],
+CT:[['Bridgeport',41.1792,-73.1894,15,['06604','06606']],['New Haven',41.3083,-72.9279,15,['06510','06511']],['Hartford',41.7658,-72.6734,18,['06103','06106']]],
+DE:[['Wilmington',39.7391,-75.5398,20,['19801','19802']],['Dover',39.1573,-75.5197,15,['19901']]],
+FL:[['Miami–Fort Lauderdale',25.7617,-80.1918,38,['33101','33130','33301']],['Tampa–St. Petersburg',27.9506,-82.4572,32,['33602','33701']],['Orlando',28.5383,-81.3792,30,['32801','32819']],['Jacksonville',30.3322,-81.6557,28,['32202','32207']]],
+GA:[['Atlanta',33.749,-84.388,35,['30303','30318']],['Savannah',32.0809,-81.0912,18,['31401']],['Augusta',33.4735,-82.0105,15,['30901']]],
+HI:[['Honolulu',21.3069,-157.8583,25,['96813','96817']],['Hilo',19.707,-155.081,15,['96720']]],
+ID:[['Boise',43.615,-116.2023,25,['83702','83704']],['Idaho Falls',43.4917,-112.0339,15,['83401']],['Coeur d’Alene',47.6777,-116.7805,15,['83814']]],
+IL:[['Chicago',41.8781,-87.6298,40,['60601','60614']],['Rockford',42.2711,-89.094,18,['61101']],['Peoria',40.6936,-89.589,15,['61602']]],
+IN:[['Indianapolis',39.7684,-86.1581,30,['46204','46220']],['Fort Wayne',41.0793,-85.1394,18,['46802']],['Evansville',37.9716,-87.5711,15,['47708']]],
+IA:[['Des Moines',41.5868,-93.625,22,['50309','50312']],['Cedar Rapids',41.9779,-91.6656,15,['52401']],['Davenport',41.5236,-90.5776,15,['52801']]],
+KS:[['Wichita',37.6872,-97.3301,22,['67202','67212']],['Kansas City',39.0997,-94.5786,20,['66101']],['Topeka',39.0473,-95.6772,12,['66603']]],
+KY:[['Louisville',38.2527,-85.7585,25,['40202','40207']],['Lexington',37.9887,-84.4777,18,['40507']],['Bowling Green',36.9685,-86.4808,12,['42101']]],
+LA:[['New Orleans',29.9511,-90.0715,28,['70112','70118']],['Baton Rouge',30.4515,-91.1871,20,['70802']],['Shreveport',32.5252,-93.7502,15,['71101']]],
+ME:[['Portland',43.6591,-70.2568,20,['04101','04103']],['Bangor',44.8016,-68.7712,15,['04401']]],
+MD:[['Baltimore',39.2904,-76.6122,30,['21201','21218']],['Frederick',39.4143,-77.4105,15,['21701']],['Salisbury',38.3607,-75.5994,12,['21801']]],
+MA:[['Boston',42.3601,-71.0589,35,['02108','02116']],['Worcester',42.2626,-71.8023,18,['01608']],['Springfield',42.1015,-72.5898,15,['01103']]],
+MI:[['Detroit',42.3314,-83.0458,35,['48201','48226']],['Grand Rapids',42.9634,-85.6681,20,['49503']],['Lansing',42.7325,-84.5555,15,['48906']],['Ann Arbor',42.2808,-83.743,12,['48104']]],
+MN:[['Minneapolis–Saint Paul',44.9778,-93.265,35,['55401','55102']],['Duluth',46.7867,-92.1005,15,['55802']],['Rochester',44.0121,-92.4802,15,['55901']]],
+MS:[['Jackson',32.2988,-90.1848,22,['39201','39211']],['Gulfport',30.3674,-89.0928,15,['39501']],['Hattiesburg',31.3271,-89.2903,12,['39401']]],
+MO:[['Kansas City',39.0997,-94.5786,28,['64106','64111']],['St. Louis',38.627,-90.1994,30,['63101','63116']],['Springfield',37.209,-93.2923,15,['65802']]],
+MT:[['Billings',45.7833,-108.5007,22,['59101']],['Missoula',46.8721,-113.994,18,['59801']],['Bozeman',45.677,-111.0429,15,['59715']],['Great Falls',47.5,-111.3,15,['59401']]],
+NE:[['Omaha',41.2565,-95.9345,25,['68102','68114']],['Lincoln',40.8136,-96.7026,15,['68508']],['Grand Island',40.9264,-98.342,12,['68801']]],
+NV:[['Las Vegas',36.1699,-115.1398,35,['89101','89109']],['Reno',39.5296,-119.8138,22,['89501']],['Henderson',36.0395,-114.9817,18,['89002']]],
+NH:[['Manchester',42.9956,-71.4548,20,['03101']],['Nashua',42.7654,-71.4676,15,['03060']]],
+NJ:[['Newark',40.7357,-74.1724,28,['07102','07103']],['Jersey City',40.7178,-74.0431,22,['07302']],['Trenton',40.2171,-74.7429,15,['08608']],['Atlantic City',39.3643,-74.4229,12,['08401']]],
+NM:[['Albuquerque',35.0844,-106.6504,28,['87102','87110']],['Santa Fe',35.687,-105.9378,15,['87501']],['Las Cruces',32.3199,-106.7637,15,['88001']]],
+NY:[['New York City',40.7128,-74.006,45,['10001','10019']],['Buffalo',42.8864,-78.8784,22,['14202']],['Albany',42.6526,-73.7562,15,['12207']],['Rochester',43.1566,-77.6088,18,['14604']],['Syracuse',43.0481,-76.1474,15,['13202']]],
+NC:[['Charlotte',35.2271,-80.8431,30,['28202','28211']],['Raleigh–Durham',35.7796,-78.6382,28,['27601','27701']],['Greensboro',36.0726,-79.792,18,['27401']],['Wilmington',34.2257,-77.9447,15,['28401']]],
+ND:[['Fargo',46.8772,-96.7898,18,['58102']],['Bismarck',46.8083,-100.7837,15,['58501']],['Grand Forks',47.9253,-97.0329,12,['58201']]],
+OH:[['Columbus',39.9612,-82.9988,30,['43215','43220']],['Cleveland',41.4993,-81.6944,28,['44114']],['Cincinnati',39.1031,-84.512,25,['45202']],['Toledo',41.6528,-83.5379,15,['43604']],['Akron',41.0814,-81.519,15,['44308']]],
+OK:[['Oklahoma City',35.4676,-97.5164,30,['73102','73120']],['Tulsa',36.154,-95.9928,25,['74103']],['Norman',35.2226,-97.4395,15,['73069']]],
+OR:[['Portland',45.5152,-122.6784,30,['97205','97209']],['Eugene',44.0521,-123.0868,18,['97401']],['Salem',44.9429,-123.0351,15,['97301']],['Bend',44.0582,-121.3153,15,['97701']]],
+PA:[['Philadelphia',39.9526,-75.1652,35,['19102','19103']],['Pittsburgh',40.4406,-79.9959,28,['15222']],['Allentown',40.6023,-75.4714,18,['18101']],['Harrisburg',40.2732,-76.8867,15,['17101']]],
+RI:[['Providence',41.824,-71.4128,25,['02903','02906']],['Warwick',41.7001,-71.4162,15,['02886']]],
+SC:[['Charleston',32.7765,-79.9311,22,['29401','29414']],['Columbia',34.0007,-81.0348,20,['29201']],['Greenville',34.8526,-82.394,18,['29601']]],
+SD:[['Sioux Falls',43.5446,-96.7311,20,['57104']],['Rapid City',44.0805,-103.231,18,['57701']],['Aberdeen',45.4647,-98.4865,12,['57401']]],
+TN:[['Nashville',36.1627,-86.7816,30,['37201','37209']],['Memphis',35.1495,-90.049,28,['38103']],['Knoxville',35.9606,-83.9207,18,['37902']],['Chattanooga',35.0456,-85.3097,15,['37402']]],
+TX:[['Houston',29.7604,-95.3698,40,['77002','77024']],['Dallas–Fort Worth',32.7767,-96.797,42,['75201','76102']],['San Antonio',29.4241,-98.4936,32,['78205','78216']],['El Paso',31.7619,-106.485,25,['79901']],['Corpus Christi',27.8006,-97.3964,20,['78401']]],
+UT:[['Salt Lake City',40.7608,-111.891,28,['84101','84111']],['Provo',40.2338,-111.6585,15,['84601']],['St. George',37.0965,-113.5684,15,['84770']]],
+VT:[['Burlington',44.4759,-73.2121,18,['05401']],['Rutland',43.6106,-72.9726,12,['05701']]],
+VA:[['Virginia Beach–Norfolk',36.8529,-75.978,30,['23451','23510']],['Richmond',37.5407,-77.436,22,['23219']],['Roanoke',37.2709,-79.9414,15,['24011']],['Charlottesville',38.0293,-78.4767,12,['22902']]],
+WA:[['Seattle',47.6062,-122.3321,35,['98101','98109']],['Spokane',47.6588,-117.426,22,['99201']],['Tacoma',47.2529,-122.4443,20,['98402']],['Bellevue',47.6101,-122.2015,15,['98004']]],
+WV:[['Charleston',38.3498,-81.6326,18,['25301']],['Huntington',38.4192,-82.4452,15,['25701']],['Morgantown',39.6295,-79.9559,12,['26505']]],
+WI:[['Milwaukee',43.0389,-87.9065,28,['53202','53211']],['Madison',43.0731,-89.4012,20,['53703']],['Green Bay',44.5133,-88.0133,15,['54301']],['Appleton',44.2619,-88.4154,12,['54911']]],
+WY:[['Cheyenne',41.14,-104.8202,15,['82001']],['Casper',42.8501,-106.3252,15,['82601']],['Jackson',43.4799,-110.7624,12,['83001']]],
+DC:[]
+};
+// Correct every record's timezone from the state map, then add missing major markets.
+for(const z of data) if(z.state!=='US') z.tz=tz[z.state];
+for(const [state, rows] of Object.entries(M)) for(const [name,lat,lng,radius,zips] of rows){ const key=`${state}|market|${name}`; if(!data.some(x=>x.key===key)) data.push({key,name,state,market:name,zone_type:'market',lat,lng,radius_miles:radius,tz:tz[state],zip_codes:zips,parent:`${state}|coverage|STATE`}); }
+fs.writeFileSync(path,JSON.stringify(data,null,2)+'\n'); console.log(`wrote ${data.length} rows`);
