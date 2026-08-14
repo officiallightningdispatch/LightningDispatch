@@ -34,6 +34,8 @@ export interface Contractor {
 
 export interface Job {
   id: string;
+  /** Towbook job number for owner-facing notifications. */
+  towbookJobId?: string;
   customerName: string;
   phone: string;
   location: Location;

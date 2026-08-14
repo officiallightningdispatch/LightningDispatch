@@ -265,11 +265,12 @@ export function OwnerNotificationLayer() {
         const items: BannerItem[] = [];
         for (const j of newJobs) {
           const raw = (data?.jobs ?? []).find((candidate) => candidate.id === j.id);
+          const eta = (raw as { etaMinutes?: number | null } | undefined)?.etaMinutes;
           items.push({
             id: `job:${j.id}`,
             kind: "job",
-            title: `New job${raw?.id ? ` #${raw.id}` : ""}`,
-            body: `${j.customerName ?? "Customer"} · ${SERVICE_LABELS[j.serviceType as keyof typeof SERVICE_LABELS] ?? "Service"} · ${j.area ?? "—"}${raw?.assignedDriverName ? ` · ${raw.assignedDriverName}` : ""}`,
+            title: `New job${raw?.towbookJobId ? ` #${raw.towbookJobId}` : raw?.id ? ` #${raw.id}` : ""}`,
+            body: `${j.customerName ?? "Customer"} · ${SERVICE_LABELS[j.serviceType as keyof typeof SERVICE_LABELS] ?? "Service"} · ${j.area ?? "—"}${raw?.assignedDriverName ? ` · ${raw.assignedDriverName}` : ""}${eta != null ? ` · ETA ${etaMinutesLabel({ etaMinutes: eta })}` : ""}`,
             to: "/owner/queue",
           });
         }
@@ -278,7 +279,7 @@ export function OwnerNotificationLayer() {
           items.push({
             id: `completed:${j.id}`,
             kind: "completed",
-            title: `Job completed${raw?.id ? ` #${raw.id}` : ""}`,
+            title: `Job completed${raw?.towbookJobId ? ` #${raw.towbookJobId}` : raw?.id ? ` #${raw.id}` : ""}`,
             body: `${j.customerName ?? "Customer"} · ${SERVICE_LABELS[j.serviceType as keyof typeof SERVICE_LABELS] ?? "Service"} · ${j.area ?? "—"}${raw?.assignedDriverName ? ` · ${raw.assignedDriverName}` : ""} · status: completed`,
             to: "/owner/queue",
           });
