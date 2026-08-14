@@ -2686,6 +2686,13 @@ async function runAutoDispatchInternal(
       const zoneRows = await sql()`SELECT id,lat,lng,radius_miles,zip_codes FROM dispatch_zones WHERE org_id=${orgId} AND active=TRUE AND state=${zoneState.state.toUpperCase()}` as Array<Record<string, unknown>>;
       const jobZip = rawStartingForZone ? zipOf(rawStartingForZone) : null;
       const lat = Number(offer.startLocationLatitude), lng = Number(offer.startLocationLongitude);
+      // Keep the nearest resolved-state zone distance for the out-of-zone
+      // ledger too. Matching is evaluated separately so ZIP membership and
+      // radius eligibility remain unchanged.
+      const nearestZoneDistance = zoneRows.reduce((nearest, z) => {
+        const distance = haversineMiles(lat, lng, Number(z.lat), Number(z.lng));
+        return nearest == null || distance < nearest ? distance : nearest;
+      }, null as number | null);
       const usableZones = zoneRows.map((z) => {
         const zLat = Number(z.lat), zLng = Number(z.lng), radius = Number(z.radius_miles);
         const zips = Array.isArray(z.zip_codes) ? z.zip_codes.map(String) : [];
@@ -2699,7 +2706,7 @@ async function runAutoDispatchInternal(
       const zoneDistance = usableZones[0]?.distance ?? null;
       if (!usableZones.length) {
         const reason = `pickup does not resolve to an active ${zoneState.state.toUpperCase()} dispatch zone (no accept)`;
-        await record({ decision: "escalated_out_of_zone", zoneDistanceMiles: null, reason, rawResponse: { offer, state: zoneState, zonesChecked: zoneRows.length } });
+        await record({ decision: "escalated_out_of_zone", zoneDistanceMiles: nearestZoneDistance, reason, rawResponse: { offer, state: zoneState, zonesChecked: zoneRows.length } });
         result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_out_of_zone", escalated: true, reason });
         continue;
       }
