@@ -243,7 +243,7 @@ let firstPaymentId = null;
   const rows = await q`SELECT org_id, job_id, driver_id, driver_towbook_id, amount_cents, currency, square_payment_id, status, attempt, idempotency_key FROM completion_tips WHERE org_id=${ORG} AND job_id=${c.job} AND status='paid'`;
   check("attribution row recorded (org/job/driver/amount/square payment id)",
     rows.length === 1 && rows[0].driver_id === DRIVER && rows[0].driver_towbook_id === "35" && Number(rows[0].amount_cents) === 500
-    && rows[0].currency === "USD" && String(rows[0].square_payment_id).startsWith("pymt_") && Number(rows[0].attempt) === 1 && rows[0].idempotency_key === `tip-${c.job}-35-1`,
+    && rows[0].currency === "USD" && String(rows[0].square_payment_id).startsWith("pymt_") && Number(rows[0].attempt) === 1 && rows[0].idempotency_key === squareIdempotencyKey("tip-", c.job, "35", 1),
     JSON.stringify(rows));
   const jc = await q`SELECT tip FROM job_completions WHERE org_id=${ORG} AND job_id=${c.job}`;
   check("job_completions.tip reflects paid + payment id", jc[0].tip?.status === "paid" && jc[0].tip?.amount_cents === 500 && typeof jc[0].tip?.square_payment_id === "string", JSON.stringify(jc[0].tip));
@@ -261,12 +261,12 @@ let firstPaymentId = null;
   const before = squareCalls.length;
   const replay = await chargeTipCore(user, { jobId: c.call, token: "cnonce-card-0001", amountCents: 500, attempt: 1 }, { fetchImpl });
   check("replay of attempt 1 → Square returns the SAME payment (no second charge)", replay.ok === true && replay.paymentId === firstPaymentId, JSON.stringify(replay));
-  check("replayed attempt reuses the same idempotency key", squareCalls[before].body.idempotency_key === `tip-${c.job}-35-1`, JSON.stringify(squareCalls[before].body.idempotency_key));
+  check("replayed attempt reuses the same idempotency key", squareCalls[before].body.idempotency_key === squareIdempotencyKey("tip-", c.job, "35", 1), JSON.stringify(squareCalls[before].body.idempotency_key));
   const rows = await q`SELECT COUNT(*)::int AS n FROM completion_tips WHERE org_id=${ORG} AND job_id=${c.job} AND status='paid'`;
   check("replayed attempt → still exactly ONE paid attribution row", Number(rows[0].n) === 1, JSON.stringify(rows));
   // A NEW attempt uses a NEW idempotency key (the retry path after a failure).
   const t2 = await chargeTipCore(user, { jobId: c.call, token: "cnonce-card-0002", amountCents: 750, attempt: 2 }, { fetchImpl });
-  check("attempt 2 → new idempotency key (tip-<job>-<driver>-2)", t2.ok === true && squareCalls.at(-1).body.idempotency_key === `tip-${c.job}-35-2`, JSON.stringify(squareCalls.at(-1).body.idempotency_key));
+  check("attempt 2 → new idempotency key (sha1 of job|driver|2)", t2.ok === true && squareCalls.at(-1).body.idempotency_key === squareIdempotencyKey("tip-", c.job, "35", 2), JSON.stringify(squareCalls.at(-1).body.idempotency_key));
   const rows2 = await q`SELECT COUNT(*)::int AS n FROM completion_tips WHERE org_id=${ORG} AND job_id=${c.job} AND status='paid'`;
   check("attempt 2 records its own attribution row (paid)", Number(rows2[0].n) === 2, JSON.stringify(rows2));
 }
@@ -345,7 +345,7 @@ const org2Fetch = makeFetch({ callId: CONF[ORG2].call });
   check("Square 400 surfaced (CARD_DECLINED)", String(bad.message).includes("CARD_DECLINED"), bad.message);
   const frow = await q`SELECT status, error, attempt, idempotency_key FROM completion_tips WHERE org_id=${ORG3} AND job_id=${c.job} AND status='failed'`;
   check("failed attempt recorded in completion_tips (attempt 1 + key + error)",
-    frow.length === 1 && Number(frow[0].attempt) === 1 && frow[0].idempotency_key === `tip-${c.job}-37-1` && String(frow[0].error).includes("CARD_DECLINED"), JSON.stringify(frow));
+    frow.length === 1 && Number(frow[0].attempt) === 1 && frow[0].idempotency_key === squareIdempotencyKey("tip-", c.job, "37", 1) && String(frow[0].error).includes("CARD_DECLINED"), JSON.stringify(frow));
   const jc = await q`SELECT tip FROM job_completions WHERE org_id=${ORG3} AND job_id=${c.job}`;
   check("no tip recorded after failure", jc[0].tip == null, JSON.stringify(jc));
 
@@ -353,7 +353,7 @@ const org2Fetch = makeFetch({ callId: CONF[ORG2].call });
   const okFetch = makeFetch({ callId: c.call, payments: "ok" });
   const { fetchImpl: f2, squareCalls: sq2 } = okFetch;
   const retry = await chargeTipCore(user, { jobId: c.call, token: "cnonce-card-0010", amountCents: 500, attempt: 2 }, { fetchImpl: f2 });
-  check("retry (attempt 2) succeeds with a fresh key", retry.ok === true && sq2[0].body.idempotency_key === `tip-${c.job}-37-2`, JSON.stringify(retry));
+  check("retry (attempt 2) succeeds with a fresh key", retry.ok === true && sq2[0].body.idempotency_key === squareIdempotencyKey("tip-", c.job, "37", 2), JSON.stringify(retry));
   const paid = await q`SELECT COUNT(*)::int AS n FROM completion_tips WHERE org_id=${ORG3} AND job_id=${c.job} AND status='paid'`;
   check("retry records one paid row", Number(paid[0].n) === 1, JSON.stringify(paid));
 
