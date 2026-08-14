@@ -393,12 +393,17 @@ export async function loadRegionalPreferenceMatches(orgId: string, candidates: u
   return out;
 }
 
-export async function loadZoneMatches(orgId: string, candidates: unknown[], lat: number, lng: number, now = new Date()): Promise<Map<string, boolean>> {
+export async function loadZoneMatches(orgId: string, candidates: unknown[], lat: number, lng: number, state?: string | Date, now = new Date()): Promise<Map<string, boolean>> {
+  if (state instanceof Date) { now = state; state = undefined; }
   const out = new Map<string, boolean>(); for (const d of candidates) out.set(String((d as Record<string, unknown>).driverId ?? ''), false);
   try {
-    const zones = await sql()`SELECT id,lat,lng,radius_miles,tz FROM dispatch_zones WHERE org_id=${orgId} AND active=TRUE` as Array<Record<string,unknown>>;
+    const zones = await sql()`SELECT id,state,zone_type,lat,lng,radius_miles,tz FROM dispatch_zones WHERE org_id=${orgId} AND active=TRUE` as Array<Record<string,unknown>>;
     const miles=(a:number,b:number,c:number,d:number)=>{const r=Math.PI/180,p=Math.sin((c-a)*r/2)**2+Math.cos(a*r)*Math.cos(c*r)*Math.sin((d-b)*r/2)**2;return 3958.7613*2*Math.atan2(Math.sqrt(p),Math.sqrt(1-p));};
-    const job=zones.find(z=>miles(lat,lng,Number(z.lat),Number(z.lng))<=Number(z.radius_miles)); if(!job)return out;
+    const scoped = state ? zones.filter(z=>String(z.state??"").toUpperCase()===state.toUpperCase()) : zones.filter(z=>String(z.zone_type??"").toLowerCase()!=="coverage");
+    const containing = scoped.map(z=>({...z,distance:miles(lat,lng,Number(z.lat),Number(z.lng))})).filter(z=>z.distance<=Number(z.radius_miles));
+    const nonCoverage=containing.filter(z=>String(z.zone_type??"").toLowerCase()!=="coverage").sort((a,b)=>a.distance-b.distance);
+    const coverage=containing.filter(z=>String(z.zone_type??"").toLowerCase()==="coverage").sort((a,b)=>a.distance-b.distance);
+    const job=nonCoverage[0]??coverage[0]; if(!job)return out;
     const rows=await sql()`SELECT u.towbook_driver_id,l.zone_id,to_char(l.day,'YYYY-MM-DD') AS day,z.tz FROM driver_availability_log l JOIN users u ON u.id=l.user_id JOIN dispatch_zones z ON z.id=l.zone_id AND z.org_id=l.org_id WHERE l.org_id=${orgId} AND l.session_started_at IS NOT NULL AND l.heartbeat_at > NOW() - INTERVAL '90 seconds' AND l.zone_id IS NOT NULL` as Array<Record<string,unknown>>;
     const day=(tz:string)=>new Intl.DateTimeFormat('en-CA',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit'}).format(now), selected=new Map<string,string>();
     for(const r of rows)if(String(r.day)===day(String(r.tz)))selected.set(String(r.towbook_driver_id),String(r.zone_id));
@@ -2821,7 +2826,7 @@ async function runAutoDispatchInternal(
       const guardOutcome: StateGuardOutcome = { active: false, jobState: null, blocked: false, blockedReason: null, checked: 0, inState: 0, excluded: [] };
       const serviceType = typeof (rawOffer as Record<string, unknown>).serviceType === "string" ? String((rawOffer as Record<string, unknown>).serviceType) : null;
       const serviceQualification: ServiceQualificationOutcome = { serviceType, assessed: Boolean(serviceType?.trim()), excluded: [] };
-      const zoneMatches = await loadZoneMatches(orgId, candidates, offer.startLocationLatitude, offer.startLocationLongitude);
+      const zoneMatches = await loadZoneMatches(orgId, candidates, offer.startLocationLatitude, offer.startLocationLongitude, zoneState.state);
       const regionalPreference = await loadRegionalPreferenceMatches(orgId, candidates, offer.startLocationLatitude, offer.startLocationLongitude, driverQueues);
       const areaCtx: AreaContext = humanReassigned
         ? { gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches, regionalPreference }
