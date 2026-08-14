@@ -23,24 +23,24 @@ import { createHash } from "node:crypto";
 /** ZIP-3 prefix ranges → US state (the first three digits of a ZIP code
  *  uniquely identify a state; compact range table). Real address evidence:
  *  "78626" → TX, "06880" → CT, "78754" → TX. */
-const ZIP3_RANGES: Array<[number, number, string]> = [
-  [100, 149, "NY"], [150, 196, "PA"], [197, 199, "DE"], [200, 205, "DC"],
-  [206, 219, "MD"], [220, 246, "VA"], [247, 268, "WV"], [270, 289, "NC"],
-  [290, 299, "SC"], [300, 319, "GA"], [320, 327, "FL"], [328, 329, "FL"],
-  [330, 349, "FL"], [350, 352, "AL"], [354, 369, "AL"], [370, 385, "TN"],
-  [386, 397, "MS"], [398, 399, "GA"], [400, 418, "KY"], [420, 427, "KY"],
-  [430, 459, "OH"], [460, 479, "IN"], [480, 499, "MI"], [500, 528, "IA"],
-  [530, 532, "WI"], [534, 535, "WI"], [537, 539, "WI"], [540, 549, "WI"],
-  [550, 567, "MN"], [570, 577, "SD"], [580, 588, "ND"], [590, 599, "MT"],
-  [60, 69, "CT"], [600, 629, "IL"], [630, 637, "IL"], [640, 658, "MO"], [660, 662, "KS"],
-  [664, 679, "KS"], [680, 693, "NE"], [700, 714, "LA"], [716, 729, "AR"],
-  [730, 731, "OK"], [733, 735, "TX"], [739, 749, "OK"], [750, 799, "TX"],
-  [800, 816, "CO"], [820, 831, "WY"], [832, 838, "ID"], [840, 847, "UT"],
-  [850, 865, "AZ"], [870, 884, "NM"], [885, 885, "TX"], [889, 891, "NV"],
-  [893, 898, "NV"], [900, 961, "CA"], [962, 966, "AA"], [967, 968, "HI"],
-  [969, 969, "GU"], [970, 979, "OR"], [980, 994, "WA"], [995, 999, "AK"],
+const ZIP3_RANGES: Array<[string, string, string]> = [
+  ["100", "149", "NY"], ["150", "196", "PA"], ["197", "199", "DE"], ["200", "205", "DC"],
+  ["206", "219", "MD"], ["220", "246", "VA"], ["247", "268", "WV"], ["270", "289", "NC"],
+  ["290", "299", "SC"], ["300", "319", "GA"], ["320", "327", "FL"], ["328", "329", "FL"],
+  ["330", "349", "FL"], ["350", "352", "AL"], ["354", "369", "AL"], ["370", "385", "TN"],
+  ["386", "397", "MS"], ["398", "399", "GA"], ["400", "418", "KY"], ["420", "427", "KY"],
+  ["430", "459", "OH"], ["460", "479", "IN"], ["480", "499", "MI"], ["500", "528", "IA"],
+  ["530", "532", "WI"], ["534", "535", "WI"], ["537", "539", "WI"], ["540", "549", "WI"],
+  ["550", "567", "MN"], ["570", "577", "SD"], ["580", "588", "ND"], ["590", "599", "MT"],
+  ["060", "069", "CT"], ["600", "629", "IL"], ["630", "637", "IL"], ["640", "658", "MO"], ["660", "662", "KS"],
+  ["664", "679", "KS"], ["680", "693", "NE"], ["700", "714", "LA"], ["716", "729", "AR"],
+  ["730", "731", "OK"], ["733", "735", "TX"], ["739", "749", "OK"], ["750", "799", "TX"],
+  ["800", "816", "CO"], ["820", "831", "WY"], ["832", "838", "ID"], ["840", "847", "UT"],
+  ["850", "865", "AZ"], ["870", "884", "NM"], ["885", "885", "TX"], ["889", "891", "NV"],
+  ["893", "898", "NV"], ["900", "961", "CA"], ["962", "966", "AA"], ["967", "968", "HI"],
+  ["969", "969", "GU"], ["970", "979", "OR"], ["980", "994", "WA"], ["995", "999", "AK"],
 ];
-const stateFromZip3 = (zip3: number): string | null => {
+const stateFromZip3 = (zip3: string): string | null => {
   for (const [lo, hi, st] of ZIP3_RANGES) if (zip3 >= lo && zip3 <= hi) return st;
   return null;
 };
@@ -85,7 +85,7 @@ export function resolveStateFromAddress(value: string): AddressStateResolution {
     }
   }
   const zip = value.match(/\b(\d{5})(?:-\d{4})?\b/);
-  const zipState = zip ? stateFromZip3(Number(zip[1]!.slice(0, 3))) : null;
+  const zipState = zip ? stateFromZip3(zip[1]!.slice(0, 3)) : null;
   if (explicit) return { state: explicit, source: "address", mismatch: Boolean(zipState && zipState !== explicit) };
   if (zipState) return { state: zipState, source: "zip", mismatch: false };
   return { state: null, source: "unknown", mismatch: false };

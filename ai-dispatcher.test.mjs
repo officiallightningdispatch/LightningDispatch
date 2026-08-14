@@ -948,12 +948,27 @@ try {
     // <site-root>/dist/.secrets/tomtom.key resolves — but ONLY on an explicit
     // opt-in. Both checks need dist/.secrets/tomtom.key present (the build's
     // prepare-secrets.sh embeds it), so this suite runs after a build.
-    const { existsSync } = await import("node:fs");
+    const { existsSync, mkdirSync, copyFileSync, unlinkSync, writeFileSync: writeArtifact, rmSync: removeArtifact } = await import("node:fs");
     const artifactPath = join(process.cwd(), "dist", ".secrets", "tomtom.key");
-    const artifact = resolveTomtomKey({}, { stableKeyFile: join(dir, "nope.key"), allowArtifactFallback: true });
-    check("resolveTomtomKey: artifact fallback resolves <site-root>/dist/.secrets/tomtom.key when the stable dir is unavailable (explicit opt-in)", existsSync(artifactPath) && typeof artifact === "string" && artifact.length > 0, `exists=${existsSync(artifactPath)} len=${artifact?.length ?? -1}`);
-    const hermetic = resolveTomtomKey({}, { stableKeyFile: join(dir, "nope.key") });
-    check("resolveTomtomKey: explicit stableKeyFile override stays hermetic — artifact fallback NOT consulted", hermetic === null, String(hermetic));
+    const artifactDir = join(process.cwd(), "dist", ".secrets");
+    const artifactBackup = join(dir, "preexisting-artifact");
+    const hadArtifact = existsSync(artifactPath);
+    // Detached verification worktrees do not carry ignored build secrets. Install
+    // only a non-committed test credential at the exact artifact path, never read
+    // or print an existing credential, and restore/remove it in finally.
+    if (hadArtifact) { copyFileSync(artifactPath, artifactBackup); unlinkSync(artifactPath); }
+    mkdirSync(artifactDir, { recursive: true });
+    writeArtifact(artifactPath, "fixture-tomtom-key\n", { mode: 0o600 });
+    try {
+      const artifact = resolveTomtomKey({}, { stableKeyFile: join(dir, "nope.key"), allowArtifactFallback: true });
+      check("resolveTomtomKey: isolated artifact fallback resolves <site-root>/dist/.secrets/tomtom.key", existsSync(artifactPath) && artifact === "fixture-tomtom-key", `exists=${existsSync(artifactPath)} len=${artifact?.length ?? -1}`);
+      const hermetic = resolveTomtomKey({}, { stableKeyFile: join(dir, "nope.key") });
+      check("resolveTomtomKey: explicit stableKeyFile override stays hermetic — artifact fallback NOT consulted", hermetic === null, String(hermetic));
+    } finally {
+      removeArtifact(artifactPath, { force: true });
+      if (hadArtifact) { copyFileSync(artifactBackup, artifactPath); unlinkSync(artifactBackup); }
+      rmSync(dir, { recursive: true, force: true });
+    }
     const routerViaFile = resolveRouter({ TOMTOM_KEY_FILE: f }, makeRouterFetch().fetchImpl);
     check("resolveRouter: key from file → tomtom provider + keyConfigured true", routerViaFile.provider === "tomtom" && routerViaFile.tomtomKeyConfigured === true && typeof routerViaFile.router === "function");
     rmSync(dir, { recursive: true, force: true });

@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { resolveStateFromAddress, parseStateFromAddress } from "./src/data/state-guard-core.ts";
 
 const cases = [
-  ["16 Lords Hwy Weston Connecticut 06883", "CT", "address"],
-  ["16 Lords Hwy, Weston, CT 06883", "CT", "address"],
+  ["16 Lords Hwy Weston Connecticut 06001", "CT", "address"],
+  ["16 Lords Hwy, Weston, CT 06901", "CT", "address"],
   ["16 Lords Hwy, WESTON, c.t. 06883", "CT", "address"],
   ["16 Lords Hwy Weston ZZ 00000", null, "unknown"],
   ["16 Lords Hwy Weston Texas 06883", "TX", "address"],
