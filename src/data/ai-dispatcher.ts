@@ -1164,10 +1164,17 @@ async function resolveJobState(
   }
   if (authoritative) {
     const pickupState = resolveStateFromAddress(authoritative.pickup);
-    const callState = await reverseGeocodeState(authoritative.lat, authoritative.lng, apiKey, fetchImpl);
-    if (!pickupState.state || !callState || pickupState.state !== callState) {
+    if (!pickupState.state) {
       return { state: null, source: "unknown", mismatch: true,
-        note: `authoritative pickup discrepancy (call ${authoritative.id}: address=${pickupState.state ?? "UNKNOWN"}, coords=${callState ?? "UNKNOWN"})`, authoritativeId: authoritative.id };
+        note: `authoritative pickup record ${authoritative.id} address unresolved (${authoritative.pickup})`, authoritativeId: authoritative.id };
+    }
+    // Address is the authoritative source; the reverse geocode only CORROBORATES.
+    // A null geocode (TomTom down/429/timeout/non-US) is absence of evidence, not
+    // a disagreement — only a conflicting state is a discrepancy (fail-closed).
+    const callState = await reverseGeocodeState(authoritative.lat, authoritative.lng, apiKey, fetchImpl);
+    if (callState && callState !== pickupState.state) {
+      return { state: null, source: "unknown", mismatch: true,
+        note: `authoritative pickup discrepancy (call ${authoritative.id}: address=${pickupState.state}, coords=${callState})`, authoritativeId: authoritative.id };
     }
     const state = pickupState.state;
     const note = placeholder
