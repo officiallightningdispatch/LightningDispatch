@@ -163,6 +163,12 @@ const offer = (id) => ({
   defaultEta: 30,
   purchaseOrderNumber: `1125${id}`,
   sound: false,
+  // Valid CT address text: the same-state guard (owner-directed 2026-08-13)
+  // resolves the JOB state from the offer's startingLocation ADDRESS, never
+  // the coords (production offers carried Bridgeport placeholder coords with
+  // Texas addresses) — an address-less fixture would fail closed with
+  // escalated_state_unknown before the session-recovery path is ever reached.
+  startingLocation: "123 MAIN ST, BRIDGEPORT CT 06606",
   startLocationLatitude: 41.2,
   startLocationLongitude: -73.2,
   drivers: [703785],
@@ -175,6 +181,12 @@ const driver = (id, name) => ({
 const makeDeps = (fetchImpl, recoverSession) => ({
   syncForOrg: async () => ({ ok: true }),
   resolveOrgActor: async () => ({ id: USER, role: "owner" }),
+  // Same-state guard driver-state resolver (hermetic, mirrors
+  // ai-dispatcher.test.mjs): the fixture driver sits at Bridgeport CT coords
+  // and the offer's address resolves to CT; without this override the driver's
+  // state would be UNKNOWN (no TomTom key in the test env) and the guard would
+  // fail closed with escalated_cross_state before recovery is exercised.
+  stateGuardResolver: async () => "CT",
   fetchImpl,
   verifyRetryDelayMs: 0,
   routerOverride: { provider: "osrm", tomtomKeyConfigured: false, router: async () => ({ seconds: 540, provider: "osrm", liveTraffic: false, trafficDelaySeconds: null, notes: "mock" }) },
