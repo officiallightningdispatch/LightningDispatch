@@ -23,7 +23,7 @@ const miles = (a: DriverQueueLocation, lat: number | null, lng: number | null): 
 /** Active assigned calls, ordered by current next-stop distance. Missing GPS or
  * pickup coordinates sort after routable jobs; id is the deterministic tie-break. */
 export function orderDriverQueue(calls: readonly QueueCall[], location: DriverQueueLocation): QueueCall[] {
-  return calls.filter((c) => ACTIVE.has(c.statusId) && !TERMINAL.has(c.statusId)).toSorted((a, b) => {
+  return calls.filter((c) => ACTIVE.has(c.statusId) && !TERMINAL.has(c.statusId)).slice().sort((a, b) => {
     const da = miles(location, a.pickupLat, a.pickupLng);
     const db = miles(location, b.pickupLat, b.pickupLng);
     if (da !== db) return da - db;
