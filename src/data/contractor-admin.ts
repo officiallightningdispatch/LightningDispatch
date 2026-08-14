@@ -91,6 +91,10 @@ export const setDocumentStatus = createServerFn({ method: "POST" }).validator(pa
   return core.setDocumentStatusHandler(data);
 });
 
+export const voidDocument = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<ContractorAdminResult<{ docId: string; status: "missing" }>> => {
+  const core = await import("./contractor-admin-core");
+  return core.voidDocumentHandler(data);
+});
 export const setDocumentExpiry = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<ContractorAdminResult<{ docId: string; expiresOn: string | null }>> => {
   const core = await import("./contractor-admin-core");
   return core.setDocumentExpiryHandler(data);

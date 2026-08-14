@@ -1140,6 +1140,11 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE UNIQUE INDEX IF NOT EXISTS push_subscriptions_org_user_endpoint_uidx
       ON push_subscriptions(org_id, user_id, endpoint)`;
   }],
+  [47, async (q) => {
+    // Existing status column + audit_log are sufficient for owner void.
+    await q`ALTER TABLE contractor_documents DROP CONSTRAINT IF EXISTS contractor_documents_status_check`;
+    await q`ALTER TABLE contractor_documents ADD CONSTRAINT contractor_documents_status_check CHECK (status IN ('uploaded','verified','expired','rejected','voided'))`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

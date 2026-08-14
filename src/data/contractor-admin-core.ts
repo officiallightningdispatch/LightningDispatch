@@ -198,6 +198,7 @@ export function deriveDocStatus(storedStatus: string | null | undefined, expires
     case "verified": return "verified";
     case "expired": return "expired";
     case "rejected": return "rejected";
+    case "voided": return "missing";
     default: return "uploaded";
   }
 }
@@ -384,7 +385,7 @@ export async function listContractorDocumentsCore(actor: ContractorAdminActor, d
 
 const DOC_STATUS_SCHEMA = z.object({
   docId: z.string().trim().min(1).max(128),
-  status: z.enum(["verified", "rejected", "expired"]),
+  status: z.enum(["verified", "rejected", "expired", "voided"]),
   reviewNote: z.string().trim().max(300).optional().or(z.literal("")),
 });
 
@@ -419,6 +420,28 @@ export async function setDocumentStatusCore(actor: ContractorAdminActor, data: u
     return ok({ docId: v.data.docId, status: v.data.status });
   } catch (e) {
     return err("database_error", e instanceof Error ? e.message : "Unable to update the document.");
+  }
+}
+
+const VOID_SCHEMA = z.object({
+  docId: z.string().trim().min(1).max(128),
+  reason: z.string().trim().min(1, "A reason is required.").max(300),
+});
+/** Owner/admin-only irreversible void. Keeps the row for compliance counts and audit history. */
+export async function voidDocumentCore(actor: ContractorAdminActor, data: unknown): Promise<ContractorAdminResult<{ docId: string; status: "missing" }>> {
+  if (!canManage(actor)) return err("unauthorized", "Owner access required.");
+  const v = VOID_SCHEMA.safeParse(data);
+  if (!v.success) return err("invalid_input", v.error.issues[0]?.message ?? "A reason is required.");
+  try {
+    await ensure();
+    const q = await db();
+    const rows = await q`SELECT id, doc_type_id, status FROM contractor_documents WHERE id=${v.data.docId} AND org_id=${actor.orgId} LIMIT 1`;
+    if (!rows.length) return err("not_found", "That document isn't on this account.");
+    await q`UPDATE contractor_documents SET status='voided', review_note=${v.data.reason}, updated_at=NOW() WHERE id=${v.data.docId} AND org_id=${actor.orgId}`;
+    await recordAudit(actor, "contractor_doc_voided", v.data.docId, { docTypeId: String(rows[0].doc_type_id), fromStatus: String(rows[0].status), reason: v.data.reason });
+    return ok({ docId: v.data.docId, status: "missing" });
+  } catch (e) {
+    return err("database_error", e instanceof Error ? e.message : "Unable to void the document.");
   }
 }
 
@@ -1659,6 +1682,10 @@ export async function setDocumentStatusHandler(data: unknown): Promise<Contracto
   const actor = await resolveOwnerActor();
   if (!actor) return err("unauthorized", "Owner access required.");
   return setDocumentStatusCore(actor, data);
+}
+export async function voidDocumentHandler(data: unknown): Promise<ContractorAdminResult<{ docId: string; status: "missing" }>> {
+  const actor = await resolveOwnerActor();
+  return actor ? voidDocumentCore(actor, data) : err("unauthorized", "Owner access required.");
 }
 export async function setDocumentExpiryHandler(data: unknown): Promise<ContractorAdminResult<{ docId: string; expiresOn: string | null }>> {
   if (!configured()) return DB_MODE_ERR("Documents");
