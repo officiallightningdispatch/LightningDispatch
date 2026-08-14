@@ -5,7 +5,7 @@ import { neon } from "@neondatabase/serverless";
 const q = neon(process.env.DATABASE_URL);
 const { ensureSchema } = await import("./src/data/migrations.ts");
 const { assertQaOrg } = await import("./src/data/db-guard.ts");
-const { selectZoneCore, getZonesCore, ownerSetZoneCore, upsertZoneCore, zoneSelectionOpenAt } = await import("./src/data/zones-core.ts");
+const { selectZoneCore, getZonesCore, ownerSetZoneCore, upsertZoneCore, zoneSelectionOpenAt, getMyZoneStateCore, getDispatchZonesForOwnerCore, getOwnerZoneDriverRosterCore } = await import("./src/data/zones-core.ts");
 const { loadZoneMatches, chooseBestDriverByRoad } = await import("./src/data/ai-dispatcher.ts");
 const ORG = `qa-zone-${randomUUID()}`;
 const OWNER = `qa-zone-owner-${randomUUID()}`;
@@ -87,6 +87,65 @@ try {
     const cleared=await q`SELECT zone_id FROM driver_availability_log WHERE org_id=${ORG} AND user_id=${DRIVER_A} AND day=${day}`; assert.equal(cleared[0].zone_id,null);
     const audit=await q`SELECT actor_user_id,actor_role,entity_id,detail->>'zoneId' zone,detail->>'day' AS "day",detail->>'reason' reason FROM audit_log WHERE org_id=${ORG} AND action='driver_zone_override' ORDER BY occurred_at DESC LIMIT 1`;
     assert.equal(String(audit[0].actor_user_id),OWNER); assert.equal(audit[0].actor_role,'owner'); assert.equal(String(audit[0].entity_id),DRIVER_A); assert.equal(audit[0].zone,null); assert.equal(audit[0].day,day); assert.equal(audit[0].reason,'owner/admin override');
+  });
+  await check("ZONE-STATE: getMyZoneStateCore is day-keyed, window-aware, change-allowance matches once-per-day rule", async () => {
+    const b={...actor,id:DRIVER_B};
+    await q`DELETE FROM driver_availability_log WHERE org_id=${ORG} AND user_id=${DRIVER_B}`;
+    // Fresh day before 6 AM local: no zone yet, window closed, can change (nothing selected).
+    const fresh=await getMyZoneStateCore(b,new Date('2026-08-18T09:59:00Z'));
+    assert.equal(fresh.ok,true); assert.equal(fresh.zoneId,null); assert.equal(fresh.zoneName,null);
+    assert.equal(fresh.canChangeToday,true); assert.equal(fresh.selectionOpen,false); assert.equal(fresh.zoneChangeCount,0);
+    // After 6 AM: select once.
+    assert.equal((await selectZoneCore(b,ZONE_IN,new Date('2026-08-18T10:00:00Z'))).ok,true);
+    const once=await getMyZoneStateCore(b,new Date('2026-08-18T12:00:00Z'));
+    assert.equal(once.zoneId,ZONE_IN); assert.equal(once.zoneName,'QA In Zone'); assert.equal(once.zoneChangeCount,1);
+    assert.equal(once.canChangeToday,true); assert.equal(once.selectionOpen,true);
+    assert.ok(typeof once.zoneChangedAt==='string' && !Number.isNaN(Date.parse(once.zoneChangedAt)));
+    // Change once more (allowed): count 2, no more changes today.
+    assert.equal((await selectZoneCore(b,ZONE_EMPTY,new Date('2026-08-18T13:00:00Z'))).ok,true);
+    const twice=await getMyZoneStateCore(b,new Date('2026-08-18T14:00:00Z'));
+    assert.equal(twice.zoneId,ZONE_EMPTY); assert.equal(twice.zoneChangeCount,2); assert.equal(twice.canChangeToday,false);
+    // Next day resets: yesterday's selection does NOT leak as today's zone.
+    const next=await getMyZoneStateCore(b,new Date('2026-08-19T12:00:00Z'));
+    assert.equal(next.zoneId,null); assert.equal(next.canChangeToday,true);
+  });
+  await check("OWNER-ZONES: getDispatchZonesForOwnerCore lists inactive zones with full config + assigned-driver counts; guards non-owner", async () => {
+    const INACTIVE=`qa-zone-off-${randomUUID()}`;
+    await upsertZoneCore(actor,{id:INACTIVE,name:'QA Off Zone',lat:41.1,lng:-73.2,radiusMiles:9,tz:'America/New_York',active:false,sortOrder:9});
+    const res=await getDispatchZonesForOwnerCore(actor);
+    assert.equal(res.ok,true);
+    const list=res.zones;
+    const off=list.find(x=>x.id===INACTIVE); assert.ok(off); assert.equal(off.active,false); assert.equal(off.radiusMiles,9); assert.equal(off.sortOrder,9);
+    const zin=list.find(x=>x.id===ZONE_IN);
+    assert.equal(zin.active,true); assert.equal(zin.tz,'America/New_York'); assert.ok(Number(zin.assignedDriverCount)>=1); // DRIVER_A online today in ZONE_IN
+    const empty=list.find(x=>x.id===ZONE_EMPTY); assert.equal(Number(empty.assignedDriverCount),0);
+    const denied=await getDispatchZonesForOwnerCore({...actor,role:'contractor'});
+    assert.equal(denied.ok,false); assert.equal(denied.message,'Owner access required.');
+  });
+  await check("ROSTER: getOwnerZoneDriverRosterCore exposes online/zone/active per contractor; guards non-owner", async () => {
+    // Deterministic latest-day fixture: DRIVER_A online today (fixed future day sorts last);
+    // DRIVER_B has no availability rows.
+    await q`DELETE FROM driver_availability_log WHERE org_id=${ORG} AND user_id=${DRIVER_B}`;
+    await q`INSERT INTO driver_availability_log(org_id,user_id,day,zone_id,session_started_at,zone_change_count) VALUES(${ORG},${DRIVER_A},'2026-08-20',${ZONE_IN},NOW(),1) ON CONFLICT ON CONSTRAINT driver_availability_log_pkey DO UPDATE SET zone_id=${ZONE_IN},session_started_at=NOW(),zone_change_count=1`;
+    const res=await getOwnerZoneDriverRosterCore(actor);
+    assert.equal(res.ok,true);
+    const a=res.drivers.find(d=>d.userId===DRIVER_A);
+    const b=res.drivers.find(d=>d.userId===DRIVER_B);
+    assert.ok(a); assert.equal(a.online,true); assert.equal(a.zoneId,ZONE_IN); assert.equal(a.zoneName,'QA In Zone'); assert.equal(a.active,true);
+    assert.ok(b); assert.equal(b.online,false); assert.equal(b.zoneId,null);
+    const denied=await getOwnerZoneDriverRosterCore({...actor,role:'contractor'});
+    assert.equal(denied.ok,false); assert.equal(denied.message,'Owner access required.');
+  });
+  await check("ZONE-METADATA: getZonesCore entries carry radiusMiles + tz for driver picker", async () => {
+    const zones=await getZonesCore(actor);
+    const z=zones.find(x=>x.id===ZONE_IN); const e=zones.find(x=>x.id===ZONE_EMPTY);
+    assert.equal(z.radiusMiles,5); assert.equal(z.tz,'America/New_York');
+    assert.equal(e.radiusMiles,2); assert.equal(e.tz,'America/New_York');
+    // Inactive zone hidden from drivers (active=TRUE filter in getZonesCore).
+    const OFF2=`qa-zone-off2-${randomUUID()}`;
+    await upsertZoneCore(actor,{id:OFF2,name:'QA Off 2',lat:41.1,lng:-73.2,radiusMiles:9,tz:'America/New_York',active:false,sortOrder:9});
+    assert.equal(zones.some(x=>x.id===OFF2),false);
+    const again=await getZonesCore(actor); assert.equal(again.some(x=>x.id===OFF2),false);
   });
 } finally {
   if(created){ assertQaOrg(ORG); await q`DELETE FROM organizations WHERE id=${ORG}`.catch(()=>{}); await q`DELETE FROM users WHERE id IN (${OWNER},${DRIVER_A},${DRIVER_B})`.catch(()=>{}); }
