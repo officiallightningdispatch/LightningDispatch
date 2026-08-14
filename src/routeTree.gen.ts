@@ -42,6 +42,7 @@ import { Route as DriverHelpRouteImport } from './routes/driver/help'
 import { Route as DriverEarningsRouteImport } from './routes/driver/earnings'
 import { Route as DriverDocumentsRouteImport } from './routes/driver/documents'
 import { Route as DriverActiveRouteImport } from './routes/driver/active'
+import { Route as OwnerZonesIndexRouteImport } from './routes/owner/zones.index'
 import { Route as OwnerMetricsIndexRouteImport } from './routes/owner/metrics.index'
 import { Route as OwnerContractorsIndexRouteImport } from './routes/owner/contractors.index'
 import { Route as OwnerMetricsIdRouteImport } from './routes/owner/metrics.$id'
@@ -214,6 +215,11 @@ const DriverActiveRoute = DriverActiveRouteImport.update({
   path: '/active',
   getParentRoute: () => DriverRoute,
 } as any)
+const OwnerZonesIndexRoute = OwnerZonesIndexRouteImport.update({
+  id: '/zones/',
+  path: '/zones/',
+  getParentRoute: () => OwnerRoute,
+} as any)
 const OwnerMetricsIndexRoute = OwnerMetricsIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -285,6 +291,7 @@ export interface FileRoutesByFullPath {
   '/owner/metrics/$id': typeof OwnerMetricsIdRoute
   '/owner/contractors/': typeof OwnerContractorsIndexRoute
   '/owner/metrics/': typeof OwnerMetricsIndexRoute
+  '/owner/zones/': typeof OwnerZonesIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -321,6 +328,7 @@ export interface FileRoutesByTo {
   '/owner/metrics/$id': typeof OwnerMetricsIdRoute
   '/owner/contractors': typeof OwnerContractorsIndexRoute
   '/owner/metrics': typeof OwnerMetricsIndexRoute
+  '/owner/zones': typeof OwnerZonesIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -363,6 +371,7 @@ export interface FileRoutesById {
   '/owner/metrics/$id': typeof OwnerMetricsIdRoute
   '/owner/contractors/': typeof OwnerContractorsIndexRoute
   '/owner/metrics/': typeof OwnerMetricsIndexRoute
+  '/owner/zones/': typeof OwnerZonesIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -406,6 +415,7 @@ export interface FileRouteTypes {
     | '/owner/metrics/$id'
     | '/owner/contractors/'
     | '/owner/metrics/'
+    | '/owner/zones/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -442,6 +452,7 @@ export interface FileRouteTypes {
     | '/owner/metrics/$id'
     | '/owner/contractors'
     | '/owner/metrics'
+    | '/owner/zones'
   id:
     | '__root__'
     | '/'
@@ -483,6 +494,7 @@ export interface FileRouteTypes {
     | '/owner/metrics/$id'
     | '/owner/contractors/'
     | '/owner/metrics/'
+    | '/owner/zones/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -728,6 +740,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DriverActiveRouteImport
       parentRoute: typeof DriverRoute
     }
+    '/owner/zones/': {
+      id: '/owner/zones/'
+      path: '/zones'
+      fullPath: '/owner/zones/'
+      preLoaderRoute: typeof OwnerZonesIndexRouteImport
+      parentRoute: typeof OwnerRoute
+    }
     '/owner/metrics/': {
       id: '/owner/metrics/'
       path: '/'
@@ -862,6 +881,7 @@ interface OwnerRouteChildren {
   OwnerQueueRoute: typeof OwnerQueueRoute
   OwnerSettingsRoute: typeof OwnerSettingsRoute
   OwnerIndexRoute: typeof OwnerIndexRoute
+  OwnerZonesIndexRoute: typeof OwnerZonesIndexRoute
 }
 
 const OwnerRouteChildren: OwnerRouteChildren = {
@@ -877,6 +897,7 @@ const OwnerRouteChildren: OwnerRouteChildren = {
   OwnerQueueRoute: OwnerQueueRoute,
   OwnerSettingsRoute: OwnerSettingsRoute,
   OwnerIndexRoute: OwnerIndexRoute,
+  OwnerZonesIndexRoute: OwnerZonesIndexRoute,
 }
 
 const OwnerRouteWithChildren = OwnerRoute._addFileChildren(OwnerRouteChildren)
