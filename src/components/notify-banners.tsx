@@ -35,7 +35,7 @@ import { etaMinutesLabel } from "~/components/driver-eta";
 import { useDispatchStore } from "~/lib/store";
 import { listAiDispatcherDecisions } from "~/data/server";
 
-export type BannerKind = "job" | "escalation" | "cancelled" | "assignment";
+export type BannerKind = "job" | "escalation" | "cancelled" | "assignment" | "completed";
 
 /** Routes banners can navigate to (typed so navigate() typechecks). */
 export type BannerTarget = "/owner/queue" | "/owner/ai-dispatcher" | "/driver";
@@ -219,6 +219,7 @@ export function OwnerNotificationLayer() {
   const { refresh } = useDispatchStore();
   const { banners, push, dismiss } = useBannerStack("owner");
   const booted = useRef(false);
+  const previousJobs = useRef<Map<string, string>>(new Map());
   useAudioPrimer();
 
   const jobsKey = seenKey("owner", "jobs");
@@ -249,22 +250,36 @@ export function OwnerNotificationLayer() {
           // First poll: seed everything visible — nothing on screen fires.
           setSeenIds(jobsKey, mergeSeen(getSeenIds(jobsKey), jobs.map((j) => j.id)));
           setSeenIds(decisionsKey, mergeSeen(getSeenIds(decisionsKey), decisions.map((d) => d.id)));
+          previousJobs.current = new Map(jobs.map((j) => [j.id, String((data?.jobs ?? []).find((raw) => raw.id === j.id)?.status ?? "")]));
           booted.current = true;
           return;
         }
 
         const newJobs = diffNewJobIds(getSeenIds(jobsKey), jobs);
+        const completedJobs = jobs.filter((j) => previousJobs.current.get(j.id) !== "completed" && (data?.jobs ?? []).find((raw) => raw.id === j.id)?.status === "completed");
+        previousJobs.current = new Map(jobs.map((j) => [j.id, String((data?.jobs ?? []).find((raw) => raw.id === j.id)?.status ?? "")]));
         const newDecs = diffEscalatedDecisionIds(getSeenIds(decisionsKey), decisions);
         if (newJobs.length) setSeenIds(jobsKey, mergeSeen(getSeenIds(jobsKey), newJobs.map((j) => j.id)));
         if (newDecs.length) setSeenIds(decisionsKey, mergeSeen(getSeenIds(decisionsKey), newDecs.map((d) => d.id)));
 
         const items: BannerItem[] = [];
         for (const j of newJobs) {
+          const raw = (data?.jobs ?? []).find((candidate) => candidate.id === j.id);
           items.push({
             id: `job:${j.id}`,
             kind: "job",
-            title: "New job",
-            body: `${j.customerName ?? "Customer"} · ${SERVICE_LABELS[j.serviceType as keyof typeof SERVICE_LABELS] ?? "Service"} · ${j.area ?? "—"}`,
+            title: `New job${raw?.id ? ` #${raw.id}` : ""}`,
+            body: `${j.customerName ?? "Customer"} · ${SERVICE_LABELS[j.serviceType as keyof typeof SERVICE_LABELS] ?? "Service"} · ${j.area ?? "—"}${raw?.assignedDriverName ? ` · ${raw.assignedDriverName}` : ""}`,
+            to: "/owner/queue",
+          });
+        }
+        for (const j of completedJobs) {
+          const raw = (data?.jobs ?? []).find((candidate) => candidate.id === j.id);
+          items.push({
+            id: `completed:${j.id}`,
+            kind: "completed",
+            title: `Job completed${raw?.id ? ` #${raw.id}` : ""}`,
+            body: `${j.customerName ?? "Customer"} · ${SERVICE_LABELS[j.serviceType as keyof typeof SERVICE_LABELS] ?? "Service"} · ${j.area ?? "—"}${raw?.assignedDriverName ? ` · ${raw.assignedDriverName}` : ""} · status: completed`,
             to: "/owner/queue",
           });
         }

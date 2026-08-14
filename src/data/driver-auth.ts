@@ -1001,9 +1001,22 @@ export const driverAvailabilityHeartbeat = createServerFn({ method: "POST" }).va
   try {
     await ensure();
     const q = await db();
-    const rows = await q`UPDATE driver_availability_log SET heartbeat_at=NOW(), updated_at=NOW()
-      WHERE org_id=${ctx.u.orgId} AND user_id=${ctx.identity.userRowId}
-        AND session_started_at IS NOT NULL
+    // The ledger is keyed by day.  At midnight the new row does not exist yet,
+    // so an UPDATE-only heartbeat would silently drop an otherwise-live GO
+    // driver. Carry the original open stretch into the new day's row; STOP then
+    // uses that timestamp to calculate the full multi-day elapsed duration.
+    const rows = await q`WITH prior AS (
+        SELECT session_started_at FROM driver_availability_log
+        WHERE org_id=${ctx.u.orgId} AND user_id=${ctx.identity.userRowId}
+          AND session_started_at IS NOT NULL
+        ORDER BY day DESC LIMIT 1
+      )
+      INSERT INTO driver_availability_log(org_id, user_id, day, online_minutes, ping_count, session_started_at, heartbeat_at, updated_at)
+      VALUES(${ctx.u.orgId}, ${ctx.identity.userRowId}, CURRENT_DATE, 0, 0,
+        COALESCE((SELECT session_started_at FROM prior), NOW()), NOW(), NOW())
+      ON CONFLICT (org_id, user_id, day) DO UPDATE SET
+        heartbeat_at=NOW(), updated_at=NOW(),
+        session_started_at=COALESCE(driver_availability_log.session_started_at, EXCLUDED.session_started_at)
       RETURNING user_id`;
     return rows.length ? { ok: true as const } : { ok: false as const, message: "Availability is offline." };
   } catch { return { ok: false as const, message: "Heartbeat unavailable." }; }
@@ -1019,8 +1032,14 @@ export const driverAvailabilityHeartbeat = createServerFn({ method: "POST" }).va
  *  a failed log write must never fail or mask the availability toggle. */
 export async function recordAvailabilityStart(q: Awaited<ReturnType<typeof db>>, orgId: string, userId: string): Promise<void> {
   try {
-    await q`INSERT INTO driver_availability_log(org_id, user_id, day, online_minutes, ping_count, session_started_at, heartbeat_at, updated_at)
-      VALUES(${orgId}, ${userId}, CURRENT_DATE, 0, 1, NOW(), NOW(), NOW())
+    await q`WITH prior AS (
+        SELECT session_started_at FROM driver_availability_log
+        WHERE org_id=${orgId} AND user_id=${userId} AND session_started_at IS NOT NULL
+        ORDER BY day DESC LIMIT 1
+      )
+      INSERT INTO driver_availability_log(org_id, user_id, day, online_minutes, ping_count, session_started_at, heartbeat_at, updated_at)
+      VALUES(${orgId}, ${userId}, CURRENT_DATE, 0, 1,
+        COALESCE((SELECT session_started_at FROM prior), NOW()), NOW(), NOW())
       ON CONFLICT (org_id, user_id, day) DO UPDATE SET
         session_started_at = COALESCE(driver_availability_log.session_started_at, EXCLUDED.session_started_at),
         ping_count = driver_availability_log.ping_count + CASE WHEN driver_availability_log.session_started_at IS NULL THEN 1 ELSE 0 END,

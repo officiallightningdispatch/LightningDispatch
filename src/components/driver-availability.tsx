@@ -2,13 +2,12 @@
  * AvailabilityPill + useAvailability — the Uber-style GO/Offline pill (R2 spec
  * §c item 4, lead interim 2026-08-11).
  *
- * SEMANTICS (lead-decided interim): the pill is a VISIBLE availability control
- * that performs a real Towbook checkin/checkout (driverSetAvailability). GO =
- * actively working / checked in; Offline = still assignable and reachable via
- * push (per the owner's dispatch directive the AI picks the next available AND
- * closest driver — even if offline), so the pill NEVER blocks assignment.
- * The local state is persisted per-driver (localStorage); actual pool
- * semantics get wired when the owner confirms (spec §e Q2).
+ * SEMANTICS: GO persists server-side; the heartbeat keeps the availability
+ * lease fresh. Closing the tab lets that lease expire after 90 seconds, so a
+ * driver is never falsely available forever. STOP removes the lease immediately.
+ * The AI-dispatch path still uses Towbook's nearest-driver lookup (not this
+ * availability table), while ops-center manual assignment, roster online state,
+ * and zone preference use the lease.
  */
 import { Loader2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
@@ -33,9 +32,28 @@ export function useAvailability(zone: { zoneId: string | null } | null, onNeedZo
 
   useEffect(() => {
     if (!online) return;
-    const id = window.setInterval(() => { void driverAvailabilityHeartbeat({ data: undefined }); }, AVAILABILITY_HEARTBEAT_INTERVAL_MS);
-    return () => window.clearInterval(id);
-  }, [online]);
+    let stopped = false;
+    const id = window.setInterval(() => {
+      void driverAvailabilityHeartbeat({ data: undefined }).then((result) => {
+        if (stopped || result.ok) return;
+        // The server has dropped the lease (or cannot refresh it). Never leave
+        // the pill claiming GO after a failed heartbeat.
+        stopped = true;
+        window.clearInterval(id);
+        setOnline(false);
+        try { localStorage.setItem(driverKey(), "off"); } catch { /* ignore */ }
+        toast(result.message ?? "Availability expired — tap GO to reconnect.");
+      }).catch(() => {
+        if (stopped) return;
+        stopped = true;
+        window.clearInterval(id);
+        setOnline(false);
+        try { localStorage.setItem(driverKey(), "off"); } catch { /* ignore */ }
+        toast("Availability expired — check your connection, then tap GO.");
+      });
+    }, AVAILABILITY_HEARTBEAT_INTERVAL_MS);
+    return () => { stopped = true; window.clearInterval(id); };
+  }, [online, toast]);
   const toggle = useCallback(async () => {
     const target = !online;
     const zid = zone?.zoneId ?? null;
