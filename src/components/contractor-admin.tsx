@@ -389,6 +389,7 @@ export function OwnerDocumentRow({
   onVerify,
   onReject,
   onSetExpiry,
+  onVoid,
   onView,
   onViewSelfie,
   onReviewPair,
@@ -399,6 +400,7 @@ export function OwnerDocumentRow({
   onVerify: (docId: string, expiresOn: string | null) => Promise<void>;
   onReject: (docId: string, reviewNote: string) => Promise<void>;
   onSetExpiry: (docId: string, expiresOn: string | null) => Promise<void>;
+  onVoid: (docId: string, reason: string) => Promise<void>;
   onView: () => Promise<void>;
   /** Part 3 (owner-directed 2026-08-12): view the live selfie half of a
    *  facial-verification pair — the pair is approved with ONE verify tap, so
@@ -420,6 +422,8 @@ export function OwnerDocumentRow({
   const [rejectSheet, setRejectSheet] = useState(false);
   const [expiryDraft, setExpiryDraft] = useState(doc.expiresOn ?? "");
   const [rejectNote, setRejectNote] = useState("");
+  const [voidSheet, setVoidSheet] = useState(false);
+  const [voidReason, setVoidReason] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const inFlight = busy || saving;
@@ -556,6 +560,11 @@ export function OwnerDocumentRow({
                     Ask to reupload
                   </Button>
                 )}
+                {(doc.status === "uploaded" || doc.status === "verified" || doc.status === "expired" || doc.status === "rejected") && !doc.requiresNotificationsLocation && (
+                  <Button size="sm" variant="ghost" className="!px-2.5 text-danger-700" disabled={inFlight} onClick={() => { setVoidSheet(true); setError(""); setVoidReason(""); }}>
+                    Void / Supersede
+                  </Button>
+                )}
               </div>
 
               {verifySheet && (
@@ -575,6 +584,18 @@ export function OwnerDocumentRow({
                   <div className="mt-3 flex flex-wrap gap-2">
                     <Button size="sm" loading={saving} onClick={() => run(() => onVerify(doc.docId!, expiryDraft || null))}>Mark verified</Button>
                     <Button size="sm" variant="secondary" disabled={saving} onClick={() => setVerifySheet(false)}>Cancel</Button>
+                  </div>
+                </div>
+              )}
+
+              {voidSheet && (
+                <div className="mt-3 rounded-xl border border-danger-200 bg-danger-50/40 p-3">
+                  <p className="text-sm font-bold text-danger-900">Void / Supersede “{doc.docTypeName}”?</p>
+                  <p className="mt-1 text-xs text-danger-800">This permanently voids the current file and treats it as missing. A reason is required.</p>
+                  <textarea value={voidReason} onChange={(e) => setVoidReason(e.target.value)} maxLength={300} rows={2} placeholder="Reason for voiding this document" className="mt-2 h-auto w-full rounded-xl border border-ink-200 bg-surface px-3 py-2 text-sm outline-none placeholder:text-ink-300 focus:border-danger-500 focus:ring-2 focus:ring-danger-100" />
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button size="sm" loading={saving} disabled={!voidReason.trim()} onClick={() => run(async () => { await onVoid(doc.docId!, voidReason.trim()); setVoidSheet(false); })}>Confirm void / supersede</Button>
+                    <Button size="sm" variant="secondary" disabled={saving} onClick={() => setVoidSheet(false)}>Cancel</Button>
                   </div>
                 </div>
               )}

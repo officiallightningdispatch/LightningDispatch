@@ -35,6 +35,7 @@ import {
   setContractorPayrate,
   setDocumentExpiry,
   setDocumentStatus,
+  voidDocument,
   type ContractorDetailRow,
   type ContractorDocumentRow,
   type DocFilePayload,
@@ -111,6 +112,12 @@ function OwnerContractorDetail() {
     const r = await setDocumentStatus({ data: { docId, status: "rejected", reviewNote } });
     if (!r.ok) throw new Error(r.message);
     toast("Reupload requested — the contractor will see your reason");
+    await refresh();
+  };
+  const actVoid = async (docId: string, reason: string) => {
+    const r = await voidDocument({ data: { docId, reason: reason.trim() } });
+    if (!r.ok) throw new Error(r.message);
+    toast("Document voided — it now requires a new upload");
     await refresh();
   };
   const actSetExpiry = async (docId: string, expiresOn: string | null) => {
@@ -352,6 +359,7 @@ function OwnerContractorDetail() {
                     onVerify={actVerify}
                     onReject={actReject}
                     onSetExpiry={actSetExpiry}
+                    onVoid={actVoid}
                     onView={() => openViewer(doc)}
                     onViewSelfie={doc.requiresFacialVerification && doc.selfieStatus === "uploaded" ? async () => { openSelfieViewer(doc); } : undefined}
                     onReviewPair={doc.requiresFacialVerification && doc.selfieStatus === "uploaded" ? async () => { setCompare(doc); } : undefined}
