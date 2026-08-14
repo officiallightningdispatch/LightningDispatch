@@ -52,6 +52,23 @@ const ARTIFACT_DIRS = [join(SITE_ROOT, "dist", ".secrets"), join(SITE_ROOT, ".se
 
 export type GmailConfig = { address: string; appPassword: string };
 
+/** Payment inbox sender policy. Exact mailbox addresses only: no domain,
+ * display-name, subject, or body expansion. */
+export const PAYMENT_ALLOWED_SENDERS = [
+  "provider.confirmation@trx-now.com",
+  "accountspayable@honkforhelp.com",
+  "incontrol@mastercard.com",
+  "noreply@pinnacle-team.com",
+] as const;
+
+export function normalizeSenderAddress(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+export function isAllowedPaymentSender(value: string): boolean {
+  return (PAYMENT_ALLOWED_SENDERS as readonly string[]).includes(normalizeSenderAddress(value));
+}
+
 const readEnvOrFile = async (env: string | undefined, envFile: string | undefined, stableFiles: string[]): Promise<string | null> => {
   if (env && env.trim() !== "") return env.trim();
   if (envFile) {
@@ -458,6 +475,9 @@ export type FetchClubMailOptions = {
   /** Injectable mailbox factory (hermetic tests) — defaults to a real imapflow
    *  connection to imap.gmail.com:993 with the owner's app password. */
   connectImpl?: () => Promise<MailboxLike>;
+  /** Optional exact sender allowlist for payment scans. Matching is trimmed and
+   * case-insensitive; no domain/display-name/subject fallback is permitted. */
+  allowedSenders?: readonly string[];
 };
 
 export type FetchClubMailResult = {
@@ -498,6 +518,7 @@ export async function fetchClubMail(opts: FetchClubMailOptions): Promise<FetchCl
     const slice = uids.slice(-maxMessages);
     const candidates: ClubChargeCandidate[] = [];
     const skipped: FetchClubMailResult["skipped"] = [];
+    const allowed = opts.allowedSenders ? new Set(opts.allowedSenders.map(normalizeSenderAddress)) : null;
     for (const uid of slice) {
       // NOTE: imapflow's fetchOne takes `{ uid: true }` as the THIRD options arg —
       // passing the UID without it fetches by SEQUENCE number (imapflow quirk
@@ -507,9 +528,13 @@ export async function fetchClubMail(opts: FetchClubMailOptions): Promise<FetchCl
       const env = raw.envelope ?? {};
       const fromAddr = (env.from && env.from[0] && env.from[0].address) || "";
       const subject = env.subject ?? "";
+      const messageId = env.messageId && env.messageId !== "" ? env.messageId : `uid-${uid}`;
+      if (allowed && !allowed.has(normalizeSenderAddress(fromAddr))) {
+        skipped.push({ messageId, from: fromAddr, subject, reason: "sender is not on the exact payment allowlist" });
+        continue;
+      }
       const bodyText = raw.source ? extractPlainText(raw.source) : "";
       const parsed = parseClubChargeEmail({ from: fromAddr, subject, bodyText });
-      const messageId = env.messageId && env.messageId !== "" ? env.messageId : `uid-${uid}`;
       if (parsed.skipReason) {
         skipped.push({ messageId, from: fromAddr, subject, reason: parsed.skipReason });
         continue;
@@ -528,9 +553,9 @@ export async function fetchClubMail(opts: FetchClubMailOptions): Promise<FetchCl
 
 /** Convenience: resolve config + scan in one call (used by the scan
  *  orchestration core). */
-export async function scanGmail(opts: { sinceDays?: number; maxMessages?: number; connectImpl?: () => Promise<MailboxLike>; stableDir?: string } = {}): Promise<FetchClubMailResult> {
+export async function scanGmail(opts: { sinceDays?: number; maxMessages?: number; connectImpl?: () => Promise<MailboxLike>; stableDir?: string; allowedSenders?: readonly string[] } = {}): Promise<FetchClubMailResult> {
   const config = await loadGmailConfig(process.env, { stableDir: opts.stableDir });
-  return fetchClubMail({ config, sinceDays: opts.sinceDays, maxMessages: opts.maxMessages, connectImpl: opts.connectImpl });
+  return fetchClubMail({ config, sinceDays: opts.sinceDays, maxMessages: opts.maxMessages, connectImpl: opts.connectImpl, allowedSenders: opts.allowedSenders });
 }
 
 /* ------------------------- generic envelope fetch ------------------------- */

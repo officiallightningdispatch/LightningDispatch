@@ -45,6 +45,8 @@ const {
   SKIP_NO_CARD,
   SKIP_NO_AMOUNT,
   SKIP_NOT_CHARGE,
+  isAllowedPaymentSender,
+  normalizeSenderAddress,
 } = await import("./src/data/club-mail.ts");
 const {
   stageClubChargeCore,
@@ -88,19 +90,19 @@ const OTHER_ACTOR = { orgId: ORG2, id: OWNER2, role: "owner" };
 const MAIL = [
   {
     messageId: `allied-${TAG}@mail.gmail.com`,
-    from: "billing@allieddispatch.com",
+    from: "provider.confirmation@trx-now.com",
     subject: "Allied Dispatch Payment — PO #88231",
     body: "Your Visa ending in 4242 was charged $85.00 for PO #88231. Expiry 12/27. Billing zip 06606.",
   },
   {
     messageId: `honk-${TAG}@mail.gmail.com`,
-    from: "no-reply@honkmobile.com",
+    from: "accountspayable@honkforhelp.com",
     subject: "Honk Invoice Paid",
     body: "Payment of USD 129.50 received for order #5532. Card ending 1010 (Mastercard), exp 05/28, zip 60601.",
   },
   {
     messageId: `allstate-${TAG}@mail.gmail.com`,
-    from: "motorclub@allstate.com",
+    from: "InControl@mastercard.com",
     subject: "Allstate Motor Club — Charge Notification",
     body: "Your card xxxx 7788 was charged $45.25. Purchase order 441233. Card Number: 3714 496353 77887. American Express, good thru 09/26, billing zip 90210.",
   },
@@ -119,7 +121,7 @@ const MAIL = [
  *  card (bare 4-digit run, no card context). */
 const HONK_REAL = {
   messageId: `honk-real-${TAG}@mail.gmail.com`,
-  from: "no-reply@honkmobile.com",
+  from: "accountspayable@honkforhelp.com",
   subject: "Your payment from HONK - Ref# 11343871391",
   body: "Payment of $49.00 received for Ref# 11343871391. Your card ending in 9498 was used. Thanks for choosing HONK!",
 };
@@ -247,6 +249,12 @@ await setup();
   check("parse junk: skipped with reason (never a fake charge)", junk.skipReason != null && junk.amountCents === null, JSON.stringify(junk));
   check("detectClub null for non-club mail", detectClub("newsletter@somewhere.com", "deals", "save money") === null);
   check("detectClub case-insensitive keyword", detectClub("ops@ALLIEDDISPATCH.com", "x", "y") === "Allied Dispatch");
+  check("payment sender allowlist: all four exact senders", [
+    "provider.confirmation@trx-now.com", "accountspayable@honkforhelp.com",
+    "InControl@mastercard.com", "noreply@pinnacle-team.com",
+  ].every(isAllowedPaymentSender));
+  check("payment sender allowlist: trim + case normalization", isAllowedPaymentSender("  InCoNtRoL@MaStErCaRd.CoM  ") && normalizeSenderAddress("  X@Y.COM ") === "x@y.com");
+  check("payment sender allowlist: near/domain/display-name rejected", !isAllowedPaymentSender("provider.confirmation+test@trx-now.com") && !isAllowedPaymentSender("provider.confirmation@trx-now.com.evil") && !isAllowedPaymentSender("Provider Confirmation <provider.confirmation@trx-now.com>") && !isAllowedPaymentSender("billing@honkforhelp.com"));
   const txt = extractPlainText(rawMessage(MAIL[0]));
   check("extractPlainText pulls the body", txt.includes("charged $85.00"), JSON.stringify(txt));
 
@@ -263,9 +271,9 @@ await setup();
   const creditOne = parseClubChargeEmail({ from: "collections@halstedfinancial.com", subject: "Payment Required on Overdue Credit One Account", bodyText: "Your payment of $271.20 is required immediately. Card on file ending in 4799 was declined. Please call 800-555-0199." });
   check("parse Credit-One spam ($271.20, last4 4799, NO club) → skipped, last4 never taken", creditOne.skipReason === SKIP_NOT_CLUB && creditOne.cardLast4 === null && creditOne.amountCents === null, JSON.stringify(creditOne));
   // Full PAN grouped + Luhn pass → last4 extracted (never the PAN itself).
-  const panGrouped = parseClubChargeEmail({ from: "billing@allieddispatch.com", subject: "Allied Dispatch Payment — PO #11220", bodyText: "Visa 4242 4242 4242 4242 charged $112.75 for PO #11220. Exp 03/29. Billing zip 06606." });
+  const panGrouped = parseClubChargeEmail({ from: "provider.confirmation@trx-now.com", subject: "Allied Dispatch Payment — PO #11220", bodyText: "Visa 4242 4242 4242 4242 charged $112.75 for PO #11220. Exp 03/29. Billing zip 06606." });
   check("parse full PAN grouped (4242…4242, Luhn pass) → last4 4242", panGrouped.cardLast4 === "4242" && panGrouped.clubName === "Allied Dispatch" && panGrouped.amountCents === 11275 && panGrouped.skipReason == null, JSON.stringify(panGrouped));
-  const panFlat = parseClubChargeEmail({ from: "billing@allieddispatch.com", subject: "Allied Dispatch Payment — PO #11221", bodyText: "Card Number: 4111111111111111 charged $33.10 for PO #11221." });
+  const panFlat = parseClubChargeEmail({ from: "provider.confirmation@trx-now.com", subject: "Allied Dispatch Payment — PO #11221", bodyText: "Card Number: 4111111111111111 charged $33.10 for PO #11221." });
   check("parse full PAN flat (4111…1111, Luhn pass) → last4 1111", panFlat.cardLast4 === "1111" && panFlat.skipReason == null, JSON.stringify(panFlat));
   // Full PAN that FAILS Luhn (order number / phone number) → card-miss skip.
   const panBadGrouped = parseClubChargeEmail({ from: "billing@honkmobile.com", subject: "Honk Invoice Paid", bodyText: "Payment of $50.00 received for order 1234 5678 9012 3456." });
@@ -278,7 +286,7 @@ await setup();
   // Promo "expires 08/16" must NOT parse as a card expiry (2020s/2030s only).
   const quillPromo = parseClubChargeEmail({ from: "offers@quill.com", subject: "Starbucks Card Promo", bodyText: "Get a $25.00 Starbucks eGift Card — promo expires 08/16. Terms apply." });
   check("parse promo email: no club → skipped (never staged)", quillPromo.skipReason === SKIP_NOT_CLUB, JSON.stringify(quillPromo));
-  const expiryTight = parseClubChargeEmail({ from: "billing@allieddispatch.com", subject: "Allied Dispatch Payment — PO #11222", bodyText: "Your Visa ending in 4242 was charged $25.00 for PO #11222. Card expires 08/16. Billing zip 06606." });
+  const expiryTight = parseClubChargeEmail({ from: "provider.confirmation@trx-now.com", subject: "Allied Dispatch Payment — PO #11222", bodyText: "Your Visa ending in 4242 was charged $25.00 for PO #11222. Card expires 08/16. Billing zip 06606." });
   check("expiry '08/16' does NOT parse (year 16 outside 2020s/2030s)", expiryTight.cardLast4 === "4242" && expiryTight.cardExpiry === null && expiryTight.skipReason == null, JSON.stringify(expiryTight));
   // Luhn unit checks (vectors verified against standard card test numbers).
   check("luhnValid 4242424242424242 (Visa test) → true", luhnValid("4242424242424242") === true);
@@ -289,7 +297,7 @@ await setup();
   check("luhnValid 9999999999999999 → false", luhnValid("9999999999999999") === false);
   check("luhnValid rejects short/garbage input", luhnValid("1234") === false && luhnValid("abc") === false);
   // Club email with a card but NO amount → existing amount gate.
-  const noAmount = parseClubChargeEmail({ from: "billing@allieddispatch.com", subject: "Allied Dispatch — statement", bodyText: "Your Visa ending in 4242 has no balance due." });
+  const noAmount = parseClubChargeEmail({ from: "provider.confirmation@trx-now.com", subject: "Allied Dispatch — statement", bodyText: "Your Visa ending in 4242 has no balance due." });
   check("parse club email with card but no amount → skipped (no charge amount)", noAmount.skipReason === SKIP_NO_AMOUNT, JSON.stringify(noAmount));
 }
 
@@ -556,7 +564,7 @@ await setup();
 {
   // A PO email that shows the FULL card number (grouped 4-4-4-4) — only the
   // last 4 may be staged, plus brand/expiry/zip.
-  const po = parseClubChargeEmail({ from: "billing@allieddispatch.com", subject: "Allied Dispatch Payment — PO #77120", bodyText: "Visa 4242 4242 4242 4242 charged $112.75 for PO #77120. Exp 03/29. Billing zip 06606." });
+  const po = parseClubChargeEmail({ from: "provider.confirmation@trx-now.com", subject: "Allied Dispatch Payment — PO #77120", bodyText: "Visa 4242 4242 4242 4242 charged $112.75 for PO #77120. Exp 03/29. Billing zip 06606." });
   check("full grouped PAN → last4 4242 only, metadata intact", po.amountCents === 11275 && po.cardLast4 === "4242" && po.cardBrand === "Visa" && po.cardExpiry === "03/29" && po.cardBillingZip === "06606" && po.poRef === "77120", JSON.stringify(po));
   check("full PAN never stored/returned", !JSON.stringify(po).includes("424242424242"), JSON.stringify(po));
   const staged = await stageClubChargeCore(ACTOR, { amountCents: po.amountCents, cardLast4: po.cardLast4, cardBrand: po.cardBrand, cardExpiry: po.cardExpiry, cardBillingZip: po.cardBillingZip, clubName: "Allied Dispatch", poRef: po.poRef, messageId: `po77120-${TAG}@mail.gmail.com` });

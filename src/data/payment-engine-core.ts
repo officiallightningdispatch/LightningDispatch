@@ -61,7 +61,7 @@
  */
 import { z } from "zod";
 import { loadSquareConfig, loadSquarePublicConfig, createCardPayment, squareIdempotencyKey } from "./square-client";
-import { scanGmail, type ClubChargeCandidate } from "./club-mail";
+import { scanGmail, PAYMENT_ALLOWED_SENDERS, type ClubChargeCandidate } from "./club-mail";
 import { randomUUID } from "node:crypto";
 
 const configured = () => Boolean(process.env.DATABASE_URL);
@@ -492,7 +492,7 @@ export async function scanClubMailCore(actor: PaymentEngineActor, data: unknown,
   const dryRun = v.data.dryRun === true;
   let mail;
   try {
-    mail = await scanGmail({ sinceDays: v.data.sinceDays, connectImpl: opts.connectImpl, stableDir: opts.stableDir });
+    mail = await scanGmail({ sinceDays: v.data.sinceDays, connectImpl: opts.connectImpl, stableDir: opts.stableDir, allowedSenders: PAYMENT_ALLOWED_SENDERS });
   } catch (err) {
     return { ok: false, dryRun, scanned: 0, candidates: 0, staged: 0, alreadyStaged: 0, skipped: 0, items: [], error: err instanceof Error ? err.message : "Gmail scan failed." };
   }
