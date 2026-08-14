@@ -44,7 +44,7 @@ try {
   });
   await check("ONE-CHANGE-PER-DAY: production selection persists, limits, resets, STOP preserves zone", async () => {
     const a={...actor,id:DRIVER_A};
-    await q`DELETE FROM driver_availability_log WHERE org_id=${ORG} AND user_id=${DRIVER_A}`;
+    await q`DELETE FROM driver_availability_log WHERE org_id=${ORG}`;
     assert.equal((await selectZoneCore(a,ZONE_IN,new Date('2026-08-15T10:00:00Z'))).ok,true);
     assert.equal((await selectZoneCore(a,ZONE_EMPTY,new Date('2026-08-15T11:00:00Z'))).ok,true);
     const third=await selectZoneCore(a,ZONE_IN,new Date('2026-08-15T12:00:00Z'));
@@ -68,7 +68,7 @@ try {
     assert.deepEqual({busyness:e.busyness,availableDrivers:e.availableDrivers,activeJobs:e.activeJobs,unassignedJobs:e.unassignedJobs,recentVolume24h:e.recentVolume24h,demandRatio:e.demandRatio},{busyness:'Low',availableDrivers:0,activeJobs:0,unassignedJobs:0,recentVolume24h:0,demandRatio:0});
   });
   await check("DISPATCH PREFERENCE: real loadZoneMatches + comparator uses nested driver", async () => {
-    await q`DELETE FROM driver_availability_log WHERE org_id=${ORG} AND user_id=${DRIVER_A}`;
+    await q`DELETE FROM driver_availability_log WHERE org_id=${ORG}`;
     await q`INSERT INTO driver_availability_log(org_id,user_id,day,session_started_at,zone_id) VALUES(${ORG},${DRIVER_A},(CURRENT_TIMESTAMP AT TIME ZONE 'America/New_York')::date,NOW(),${ZONE_IN})`;
     const candidates=[driver('910001',41.208862,-73.207253),driver('910002',41.208862,-73.207253)];
     const matches=await loadZoneMatches(ORG,candidates,41.208862,-73.207253,new Date());
@@ -80,12 +80,12 @@ try {
   });
   await check("OVERRIDE: owner production override bypasses limit, clears, audits", async () => {
     const a={...actor}; const day='2026-08-17';
-    await q`INSERT INTO driver_availability_log(org_id,user_id,day,zone_id,zone_change_count) VALUES(${ORG},${DRIVER_A},${day},${ZONE_IN},2) ON CONFLICT DO UPDATE SET zone_id=${ZONE_IN},zone_change_count=2`;
+    await q`INSERT INTO driver_availability_log(org_id,user_id,day,zone_id,zone_change_count) VALUES(${ORG},${DRIVER_A},${day},${ZONE_IN},2) ON CONFLICT ON CONSTRAINT driver_availability_log_pkey DO UPDATE SET zone_id=${ZONE_IN},zone_change_count=2`;
     assert.equal((await ownerSetZoneCore(a,DRIVER_A,ZONE_EMPTY,day)).ok,true);
     const row=await q`SELECT zone_id FROM driver_availability_log WHERE org_id=${ORG} AND user_id=${DRIVER_A} AND day=${day}`; assert.equal(String(row[0].zone_id),ZONE_EMPTY);
     assert.equal((await ownerSetZoneCore(a,DRIVER_A,null,day)).ok,true);
     const cleared=await q`SELECT zone_id FROM driver_availability_log WHERE org_id=${ORG} AND user_id=${DRIVER_A} AND day=${day}`; assert.equal(cleared[0].zone_id,null);
-    const audit=await q`SELECT actor_user_id,actor_role,entity_id,detail->>'zoneId' zone,detail->>'day' day,detail->>'reason' reason FROM audit_log WHERE org_id=${ORG} AND action='driver_zone_override' ORDER BY occurred_at DESC LIMIT 1`;
+    const audit=await q`SELECT actor_user_id,actor_role,entity_id,detail->>'zoneId' zone,detail->>'day' AS "day",detail->>'reason' reason FROM audit_log WHERE org_id=${ORG} AND action='driver_zone_override' ORDER BY occurred_at DESC LIMIT 1`;
     assert.equal(String(audit[0].actor_user_id),OWNER); assert.equal(audit[0].actor_role,'owner'); assert.equal(String(audit[0].entity_id),DRIVER_A); assert.equal(audit[0].zone,null); assert.equal(audit[0].day,day); assert.equal(audit[0].reason,'owner/admin override');
   });
 } finally {
