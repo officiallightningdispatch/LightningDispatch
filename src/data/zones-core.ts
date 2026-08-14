@@ -4,7 +4,6 @@ export type ZoneActor={orgId:string;id:string;role:string};
 const qdb=()=>sql();
 function localDate(tz:string, d=new Date()){ return new Intl.DateTimeFormat('en-CA',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit'}).format(d); }
 export function zoneSelectionOpenAt(nowIso:string|Date, tz:string){ return Number(new Intl.DateTimeFormat('en-US',{timeZone:tz,hour:'numeric',hour12:false}).format(new Date(nowIso)))%24 >= 6; }
-function hour(tz:string,d=new Date()){ return Number(new Intl.DateTimeFormat('en-US',{timeZone:tz,hour:'numeric',hour12:false}).format(d))%24; }
 function can(a:ZoneActor){return a.role==='owner'||a.role==='admin';}
 export async function selectZoneCore(a:ZoneActor, zoneId:string, now=new Date()){
  const q=qdb(); const z=await q`SELECT id,name,tz FROM dispatch_zones WHERE id=${zoneId} AND org_id=${a.orgId} AND active=TRUE LIMIT 1`;
