@@ -37,6 +37,11 @@ export type DriverCall = {
   pickupAddress: string;
   zip: string;
   vehicle: string;
+  /** Authoritative vehicle attributes from the assigned Towbook asset; null when absent. */
+  vehicleYear: string | null;
+  vehicleMake: string | null;
+  vehicleModel: string | null;
+  vehicleDutySignal: string | null;
   arrivalETA: string | null;
   purchaseOrderNumber: string | null;
   /** Real member/customer name — contacts[0] on the raw call (the sync's
@@ -477,6 +482,10 @@ export function normalizeDriverCall(call: Record<string, unknown>): DriverCall |
     pickupAddress: waypoint ? String(waypoint.address ?? "") : "",
     zip: waypoint ? String(waypoint.zip ?? "") : "",
     vehicle,
+    vehicleYear: asset?.year != null ? String(asset.year) : null,
+    vehicleMake: asset?.make != null ? String(asset.make) : null,
+    vehicleModel: asset?.model != null ? String(asset.model) : null,
+    vehicleDutySignal: asset?.vehicleClass != null ? String(asset.vehicleClass) : (asset?.weightClass != null ? String(asset.weightClass) : null),
     arrivalETA,
     purchaseOrderNumber: call.purchaseOrderNumber != null ? String(call.purchaseOrderNumber) : null,
     customerName: contact ? pickString(contact, "name", "fullName", "contactName", "customerName", "displayName") : "",
@@ -527,6 +536,10 @@ async function platformOnlyCalls(user: { orgId: string; towbookDriverId: string 
         pickupAddress: String(r.pickup ?? r.area ?? ""),
         zip: "",
         vehicle: String(r.vehicle_desc ?? ""),
+        vehicleYear: null,
+        vehicleMake: null,
+        vehicleModel: null,
+        vehicleDutySignal: null,
         arrivalETA: null,
         purchaseOrderNumber: null,
         customerName: String(r.customer_name ?? ""),

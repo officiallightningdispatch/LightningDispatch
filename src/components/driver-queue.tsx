@@ -15,6 +15,7 @@ import { JobPhotoFlow } from "~/components/driver-photos-ui";
 import { DriverNotificationBanners, SoundToggle } from "~/components/notify-banners";
 import { Button, Card, useToast } from "~/components/ui";
 import { driverJobAction, driverJobs, driverLogout, driverReconnect, driverReconnectContext, type DriverCall } from "~/data/driver-auth";
+import { orderDriverQueue } from "~/lib/driver-queue-core";
 import { pingDriverLocation } from "~/data/driver-gps";
 
 export const STATUS_META: Record<number, { label: string; badge: string; dot: string }> = {
@@ -113,14 +114,24 @@ export function useDriverQueue() {
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState<string | null>(null);
   const [reconnectOpen, setReconnectOpen] = useState(false);
+  const [driverLocation, setDriverLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const gpsState = useDriverGps(calls);
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !navigator.geolocation) return;
+    const watch = navigator.geolocation.watchPosition(
+      (p) => setDriverLocation({ latitude: p.coords.latitude, longitude: p.coords.longitude }),
+      () => { /* queue remains safe when location is unavailable */ },
+      { enableHighAccuracy: true, maximumAge: 20000, timeout: 12000 },
+    );
+    return () => navigator.geolocation.clearWatch(watch);
+  }, []);
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
     const r = await driverJobs();
-    if (r.ok) { setCalls(r.calls); setError(""); setExpired(false); }
+    if (r.ok) { setCalls(orderDriverQueue(r.calls, driverLocation)); setError(""); setExpired(false); }
     else { if (r.expired) setExpired(true); setError(r.message); }
     setLoading(false);
-  }, []);
+  }, [driverLocation]);
   useEffect(() => {
     void load();
     const t = setInterval(() => void load(true), 20000); // keep the queue live

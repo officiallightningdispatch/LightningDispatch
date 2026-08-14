@@ -9,6 +9,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { DriverBottomSheet } from "~/components/driver-bottom-sheet";
 import { ProgressRail } from "~/components/driver-progress";
 import { etaLabel, JobCardActions, STATUS_META, type GpsState } from "~/components/driver-queue";
+import { normalizeDutyType } from "~/lib/driver-queue-core";
 import { GpsStatusChip } from "~/components/driver-queue";
 import { buildNavigateUrl } from "~/lib/navigation";
 import { Button } from "~/components/ui";
@@ -19,7 +20,7 @@ import type { DriverCall } from "~/data/driver-auth";
 const addressOf = (call: DriverCall): string => [call.pickupAddress, call.zip].filter(Boolean).join(", ");
 
 /** "?" style: one prominent job front-and-center (peek) — the Uber look. */
-export function PrimaryJobPeek({ call, acting, onAct, onQueueChanged }: { call: DriverCall; acting: boolean; onAct: (id: string, a: "accept" | "en_route") => Promise<void>; onQueueChanged: () => void }) {
+export function PrimaryJobPeek({ call, position = 1, acting, onAct, onQueueChanged }: { call: DriverCall; position?: number; acting: boolean; onAct: (id: string, a: "accept" | "en_route") => Promise<void>; onQueueChanged: () => void }) {
   const meta = STATUS_META[call.statusId] ?? { label: `Status ${call.statusId}`, badge: "bg-ink-100 text-ink-600" };
   const address = addressOf(call);
   const [ua, setUa] = useState("");
@@ -46,12 +47,14 @@ export function PrimaryJobPeek({ call, acting, onAct, onQueueChanged }: { call: 
         </p>
       )}
       <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-ink-500">
+        <span className="font-semibold text-ink-700">Stop {position}</span>
         <span>
           ETA <strong className="font-semibold tabular-nums text-ink-700">{etaLabel(call.arrivalETA)}</strong>
         </span>
-        {call.vehicle && (
-          <span className="flex min-w-0 items-center gap-1"><Truck className="size-3.5 shrink-0" /><span className="break-words">{call.vehicle}</span></span>
+        {(call.vehicleYear || call.vehicleMake || call.vehicleModel) && (
+          <span className="flex min-w-0 items-center gap-1"><Truck className="size-3.5 shrink-0" /><span className="break-words">{[call.vehicleYear, call.vehicleMake, call.vehicleModel].filter(Boolean).join(" ") || "—"}</span></span>
         )}
+        <span>{normalizeDutyType(call.vehicleDutySignal) ?? "Duty —"}</span>
       </div>
       {/* Navigate — one tap into the phone's maps app (owner-directed 2026-08-13):
           coords when the job has them, address query when not. Active jobs only;
@@ -159,7 +162,7 @@ export function HomeSheet({
       {topSlot}
       {primary ? (
         <>
-          <PrimaryJobPeek call={primary} acting={acting === primary.id} onAct={onAct} onQueueChanged={onQueueChanged} />
+          <PrimaryJobPeek call={primary} position={1} acting={acting === primary.id} onAct={onAct} onQueueChanged={onQueueChanged} />
           {/* Earnings strip (peek only): N completed · $X in tips — honest: no
               per-job rate yet (owner-side payday milestone). */}
           {!expanded && earnings && (
@@ -192,8 +195,10 @@ export function HomeSheet({
               <p className="pb-1 pt-3 text-xs font-bold uppercase tracking-[.14em] text-ink-400">
                 More offers ({offers.length})
               </p>
-              {offers.map((c) => (
-                <OfferRow key={c.id} call={c} acting={acting === c.id} onAct={onAct} />
+              {offers.map((c, index) => (
+                c.statusId === 1 ? <OfferRow key={c.id} call={c} acting={acting === c.id} onAct={onAct} /> : (
+                  <div key={c.id} className="border-b border-ink-100 py-3"><PrimaryJobPeek call={c} position={index + 2} acting={acting === c.id} onAct={onAct} onQueueChanged={onQueueChanged} /></div>
+                )
               ))}
             </div>
           )}

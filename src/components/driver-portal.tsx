@@ -117,7 +117,9 @@ export function RealDriverPortal() {
   const history =
     calls?.filter((c) => c.statusId === 5 || c.statusId === 6 || c.statusId === 252 || c.statusId === 255) ?? [];
   const primary = active[0] ?? offers[0] ?? null;
-  const moreOffers = primary ? offers.filter((c) => c.id !== primary.id) : offers;
+  // Keep every live assigned job in the sheet; the first is the next stop and
+  // the remainder stay visible beneath it (offers remain available too).
+  const moreOffers = [...active.slice(1), ...offers.filter((c) => c.id !== primary?.id)];
   const flash = useRequoteFlash(primary);
 
   const chips: { kind: "error" | "expired"; text: string; onAction?: () => void }[] = [];
