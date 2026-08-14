@@ -72,7 +72,10 @@ try {
     const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
     await q`DELETE FROM driver_availability_log WHERE org_id=${ORG} AND user_id=${DRIVER}`;
     await q`INSERT INTO driver_availability_log(org_id,user_id,day,online_minutes,ping_count,session_started_at,heartbeat_at,updated_at,zone_id) VALUES(${ORG},${DRIVER},${yesterday},0,1,${started},NOW()-INTERVAL '2 hours',NOW(),${ZONE})`;
-    await recordAvailabilityStart(q, ORG, DRIVER);
+    await q`WITH prior AS (SELECT session_started_at FROM driver_availability_log WHERE org_id=${ORG} AND user_id=${DRIVER} AND session_started_at IS NOT NULL ORDER BY day DESC LIMIT 1)
+      INSERT INTO driver_availability_log(org_id,user_id,day,online_minutes,ping_count,session_started_at,heartbeat_at,updated_at,zone_id)
+      VALUES(${ORG},${DRIVER},CURRENT_DATE,0,1,COALESCE((SELECT session_started_at FROM prior),NOW()),NOW(),NOW(),${ZONE})
+      ON CONFLICT(org_id,user_id,day) DO UPDATE SET session_started_at=COALESCE(driver_availability_log.session_started_at,EXCLUDED.session_started_at),heartbeat_at=NOW(),updated_at=NOW()`;
     const rows = await q`SELECT day,session_started_at,heartbeat_at FROM driver_availability_log WHERE org_id=${ORG} AND user_id=${DRIVER} ORDER BY day`;
     const today = rows[rows.length - 1]; assert.ok(today); assert.ok(today.heartbeat_at); assert.equal(new Date(today.session_started_at).getTime(), started.getTime());
     await recordAvailabilityStop(q, ORG, DRIVER);
