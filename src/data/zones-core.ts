@@ -3,13 +3,14 @@ import { randomUUID } from "node:crypto";
 export type ZoneActor={orgId:string;id:string;role:string};
 const qdb=()=>sql();
 function localDate(tz:string, d=new Date()){ return new Intl.DateTimeFormat('en-CA',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit'}).format(d); }
+export function zoneSelectionOpenAt(nowIso:string|Date, tz:string){ return Number(new Intl.DateTimeFormat('en-US',{timeZone:tz,hour:'numeric',hour12:false}).format(new Date(nowIso)))%24 >= 6; }
 function hour(tz:string,d=new Date()){ return Number(new Intl.DateTimeFormat('en-US',{timeZone:tz,hour:'numeric',hour12:false}).format(d))%24; }
 function can(a:ZoneActor){return a.role==='owner'||a.role==='admin';}
-export async function selectZoneCore(a:ZoneActor, zoneId:string){
+export async function selectZoneCore(a:ZoneActor, zoneId:string, now=new Date()){
  const q=qdb(); const z=await q`SELECT id,name,tz FROM dispatch_zones WHERE id=${zoneId} AND org_id=${a.orgId} AND active=TRUE LIMIT 1`;
  if(!z.length)return {ok:false as const,message:'That zone is not available.'};
- if(hour(String(z[0].tz))<6)return {ok:false as const,message:'Zone selection opens at 6:00 AM local'};
- const day=localDate(String(z[0].tz));
+ if(!zoneSelectionOpenAt(now, String(z[0].tz)))return {ok:false as const,message:'Zone selection opens at 6:00 AM local'};
+ const day=localDate(String(z[0].tz),now);
  const rows=await q`SELECT zone_change_count FROM driver_availability_log WHERE org_id=${a.orgId} AND user_id=${a.id} AND day=${day} LIMIT 1`;
  const count=rows.length?Number(rows[0].zone_change_count):0;
  if(count>=2)return {ok:false as const,message:'You can change your zone only once per day.'};

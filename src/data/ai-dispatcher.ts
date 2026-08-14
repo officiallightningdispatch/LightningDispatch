@@ -383,13 +383,13 @@ export async function loadDriverAnchors(orgId: string, now: Date = new Date()): 
  *  24h on write, so any row here is recent; the caller decides freshness via
  *  STALE_GPS_FIX_MINUTES against captured_at. Never throws — a DB error
  *  returns an empty map so the engine degrades to payload-GPS origins. */
-async function loadZoneMatches(orgId: string, candidates: unknown[], lat: number, lng: number, now = new Date()): Promise<Map<string, boolean>> {
+export async function loadZoneMatches(orgId: string, candidates: unknown[], lat: number, lng: number, now = new Date()): Promise<Map<string, boolean>> {
   const out = new Map<string, boolean>(); for (const d of candidates) out.set(String((d as Record<string, unknown>).driverId ?? ''), false);
   try {
     const zones = await sql()`SELECT id,lat,lng,radius_miles,tz FROM dispatch_zones WHERE org_id=${orgId} AND active=TRUE` as Array<Record<string,unknown>>;
     const miles=(a:number,b:number,c:number,d:number)=>{const r=Math.PI/180,p=Math.sin((c-a)*r/2)**2+Math.cos(a*r)*Math.cos(c*r)*Math.sin((d-b)*r/2)**2;return 3958.7613*2*Math.atan2(Math.sqrt(p),Math.sqrt(1-p));};
     const job=zones.find(z=>miles(lat,lng,Number(z.lat),Number(z.lng))<=Number(z.radius_miles)); if(!job)return out;
-    const rows=await sql()`SELECT u.towbook_driver_id,l.zone_id,l.day,z.tz FROM driver_availability_log l JOIN users u ON u.id=l.user_id AND u.org_id=l.org_id JOIN dispatch_zones z ON z.id=l.zone_id AND z.org_id=l.org_id WHERE l.org_id=${orgId} AND l.session_started_at IS NOT NULL AND l.zone_id IS NOT NULL` as Array<Record<string,unknown>>;
+    const rows=await sql()`SELECT u.towbook_driver_id,l.zone_id,l.day,z.tz FROM driver_availability_log l JOIN users u ON u.id=l.user_id JOIN dispatch_zones z ON z.id=l.zone_id AND z.org_id=l.org_id WHERE l.org_id=${orgId} AND l.session_started_at IS NOT NULL AND l.zone_id IS NOT NULL` as Array<Record<string,unknown>>;
     const day=(tz:string)=>new Intl.DateTimeFormat('en-CA',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit'}).format(now), selected=new Map<string,string>();
     for(const r of rows)if(String(r.day)===day(String(r.tz)))selected.set(String(r.towbook_driver_id),String(r.zone_id));
     for(const d of candidates){const id=String((d as Record<string,unknown>).driverId??'');out.set(id,selected.get(id)===String(job.id));}
