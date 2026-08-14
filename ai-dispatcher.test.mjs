@@ -84,7 +84,7 @@ let created = false;
 const ZONE = { lat: 41.208862, lng: -73.207253, radiusMi: 30 };
 const northOf = (dMiles) => ZONE.lat + dMiles / 69.09; // ~1° lat = 69.09 mi
 
-const offer = (id, { lat = 41.2, lng = -73.2, status = 0, expiresInMin = 10, maxEta = null, omitLat = false, omitLng = false, startingLocation = "123 MAIN ST, BRIDGEPORT CT 06606", past = false } = {}) => {
+const offer = (id, { lat = 41.2, lng = -73.2, status = 0, expiresInMin = 10, maxEta = null, omitLat = false, omitLng = false, startingLocation = "123 MAIN ST, BRIDGEPORT CT 06606", purchaseOrderNumber = `1125${id}`, past = false } = {}) => {
   const o = {
     callRequestId: id,
     masterAccountId: 29,
@@ -94,7 +94,7 @@ const offer = (id, { lat = 41.2, lng = -73.2, status = 0, expiresInMin = 10, max
     status,
     expirationDateUtc: past ? "2026-08-01T00:00:00" : new Date(Date.now() + expiresInMin * 60000).toISOString(),
     defaultEta: 30,
-    purchaseOrderNumber: `1125${id}`,
+    purchaseOrderNumber,
     sound: false,
     startLocationLatitude: lat,
     startLocationLongitude: lng,
@@ -1387,6 +1387,56 @@ try {
     check("coords real-geocode path: auto_accept_with_driver, NOT escalated", r.decisions[0]?.decision === "auto_accept_with_driver" && r.decisions[0]?.escalated === false, JSON.stringify(r.decisions));
     const rows = await q`SELECT decision, reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='6005'`;
     check("coords real-geocode path: decision records source=geocode + score 96 + verified dispatch", rows[0] && rows[0].decision === "auto_accept_with_driver" && String(rows[0].reason).includes("pickup coords: geocode") && String(rows[0].reason).includes("score 96") && String(rows[0].reason).includes("VERIFIED"), String(rows[0]?.reason));
+  }
+
+  /* ============ 27j) state-resolution regressions (authoritative record + placeholder) ============ */
+  {
+    const tx = "2500 SE Inner Loop, Georgetown, TX 78626";
+    const ct = "123 MAIN ST, BRIDGEPORT CT 06606";
+    // Zone-guard interplay: ORG6's org_settings carries the default 06606-centroid
+    // zone (30-mi radius), so a TX-coordinate pickup is escalated_out_of_zone
+    // BEFORE the state guard runs. The suite is sequential — switch the org zone
+    // per scenario (CT for CT-coordinate scenarios, Georgetown TX for TX) and
+    // restore the original values at the end so later ORG6 tests are unaffected.
+    const origZone = (await q`SELECT zone_lat, zone_lng, zone_radius_miles FROM org_settings WHERE org_id=${ORG6}`)[0]
+      ?? { zone_lat: 41.208862, zone_lng: -73.207253, zone_radius_miles: 30 };
+    const setZone = (lat, lng, radius) => q`UPDATE org_settings SET zone_lat=${lat}, zone_lng=${lng}, zone_radius_miles=${radius} WHERE org_id=${ORG6}`;
+    const TX_ZONE = { lat: 30.61948, lng: -97.648242, radius: 50 };
+    const runStateCase = async (id, opts = {}) => {
+      const m = makeFetch({ offers: [offer(id, { startingLocation: opts.address ?? ct, lat: opts.lat ?? 41.31, lng: opts.lng ?? -73.06, purchaseOrderNumber: opts.po ?? `state-${id}` })], drivers: [driver(703785, "Jayden Fountain")] });
+      const { deps } = makeDeps(m.fetchImpl, null, opts.stateResolver ? { stateResolver: opts.stateResolver } : {});
+      return { m, r: await runAutoDispatch(ORG6, deps) };
+    };
+    const insertJob = (id, towbookId, po, pickup, lat, lng) => q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, pickup, raw_json, pickup_lat, pickup_lng)
+      VALUES(${id}, ${ORG6}, 'QA State Job', '', 0, 0, 'TX', 'tow', 'accepted', NOW(), '', ${towbookId}, ${pickup}, ${JSON.stringify({ purchaseOrderNumber: po, startingLocation: pickup })}::jsonb, ${lat}, ${lng})`;
+    // --- CT-coordinate scenarios (default ORG6 zone: 06606 centroid, 30 mi) ---
+    const s1 = await runStateCase(6201);
+    check("state resolution CT baseline: non-placeholder CT coords auto-accept, not escalated", s1.r.decisions[0]?.decision === "auto_accept_with_driver" && !s1.r.decisions[0]?.escalated, JSON.stringify(s1.r.decisions));
+    await insertJob("state-db-1", "280160981", "112716690", `${tx}, USA`, 30.61948, -97.648242);
+    const s3 = await runStateCase(6203, { address: tx, lat: 41.214889, lng: -73.195803, po: "112716690", stateResolver: async () => "TX" });
+    const s3row = (await q`SELECT reason FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='6203'`)[0];
+    check("state resolution placeholder + authoritative: auto-accepts with both reason markers", s3.r.decisions[0]?.decision === "auto_accept_with_driver" && String(s3row?.reason).includes("Agero CT placeholder") && String(s3row?.reason).includes("authoritative pickup record"), String(s3row?.reason));
+    await insertJob("state-db-2", "280170002", "112730001", `${tx}, USA`, 30.61948, -97.648242);
+    const s4 = await runStateCase(6204, { address: ct, lat: 41.214889, lng: -73.195803, po: "112730001", stateResolver: async () => "TX" });
+    const s4row = (await q`SELECT reason FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='6204'`)[0];
+    check("state resolution authoritative record beats stale offer address", s4.r.decisions[0]?.decision === "auto_accept_with_driver" && String(s4row?.reason).includes("authoritative"), String(s4row?.reason));
+    const s7 = await runStateCase(6207, { address: ct, lat: 41.31, lng: -73.06, stateResolver: async () => "TX" });
+    check("state resolution no in-state driver: CT job with TX drivers", s7.r.decisions[0]?.decision === "escalated_cross_state" && String(s7.r.decisions[0]?.reason).includes("no driver currently in state CT"), JSON.stringify(s7.r.decisions));
+    // --- TX-coordinate scenarios: switch the org zone to Georgetown TX ---
+    await setZone(TX_ZONE.lat, TX_ZONE.lng, TX_ZONE.radius);
+    const s2 = await runStateCase(6202, { address: tx, lat: 30.61948, lng: -97.648242, stateResolver: async () => "TX" });
+    check("state resolution TX baseline: address wins when reverse geocode unavailable", s2.r.decisions[0]?.decision === "auto_accept_with_driver" && !s2.r.decisions[0]?.escalated, JSON.stringify(s2.r.decisions));
+    const m5 = makeFetch({ offers: [offer(6205, { address: ct, startingLocation: ct, lat: 30.61948, lng: -97.648242, purchaseOrderNumber: "112731111" })], drivers: [driver(703785, "Jayden Fountain")] });
+    const rf5 = makeRouterFetch();
+    const geoTomtomFetch = async (url, init = {}) => String(url).includes("/search/2/reverseGeocode/")
+      ? jsonResponse(200, { addresses: [{ address: { countryCode: "US", adminDistrict: "TX" } }] }) : rf5.fetchImpl(url, init);
+    const { deps: d5 } = makeDeps(withRouter(m5.fetchImpl, geoTomtomFetch), null, { noRouterOverride: true, env: { TOMTOM_API_KEY: "test-key-not-real" } });
+    const r5 = await runAutoDispatch(ORG6, d5);
+    check("state resolution genuine discrepancy: escalated_state_unknown with zero accept POSTs", r5.decisions[0]?.decision === "escalated_state_unknown" && String(r5.decisions[0]?.reason).includes("genuine location discrepancy") && posts(m5.calls).length === 0, JSON.stringify(r5.decisions));
+    const s6 = await runStateCase(6206, { address: tx, lat: 30.61948, lng: -97.648242 });
+    check("state resolution cross-state blocked: TX job with CT drivers", s6.r.decisions[0]?.decision === "escalated_cross_state" && String(s6.r.decisions[0]?.reason).includes("no driver currently in state TX"), JSON.stringify(s6.r.decisions));
+    // restore ORG6 zone for later tests
+    await setZone(origZone.zone_lat, origZone.zone_lng, origZone.zone_radius_miles);
   }
 
   /* ============ 27k) tick observability: ai_dispatcher_runs (backlog #1) ============ */
