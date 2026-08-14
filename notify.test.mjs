@@ -9,6 +9,7 @@ import {
   SEEN_CAP,
   diffCancelledJobIds,
   diffEscalatedDecisionIds,
+  diffNewCashoutIds,
   diffNewJobIds,
   isEscalationDecision,
   mergeSeen,
@@ -20,6 +21,7 @@ const check = (name, cond, extra = "") => { checks.push([name, Boolean(cond), ex
 
 const J = (id, extra = {}) => ({ id, ...extra });
 const D = (id, decision, reason = "") => ({ id, decision, reason });
+const CO = (id, amountCents = 1200, extra = {}) => ({ id, amountCents, contractorName: "Driver", rail: "cash_app", ...extra });
 
 /* --------------------------- no-fire on first load --------------------------- */
 {
@@ -34,6 +36,17 @@ const D = (id, decision, reason = "") => ({ id, decision, reason });
   const seeded = mergeSeen([], visible.map((j) => j.id));
   check("bootstrap seed keeps all visible ids", seeded.length === 2 && seeded.includes("j1") && seeded.includes("j2"));
   check("post-bootstrap poll of the same list fires nothing", diffNewJobIds(seeded, visible).length === 0);
+}
+
+/* --------------------------- cash-out arrival detection --------------------------- */
+{
+  const added = diffNewCashoutIds(["cash-a"], [CO("cash-a"), CO("cash-b", 3450)]);
+  check("cash-out new id fires with real payload", added.length === 1 && added[0].id === "cash-b" && added[0].amountCents === 3450);
+}
+{
+  const added = diffNewCashoutIds([], [CO("cash-a"), CO("cash-a"), {}, { id: "" }]);
+  check("cash-out ids dedupe within poll", added.length === 1 && added[0].id === "cash-a");
+  check("paid cash-outs are excluded by pending input", diffNewCashoutIds([], []).length === 0);
 }
 
 /* --------------------------- new arrival detection --------------------------- */

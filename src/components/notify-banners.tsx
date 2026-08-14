@@ -28,17 +28,18 @@ import { useNavigate } from "@tanstack/react-router";
 import { AlertTriangle, Volume2, VolumeX, X, XCircle, Zap } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SERVICE_LABELS } from "~/lib/job-ui";
-import { diffCancelledJobIds, diffEscalatedDecisionIds, diffNewJobIds, mergeSeen, type NotifyCall } from "~/lib/notify";
+import { diffCancelledJobIds, diffEscalatedDecisionIds, diffNewCashoutIds, diffNewJobIds, mergeSeen, type NotifyCall } from "~/lib/notify";
 import { getSeenIds, seenKey, setSeenIds } from "~/lib/notify-seen";
 import { playAlertSound, primeAudio, soundMuted, toggleSoundMuted, type SoundRole } from "~/lib/sound";
 import { etaMinutesLabel } from "~/components/driver-eta";
 import { useDispatchStore } from "~/lib/store";
 import { listAiDispatcherDecisions } from "~/data/server";
+import { listTipCashoutRequests } from "~/data/tip-cashout";
 
-export type BannerKind = "job" | "escalation" | "cancelled" | "assignment" | "completed";
+export type BannerKind = "job" | "escalation" | "cancelled" | "assignment" | "completed" | "cashout";
 
 /** Routes banners can navigate to (typed so navigate() typechecks). */
-export type BannerTarget = "/owner/queue" | "/owner/ai-dispatcher" | "/driver";
+export type BannerTarget = "/owner/queue" | "/owner/ai-dispatcher" | "/owner/money" | "/driver";
 
 export type BannerItem = {
   /** Unique key — job:LDID / esc:DECISIONID / driverjob:CALLID */
@@ -139,7 +140,7 @@ function BannerStack({
           key={b.id}
           role="status"
           className={`pointer-events-auto w-full max-w-md animate-[notify-in_0.25s_ease-out] overflow-hidden rounded-2xl border shadow-card ${
-            b.kind === "escalation" ? "border-danger-200 bg-danger-50" : b.kind === "cancelled" ? "border-accent-200 bg-accent-50" : "border-brand-200 bg-surface"
+            b.kind === "escalation" ? "border-danger-200 bg-danger-50" : b.kind === "cancelled" ? "border-accent-200 bg-accent-50" : b.kind === "cashout" ? "border-success-200 bg-success-50" : "border-brand-200 bg-surface"
           }`}
         >
           <div className="flex items-stretch">
@@ -150,7 +151,7 @@ function BannerStack({
             >
               <span
                 className={`mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg ${
-                  b.kind === "escalation" ? "bg-danger-100 text-danger-600" : b.kind === "cancelled" ? "bg-accent-100 text-accent-700" : b.kind === "assignment" ? "bg-brand-500 text-white" : "bg-brand-50 text-brand-600"
+                  b.kind === "escalation" ? "bg-danger-100 text-danger-600" : b.kind === "cancelled" ? "bg-accent-100 text-accent-700" : b.kind === "cashout" ? "bg-success-100 text-success-700" : b.kind === "assignment" ? "bg-brand-500 text-white" : "bg-brand-50 text-brand-600"
                 }`}
               >
                 {b.kind === "escalation" ? (
@@ -224,6 +225,7 @@ export function OwnerNotificationLayer() {
 
   const jobsKey = seenKey("owner", "jobs");
   const decisionsKey = seenKey("owner", "decisions");
+  const cashoutsKey = seenKey("owner", "cashouts");
 
   useEffect(() => {
     let stop = false;
@@ -237,7 +239,9 @@ export function OwnerNotificationLayer() {
         // still bootstraps cleanly (no burst).
         const data = await refresh();
         const decisions = await listAiDispatcherDecisions({ data: { escalatedOnly: true, limit: 20 } });
+        const cashoutResult = await listTipCashoutRequests();
         if (stop || !data) return;
+        const cashouts = cashoutResult.ok ? cashoutResult.data.open : [];
 
         const jobs = (data?.jobs ?? []).map((j) => ({
           id: j.id,
@@ -250,6 +254,7 @@ export function OwnerNotificationLayer() {
           // First poll: seed everything visible — nothing on screen fires.
           setSeenIds(jobsKey, mergeSeen(getSeenIds(jobsKey), jobs.map((j) => j.id)));
           setSeenIds(decisionsKey, mergeSeen(getSeenIds(decisionsKey), decisions.map((d) => d.id)));
+          setSeenIds(cashoutsKey, mergeSeen(getSeenIds(cashoutsKey), cashouts.map((c) => c.id)));
           previousJobs.current = new Map(jobs.map((j) => [j.id, String((data?.jobs ?? []).find((raw) => raw.id === j.id)?.status ?? "")]));
           booted.current = true;
           return;
@@ -259,8 +264,10 @@ export function OwnerNotificationLayer() {
         const completedJobs = jobs.filter((j) => previousJobs.current.get(j.id) !== "completed" && (data?.jobs ?? []).find((raw) => raw.id === j.id)?.status === "completed");
         previousJobs.current = new Map(jobs.map((j) => [j.id, String((data?.jobs ?? []).find((raw) => raw.id === j.id)?.status ?? "")]));
         const newDecs = diffEscalatedDecisionIds(getSeenIds(decisionsKey), decisions);
+        const newCashouts = diffNewCashoutIds(getSeenIds(cashoutsKey), cashouts);
         if (newJobs.length) setSeenIds(jobsKey, mergeSeen(getSeenIds(jobsKey), newJobs.map((j) => j.id)));
         if (newDecs.length) setSeenIds(decisionsKey, mergeSeen(getSeenIds(decisionsKey), newDecs.map((d) => d.id)));
+        if (newCashouts.length) setSeenIds(cashoutsKey, mergeSeen(getSeenIds(cashoutsKey), newCashouts.map((c) => c.id)));
 
         const items: BannerItem[] = [];
         for (const j of newJobs) {
@@ -292,6 +299,16 @@ export function OwnerNotificationLayer() {
             to: "/owner/ai-dispatcher",
           });
         }
+        for (const c of newCashouts) {
+          const dollars = (Number(c.amountCents ?? 0) / 100).toLocaleString(undefined, { style: "currency", currency: "USD" });
+          items.push({
+            id: `cashout:${c.id}`,
+            kind: "cashout",
+            title: "Tip cash-out request",
+            body: `${c.contractorName?.trim() || "Contractor"} · ${dollars} · ${c.rail === "cash_app" ? "Cash App" : c.rail ? c.rail.charAt(0).toUpperCase() + c.rail.slice(1) : "Payout"}`,
+            to: "/owner/money",
+          });
+        }
         if (items.length) push(items);
       } catch {
         /* transient poll failure — never break the loop */
@@ -300,7 +317,7 @@ export function OwnerNotificationLayer() {
     void tick();
     const t = setInterval(() => void tick(), 5000);
     return () => { stop = true; clearInterval(t); };
-  }, [refresh, jobsKey, decisionsKey, push]);
+  }, [refresh, jobsKey, decisionsKey, cashoutsKey, push]);
 
   return <BannerStack role="owner" banners={banners} onDismiss={dismiss} showSoundToggle />;
 }

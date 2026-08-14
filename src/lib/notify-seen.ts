@@ -14,7 +14,7 @@ import { parseSeen } from "./notify";
 
 const cache = new Map<string, string[]>();
 
-export function seenKey(role: SoundRole, kind: "jobs" | "decisions" | "cancelled"): string {
+export function seenKey(role: SoundRole, kind: "jobs" | "decisions" | "cancelled" | "cashouts"): string {
   return `ld-seen-${role}-${kind}`;
 }
 

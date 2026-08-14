@@ -33,6 +33,27 @@ export type NotifyDecision = {
   reason?: string | null;
 };
 
+export type NotifyCashout = {
+  id: string;
+  contractorName?: string | null;
+  amountCents?: number | null;
+  rail?: string | null;
+};
+
+/** Pending tip cash-outs whose ids have not yet been surfaced. */
+export function diffNewCashoutIds(seen: readonly string[], requests: readonly NotifyCashout[]): NotifyCashout[] {
+  if (!Array.isArray(requests) || requests.length === 0) return [];
+  const s = new Set(seen ?? []);
+  const out: NotifyCashout[] = [];
+  const seenInBatch = new Set<string>();
+  for (const r of requests) {
+    if (!r || typeof r.id !== "string" || r.id === "" || s.has(r.id) || seenInBatch.has(r.id)) continue;
+    seenInBatch.add(r.id);
+    out.push(r);
+  }
+  return out;
+}
+
 /** Upper bound for a seen-set — drop the oldest ids past this. */
 export const SEEN_CAP = 200;
 
