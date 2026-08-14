@@ -9,12 +9,11 @@ export function NativeContractorStatus({ contractorOnline }: { contractorOnline:
   useEffect(() => {
     if (!isNative()) return;
     let live = true;
-    let watch: string | null = null;
     void nativeOnline().then((v) => live && setConnected(v)).catch(() => live && setConnected(false));
     const net = onConnectivityChange((v) => { if (live) setConnected(v); });
     void registerPush().then((r) => { if (live) setPush(r.granted ? 'ready' : 'blocked'); }).catch(() => live && setPush('error'));
     const tokenListener = onNativePushToken((token) => { void saveNativePushToken(token).then((r) => live && setPush(r.ok ? 'ready' : 'error')); });
-    return () => { live = false; void tokenListener.remove(); void net.remove(); if (watch) void stopLocation(watch); };
+    return () => { live = false; void tokenListener.remove(); void net.remove(); };
   }, []);
   useEffect(() => {
     if (!isNative() || !contractorOnline || !connected) { setLocation('idle'); return; }

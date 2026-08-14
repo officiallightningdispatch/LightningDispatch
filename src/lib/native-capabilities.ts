@@ -44,7 +44,7 @@ export async function watchLocation(callback: (position: Position | GeolocationP
 export async function stopLocation(watchId: string | null | undefined) { if (!watchId) return; if (isNative()) await Geolocation.clearWatch({ id: watchId }); else navigator.geolocation.clearWatch(Number(watchId)); }
 export async function startLocationUpdates(online: boolean, jobTowbookId?: string | null) {
   if (!online || !(await requestLocation())) return null;
-  return watchLocation((p) => { const c = 'coords' in p ? p.coords : p.coords; void pingDriverLocation({ data: { latitude: c.latitude, longitude: c.longitude, accuracy: c.accuracy ?? null, jobTowbookId: jobTowbookId ?? null } }); });
+  return watchLocation((p) => { const c = p.coords; void pingDriverLocation({ data: { latitude: c.latitude, longitude: c.longitude, accuracy: c.accuracy ?? null, jobTowbookId: jobTowbookId ?? null } }); });
 }
 export async function capturePhoto(): Promise<Photo | File> { if (isNative()) return Camera.getPhoto({ resultType: CameraResultType.Uri, source: CameraSource.Camera, quality: 85 }); throw new Error('Use the existing web photo input'); }
 export async function online() { return isNative() ? (await Network.getStatus()).connected : navigator.onLine; }
