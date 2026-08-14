@@ -8,7 +8,7 @@ export type ZoneSummary = { id: string; name: string; busyness: "Low" | "Moderat
 const badge: Record<ZoneSummary["busyness"], string> = { Low: "bg-success-50 text-success-700", Moderate: "bg-accent-50 text-accent-800", Busy: "bg-danger-50 text-danger-700" };
 export function DriverZonePicker({ open, onClose, state, onSelected }: { open: boolean; onClose: () => void; state: DriverZoneState | null; onSelected: () => void }) {
   const toast = useToast(); const [zones, setZones] = useState<ZoneSummary[]>([]); const [busy, setBusy] = useState(false);
-  useEffect(() => { if (open) void getZonesWithBusyness().then(setZones).catch(() => toast("Couldn't load zones — check your connection.")); }, [open, toast]);
+  useEffect(() => { if (open) void getZonesWithBusyness().then((r) => setZones(r as ZoneSummary[])).catch(() => toast("Couldn't load zones — check your connection.")); }, [open, toast]);
   if (!open) return null;
   const locked = state?.ok === true && (!state.selectionOpen || !state.canChangeToday);
   const lockMessage = state?.ok === true && !state.selectionOpen ? "Zone selection opens at 6:00 AM local" : state?.ok === true && !state.canChangeToday ? "You can change your zone only once per day." : "";

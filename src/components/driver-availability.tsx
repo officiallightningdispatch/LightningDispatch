@@ -33,11 +33,12 @@ export function useAvailability(zone: { zoneId: string | null } | null, onNeedZo
 
   const toggle = useCallback(async () => {
     const target = !online;
-    if (target && !zone?.zoneId) { onNeedZone?.(); toast("Pick a zone before going online."); return; }
+    const zid = zone?.zoneId ?? null;
+    if (target && !zid) { onNeedZone?.(); toast("Pick a zone before going online."); return; }
     setOnline(target);
     setPending(true);
     try {
-      const r = await driverSetAvailability({ data: target ? { online: true, zoneId: zone.zoneId } : { online: false } });
+      const r = await driverSetAvailability({ data: target ? { online: true, zoneId: zid! } : { online: false } });
       if (!r.ok) {
         setOnline(!target);
         toast(r.message ?? "Couldn't update availability — try again.");

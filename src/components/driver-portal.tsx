@@ -132,7 +132,7 @@ export function RealDriverPortal() {
       description=""
       headerActions={
         <>
-          <button type="button" onClick={() => setZoneOpen(true)} className="hidden max-w-[10rem] truncate rounded-full border border-ink-200 bg-surface px-3 py-2 text-xs font-bold text-ink-700 sm:block">{zone?.ok && zone.zoneName ? zone.zoneName : "Choose zone"}</button>
+          <button type="button" onClick={() => setZoneOpen(true)} className="block max-w-[7.5rem] truncate rounded-full border border-ink-200 bg-surface px-3 py-2 text-xs font-bold text-ink-700 sm:max-w-[10rem]">{zone?.ok && zone.zoneName ? zone.zoneName : "Choose zone"}</button>
           <AvailabilityPill online={online} pending={pending} onToggle={() => void toggle()} />
           <HelpIcon />
         </>
