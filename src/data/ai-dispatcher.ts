@@ -1141,6 +1141,8 @@ type JobStateResolution = {
   mismatch: boolean;
   note: string | null;
   authoritativeId: string | null;
+  authoritativeLat: number | null;
+  authoritativeLng: number | null;
 };
 
 /** Resolve job state without trusting Towbook's known placeholder coordinates.
@@ -1176,7 +1178,7 @@ async function resolveJobState(
     const pickupState = resolveStateFromAddress(authoritative.pickup);
     if (!pickupState.state) {
       return { state: null, source: "unknown", mismatch: true,
-        note: `authoritative pickup record ${authoritative.id} address unresolved (${authoritative.pickup})`, authoritativeId: authoritative.id };
+        note: `authoritative pickup record ${authoritative.id} address unresolved (${authoritative.pickup})`, authoritativeId: authoritative.id, authoritativeLat: authoritative.lat, authoritativeLng: authoritative.lng };
     }
     // Address is the authoritative source; the reverse geocode only CORROBORATES.
     // A null geocode (TomTom down/429/timeout/non-US) is absence of evidence, not
@@ -1184,26 +1186,26 @@ async function resolveJobState(
     const callState = await reverseGeocodeState(authoritative.lat, authoritative.lng, apiKey, fetchImpl);
     if (callState && callState !== pickupState.state) {
       return { state: null, source: "unknown", mismatch: true,
-        note: `authoritative pickup discrepancy (call ${authoritative.id}: address=${pickupState.state}, coords=${callState})`, authoritativeId: authoritative.id };
+        note: `authoritative pickup discrepancy (call ${authoritative.id}: address=${pickupState.state}, coords=${callState})`, authoritativeId: authoritative.id, authoritativeLat: authoritative.lat, authoritativeLng: authoritative.lng };
     }
     const state = pickupState.state;
     const note = placeholder
       ? `offer coordinates are known Agero CT placeholder (${lat},${lng}); authoritative pickup record ${authoritative.id} / address resolves to ${state}`
       : `authoritative pickup record ${authoritative.id} resolves to ${state}`;
-    return { state, source: "authoritative", mismatch: false, note, authoritativeId: authoritative.id };
+    return { state, source: "authoritative", mismatch: false, note, authoritativeId: authoritative.id, authoritativeLat: authoritative.lat, authoritativeLng: authoritative.lng };
   }
   if (placeholder) {
     return { state: addressResolution.state, source: addressResolution.source, mismatch: addressResolution.mismatch,
-      note: `offer coordinates are known Agero CT placeholder (${lat},${lng}); no authoritative call record, address-only resolution retained`, authoritativeId: null };
+      note: `offer coordinates are known Agero CT placeholder (${lat},${lng}); no authoritative call record, address-only resolution retained`, authoritativeId: null, authoritativeLat: null, authoritativeLng: null };
   }
   if (addressResolution.state && Number.isFinite(lat) && Number.isFinite(lng)) {
     const offerState = await reverseGeocodeState(lat, lng, apiKey, fetchImpl);
     if (offerState && offerState !== addressResolution.state) {
       return { state: null, source: "unknown", mismatch: true,
-        note: `genuine location discrepancy (offer coords resolve to ${offerState}, address resolves to ${addressResolution.state})`, authoritativeId: null };
+        note: `genuine location discrepancy (offer coords resolve to ${offerState}, address resolves to ${addressResolution.state})`, authoritativeId: null, authoritativeLat: null, authoritativeLng: null };
     }
   }
-  return { state: addressResolution.state, source: addressResolution.source, mismatch: addressResolution.mismatch, note: null, authoritativeId: null };
+  return { state: addressResolution.state, source: addressResolution.source, mismatch: addressResolution.mismatch, note: null, authoritativeId: null, authoritativeLat: null, authoritativeLng: null };
 }
 
 
@@ -2684,8 +2686,12 @@ async function runAutoDispatchInternal(
         continue;
       }
       const zoneRows = await sql()`SELECT id,lat,lng,radius_miles,zip_codes FROM dispatch_zones WHERE org_id=${orgId} AND active=TRUE AND state=${zoneState.state.toUpperCase()}` as Array<Record<string, unknown>>;
+      const zoneLat = zoneState.source === "authoritative" && zoneState.authoritativeLat != null
+        ? zoneState.authoritativeLat : Number(offer.startLocationLatitude);
+      const zoneLng = zoneState.source === "authoritative" && zoneState.authoritativeLng != null
+        ? zoneState.authoritativeLng : Number(offer.startLocationLongitude);
       const jobZip = rawStartingForZone ? zipOf(rawStartingForZone) : null;
-      const lat = Number(offer.startLocationLatitude), lng = Number(offer.startLocationLongitude);
+      const lat = zoneLat, lng = zoneLng;
       // Keep the nearest resolved-state zone distance for the out-of-zone
       // ledger too. Matching is evaluated separately so ZIP membership and
       // radius eligibility remain unchanged.
