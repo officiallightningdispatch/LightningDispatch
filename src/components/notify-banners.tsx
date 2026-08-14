@@ -216,7 +216,7 @@ function useAudioPrimer() {
  * entirely (there is no live feed to watch).
  */
 export function OwnerNotificationLayer() {
-  const { refresh, isDemoMode } = useDispatchStore();
+  const { refresh } = useDispatchStore();
   const { banners, push, dismiss } = useBannerStack("owner");
   const booted = useRef(false);
   useAudioPrimer();
@@ -227,7 +227,7 @@ export function OwnerNotificationLayer() {
   useEffect(() => {
     let stop = false;
     const tick = async () => {
-      if (stop || isDemoMode) return;
+      if (stop) return;
       try {
         // refresh() re-hydrates the store so a tapped banner lands on a queue
         // that actually shows the job — and returns the fresh payload for
@@ -285,7 +285,7 @@ export function OwnerNotificationLayer() {
     void tick();
     const t = setInterval(() => void tick(), 5000);
     return () => { stop = true; clearInterval(t); };
-  }, [refresh, isDemoMode, jobsKey, decisionsKey, push]);
+  }, [refresh, jobsKey, decisionsKey, push]);
 
   return <BannerStack role="owner" banners={banners} onDismiss={dismiss} showSoundToggle />;
 }

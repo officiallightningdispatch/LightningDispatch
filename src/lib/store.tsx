@@ -9,7 +9,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { Contractor, ContractorStatus, Job, JobStatus } from "~/data/seed";
+import type { Contractor, Job, JobStatus } from "~/data/seed";
 import {
   advanceJob as advanceJobServer,
   assignJob as assignJobServer,
@@ -17,8 +17,6 @@ import {
   declineJob as declineJobServer,
   getDispatchData,
   reassignJob as reassignJobServer,
-  resetDemo as resetDemoServer,
-  setContractorStatus as setContractorStatusServer,
   setJobStatus as setJobStatusServer,
   type CommandResult,
   type DispatchData,
@@ -27,26 +25,23 @@ import {
 import { JOB_LIFECYCLE } from "~/lib/job-ui";
 
 /**
- * Shared client-side store for the whole demo (dispatcher, contractor, owner).
+ * Shared client-side store for the database-backed dispatch UI (dispatcher, contractor, owner).
  *
  * - Initialized ONCE from the server (`getDispatchData`) on first use.
  * - Holds the full mutable app state (contractors + jobs with all status
  *   fields). Every mutation in the app goes through the actions below.
  * - In DATABASE mode every mutation is awaited against the server command
  *   layer, which enforces the job state machine and returns structured
- *   errors. In demo mode (no DATABASE_URL) mutations apply locally through
  *   the same validation rules so both modes behave identically.
  *
  * Mutation UX: each action has a per-target pending flag and a last error
  * (keyed by mutationKey()) — buttons disable while pending and show the error
  * inline with a retry path (re-invoking the action retries).
  *
- * Timestamps: re-anchoring (so the demo always looks "live") applies ONLY in
  * demo mode. In database mode the persisted timestamps are real and are shown
  * exactly as stored — never shifted.
  */
 
-const STORAGE_KEY = "lightning-dispatch-store-v1";
 
 export interface DispatchState {
   contractors: Contractor[];
@@ -60,7 +55,6 @@ type DispatchAction =
   | { type: "advanceJob"; jobId: string }
   | { type: "setJobStatus"; jobId: string; status: JobStatus }
   | { type: "declineJob"; jobId: string }
-  | { type: "setContractorStatus"; contractorId: string; status: ContractorStatus }
   | { type: "clear" };
 
 const EMPTY: DispatchState = { contractors: [], jobs: [] };
@@ -70,108 +64,6 @@ function nowIso() {
 }
 
 /** Shift every job timestamp by the same delta so the newest job is ~2 min old. */
-function reanchorTimes(jobs: Job[]): Job[] {
-  const now = Date.now();
-  if (!jobs.length) return jobs;
-  const newestSeed = Math.max(...jobs.map((j) => new Date(j.createdAt).getTime()));
-  const delta = now - 2 * 60_000 - newestSeed;
-  const shift = (iso?: string) =>
-    iso ? new Date(new Date(iso).getTime() + delta).toISOString() : undefined;
-  return jobs.map((j) => ({
-    ...j,
-    createdAt: shift(j.createdAt)!,
-    assignedAt: shift(j.assignedAt),
-    arrivedAt: shift(j.arrivedAt),
-    completedAt: shift(j.completedAt),
-  }));
-}
-
-function reducer(state: DispatchState, action: DispatchAction): DispatchState {
-  switch (action.type) {
-    case "hydrate":
-      return action.payload;
-    case "clear":
-      return EMPTY;
-    case "assignJob":
-      return {
-        ...state,
-        jobs: state.jobs.map((j) =>
-          j.id === action.jobId
-            ? {
-                ...j,
-                status: "offered",
-                assignedContractorId: action.contractorId,
-                assignedAt: nowIso(),
-              }
-            : j,
-        ),
-      };
-    case "reassignJob":
-      // Owner/admin changes WHO is on the job (owner-directed 2026-08-13).
-      // The STATUS does not change — only the assignment. Demo mode has no
-      // driver-name column; assignedContractorId is the visible marker.
-      return {
-        ...state,
-        jobs: state.jobs.map((j) =>
-          j.id === action.jobId
-            ? { ...j, assignedContractorId: action.contractorId, assignedAt: nowIso() }
-            : j,
-        ),
-      };
-    case "advanceJob":
-      return {
-        ...state,
-        jobs: state.jobs.map((j) => {
-          if (j.id !== action.jobId) return j;
-          const i = JOB_LIFECYCLE.indexOf(j.status);
-          const next = i >= 0 && i < JOB_LIFECYCLE.length - 1 ? JOB_LIFECYCLE[i + 1] : null;
-          if (!next) return j;
-          return {
-            ...j,
-            status: next,
-            arrivedAt: next === "arrived" ? nowIso() : j.arrivedAt,
-            completedAt: next === "completed" ? nowIso() : j.completedAt,
-          };
-        }),
-      };
-    case "setJobStatus":
-      return {
-        ...state,
-        jobs: state.jobs.map((j) =>
-          j.id === action.jobId
-            ? {
-                ...j,
-                status: action.status,
-                arrivedAt: action.status === "arrived" ? nowIso() : j.arrivedAt,
-                completedAt: action.status === "completed" ? nowIso() : j.completedAt,
-              }
-            : j,
-        ),
-      };
-    case "declineJob":
-      // Contractor turns down an offer: return the job to the unassigned queue
-      // (status "new", no contractor) so the dispatcher sees it as incoming
-      // again and the AI re-recommends.
-      return {
-        ...state,
-        jobs: state.jobs.map((j) =>
-          j.id === action.jobId
-            ? { ...j, status: "new", assignedContractorId: undefined, assignedAt: undefined }
-            : j,
-        ),
-      };
-    case "setContractorStatus":
-      return {
-        ...state,
-        contractors: state.contractors.map((c) =>
-          c.id === action.contractorId ? { ...c, status: action.status } : c,
-        ),
-      };
-    default:
-      return state;
-  }
-}
-
 /* ------------------------- mutation key helpers ------------------------- */
 
 export const mutationKey = {
@@ -184,62 +76,9 @@ export const mutationKey = {
   reset: () => "reset",
 };
 
-/* -------------------- demo-mode validation (mirrors server) -------------------- */
-
-function demoAssignError(state: DispatchState, jobId: string, contractorId: string): string | null {
-  const job = state.jobs.find((j) => j.id === jobId);
-  if (!job) return "Job not found — refresh to resync.";
-  if (job.status !== "new") {
-    return `Job ${jobId} is no longer new (${job.status}) — only new jobs can be assigned.`;
-  }
-  const con = state.contractors.find((c) => c.id === contractorId);
-  if (!con) return "Contractor not found.";
-  if (con.status !== "online" && state.contractors.some((c) => c.status === "online")) {
-    return `${con.name} is offline — only online contractors can take jobs while others are available.`;
-  }
-  return null;
-}
-
-function demoAdvanceError(state: DispatchState, jobId: string): string | null {
-  const job = state.jobs.find((j) => j.id === jobId);
-  if (!job) return "Job not found — refresh to resync.";
-  if (job.status === "new") return "This job has not been assigned yet — assign it to a contractor first.";
-  if (job.status === "completed") return "This job is already completed and cannot be advanced further.";
-  return null;
-}
-
-function demoDeclineError(state: DispatchState, jobId: string): string | null {
-  const job = state.jobs.find((j) => j.id === jobId);
-  if (!job) return "Job not found — refresh to resync.";
-  if (job.status !== "offered") {
-    return `Only offered jobs can be declined — this job is ${job.status}.`;
-  }
-  if (!job.assignedContractorId) return "This job has no assigned contractor, so it cannot be declined.";
-  return null;
-}
-
-/** Demo-mode mirror of the server's reassign guard: the job must exist and be
- *  non-terminal, the contractor must be on the roster, and it must not already
- *  be the assigned driver. Role gating is enforced by the UI (owner/admin
- *  only) + the server fn. */
-function demoReassignError(state: DispatchState, jobId: string, contractorId: string): string | null {
-  const job = state.jobs.find((j) => j.id === jobId);
-  if (!job) return "Job not found — refresh to resync.";
-  if (job.status === "completed" || job.status === "cancelled") {
-    return `This job is ${job.status} — a finished call cannot be reassigned.`;
-  }
-  if (job.assignedContractorId === contractorId) return "This contractor is already the assigned driver for this job.";
-  if (!state.contractors.some((c) => c.id === contractorId)) return "Contractor not found on the roster.";
-  return null;
-}
-
-/* --------------------------------- store --------------------------------- */
-
 export interface DispatchStoreValue {
   state: DispatchState;
   loading: boolean;
-  /** True when running the localStorage fixture mode. */
-  isDemoMode: boolean;
   /** Per-action in-flight flags, keyed by mutationKey(). */
   pending: Record<string, boolean>;
   /** Per-action last error message, keyed by mutationKey() (null = none). */
@@ -267,13 +106,7 @@ export interface DispatchStoreValue {
   getPushResult: (key: string) => StatusPushOutcome | null;
   /** Contractor turns down an offer: back to status "new", unassigned, so the dispatcher re-dispatches. */
   declineJob: (jobId: string) => Promise<boolean>;
-  setContractorStatus: (contractorId: string, status: ContractorStatus) => Promise<boolean>;
-  /** Wipe persisted state and reload the pristine server seed. */
-  resetDemo: () => Promise<boolean>;
-  /** Re-fetch org data and re-hydrate the store (database mode only — demo
-   *  mode keeps its local fixture untouched). Returns the fresh payload so
-   *  callers (e.g. the notification layer) can detect arrivals; null when the
-   *  fetch failed or in demo mode. Powers the owner portal's live poll. */
+  /** Re-fetch org data and re-hydrate the database-backed store. */
   refresh: () => Promise<DispatchData | null>;
 }
 
@@ -282,26 +115,20 @@ const DispatchStoreContext = createContext<DispatchStoreValue | null>(null);
 export function DispatchStoreProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, EMPTY);
   const [loading, setLoading] = useState(true);
-  const [isDemoMode, setIsDemoMode] = useState(true);
   const [pending, setPending] = useState<Record<string, boolean>>({});
   const [errors, setErrors] = useState<Record<string, string | null>>({});
   const loadedOnce = useRef(false);
   const dbMode = useRef(false);
-  const stateRef = useRef(state);
-  stateRef.current = state;
   // Pending guard mirror so callbacks always read fresh in-flight state.
   const pendingRef = useRef<Record<string, boolean>>({});
 
-  /** Apply a server payload — re-anchor ONLY in demo mode. */
+  /** Apply a database payload. */
   const hydrateFromServer = useCallback((data: DispatchData) => {
     const payload: DispatchState = {
       contractors: data.contractors,
-      jobs: dbMode.current ? data.jobs : reanchorTimes(data.jobs),
+      jobs: data.jobs,
     };
     dispatch({ type: "hydrate", payload });
-    if (!dbMode.current) {
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(payload)); } catch { /* demo still works in memory */ }
-    }
   }, []);
 
   useEffect(() => {
@@ -315,28 +142,15 @@ export function DispatchStoreProvider({ children }: { children: ReactNode }) {
         response = await getDispatchData();
       } catch {
         dbMode.current = true;
-        setIsDemoMode(false);
         setLoading(false);
         return;
       }
       dbMode.current = response.mode === "database";
-      setIsDemoMode(false);
-      if (response.mode !== "database") { dbMode.current = true; setLoading(false); return; }
+      if (response.mode !== "database") { setLoading(false); return; }
       hydrateFromServer(response.data);
       setLoading(false);
     })();
   }, [hydrateFromServer]);
-
-  // Persist every change in demo mode so refresh keeps them. In database mode
-  // the database is the source of truth — nothing is written to localStorage.
-  useEffect(() => {
-    if (loading || !state.jobs.length || dbMode.current) return;
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    } catch {
-      // ignore
-    }
-  }, [state, loading]);
 
   /** Run a mutation with pending/error bookkeeping; no-ops if already pending. */
   const run = useCallback(async (key: string, work: () => Promise<boolean>): Promise<boolean> => {
@@ -365,8 +179,6 @@ export function DispatchStoreProvider({ children }: { children: ReactNode }) {
           hydrateFromServer(res.data);
           return true;
         }
-        const demoErr = demoAssignError(stateRef.current, jobId, contractorId);
-        if (demoErr) { fail(mutationKey.assign(jobId), demoErr); return false; }
         dispatch({ type: "assignJob", jobId, contractorId });
         return true;
       }),
@@ -382,8 +194,6 @@ export function DispatchStoreProvider({ children }: { children: ReactNode }) {
           hydrateFromServer(res.data);
           return true;
         }
-        const demoErr = demoReassignError(stateRef.current, jobId, contractorId);
-        if (demoErr) { fail(mutationKey.reassign(jobId), demoErr); return false; }
         dispatch({ type: "reassignJob", jobId, contractorId });
         return true;
       }),
@@ -399,8 +209,6 @@ export function DispatchStoreProvider({ children }: { children: ReactNode }) {
           hydrateFromServer(res.data);
           return true;
         }
-        const demoErr = demoAdvanceError(stateRef.current, jobId);
-        if (demoErr) { fail(mutationKey.advance(jobId), demoErr); return false; }
         dispatch({ type: "advanceJob", jobId });
         return true;
       }),
@@ -422,7 +230,6 @@ export function DispatchStoreProvider({ children }: { children: ReactNode }) {
           hydrateFromServer(res.data);
           return true;
         }
-        const job = stateRef.current.jobs.find((j) => j.id === jobId);
         if (!job) { fail(mutationKey.setStatus(jobId), "Job not found — refresh to resync."); return false; }
         if (!canSetJobStatus(job.status, status)) {
           fail(mutationKey.setStatus(jobId), `This job is ${job.status} — it can only move forward in the lifecycle (or stay put).`);
@@ -440,7 +247,6 @@ export function DispatchStoreProvider({ children }: { children: ReactNode }) {
     (jobId: string) =>
       run(mutationKey.decline(jobId), async () => {
         if (dbMode.current) {
-          const job = stateRef.current.jobs.find((j) => j.id === jobId);
           const contractorId = job?.assignedContractorId;
           if (!contractorId) { fail(mutationKey.decline(jobId), "This job has no assigned contractor, so it cannot be declined."); return false; }
           const res: CommandResult = await declineJobServer({ data: { jobId, contractorId } });
@@ -448,57 +254,8 @@ export function DispatchStoreProvider({ children }: { children: ReactNode }) {
           hydrateFromServer(res.data);
           return true;
         }
-        const demoErr = demoDeclineError(stateRef.current, jobId);
-        if (demoErr) { fail(mutationKey.decline(jobId), demoErr); return false; }
         dispatch({ type: "declineJob", jobId });
         return true;
-      }),
-    [run, hydrateFromServer, fail],
-  );
-
-  const setContractorStatus = useCallback(
-    (contractorId: string, status: ContractorStatus) =>
-      run(mutationKey.status(contractorId), async () => {
-        if (dbMode.current) {
-          const res: CommandResult = await setContractorStatusServer({ data: { contractorId, status } });
-          if (!res.ok) { fail(mutationKey.status(contractorId), res.error.message); return false; }
-          hydrateFromServer(res.data);
-          return true;
-        }
-        if (status !== "online" && status !== "offline") {
-          fail(mutationKey.status(contractorId), "Invalid status — use online or offline.");
-          return false;
-        }
-        dispatch({ type: "setContractorStatus", contractorId, status });
-        return true;
-      }),
-    [run, hydrateFromServer, fail],
-  );
-
-  const resetDemo = useCallback(
-    () =>
-      run(mutationKey.reset(), async () => {
-        if (dbMode.current) {
-          const res: CommandResult = await resetDemoServer({ data: { confirm: true } });
-          if (!res.ok) { fail(mutationKey.reset(), res.error.message); return false; }
-          hydrateFromServer(res.data);
-          return true;
-        }
-        try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
-        dispatch({ type: "clear" });
-        try {
-          const response = await getDispatchData();
-          const payload: DispatchState = {
-            contractors: response.data.contractors,
-            jobs: reanchorTimes(response.data.jobs),
-          };
-          dispatch({ type: "hydrate", payload });
-          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(payload)); } catch { /* ignore */ }
-          return true;
-        } catch {
-          fail(mutationKey.reset(), "Reset failed — could not reload the demo seed. Refresh the page and try again.");
-          return false;
-        }
       }),
     [run, hydrateFromServer, fail],
   );
@@ -526,7 +283,6 @@ export function DispatchStoreProvider({ children }: { children: ReactNode }) {
     () => ({
       state,
       loading,
-      isDemoMode,
       pending,
       errors,
       isPending: (key: string) => Boolean(pending[key]),
@@ -538,11 +294,9 @@ export function DispatchStoreProvider({ children }: { children: ReactNode }) {
       setJobStatus,
       getPushResult,
       declineJob,
-      setContractorStatus,
-      resetDemo,
       refresh,
     }),
-    [state, loading, isDemoMode, pending, errors, clearError, assignJob, reassignJob, advanceJob, setJobStatus, getPushResult, declineJob, setContractorStatus, resetDemo, refresh],
+    [state, loading, pending, errors, clearError, assignJob, reassignJob, advanceJob, setJobStatus, getPushResult, declineJob, refresh],
   );
 
   return <DispatchStoreContext.Provider value={value}>{children}</DispatchStoreContext.Provider>;

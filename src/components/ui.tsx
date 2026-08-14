@@ -219,18 +219,6 @@ export function StatCard({
   );
 }
 
-/* ------------------------------ demo data chip ---------------------------- */
-
-/** Yellow "demo data" chip — one of the four allowed accent usages. */
-export function DemoChip({ children }: { children: ReactNode }) {
-  return (
-    <span className="inline-flex items-center gap-1.5 rounded-full bg-accent-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-accent-700">
-      <span aria-hidden="true" className="size-1.5 rounded-full bg-accent-500" />
-      {children}
-    </span>
-  );
-}
-
 /* --------------------------------- alerts -------------------------------- */
 
 const ALERT_VARIANTS = {

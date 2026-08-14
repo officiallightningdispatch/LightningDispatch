@@ -296,8 +296,6 @@ function MoneyView() {
   return (
     <AppShell portal="owner" title="Payments" description="Payday manifest, motor-club card charges, and driver tips — all money settles in your Square account, nothing is ever transferred out.">
       <div className="space-y-5">
-        {!overview.hasRealMoney && (
-          <DemoChip>demo — no real money has moved yet</DemoChip>
         )}
 
         {/* stat cards */}
