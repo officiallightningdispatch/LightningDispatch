@@ -147,6 +147,12 @@ try {
     assert.equal(zones.some(x=>x.id===OFF2),false);
     const again=await getZonesCore(actor); assert.equal(again.some(x=>x.id===OFF2),false);
   });
+  await check("ZONE PREFERENCE IN UNDER-CAP PATH (id cannot mask it)", async () => {
+    const candidates=[driver('910002',41.2,-73.2),driver('910001',41.2,-73.2)];
+    const matches=new Map([['910002',true],['910001',false]]);
+    const picked=await chooseBestDriverByRoad(candidates,41.208862,-73.207253,null,new Map(),{zoneMatches:matches});
+    assert.equal(String(picked?.driver?.driverId),'910002');
+  });
 } finally {
   if(created){ assertQaOrg(ORG); await q`DELETE FROM organizations WHERE id=${ORG}`.catch(()=>{}); await q`DELETE FROM users WHERE id IN (${OWNER},${DRIVER_A},${DRIVER_B})`.catch(()=>{}); }
   const residue=await q`SELECT (SELECT count(*) FROM organizations WHERE id=${ORG}) orgs,(SELECT count(*) FROM users WHERE id IN (${OWNER},${DRIVER_A},${DRIVER_B})) users,(SELECT count(*) FROM dispatch_zones WHERE org_id=${ORG}) zones,(SELECT count(*) FROM driver_availability_log WHERE org_id=${ORG}) availability,(SELECT count(*) FROM dispatch_jobs WHERE org_id=${ORG}) jobs,(SELECT count(*) FROM audit_log WHERE org_id=${ORG}) audit`;

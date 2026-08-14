@@ -384,7 +384,7 @@ export async function loadDriverAnchors(orgId: string, now: Date = new Date()): 
  *  STALE_GPS_FIX_MINUTES against captured_at. Never throws — a DB error
  *  returns an empty map so the engine degrades to payload-GPS origins. */
 export async function loadRegionalPreferenceMatches(orgId: string, candidates: unknown[], lat: number, lng: number, queues = new Map<string, DriverQueue>()): Promise<Map<string, number>> {
-  const out = new Map<string, number>(); for (const d of candidates) out.set(String((d as Record<string, unknown>).driverId ?? ""), 0);
+  const out = new Map<string, number>();
   try {
     const rows = await sql()`SELECT driver_id, config FROM driver_region_preferences WHERE org_id=${orgId} AND enabled=TRUE` as Array<Record<string, unknown>>;
     const miles=(a:number,b:number,c:number,d:number)=>{const r=Math.PI/180,p=Math.sin((c-a)*r/2)**2+Math.cos(a*r)*Math.cos(c*r)*Math.sin((d-b)*r/2)**2;return 3958.7613*2*Math.atan2(Math.sqrt(p),Math.sqrt(1-p));};
@@ -1918,13 +1918,22 @@ export async function chooseBestDriverByRoad(
     };
   };
 
+  // Proximity is the owner-directed primary rank. GPS-backed origins always
+  // outrank fallback origins; within the same tier, geographic distance wins,
+  // then road ETA, zone preference, regional preference, and deterministic
+  // driver id. This comparator is shared by both dispatch paths so preference
+  // terms cannot be bypassed when candidates are under the queue cap.
+  const rank = (a: ChosenDriverEta, b: ChosenDriverEta): number =>
+    (a.distanceBasis === "gps" ? 0 : 1) - (b.distanceBasis === "gps" ? 0 : 1) ||
+    (a.distanceMiles - b.distanceMiles > 0.01 ? 1 : b.distanceMiles - a.distanceMiles > 0.01 ? -1 : 0) ||
+    a.baseMinutes - b.baseMinutes ||
+    (area?.zoneMatches?.get(String(b.driver.driverId)) ? 1 : 0) - (area?.zoneMatches?.get(String(a.driver.driverId)) ? 1 : 0) ||
+    (area?.regionalPreference?.get(String(b.driver.driverId)) ?? 0) - (area?.regionalPreference?.get(String(a.driver.driverId)) ?? 0) ||
+    String(a.driver.driverId ?? "").localeCompare(String(b.driver.driverId ?? ""));
+
   if (underCap.length) {
     const routed = (await Promise.all(pickCandidates.map(routeOne))).filter((r): r is ChosenDriverEta => r != null);
-    routed.sort((a, b) =>
-      (a.distanceBasis === "gps" ? 0 : 1) - (b.distanceBasis === "gps" ? 0 : 1) ||
-      (a.distanceMiles - b.distanceMiles > 0.01 ? 1 : b.distanceMiles - a.distanceMiles > 0.01 ? -1 : 0) ||
-      a.baseMinutes - b.baseMinutes ||
-      String(a.driver.driverId ?? "").localeCompare(String(b.driver.driverId ?? "")));
+    routed.sort(rank);
     return routed[0] ?? null;
   }
 
@@ -1963,17 +1972,6 @@ export async function chooseBestDriverByRoad(
   }));
   const winners = modeled.filter((m): m is ChosenDriverEta => m != null);
   if (!winners.length) return null;
-  // Proximity is the owner-directed primary rank. GPS-backed origins always
-  // outrank fallback origins; within the same tier, geographic distance wins,
-  // then road ETA and deterministic driver id. This prevents route/provider,
-  // payload, or database ordering from selecting the winner.
-  const rank = (a: ChosenDriverEta, b: ChosenDriverEta): number =>
-    (a.distanceBasis === "gps" ? 0 : 1) - (b.distanceBasis === "gps" ? 0 : 1) ||
-    (a.distanceMiles - b.distanceMiles > 0.01 ? 1 : b.distanceMiles - a.distanceMiles > 0.01 ? -1 : 0) ||
-    a.baseMinutes - b.baseMinutes ||
-    (area?.zoneMatches?.get(String(b.driver.driverId)) ? 1 : 0) - (area?.zoneMatches?.get(String(a.driver.driverId)) ? 1 : 0) ||
-    (area?.regionalPreference?.get(String(b.driver.driverId)) ?? 0) - (area?.regionalPreference?.get(String(a.driver.driverId)) ?? 0) ||
-    String(a.driver.driverId ?? "").localeCompare(String(b.driver.driverId ?? ""));
   winners.sort(rank);
   return winners[0];
 }
