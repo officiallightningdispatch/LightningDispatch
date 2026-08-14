@@ -1194,6 +1194,13 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE TABLE IF NOT EXISTS driver_region_preferences (org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, driver_id TEXT NOT NULL, config JSONB NOT NULL DEFAULT '{}'::jsonb, enabled BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(org_id, driver_id))`;
     await q`CREATE INDEX IF NOT EXISTS driver_region_preferences_org_idx ON driver_region_preferences(org_id, enabled)`;
   }],
+  [54, async (q) => {
+    // P0 Slice 3: persisted availability heartbeat. A live GO is eligible only
+    // while heartbeat_at is fresh; closing a tab therefore cannot leave a
+    // driver available forever, while device handoff has a 90-second grace.
+    await q`ALTER TABLE driver_availability_log ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ`;
+    await q`CREATE INDEX IF NOT EXISTS driver_availability_heartbeat_idx ON driver_availability_log(org_id, heartbeat_at) WHERE session_started_at IS NOT NULL`;
+  }],
   [53, async (q) => {
     await q`INSERT INTO driver_region_preferences (org_id, driver_id, config, enabled)
       VALUES ('89e15ce587651cc47c3bc45b1c612a220955', '717660', ${JSON.stringify({

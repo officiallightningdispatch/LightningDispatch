@@ -990,6 +990,24 @@ export const driverJobAction = createServerFn({ method: "POST" }).validator(pass
 
 /* ------------------------------- availability toggle ------------------------------- */
 export type AvailabilityResult = { ok: boolean; message?: string };
+export const AVAILABILITY_HEARTBEAT_INTERVAL_MS = 30_000;
+export const AVAILABILITY_STALE_AFTER_SECONDS = 90;
+/** Refreshes the persisted GO lease. It is deliberately separate from STOP:
+ * tab closure does not call STOP, and a missing refresh expires eligibility. */
+export const driverAvailabilityHeartbeat = createServerFn({ method: "POST" }).validator(passthrough).handler(async (): Promise<AvailabilityResult> => {
+  if (!configured()) return { ok: false as const, message: "Availability requires database mode." };
+  const ctx = await resolveEffectiveDriver();
+  if (!ctx) return { ok: false as const, message: "Sign in as a driver first." };
+  try {
+    await ensure();
+    const q = await db();
+    const rows = await q`UPDATE driver_availability_log SET heartbeat_at=NOW(), updated_at=NOW()
+      WHERE org_id=${ctx.u.orgId} AND user_id=${ctx.identity.userRowId}
+        AND session_started_at IS NOT NULL
+      RETURNING user_id`;
+    return rows.length ? { ok: true as const } : { ok: false as const, message: "Availability is offline." };
+  } catch { return { ok: false as const, message: "Heartbeat unavailable." }; }
+});
 /** Daily availability ledger (owner-directed 2026-08-12, metrics Q2): the
  *  driver_availability_log row per (org, user, day) is the source for the
  *  hours-online metric + the "GO/Offline planning" Academy lesson. GO starts
@@ -1001,12 +1019,12 @@ export type AvailabilityResult = { ok: boolean; message?: string };
  *  a failed log write must never fail or mask the availability toggle. */
 export async function recordAvailabilityStart(q: Awaited<ReturnType<typeof db>>, orgId: string, userId: string): Promise<void> {
   try {
-    await q`INSERT INTO driver_availability_log(org_id, user_id, day, online_minutes, ping_count, session_started_at, updated_at)
-      VALUES(${orgId}, ${userId}, CURRENT_DATE, 0, 1, NOW(), NOW())
+    await q`INSERT INTO driver_availability_log(org_id, user_id, day, online_minutes, ping_count, session_started_at, heartbeat_at, updated_at)
+      VALUES(${orgId}, ${userId}, CURRENT_DATE, 0, 1, NOW(), NOW(), NOW())
       ON CONFLICT (org_id, user_id, day) DO UPDATE SET
         session_started_at = COALESCE(driver_availability_log.session_started_at, EXCLUDED.session_started_at),
         ping_count = driver_availability_log.ping_count + CASE WHEN driver_availability_log.session_started_at IS NULL THEN 1 ELSE 0 END,
-        updated_at = NOW()`;
+        heartbeat_at = NOW(), updated_at = NOW()`;
   } catch { /* best-effort — never mask the checkin outcome */ }
 }
 export async function recordAvailabilityStop(q: Awaited<ReturnType<typeof db>>, orgId: string, userId: string): Promise<void> {

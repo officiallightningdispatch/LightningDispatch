@@ -82,8 +82,10 @@ export async function listRosterContractors(orgId: string, contractorId?: string
                OR j.assigned_contractor_id = u.id)) AS completed_job_count
     FROM users u
     LEFT JOIN LATERAL (
-      SELECT MAX(updated_at) AS session_updated_at FROM towbook_sessions ts
-      WHERE ts.org_id = ${orgId} AND ts.towbook_driver_id = u.towbook_driver_id
+      SELECT MAX(heartbeat_at) AS session_updated_at FROM driver_availability_log ts
+      WHERE ts.org_id = ${orgId} AND ts.user_id = u.id
+        AND ts.session_started_at IS NOT NULL
+        AND ts.heartbeat_at > NOW() - INTERVAL '90 seconds'
     ) ts ON TRUE
     LEFT JOIN LATERAL (
       SELECT MAX(created_at) AS last_login FROM sessions s
@@ -124,11 +126,12 @@ export async function listRosterContractors(orgId: string, contractorId?: string
  *  legacy dispatch_contractors table. */
 async function contractorOnline(orgId: string, userId: string, towbookDriverId: string): Promise<boolean> {
   const q = sql();
-  const rows = await q`SELECT
-      (SELECT COUNT(*)::int FROM sessions s WHERE s.user_id=${userId} AND s.expires_at > NOW()) AS portal_sessions,
-      (SELECT COUNT(*)::int FROM towbook_sessions ts WHERE ts.org_id=${orgId} AND ts.towbook_driver_id=${towbookDriverId}) AS tb_sessions`;
-  const r = rows[0] as Record<string, unknown>;
-  return Number(r.portal_sessions ?? 0) > 0 || Number(r.tb_sessions ?? 0) > 0;
+  const rows = await q`SELECT COUNT(*)::int AS active
+    FROM driver_availability_log
+    WHERE org_id=${orgId} AND user_id=${userId}
+      AND session_started_at IS NOT NULL
+      AND heartbeat_at > NOW() - INTERVAL '90 seconds'`;
+  return Number((rows[0] as Record<string, unknown>).active ?? 0) > 0;
 }
 
 async function dataFor(u: AuthUser): Promise<DispatchData> { const cs=await listRosterContractors(u.orgId, u.role==="contractor" ? u.contractorId || undefined : undefined); const q=sql(); const js=await q`SELECT id,customer_name,phone,lat,lng,area,service_type,status,created_at,assigned_at,arrived_at,completed_at,assigned_contractor_id,assigned_driver_name,assigned_driver_towbook_id,note FROM dispatch_jobs WHERE org_id=${u.orgId} ${u.role==="contractor" ? q`AND (assigned_contractor_id=${u.contractorId||""} OR assigned_driver_towbook_id=(SELECT towbook_driver_id FROM users WHERE id=${u.contractorId||""}))` : q``} ORDER BY created_at DESC`; return {contractors:cs,jobs:js.map(mapJob)}; }

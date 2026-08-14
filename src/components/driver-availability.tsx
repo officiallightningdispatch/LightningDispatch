@@ -12,7 +12,7 @@
  */
 import { Loader2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { driverSetAvailability } from "~/data/driver-auth";
+import { driverSetAvailability, driverAvailabilityHeartbeat, AVAILABILITY_HEARTBEAT_INTERVAL_MS } from "~/data/driver-auth";
 import { useToast } from "~/components/ui";
 
 const AVAIL_KEY = "lightning-driver-availability-v1";
@@ -31,6 +31,11 @@ export function useAvailability(zone: { zoneId: string | null } | null, onNeedZo
     } catch { /* ignore */ }
   }, []);
 
+  useEffect(() => {
+    if (!online) return;
+    const id = window.setInterval(() => { void driverAvailabilityHeartbeat({ data: undefined }); }, AVAILABILITY_HEARTBEAT_INTERVAL_MS);
+    return () => window.clearInterval(id);
+  }, [online]);
   const toggle = useCallback(async () => {
     const target = !online;
     const zid = zone?.zoneId ?? null;
