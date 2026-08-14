@@ -1171,6 +1171,25 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
       ON users(towbook_user_id)
       WHERE towbook_user_id IS NOT NULL AND towbook_user_id <> ''`;
   }],
+  [51, async (q) => {
+    await q`CREATE TABLE IF NOT EXISTS dispatch_zones (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      lat DOUBLE PRECISION NOT NULL,
+      lng DOUBLE PRECISION NOT NULL,
+      radius_miles DOUBLE PRECISION NOT NULL DEFAULT 20,
+      tz TEXT NOT NULL DEFAULT 'America/New_York',
+      active BOOLEAN NOT NULL DEFAULT TRUE,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    await q`CREATE INDEX IF NOT EXISTS dispatch_zones_org_active_idx ON dispatch_zones(org_id, active)`;
+    await q`ALTER TABLE driver_availability_log ADD COLUMN IF NOT EXISTS zone_id TEXT REFERENCES dispatch_zones(id) ON DELETE SET NULL`;
+    await q`ALTER TABLE driver_availability_log ADD COLUMN IF NOT EXISTS zone_changed_at TIMESTAMPTZ`;
+    await q`ALTER TABLE driver_availability_log ADD COLUMN IF NOT EXISTS zone_change_count INTEGER NOT NULL DEFAULT 0`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

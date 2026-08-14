@@ -1029,7 +1029,7 @@ export async function recordAvailabilityStop(q: Awaited<ReturnType<typeof db>>, 
  *  driver, so the gate is identical for staff driving the contractor app.
  *  Going OFFLINE is never blocked. */
 export const driverSetAvailability = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<AvailabilityResult> => {
-  const v = z.object({ online: z.boolean() }).safeParse(data);
+  const v = z.object({ online: z.boolean(), zoneId: z.string().min(1).optional() }).safeParse(data);
   if (!v.success) return { ok: false as const, message: "Invalid availability value." };
   if (!configured()) return { ok: false as const, message: "Availability requires database mode." };
   const ctx = await resolveEffectiveDriver();
@@ -1037,6 +1037,10 @@ export const driverSetAvailability = createServerFn({ method: "POST" }).validato
   try {
     await ensure();
     if (v.data.online) {
+      if (!v.data.zoneId) return { ok: false as const, message: "Pick a zone before going online." };
+      const { selectZoneCore } = await import("./zones-core");
+      const zoneResult = await selectZoneCore({ orgId: ctx.u.orgId, id: ctx.identity.userRowId, role: "contractor" }, v.data.zoneId);
+      if (!zoneResult.ok) return zoneResult;
       // Compliance gate FIRST — no Towbook call, no checkin, until approved.
       const { getComplianceGateCore } = await import("./contractor-admin-core");
       const gate = await getComplianceGateCore({ orgId: ctx.u.orgId, id: ctx.identity.userRowId, role: "contractor" });

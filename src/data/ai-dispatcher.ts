@@ -1453,6 +1453,7 @@ export type AreaContext = {
   stateGuard?: StateGuardContext;
   serviceType?: string | null;
   serviceQualification?: ServiceQualificationOutcome;
+  zoneMatches?: Map<string, boolean>;
 };
 
 /** Workload-aware arrival model (owner-directed 2026-08-11): a driver with
@@ -1873,6 +1874,7 @@ export async function chooseBestDriverByRoad(
     (a.distanceBasis === "gps" ? 0 : 1) - (b.distanceBasis === "gps" ? 0 : 1) ||
     (a.distanceMiles - b.distanceMiles > 0.01 ? 1 : b.distanceMiles - a.distanceMiles > 0.01 ? -1 : 0) ||
     a.baseMinutes - b.baseMinutes ||
+    (area?.zoneMatches?.get(String(b.driver.driverId)) ? 1 : 0) - (area?.zoneMatches?.get(String(a.driver.driverId)) ? 1 : 0) ||
     String(a.driver.driverId ?? "").localeCompare(String(b.driver.driverId ?? ""));
   winners.sort(rank);
   return winners[0];
