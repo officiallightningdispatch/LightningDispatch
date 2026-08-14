@@ -2676,7 +2676,7 @@ async function runAutoDispatchInternal(
         continue;
       }
       const rawStartingForZone = startingLocationOf(rawOffer as Record<string, unknown>);
-      const zoneState = await resolveJobState(orgId, rawOffer as Record<string, unknown>, rawStartingForZone, resolveTomTomKey(deps.env ?? process.env), fetchImpl);
+      const zoneState = await resolveJobState(orgId, rawOffer as Record<string, unknown>, rawStartingForZone, resolveTomtomKey(deps.env ?? process.env), fetchImpl);
       if (!zoneState.state) {
         const reason = `job state UNKNOWN (offer address ${rawStartingForZone ? `"${rawStartingForZone}"` : "missing"} did not resolve to a US state; state_resolution=unknown${zoneState.note ? `; ${zoneState.note}` : ""}) — cannot verify zone (no accept)`;
         await record({ decision: "escalated_state_unknown", reason, rawResponse: { offer } });

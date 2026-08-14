@@ -303,6 +303,18 @@ try {
   await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES(${ORG6}, ${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))}, 'connected')`;
   await q`INSERT INTO organizations(id, name) VALUES(${ORG7}, 'qa ai-dispatcher geography')`;
   created = true;
+  // Production-shaped zoning fixture: auto-accept now resolves state + active
+  // org-scoped dispatch_zones (legacy org_settings centroid is not consulted).
+  for (const [zoneOrg, state, lat, lng, radius, zips] of [
+    [ORG, "CT", ZONE.lat, ZONE.lng, 30, ["06606"]],
+    [ORG3, "CT", ZONE.lat, ZONE.lng, 30, ["06606"]],
+    [ORG4, "CT", ZONE.lat, ZONE.lng, 30, ["06606"]],
+    [ORG5, "CT", ZONE.lat, ZONE.lng, 30, ["06606"]],
+    [ORG6, "CT", ZONE.lat, ZONE.lng, 30, ["06606"]],
+    [ORG6, "TX", 30.61948, -97.648242, 50, ["78626"]],
+    [ORG7, "CT", ZONE.lat, ZONE.lng, 30, ["06606"]],
+  ]) await q`INSERT INTO dispatch_zones(id,org_id,name,state,market,zone_type,lat,lng,radius_miles,tz,active,sort_order,zip_codes)
+    VALUES(${`qa-zone-${randomUUID()}`},${zoneOrg},${state+' fixture'},${state},${state+' fixture'},'market',${lat},${lng},${radius},'America/New_York',TRUE,1,${zips}::text[])`;
   // Owner-org baseline: the REAL incident row (offer 326520203, auto-accepted
   // 2026-08-10 with a 3-min straight-line ETA) lives in the owner org — the
   // "zero decisions" assumption predates it. Capture the count so the final
@@ -510,7 +522,7 @@ try {
   /* ============ 11) out-of-zone escalation (30.5 mi) — never accept ============ */
   {
     const m = makeFetch({
-      offers: [offer(7005, { lat: northOf(30.5), lng: ZONE.lng })],
+      offers: [offer(7005, { lat: northOf(30.5), lng: ZONE.lng, startingLocation: "123 MAIN ST, BRIDGEPORT CT 06607" })],
       drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })],
     });
     const { deps } = makeDeps(m.fetchImpl);
