@@ -174,7 +174,7 @@ check("payload: tag = job-<towbook call id> (driver's job identity)", notif.tag 
 check("payload: data.url opens the driver portal", notif.data.url === "/driver", JSON.stringify(notif.data));
 check("payload: icon+badge favicon", notif.icon === "/favicon.svg" && notif.badge === "/favicon.svg");
 check("SOUND METADATA: absolute same-origin strike sound (Android Chrome showNotification)", notif.sound === "/sounds/alert.mp3", notif.sound);
-check("payload: renotify false", notif.renotify === false);
+check("payload: renotify true (re-alert same-job updates)", notif.renotify === true);
 const jwtPayload = JSON.parse(Buffer.from(wire.init.headers.authorization.split("t=")[1].split(".")[1], "base64url").toString("utf8"));
 check("vapid: JWT audience = push service origin", jwtPayload.aud === "https://push.example.test", jwtPayload.aud);
 check("vapid: JWT subject + future exp", jwtPayload.sub === "https://www.lightningdispatch.app" && jwtPayload.exp > Math.floor(Date.now() / 1000));

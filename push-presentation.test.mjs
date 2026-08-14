@@ -77,13 +77,13 @@ const PAYLOAD = {
   icon: "/favicon.svg",
   badge: "/favicon.svg",
   sound: "/sounds/alert.mp3",
-  renotify: false,
+  renotify: true,
 };
 
 const android = runSw("Mozilla/5.0 (Linux; Android 14) Mobile Safari/537.36");
 await firePush(android, PAYLOAD);
 check("SW (Android) posts LD_PUSH_RECEIVED to every open window", android.posted.length === 1 && android.posted[0].type === "LD_PUSH_RECEIVED" && android.posted[0].tag === "job-280999001" && android.posted[0].title === PAYLOAD.title && android.posted[0].body === PAYLOAD.body);
-check("SW (Android) shows the OS notification with FULL options", android.shown.length === 1 && android.shown[0].title === PAYLOAD.title && android.shown[0].opts.tag === "job-280999001" && android.shown[0].opts.sound === "/sounds/alert.mp3" && android.shown[0].opts.vibrate?.[0] === 200 && android.shown[0].opts.renotify === false && android.shown[0].opts.data.url === "/driver", JSON.stringify(android.shown));
+check("SW (Android) shows the OS notification with FULL options", android.shown.length === 1 && android.shown[0].title === PAYLOAD.title && android.shown[0].opts.tag === "job-280999001" && android.shown[0].opts.sound === "/sounds/alert.mp3" && android.shown[0].opts.vibrate?.[0] === 200 && android.shown[0].opts.renotify === true && android.shown[0].opts.data.url === "/driver", JSON.stringify(android.shown));
 
 const ios = runSw("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148");
 await firePush(ios, PAYLOAD);

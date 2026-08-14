@@ -54,7 +54,7 @@ const { encryptPush } = await import("./src/data/webpush.ts");
 const payload = { callId: "280999001", callRequestId: null, jobType: "Tow job", location: "Main St, 06606", etaMinutes: 9, jobUrl: "/driver" };
 const notifJson = buildPushNotificationJson(payload);
 check("payload sound = /sounds/alert.mp3 (Android notification plays the OWNER's exact MP3)", notifJson.sound === "/sounds/alert.mp3");
-check("payload keeps the rest of spec A1", notifJson.title === "New job — Lightning Dispatch" && notifJson.body.includes("ETA ~9 min") && notifJson.tag === "job-280999001" && notifJson.data.url === "/driver" && notifJson.renotify === false);
+check("payload keeps the rest of spec A1 (including visible re-alert)", notifJson.title === "New job — Lightning Dispatch" && notifJson.body.includes("ETA ~9 min") && notifJson.tag === "job-280999001" && notifJson.data.url === "/driver" && notifJson.renotify === true);
 
 /* ------------------------------ 3. service worker wiring ------------------------------ */
 

@@ -134,7 +134,7 @@ check("selftest: tag override wins (self-test-<ts>)", buildPushNotificationJson(
 check("spec A1: data.url /driver", notifJson.data.url === "/driver");
 check("spec A1: icon+badge favicon", notifJson.icon === "/favicon.svg" && notifJson.badge === "/favicon.svg");
 check("spec A1: sound field", notifJson.sound === "/sounds/alert.mp3");
-check("spec A1: renotify false", notifJson.renotify === false);
+check("spec A1: renotify true (re-alert same-job updates)", notifJson.renotify === true);
 
 const enc = encryptPush({ endpoint: endpoint("crypto"), p256dh: SUB_PUB, auth: SUB_AUTH }, JSON.stringify(notifJson), keys);
 const decrypted = decryptPushBody(SUB_PRIV, SUB_AUTH, enc.body);

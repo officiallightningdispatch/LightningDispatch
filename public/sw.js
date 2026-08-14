@@ -51,7 +51,7 @@ async function ldNotifyClients(payload) {
 }
 
 self.addEventListener("push", (event) => {
-  let data = { title: "New job — Lightning Dispatch", body: "A new job landed in your queue.", tag: "new-assignment", data: { url: "/driver" } };
+  let data = { title: "New job — Lightning Dispatch", body: "A new job landed in your queue.", tag: "new-assignment", data: { url: "/driver" }, icon: "/favicon.svg", badge: "/favicon.svg", sound: "/sounds/alert.mp3", renotify: true };
   if (event.data) {
     try {
       const parsed = event.data.json();
@@ -64,7 +64,7 @@ self.addEventListener("push", (event) => {
           icon: typeof parsed.icon === "string" ? parsed.icon : "/favicon.svg",
           badge: typeof parsed.badge === "string" ? parsed.badge : "/favicon.svg",
           sound: typeof parsed.sound === "string" && parsed.sound ? parsed.sound : "/sounds/alert.mp3",
-          renotify: false,
+          renotify: typeof parsed.renotify === "boolean" ? parsed.renotify : true,
         };
       }
     } catch {

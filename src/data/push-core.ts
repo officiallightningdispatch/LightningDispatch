@@ -333,7 +333,12 @@ export function buildPushNotificationJson(p: AssignmentPushPayload): Record<stri
     // received.ts → sound.ts playAlertSound) is the guaranteed-audible path
     // when the app is open).
     sound: "/sounds/alert.mp3",
-    renotify: false,
+    // Repeated assignment updates use the same job tag. `false` lets browsers
+    // replace an existing notification silently: the open-page bridge still
+    // plays the strike, producing the owner's "sound but no banner" symptom.
+    // Request a visible re-alert; the SW supplies the required vibrate cue on
+    // Android and intentionally omits this option on iOS.
+    renotify: true,
   };
 }
 
