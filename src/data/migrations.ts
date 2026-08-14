@@ -1194,6 +1194,18 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE TABLE IF NOT EXISTS driver_region_preferences (org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, driver_id TEXT NOT NULL, config JSONB NOT NULL DEFAULT '{}'::jsonb, enabled BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(org_id, driver_id))`;
     await q`CREATE INDEX IF NOT EXISTS driver_region_preferences_org_idx ON driver_region_preferences(org_id, enabled)`;
   }],
+  [53, async (q) => {
+    await q`INSERT INTO driver_region_preferences (org_id, driver_id, config, enabled)
+      VALUES ('89e15ce587651cc47c3bc45b1c612a220955', '717660', ${JSON.stringify({
+        core_centers: [{ name: 'Bridgeport', lat: 41.1792, lng: -73.1894, radius_miles: 4 }, { name: 'Milford', lat: 41.2307, lng: -73.064, radius_miles: 4 }],
+        nearby_centers: [
+          { name: 'Stratford', lat: 41.2043, lng: -73.1332, radius_miles: 3 }, { name: 'Fairfield', lat: 41.1412, lng: -73.2637, radius_miles: 3 },
+          { name: 'Orange', lat: 41.2787, lng: -73.0257, radius_miles: 3 }, { name: 'Shelton', lat: 41.3165, lng: -73.0932, radius_miles: 3 },
+          { name: 'Trumbull', lat: 41.2429, lng: -73.2007, radius_miles: 3 }, { name: 'West Haven', lat: 41.2707, lng: -72.947, radius_miles: 3 }
+        ], priority_weight: 1, nearby_weight: 0.5, max_backlog_before_waive: 2, enabled: true
+      })}::jsonb, TRUE)
+      ON CONFLICT (org_id, driver_id) DO NOTHING`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();
