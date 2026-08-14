@@ -239,6 +239,23 @@ export async function pushJobStatusToTowbook(input: StatusPushInput): Promise<St
     const numericId = Number(towbookJobId);
     const idForBody = Number.isInteger(numericId) && numericId > 0 ? numericId : towbookJobId;
     const attempts: string[] = [];
+    const endpoint = `/api/calls/${towbookJobId}`;
+    // One durable key per logical lifecycle transition. A rollback followed by
+    // retry deliberately reuses the same ledger row; a later transition gets a
+    // different key. The request hash protects the key from accidental reuse.
+    const requestKey = `status:${orgId}:${jobId}:${status}:${toStatus}`;
+    const requestHash = `${endpoint}|${JSON.stringify({ id: idForBody, status: { id: toStatus } })}`;
+    const ledger = async (state: "pending" | "success" | "failed", summary: string) => {
+      try {
+        await q`INSERT INTO outbound_write_ledger(id,org_id,job_id,request_key,endpoint,request_hash,status,response_summary,completed_at)
+          VALUES(gen_random_uuid()::text,${orgId},${jobId},${requestKey},${endpoint},${requestHash},${state},${summary.slice(0,1000)},${state === "pending" ? null : new Date()})
+          ON CONFLICT (request_key) DO UPDATE SET status=EXCLUDED.status,response_summary=EXCLUDED.response_summary,completed_at=EXCLUDED.completed_at`;
+      } catch (err) {
+        // Idempotency is a safety invariant, not best-effort telemetry. Without
+        // a durable ledger row we cannot claim this write is safely tracked.
+        throw new Error(`Outbound write ledger unavailable: ${err instanceof Error ? err.message : "database error"}`);
+      }
+    };
 
     // (3) GET-first idempotency + last-write-wins predecessor guard.
     const getRes = await tbFetch(fetchImpl, `${session.baseUrl}/api/calls/${towbookJobId}`, session.cookie);
@@ -251,8 +268,13 @@ export async function pushJobStatusToTowbook(input: StatusPushInput): Promise<St
     }
     const currentId = getRes.ok && getRes.body && typeof getRes.body === "object" ? extractStatusId((getRes.body as Record<string, unknown>).status) : null;
     if (currentId === toStatus) {
-      // Already there — the same transition is a no-op; never a double PUT.
-      await recordAudit(orgId, actor, "status_push_noop", jobId, { towbookJobId, status, toStatus, reason: "Towbook already reports this status" });
+      // Already there — reconcile the durable intent before returning. This is
+      // the ambiguous-timeout path: the prior PUT may have landed even though
+      // its read-back failed. Marking the same request key success makes the
+      // retry converge without issuing a second PUT.
+      await ledger("success", `reconciled status ${toStatus}`);
+      await q`UPDATE dispatch_jobs SET towbook_status=${String(toStatus)} WHERE id=${jobId} AND org_id=${orgId} AND status=${status}`;
+      await recordAudit(orgId, actor, "status_push_noop", jobId, { towbookJobId, status, toStatus, reason: "Towbook already reports this status; ledger reconciled" });
       return { ok: true, changed: false, skipped: true, reason: "already-at-status", statusId: toStatus };
     }
     const required = STATUS_PREDECESSOR[toStatus] ?? null;
@@ -274,6 +296,9 @@ export async function pushJobStatusToTowbook(input: StatusPushInput): Promise<St
     // transition when currentId === required, or a lagged pull otherwise). The
     // PUT fires; a non-adjacent jump Towbook rejects escalates with evidence.
 
+    // Durable intent is recorded before the first outbound write. A retry can
+    // therefore be reconciled even if the request times out ambiguously.
+    await ledger("pending", "write started");
     // (4) PUT with one retry on transient failure, then read-back verify.
     let put = await tbFetch(fetchImpl, `${session.baseUrl}/api/calls/${towbookJobId}`, session.cookie, {
       method: "PUT",
@@ -292,6 +317,7 @@ export async function pushJobStatusToTowbook(input: StatusPushInput): Promise<St
       const reason = isExpired(put)
         ? "The Towbook session expired while pushing the status — reconnect Towbook in Settings."
         : `Towbook rejected the status update (HTTP ${put.status ?? "error"}).`;
+      await ledger("failed", reason);
       await recordEscalation(orgId, jobId, towbookJobId, toStatus, reason, { status, toStatus, attempts, rawPut: isExpired(put) ? "session expired" : String(put.body ?? "").slice(0, 200) });
       await recordAudit(orgId, actor, "status_push_failed", jobId, { towbookJobId, status, toStatus, reason, attempts });
       return { ok: false, code: isExpired(put) ? "session_expired" : "towbook_failed", message: reason, escalated: true };
@@ -304,6 +330,7 @@ export async function pushJobStatusToTowbook(input: StatusPushInput): Promise<St
     const verifiedId = call ? extractStatusId(call.status) : null;
     if (verifiedId !== toStatus) {
       const reason = `Towbook did not confirm status ${toStatus} after the update (now ${verifiedId ?? "unknown"}).`;
+      await ledger("failed", reason);
       await recordEscalation(orgId, jobId, towbookJobId, toStatus, reason, { status, toStatus, attempts, verifiedId: verifiedId ?? null });
       await recordAudit(orgId, actor, "status_push_failed", jobId, { towbookJobId, status, toStatus, reason, attempts, verifiedId: verifiedId ?? null });
       return { ok: false, code: "verify_failed", message: reason, escalated: true };
@@ -312,6 +339,7 @@ export async function pushJobStatusToTowbook(input: StatusPushInput): Promise<St
     // Success: record towbook_status (guarded — a newer import that changed the
     // lifecycle status keeps its own towbook_status) + audit.
     await q`UPDATE dispatch_jobs SET towbook_status=${String(toStatus)} WHERE id=${jobId} AND org_id=${orgId} AND status=${status}`;
+    await ledger("success", `verified status ${toStatus}`);
     await recordAudit(orgId, actor, "status_push_verified", jobId, { towbookJobId, status, toStatus, attempts });
     return { ok: true, changed: true, skipped: false, reason: null, statusId: toStatus };
   } catch (err) {

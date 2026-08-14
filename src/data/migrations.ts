@@ -1145,6 +1145,22 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`ALTER TABLE contractor_documents DROP CONSTRAINT IF EXISTS contractor_documents_status_check`;
     await q`ALTER TABLE contractor_documents ADD CONSTRAINT contractor_documents_status_check CHECK (status IN ('uploaded','verified','expired','rejected','voided'))`;
   }],
+  [48, async (q) => {
+    await q`CREATE TABLE IF NOT EXISTS outbound_write_ledger (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      job_id TEXT NOT NULL,
+      request_key TEXT NOT NULL,
+      endpoint TEXT NOT NULL,
+      request_hash TEXT NOT NULL,
+      status TEXT NOT NULL,
+      response_summary TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      completed_at TIMESTAMPTZ
+    )`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS outbound_write_ledger_request_key_uidx ON outbound_write_ledger(request_key)`;
+    await q`CREATE INDEX IF NOT EXISTS outbound_write_ledger_org_job_idx ON outbound_write_ledger(org_id, job_id)`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();
