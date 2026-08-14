@@ -23,6 +23,7 @@ import { DriverNotificationBanners } from "~/components/notify-banners";
 import { PushNotificationSetup, PushPermissionCard } from "~/components/push-setup";
 import { getMyCompliance } from "~/data/contractor-admin";
 import { driverEarnings } from "~/data/driver-auth";
+import { NativeContractorStatus } from "~/components/native-contractor-status";
 
 /** Home compliance chip (contractor-admin part 3, owner-directed 2026-08-12):
  *  over the map hero when required docs aren't all approved — yellow "N docs
@@ -130,6 +131,7 @@ export function RealDriverPortal() {
         </>
       }
     >
+      <NativeContractorStatus contractorOnline={online} />
       <div className="relative h-[calc(100dvh-3.5rem-4.25rem)] md:mx-auto md:h-[70vh] md:max-w-3xl">
         <LiveMap
           variant="hero"
