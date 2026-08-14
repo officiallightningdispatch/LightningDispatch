@@ -137,11 +137,35 @@ export function pushSetupFailureCopy(reason: PushSetupFailureReason): string {
   }
 }
 
+/** Session flag: the one-time uncontrolled-page reload already ran (prevents a
+ *  reload loop if the browser never grants control). */
+const SW_HEAL_KEY = "ld-sw-healed-v1";
+
 /** Register the SW at the ORIGIN ROOT (/sw.js — root scope). Returns null on
- *  failure (diagnosed as "sw_failed" by ensurePushSubscription). */
+ *  failure (diagnosed as "sw_failed" by ensurePushSubscription).
+ *
+ *  Self-heal (2026-08-14, owner report: "no banner/sound"): browsers only
+ *  deliver SW→page messages (the SW's LD_PUSH_RECEIVED postMessage) to pages
+ *  the SW CONTROLS. A page that loaded before the SW activated/updated is
+ *  uncontrolled, so the push round-trip silently dies — the phone got the push
+ *  (Apple 201) but the open app never heard about it. After registering, if
+ *  this page still has no controller, reload ONCE as soon as the new SW takes
+ *  control, so the bridge works from this session forward. */
 export async function registerServiceWorker(): Promise<ServiceWorkerRegistration | null> {
   try {
     const reg = await navigator.serviceWorker.register("/sw.js");
+    if (typeof navigator !== "undefined" && navigator.serviceWorker.controller === null) {
+      try {
+        if (!sessionStorage.getItem(SW_HEAL_KEY)) {
+          sessionStorage.setItem(SW_HEAL_KEY, "1");
+          navigator.serviceWorker.addEventListener(
+            "controllerchange",
+            () => window.location.reload(),
+            { once: true },
+          );
+        }
+      } catch { /* storage blocked — skip self-heal, still return the reg */ }
+    }
     await navigator.serviceWorker.ready;
     return reg;
   } catch {

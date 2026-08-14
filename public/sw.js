@@ -2,6 +2,16 @@
  * 2026-08-12). Registered from the contractor portal at /sw.js (static file,
  * scope = origin root). Two handlers:
  *
+ * LD_SW_VERSION (2026-08-14): the browser's SW update check compares sw.js
+ * BYTES, so every publish that changes sw.js must bump this stamp — an
+ * unchanged file can leave a phone's SW on an old revision for 24h+ (iOS is
+ * known to defer SW updates after install), which silently breaks the
+ * LD_PUSH_RECEIVED round-trip (the SW simply never posts it). Bumping the
+ * stamp forces the update check to see new bytes on the next launch.
+ */
+const LD_SW_VERSION = "2026-08-14.1";
+
+/*
  *  push  — the server sends an encrypted RFC 8291 payload whose JSON carries
  *          { title, body, tag, data:{url}, icon, badge, sound, renotify }
  *          (built by push-core buildPushNotificationJson — spec A1 verbatim).

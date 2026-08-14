@@ -31,6 +31,13 @@ const SOUND_KEYS: Record<SoundRole, string> = {
 
 let ctx: AudioContext | null = null;
 let primed = false;
+/** A real alert whose play() was blocked by the autoplay policy (no user
+ *  gesture since load — the FIRST push after opening the app is silent on iOS
+ *  and Chrome). Replayed on the next user gesture by primeAudio(), so a
+ *  driver who picks up the phone after a missed alert still HEARS it (the
+ *  banner is already up). Cleared when muted, when it finally plays, or when
+ *  it is superseded by a newer blocked alert. */
+let pendingStrike: SoundRole | null = null;
 
 /** Create the shared AudioContext lazily (webkit prefix for older Safari). */
 function getCtx(): AudioContext | null {
@@ -50,20 +57,35 @@ function getCtx(): AudioContext | null {
 }
 
 /** Call on the first user gesture (any click/tap/key): create/resume the
- *  context so sounds work afterward. Idempotent and never throws. */
+ *  context so sounds work afterward. Idempotent and never throws. Also fires
+ *  any alert whose play was blocked by autoplay earlier (pendingStrike). */
 export function primeAudio(): void {
   if (typeof window === "undefined" || primed) return;
   const c = getCtx();
   if (!c) return;
   try {
     if (c.state === "suspended") {
-      void c.resume().then(() => { primed = true; }).catch(() => { /* blocked — retried on the next gesture */ });
+      void c.resume().then(() => {
+        primed = true;
+        firePendingStrike();
+      }).catch(() => { /* blocked — retried on the next gesture */ });
     } else if (c.state === "running") {
       primed = true;
+      firePendingStrike();
     }
   } catch {
     /* blocked — banner-only fallback */
   }
+}
+
+/** Replay the most recent autoplay-blocked alert now that a gesture has
+ *  unlocked audio. playLightning re-checks mute; on success the pending flag
+ *  clears (it also re-sets pending if STILL blocked — next gesture retries). */
+function firePendingStrike(): void {
+  if (!pendingStrike) return;
+  const role = pendingStrike;
+  pendingStrike = null;
+  playLightning(role);
 }
 
 /** Per-role mute state — absent key means sound ON (default). */
@@ -77,8 +99,10 @@ export function soundMuted(role: SoundRole): boolean {
 
 export function setSoundMuted(role: SoundRole, muted: boolean): void {
   try {
-    if (muted) localStorage.setItem(SOUND_KEYS[role], "1");
-    else localStorage.removeItem(SOUND_KEYS[role]);
+    if (muted) {
+      localStorage.setItem(SOUND_KEYS[role], "1");
+      if (pendingStrike === role) pendingStrike = null; // muted — don't replay a blocked alert
+    } else localStorage.removeItem(SOUND_KEYS[role]);
   } catch {
     /* storage unavailable — mute just won't persist this session */
   }
@@ -122,7 +146,11 @@ export function playAlertSound(role: SoundRole): void {
     a.currentTime = 0;
     const p = a.play();
     if (p && typeof p.catch === "function") {
-      p.catch(() => playLightning(role)); // autoplay blocked — synthesized fallback
+      p.then(() => {
+        // Played — a previously blocked alert (pendingStrike) is now stale;
+        // drop it so the next gesture doesn't replay an old alert.
+        pendingStrike = null;
+      }).catch(() => playLightning(role)); // autoplay blocked — synthesized fallback
     }
   } catch {
     playLightning(role);
@@ -141,8 +169,12 @@ export function playLightning(role: SoundRole): void {
   const c = getCtx();
   if (!c) return;
   if (c.state !== "running") {
-    try { void c.resume().catch(() => { /* blocked */ }); } catch { /* blocked */ }
-    return; // blocked — the banner still shows; sound is best-effort
+    // Autoplay-blocked (no user gesture since load). Remember the alert so the
+    // next gesture replays it (primeAudio → firePendingStrike); until then the
+    // banner still shows — sound is best-effort by browser policy.
+    pendingStrike = role;
+    try { void c.resume().catch(() => { /* still blocked — gesture retry */ }); } catch { /* blocked */ }
+    return;
   }
   try {
     const now = c.currentTime;
