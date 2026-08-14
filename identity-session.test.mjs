@@ -48,7 +48,7 @@ try {
   const single=await q`SELECT u.id,m.org_id,m.role,m.contractor_id FROM users u JOIN organization_memberships m ON m.user_id=u.id WHERE u.id=${singleU}`;
   check('e single-membership preserves org/role/contractorId',single[0]?.org_id===singleO&&single[0]?.role==='contractor'&&single[0]?.contractor_id==='single-contractor-'+suffix);
   await q`DELETE FROM organizations WHERE id=${singleO}`; await q`DELETE FROM users WHERE id=${singleU}`;
-  const applied=await q`SELECT COUNT(*)::int n FROM schema_migrations`; check('f migration state ends at 51',Number((await q`SELECT MAX(version)::int n FROM schema_migrations`)[0].n)===51);
+  const applied=await q`SELECT COUNT(*)::int n FROM schema_migrations`; check('f migration state at least 51 (52-54 landed: region prefs + heartbeat)',Number((await q`SELECT MAX(version)::int n FROM schema_migrations`)[0].n)>=51);
 } finally {
   await q`DELETE FROM sessions WHERE id IN (${S},${SL}) OR user_id IN (${U},${U2})`.catch(()=>{});
   await q`DELETE FROM organization_memberships WHERE org_id IN (${Oqa},${Oreal}) OR user_id IN (${U},${U2})`.catch(()=>{});
