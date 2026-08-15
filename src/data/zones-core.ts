@@ -2,6 +2,7 @@ import { sql } from "~/db";
 import { randomUUID, createHash } from "node:crypto";
 import nationalZones from "./national-zones.json";
 import { clampDemandLevel, computedDemandLevel, validateHexColor, validateUnlockJobs, validateZoneStatus } from "../lib/zone-model";
+import { aggregateZoneMetrics } from "../lib/zone-metrics";
 export type ZoneActor={orgId:string;id:string;role:string};
 
 type NationalNode={state:string;name:string;zone_type:string;lat:number;lng:number;radius_miles:number;tz:string;parent:string|null};
@@ -40,12 +41,7 @@ type ZoneMetrics={busyness:string;availableDrivers:number;activeJobs:number;unas
 async function batchMetrics(q:any, orgId:string, zones:any[]):Promise<Map<string,ZoneMetrics & {assignedDriverCount:number}>>{
  const availability=await q`SELECT zone_id, user_id, day::text AS day FROM driver_availability_log WHERE org_id=${orgId} AND session_started_at IS NOT NULL AND heartbeat_at > NOW() - INTERVAL '90 seconds' AND zone_id IS NOT NULL`;
  const jobs=await q`SELECT status,lat,lng,pickup_lat,pickup_lng FROM dispatch_jobs WHERE org_id=${orgId} AND created_at>=NOW()-INTERVAL '24 hours' AND (pickup_lat IS NOT NULL AND pickup_lng IS NOT NULL OR lat IS NOT NULL AND lng IS NOT NULL)`;
- const out=new Map<string,ZoneMetrics & {assignedDriverCount:number}>();
- for(const z of zones){ const zid=String(z.id), day=localDate(String(z.tz)); const drivers=availability.filter((r:any)=>String(r.zone_id)===zid&&String(r.day)===day); const users=new Set(drivers.map((r:any)=>String(r.user_id)));
-  const inside=(j:any)=>{const la=Number(j.pickup_lat??j.lat),ln=Number(j.pickup_lng??j.lng);const x=(la-Number(z.lat))*69,y=(ln-Number(z.lng))*69*Math.cos(Number(z.lat)*Math.PI/180);return Math.sqrt(x*x+y*y)<=Number(z.radius_miles)};
-  const inJobs=jobs.filter(inside), active=inJobs.filter((j:any)=>['offered','assigned','in_progress'].includes(String(j.status))).length, unassigned=inJobs.filter((j:any)=>j.status==='new').length, av=users.size, ratio=(active+unassigned)/Math.max(av,1), busyness=av===0&&(active+unassigned)>0?'Busy':ratio>=2?'Busy':ratio>=1?'Moderate':'Low';
-  out.set(zid,{busyness,availableDrivers:av,activeJobs:active,unassignedJobs:unassigned,recentVolume24h:inJobs.length,demandRatio:Number(ratio.toFixed(1)),assignedDriverCount:users.size}); }
- return out;
+ return aggregateZoneMetrics(zones, availability, jobs, zone => localDate(String(zone.tz)));
 }
 export async function getZonesCore(a:ZoneActor){ const q=qdb(); const zones=await q`SELECT id,org_id,name,lat,lng,radius_miles,tz,polygon_geojson,capacity,market_id,demand_level,status,is_reserved,unlock_jobs_required,color FROM dispatch_zones WHERE org_id=${a.orgId} AND active=TRUE AND zone_type IN ('market','corridor') AND zone_type <> 'coverage' ORDER BY sort_order,name`; const metrics=await batchMetrics(q,a.orgId,zones); return zones.map((z:any)=>({id:String(z.id),name:String(z.name),lat:Number(z.lat),lng:Number(z.lng),radiusMiles:Number(z.radius_miles),tz:String(z.tz),geometry:z.polygon_geojson??null,demandLevel:clampDemandLevel(z.demand_level),demandSource:z.demand_level!=null?'set':computedDemandLevel((metrics.get(String(z.id))!).activeJobs,(metrics.get(String(z.id))!).unassignedJobs,z.capacity==null?null:Number(z.capacity),(metrics.get(String(z.id))!).availableDrivers)!=null?'computed':'unavailable',status:validateZoneStatus(z.status??'available'),isReserved:Boolean(z.is_reserved),unlockJobsRequired:Number(z.unlock_jobs_required??30),capacity:z.capacity==null?null:Number(z.capacity),color:z.color?String(z.color):null,...metrics.get(String(z.id))!})); }
 export async function getMyZoneStateCore(a:ZoneActor, now=new Date()){

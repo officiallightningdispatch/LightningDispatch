@@ -24,8 +24,15 @@ export function validateZonePolygon(value: unknown): ZonePolygon | null {
 
 export function pointInZone(zone: ContainmentZone, lat: number, lng: number, zip?: string): boolean {
   const poly = zone.polygon_geojson;
-  if (poly && typeof poly === "object" && ((poly as any).type === "Polygon" || (poly as any).type === "MultiPolygon")) {
-    try { return booleanPointInPolygon({ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [lng, lat] } } as any, feature({type: (poly as any).type, coordinates: (poly as any).coordinates}) as any); } catch { return false; }
+  if (poly != null && poly !== "") {
+    // A malformed polygon must not make a live zone disappear: validation failure
+    // deliberately falls through to the established ZIP/radius membership.
+    try {
+      const geometry = validateZonePolygon(poly);
+      if (geometry) {
+        return booleanPointInPolygon({ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: [lng, lat] } } as any, feature(geometry) as any);
+      }
+    } catch { /* use the legacy fallback below */ }
   }
   if (zip && Array.isArray(zone.zip_codes) && zone.zip_codes.map(String).includes(String(zip))) return true;
   return haversineMiles({ lat, lng }, { lat: Number(zone.lat), lng: Number(zone.lng) }) <= Number(zone.radius_miles);
