@@ -1327,10 +1327,9 @@ async function resolveOfferPickupCoords(
 type LookupAnchor = { lat: number; lng: number; note: string };
 
 /** Choose the coordinate used by Towbook nearestDrivers and road ranking.
- * Agero broadcasts a Bridgeport placeholder for some real jobs; never use it
- * as a geographic search origin when our authoritative sync row or validated
- * startingLocation geocode has the real pickup. Non-placeholder offers retain
- * their exact existing coordinates. */
+ * Always prefer the strongest real pickup resolution: authoritative sync
+ * coordinates, then validated startingLocation/synced dispatch pickup. Offer
+ * coordinates are only a fail-closed fallback when no better resolution exists. */
 async function resolveDriverLookupAnchor(
   orgId: string,
   rawOffer: Record<string, unknown>,
@@ -1341,18 +1340,15 @@ async function resolveDriverLookupAnchor(
 ): Promise<LookupAnchor> {
   const lat = Number(offer.startLocationLatitude);
   const lng = Number(offer.startLocationLongitude);
-  if (!isAgeroPlaceholderCoords(lat, lng)) {
-    return { lat, lng, note: `lookup anchored at offer coordinates (${lat},${lng})` };
-  }
   if (stateResolution.authoritativeLat != null && stateResolution.authoritativeLng != null) {
     const realLat = stateResolution.authoritativeLat, realLng = stateResolution.authoritativeLng;
-    return { lat: realLat, lng: realLng, note: `lookup anchored at authoritative pickup (${realLat},${realLng}) — placeholder coords suppressed` };
+    return { lat: realLat, lng: realLng, note: `lookup anchored at authoritative pickup (${realLat},${realLng}) — offer coords suppressed` };
   }
   const resolved = await resolveOfferPickupCoords(orgId, rawOffer, deps, fetchImpl);
   if (resolved.ok) {
-    return { lat: resolved.lat, lng: resolved.lng, note: `lookup anchored at ${resolved.source === "geocode" ? "geocoded startingLocation" : "synced pickup"} (${resolved.lat},${resolved.lng}) — placeholder coords suppressed` };
+    return { lat: resolved.lat, lng: resolved.lng, note: `lookup anchored at ${resolved.source === "geocode" ? "geocoded startingLocation" : "synced pickup"} (${resolved.lat},${resolved.lng}) — offer coords suppressed` };
   }
-  return { lat, lng, note: `lookup retained known Agero placeholder (${lat},${lng}) — real pickup unresolved (${resolved.reason})` };
+  return { lat, lng, note: `offer coordinates retained (no better resolution)${isAgeroPlaceholderCoords(lat, lng) ? ` — real pickup unresolved (${resolved.reason})` : ""}` };
 }
 
 /** Build the OfferShape from the raw offer record with the given pickup
@@ -1455,6 +1451,8 @@ export type ChosenDriverEta = {
   queuedJobCount: number | null;
   /** Final road leg minutes last-job-location → offer (workload-aware only). */
   finalLegMinutes: number | null;
+  /** Human-readable road/service arithmetic for queue-aware ETA. */
+  queueBreakdown?: string | null;
   /** True when the driver was already ON SCENE at their current job (arrived)
    *  — the chain starts at that job's service time, no GPS→pickup leg
    *  (workload-aware only; null otherwise). */
@@ -1585,6 +1583,7 @@ export async function workloadAwareArrivalMinutes(
   queueMinutes: number;
   finalLegMinutes: number;
   finalLegProvider: EtaProvider;
+  queueBreakdown: string;
   startedOnScene: boolean;
   unlocatedJobs: number;
   /** First TomTom failure seen on ANY chain leg (a leg that fell back to
@@ -1612,6 +1611,7 @@ export async function workloadAwareArrivalMinutes(
   const originLng = origin != null && Number.isFinite(origin.lng) ? origin.lng : Number(driver.longitude);
   const unlocatedJobs = Math.max(0, total - queue.length);
   let queueMinutes = 0;
+  const breakdown: string[] = [];
   let prevLat = originLat;
   let prevLng = originLng;
   let startedOnScene = false;
@@ -1623,11 +1623,13 @@ export async function workloadAwareArrivalMinutes(
       // never from the driver's last GPS ping).
       startedOnScene = true;
       queueMinutes += SERVICE_MINUTES_PER_JOB;
+      breakdown.push(`${SERVICE_MINUTES_PER_JOB} min service`);
       prevLat = first.pickupLat;
       prevLng = first.pickupLng;
       for (let i = 1; i < queue.length; i++) {
         const leg = await legMinutes(prevLat, prevLng, queue[i].pickupLat, queue[i].pickupLng);
         queueMinutes += leg.minutes + SERVICE_MINUTES_PER_JOB;
+        breakdown.push(`${Math.round(leg.minutes)} min to queued job ${i + 1}`, `${SERVICE_MINUTES_PER_JOB} min service`);
         prevLat = queue[i].pickupLat;
         prevLng = queue[i].pickupLng;
       }
@@ -1635,6 +1637,7 @@ export async function workloadAwareArrivalMinutes(
       for (const job of queue) {
         const leg = await legMinutes(prevLat, prevLng, job.pickupLat, job.pickupLng);
         queueMinutes += leg.minutes + SERVICE_MINUTES_PER_JOB;
+        breakdown.push(`${Math.round(leg.minutes)} min to queued job ${breakdown.filter((x) => x.includes("queued job")).length + 1}`, `${SERVICE_MINUTES_PER_JOB} min service`);
         prevLat = job.pickupLat;
         prevLng = job.pickupLng;
       }
@@ -1643,7 +1646,7 @@ export async function workloadAwareArrivalMinutes(
   // Unlocated active jobs (no pickup coords): their on-scene service time is
   // still real workload — estimate it at the tail (never dropped, never routed
   // blind).
-  if (unlocatedJobs > 0) queueMinutes += SERVICE_MINUTES_PER_JOB * unlocatedJobs;
+  if (unlocatedJobs > 0) { queueMinutes += SERVICE_MINUTES_PER_JOB * unlocatedJobs; breakdown.push(`${SERVICE_MINUTES_PER_JOB * unlocatedJobs} min service for ${unlocatedJobs} unlocated job(s)`); }
   // Final leg: from the LAST job's location to the offer — NOT from the
   // driver's GPS (they are at the last job when this leg begins).
   const finalLeg = await legMinutes(prevLat, prevLng, pickupLat, pickupLng);
@@ -1652,6 +1655,7 @@ export async function workloadAwareArrivalMinutes(
     queueMinutes,
     finalLegMinutes: finalLeg.minutes,
     finalLegProvider: finalLeg.provider,
+    queueBreakdown: `${breakdown.join(" + ")}${breakdown.length ? " + " : ""}${Math.round(finalLeg.minutes)} min final leg`,
     startedOnScene,
     unlocatedJobs,
     tomtomFailure: chainTomtomFailure,
@@ -1840,6 +1844,7 @@ export async function chooseBestDriverByRoad(
           queueMinutes: chain.queueMinutes,
           queuedJobCount: activeCount,
           finalLegMinutes: chain.finalLegMinutes,
+          queueBreakdown: chain.queueBreakdown,
           startedOnScene: chain.startedOnScene,
           unlocatedJobs: chain.unlocatedJobs,
           tomtomFailure: chain.tomtomFailure,
@@ -1952,6 +1957,7 @@ export async function chooseBestDriverByRoad(
       queueMinutes: arrival.queueMinutes,
       queuedJobCount: activeCount,
       finalLegMinutes: arrival.finalLegMinutes,
+      queueBreakdown: arrival.queueBreakdown,
       startedOnScene: arrival.startedOnScene,
       unlocatedJobs: arrival.unlocatedJobs,
       tomtomFailure: arrival.tomtomFailure,
@@ -1975,9 +1981,13 @@ export function finalEtaMinutes(
   ceilingMinutes: number,
 ): number {
   const raw = Math.ceil(Number.isFinite(baseMinutes) ? baseMinutes : 0) + (Number.isFinite(bufferMinutes) ? bufferMinutes : 0);
-  const ceiling = Math.round(ceilingMinutes) || 45;
+  // ceilingMinutes remains an explicit API input for decision-gate callers;
+  // quoted ETA intentionally does not use it as a cap.
+  void ceilingMinutes;
   const floor = Math.round(floorMinutes) || 5;
-  return Math.min(ceiling, Math.max(floor, raw));
+  // Keep the floor for malformed/near-zero estimates, but never clamp a real
+  // queue-inclusive ETA to the SLA ceiling (45 minutes is an acceptance goal).
+  return Math.max(floor, raw);
 }
 
 /** Human-readable ETA breakdown for decision reasons. The label NAMES the
@@ -1994,7 +2004,7 @@ export function finalEtaMinutes(
  *  flagged ("GPS ping age 30 min") — ETA honesty (2026-08-11). */
 export function etaDetailLabel(c: ChosenDriverEta, buffer: number, floor: number, ceiling: number, finalMinutes: number): string {
   const base = c.queueInclusive
-    ? `workload-aware: ${c.queuedJobCount ?? 0} active jobs ≈ ${Math.round(c.queueMinutes ?? 0)} min (incl. ${SERVICE_MINUTES_PER_JOB}-min service/job) + final leg ${Math.round(c.finalLegMinutes ?? 0)} (${c.provider === "tomtom" ? "tomtom-traffic" : c.provider === "osrm" ? "osrm" : "factor"})${c.startedOnScene ? "; already on-scene at current job" : ""}${c.unlocatedJobs ? `; +${c.unlocatedJobs} unlocated ≈ service` : ""}`
+    ? `queue-aware ETA ${Math.round(c.baseMinutes)} min = ${c.queueBreakdown ?? `${Math.round(c.queueMinutes ?? 0)} min queued work + ${Math.round(c.finalLegMinutes ?? 0)} min final leg`} (${c.provider === "tomtom" ? "tomtom-traffic" : c.provider === "osrm" ? "osrm" : "factor"})${c.startedOnScene ? "; already on-scene at current job" : ""}${c.unlocatedJobs ? `; +${c.unlocatedJobs} unlocated ≈ service` : ""}`
     : c.usedFallback
       ? `road fallback ${c.baseMinutes} (factor model)`
       : c.provider === "tomtom"
@@ -2922,7 +2932,8 @@ async function runAutoDispatchInternal(
       let dispatchDriverName = humanReassigned
         ? (humanReassigned.driverName ?? String(manualDriverId))
         : driver ? String(driver.driverName ?? "") : null;
-      // Final quoted ETA: ceil(road minutes) + buffer, clamped to [floor, ceiling].
+      // Final quoted ETA is accurate (including the full queue); the ceiling is
+      // used only by acceptance/escalation checks above.
       // NO road-ETA candidate → no ETA is computed (the accept body still needs
       // the field — quote the club's SLA ceiling, an honest "not yet assigned"
       // worst case, never a fabricated 1-minute promise).
