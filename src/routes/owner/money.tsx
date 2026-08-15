@@ -43,8 +43,8 @@ import {
   type PayPeriod, type PayPeriodDetail, type PayoutRail, type PayoutRecord, type OwnerPayoutMethod,
 } from "~/data/payouts";
 import {
-  listTipCashoutRequests, markTipCashoutPaid,
-  type TipCashoutList, type TipCashoutRequest,
+  listTipCashoutRequests, markTipCashoutPaid, listTirePlugLedger, markTirePlugPaid,
+  type TipCashoutList, type TipCashoutRequest, type TirePlugLedgerRow,
 } from "~/data/tip-cashout";
 import {
   chargeStaged,
@@ -98,6 +98,8 @@ function MoneyView() {
   const [editSaving, setEditSaving] = useState(false);
   // Tip cash-outs (owner-directed 2026-08-12) — open requests + recently paid.
   const [cashouts, setCashouts] = useState<TipCashoutList | null>(null);
+  const [tireLedger, setTireLedger] = useState<TirePlugLedgerRow[] | null>(null);
+  const [markingTireId, setMarkingTireId] = useState<string | null>(null);
   const [markingCashoutId, setMarkingCashoutId] = useState<string | null>(null);
   // Top Tips KPI disclosure: load the real ledger only when the owner opens it.
   const [tipsExpanded, setTipsExpanded] = useState(false);
@@ -119,6 +121,8 @@ function MoneyView() {
   const loadCashouts = useCallback(async () => {
     const res = await listTipCashoutRequests();
     if (res.ok) setCashouts(res.data);
+    const plugs = await listTirePlugLedger();
+    if (plugs.ok) setTireLedger(plugs.data);
   }, []);
 
   const loadTipsBreakdown = useCallback(async () => {
@@ -467,6 +471,8 @@ function MoneyView() {
             </Card>
           )}
         </section>
+
+        <section aria-label="Tire-plug ledger" className="space-y-3"><div><h2 className="text-base font-bold text-ink-800">Tire-plug requests</h2><p className="mt-0.5 text-xs text-ink-500">Send the contractor $45 outside Lightning Dispatch, then mark the request paid.</p></div>{tireLedger === null ? <div className="h-20 animate-pulse rounded-2xl bg-ink-100/70" /> : tireLedger.length === 0 ? <EmptyState icon={Zap} title="No tire-plug requests yet" body="Accepted tire-plug charges appear here after completion." /> : <Card className="divide-y divide-ink-100">{tireLedger.map((r) => <div key={r.id} className="flex flex-wrap items-center gap-3 px-4 py-3.5"><Avatar name={r.contractorName} className="size-9" /><div className="min-w-0 flex-1"><p className="text-sm font-semibold text-ink-800">{r.contractorName}</p><p className="text-xs text-ink-400">Tire plug · {new Date(r.createdAt).toLocaleDateString()}</p></div><div className="text-right"><p className="text-sm font-bold">{money(r.amountCents)}</p><StatusBadge className={r.status === "paid" ? "bg-success-100 text-success-700" : "bg-info-100 text-info-700"}>{r.status}</StatusBadge></div>{r.status !== "paid" && <Button size="md" variant="primary" loading={markingTireId === r.id} onClick={async () => { setMarkingTireId(r.id); await markTirePlugPaid({ data: { transactionId: r.id } }); setMarkingTireId(null); void loadCashouts(); }}>Mark paid</Button>}</div>)}</Card>}</section>
 
         {/* payday manifest */}
         <section aria-label="Payday manifest" className="space-y-3">

@@ -1520,6 +1520,10 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`UPDATE contractor_profiles SET vehicle_type = 'other' WHERE vehicle_type = 'Other'`;
   }],
 
+  [69, async (q) => {
+    await q`ALTER TABLE tip_cashouts ADD COLUMN IF NOT EXISTS covered_tire_plug_ids JSONB NOT NULL DEFAULT '[]'::jsonb`;
+    await q`ALTER TABLE payout_records ADD COLUMN IF NOT EXISTS tire_plug_cents INTEGER NOT NULL DEFAULT 0`;
+  }],
  ];
 export async function ensureSchema() {
   const q = sql();

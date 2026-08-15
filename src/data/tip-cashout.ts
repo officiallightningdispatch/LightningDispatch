@@ -8,8 +8,8 @@
  * (see the client-graph rule that has broken the build before).
  */
 import { createServerFn } from "@tanstack/react-start";
-import type { TipCashoutRequest, TipCashoutList, DriverTipCashoutState, TipCashoutResult } from "./tip-cashout-core";
-export type { DriverTipCashoutState, TipCashoutRequest, TipCashoutList } from "./tip-cashout-core";
+import type { TipCashoutRequest, TipCashoutList, DriverTipCashoutState, TipCashoutResult, TirePlugLedgerRow } from "./tip-cashout-core";
+export type { DriverTipCashoutState, TipCashoutRequest, TipCashoutList, TirePlugLedgerRow } from "./tip-cashout-core";
 
 const passthrough = (x: unknown) => x;
 
@@ -40,6 +40,17 @@ export const submitTipCashout = createServerFn({ method: "POST" }).handler(async
 
 /** Owner/admin: the Money-tab list of tip cash-out requests — open first,
  *  then recently paid. Masked handles only. */
+export const listTirePlugLedger = createServerFn({ method: "GET" }).handler(async (): Promise<TipCashoutResult<TirePlugLedgerRow[]>> => {
+  const core = await import("./tip-cashout-core"); const { currentUser } = await import("./auth-server"); const u = await currentUser();
+  if (!u) return { ok: false as const, code: "unauthorized", message: "Sign in first." };
+  return core.listTirePlugLedgerCore({ orgId: u.orgId, id: u.id, role: u.role });
+});
+export const markTirePlugPaid = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<TipCashoutResult<TirePlugLedgerRow>> => {
+  const core = await import("./tip-cashout-core"); const { currentUser } = await import("./auth-server"); const u = await currentUser();
+  if (!u) return { ok: false as const, code: "unauthorized", message: "Sign in first." };
+  return core.markTirePlugPaidCore({ orgId: u.orgId, id: u.id, role: u.role }, data);
+});
+
 export const listTipCashoutRequests = createServerFn({ method: "GET" }).handler(async (): Promise<TipCashoutResult<TipCashoutList>> => {
   const core = await import("./tip-cashout-core");
   const { currentUser } = await import("./auth-server");

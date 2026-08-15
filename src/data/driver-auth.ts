@@ -1145,6 +1145,9 @@ export const driverSetAvailability = createServerFn({ method: "POST" }).validato
 });
 
 /* ------------------------------- earnings + profile ------------------------------- */
+export type DriverEarningsTirePlug = {
+  jobId: string; callNumber: string | null; amountCents: number; status: string; createdAtIso: string | null;
+};
 export type DriverEarningsTip = {
   jobId: string;
   callNumber: string | null;
@@ -1167,7 +1170,7 @@ export type DriverBusyBonus = {
   bonusCents: number;
 };
 export type DriverEarningsResult =
-  | { ok: true; profile: { name: string; email: string; towbookDriverId: string; payrateCents: number | null }; completed: DriverCall[]; tips: DriverEarningsTip[]; busyBonus: DriverBusyBonus; totals: { completedJobs: number; tipsTotalCents: number; tipCount: number } }
+  | { ok: true; profile: { name: string; email: string; towbookDriverId: string; payrateCents: number | null }; completed: DriverCall[]; tips: DriverEarningsTip[]; tirePlugs: DriverEarningsTirePlug[]; busyBonus: DriverBusyBonus; totals: { completedJobs: number; tipsTotalCents: number; tipCount: number } }
   | { ok: false; expired: boolean; message: string };
 /** The driver-facing email: real addresses are shown; derived @towbook.driver
  *  placeholders are internal-only and must never reach a driver's screen
@@ -1204,6 +1207,11 @@ export const driverEarnings = createServerFn({ method: "GET" }).handler(async ()
       FROM job_completions jc LEFT JOIN dispatch_jobs d ON d.id = jc.job_id AND d.org_id = jc.org_id
       WHERE jc.org_id = ${ctx.u.orgId} AND jc.tip IS NOT NULL AND jc.tip->>'driver_towbook_id' = ${driverId}
       ORDER BY jc.updated_at DESC`;
+    const tirePlugRows = await q`SELECT t.job_id, t.amount_cents, t.status, t.paid_at, d.towbook_job_id
+      FROM tire_plug_transactions t LEFT JOIN dispatch_jobs d ON d.id=t.job_id AND d.org_id=t.org_id
+      WHERE t.org_id=${ctx.u.orgId} AND t.contractor_user_id=${ctx.identity.userRowId} AND t.status='paid' ORDER BY t.paid_at DESC`;
+    const tirePlugs: DriverEarningsTirePlug[] = (tirePlugRows as Record<string, unknown>[]).map((r) => ({ jobId: String(r.job_id), callNumber: r.towbook_job_id != null ? String(r.towbook_job_id) : null, amountCents: Number(r.amount_cents ?? 0), status: String(r.status), createdAtIso: r.paid_at != null ? new Date(String(r.paid_at)).toISOString() : null }));
+    const tirePlugTotalCents = tirePlugs.reduce((sum, row) => sum + row.amountCents, 0);
     const tips: DriverEarningsTip[] = [];
     for (const r of tipRows as Record<string, unknown>[]) {
       const tip = typeof r.tip === "object" && r.tip != null ? (r.tip as Record<string, unknown>) : {};
@@ -1259,8 +1267,9 @@ export const driverEarnings = createServerFn({ method: "GET" }).handler(async ()
       },
       completed,
       tips,
+      tirePlugs,
       busyBonus,
-      totals: { completedJobs: completed.length, tipsTotalCents, tipCount: tips.length },
+      totals: { completedJobs: completed.length, tipsTotalCents: tipsTotalCents + tirePlugTotalCents, tipCount: tips.length + tirePlugs.length },
     };
   } catch {
     return { ok: false as const, expired: false, message: "Unable to load your earnings. Try again." };

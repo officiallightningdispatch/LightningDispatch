@@ -7,6 +7,7 @@ import { Button, Card } from "~/components/ui";
 import { connectTowbook, disconnectTowbook, towbookStatus, towbookSyncNow, type TowbookSyncResult } from "~/data/server";
 import { getGeofenceSettingsFn, updateGeofenceSettings } from "~/data/driver-gps";
 import { driverLinkStatus, linkDriverAccount, unlinkDriverAccount, type DriverLinkStatus } from "~/data/auth";
+import { tirePlugRate, setTirePlugRate } from "~/data/tire-plug";
 
 export const Route = createFileRoute("/owner/settings")({ component: OwnerSettings });
 function OwnerSettings() {
@@ -26,6 +27,7 @@ function OwnerSettings() {
     {success&&<p className="mt-5 rounded-xl bg-success-50 p-3 text-sm text-success-700">Towbook connected securely. The background puller can now use this session.</p>}{error&&!open&&<p className="mt-5 flex gap-2 rounded-xl bg-danger-50 p-3 text-sm text-danger-700"><AlertTriangle className="size-4 shrink-0"/>{error}</p>}</Card>
     <div className="mt-6"><DriverAccountCard /></div>
     <div className="mt-6"><GeofenceSettingsCard /></div>
+    <div className="mt-6"><TirePlugRateCard /></div>
     <div className="mt-6"><BatteryRatesCard /></div>
     {open&&<div className="fixed inset-0 z-50 grid place-items-center bg-ink-950/40 p-4" role="dialog" aria-modal="true" aria-labelledby="towbook-title"><Card className="w-full max-w-md p-6"><div className="flex items-start justify-between gap-4"><div><span className="grid size-10 place-items-center rounded-xl bg-brand-50 text-brand-600"><Plug className="size-5"/></span><h2 id="towbook-title" className="mt-4 text-xl font-bold">Connect Towbook</h2></div><button className="grid size-11 place-items-center rounded-xl text-ink-400 hover:bg-ink-50" aria-label="Close" onClick={()=>setOpen(false)}><X className="size-5"/></button></div><p className="mt-4 text-sm leading-relaxed text-ink-600">Enter your Towbook login once. Your password is used only to establish an encrypted session and is never stored.</p><form onSubmit={submit} className="mt-5 space-y-4"><label className="block text-sm font-semibold">Towbook username<input required type="text" value={username} onChange={e=>setUsername(e.target.value)} placeholder="e.g. mjohnson — often your email" className="mt-1 h-11 w-full rounded-xl border border-ink-200 px-3"/></label><label className="block text-sm font-semibold">Towbook password<input required type="password" value={password} onChange={e=>setPassword(e.target.value)} className="mt-1 h-11 w-full rounded-xl border border-ink-200 px-3"/></label>{error&&<p className="flex gap-2 rounded-xl bg-danger-50 p-3 text-sm text-danger-700"><AlertTriangle className="size-4 shrink-0"/>{error}</p>}<Button type="submit" className="w-full" loading={pending}>Connect securely</Button></form></Card></div>}
   </AppShell>;
@@ -260,6 +262,13 @@ function DriverAccountCard() {
   );
 }
 
+
+function TirePlugRateCard() {
+  const [rate, setRate] = useState("45.00"); const [loaded, setLoaded] = useState(false); const [saving, setSaving] = useState(false); const [message, setMessage] = useState<string | null>(null);
+  useEffect(() => { void tirePlugRate().then((c) => { setRate((c / 100).toFixed(2)); setLoaded(true); }); }, []);
+  const save = async () => { const cents = Math.round(Number(rate) * 100); if (!Number.isFinite(cents) || cents < 0 || cents > 100000) { setMessage("Enter a valid rate from $0 to $1,000."); return; } setSaving(true); const r = await setTirePlugRate({ data: cents }); setSaving(false); setMessage(r.ok ? `Saved — new tire-plug offers will use ${(r.rateCents / 100).toFixed(2)}.` : r.message); };
+  return <Card className="p-6 sm:p-8"><p className="text-xs font-bold uppercase tracking-wider text-ink-500">Battery services</p><h2 className="mt-1 text-xl font-bold">Tire-plug rate</h2><p className="mt-1 text-sm text-ink-500">Set the customer charge for new tire-plug offers. Existing jobs keep their captured rate.</p>{loaded ? <div className="mt-5 flex max-w-sm items-end gap-3"><label className="flex-1 text-sm font-semibold">Customer charge ($)<input type="number" min="0" max="1000" step="0.01" value={rate} onChange={(e) => setRate(e.target.value)} className="mt-1 h-11 w-full rounded-xl border border-ink-200 px-3" /></label><Button onClick={() => void save()} loading={saving}>Save</Button></div> : <div className="mt-5 h-11 animate-pulse rounded-xl bg-ink-100" />}{message && <p className="mt-3 rounded-xl bg-success-50 p-3 text-sm text-success-700">{message}</p>}</Card>;
+}
 
 /* ------------------- Battery sale rates (owner-spec'd 2026-08-13) ------------------- */
 import { Zap } from "lucide-react";

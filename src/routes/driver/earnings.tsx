@@ -76,6 +76,10 @@ function EarningsView() {
     () => (state?.ok ? state.completed.filter((c) => inRange(c.updatedAtIso, range, now)) : []),
     [state, range, now],
   );
+  const filteredTirePlugs = useMemo(
+    () => (state?.ok ? state.tirePlugs.filter((t) => inRange(t.createdAtIso, range, now)) : []),
+    [state, range, now],
+  );
   const filteredTips = useMemo(
     () => (state?.ok ? state.tips.filter((t) => inRange(t.createdAtIso, range, now)) : []),
     [state, range, now],
@@ -156,6 +160,8 @@ function EarningsView() {
               <p className="text-xs text-ink-400">{state.totals.tipCount} tip{state.totals.tipCount === 1 ? "" : "s"}</p>
             </Card>
           </div>
+
+          {filteredTirePlugs.length > 0 && <Card className="p-4"><p className="text-sm font-bold text-ink-800">Tire-plug earnings</p><div className="mt-2 space-y-2">{filteredTirePlugs.map((plug) => <div key={plug.jobId} className="flex justify-between text-sm"><span>Tire plug{plug.callNumber ? ` · Call #${plug.callNumber}` : ""}</span><span className="font-bold text-brand-700">+{money(plug.amountCents)}</span></div>)}</div></Card>}
 
           {/* Immediate tip cash-out (owner-directed 2026-08-12) — ONE TAP.
               Server-computed amount; states handled in the shared panel. */}

@@ -86,6 +86,7 @@ export type TipCashoutList = {
   paid: TipCashoutRequest[];
   openTotalCents: number;
 };
+export type TirePlugLedgerRow = { id: string; contractorId: string; contractorName: string; jobId: string; amountCents: number; status: string; createdAt: string; paidAt: string | null };
 
 /** Driver-facing cash-out state. The method is masked; bankDepositSent is
  *  TRUE when the owner has recorded a test deposit and the driver should
@@ -115,10 +116,12 @@ export async function availableTipsCore(orgId: string, driverId: string): Promis
   const q = await db();
   const paid = await q`SELECT COALESCE(SUM(amount_cents),0)::int AS total, COUNT(*)::int AS cnt
     FROM completion_tips WHERE org_id=${orgId} AND driver_id=${driverId} AND status='paid'`;
+  const plugs = await q`SELECT COALESCE(SUM(amount_cents),0)::int AS total, COUNT(*)::int AS cnt
+    FROM tire_plug_transactions WHERE org_id=${orgId} AND contractor_user_id=${driverId} AND status='paid'`;
   const cash = await q`SELECT COALESCE(SUM(amount_cents),0)::int AS total
     FROM tip_cashouts WHERE org_id=${orgId} AND contractor_id=${driverId}`;
-  const totalCents = Number(paid[0]?.total ?? 0) - Number(cash[0]?.total ?? 0);
-  return { totalCents: Math.max(0, totalCents), tipCount: Number(paid[0]?.cnt ?? 0) };
+  const totalCents = Number(paid[0]?.total ?? 0) + Number(plugs[0]?.total ?? 0) - Number(cash[0]?.total ?? 0);
+  return { totalCents: Math.max(0, totalCents), tipCount: Number(paid[0]?.cnt ?? 0) + Number(plugs[0]?.cnt ?? 0) };
 }
 
 /** Oldest paid tips NOT already covered by a cash-out (requested or paid),
@@ -199,11 +202,13 @@ export async function submitTipCashoutCore(user: { orgId: string; id: string; ac
     const avail = await availableTipsCore(user.orgId, user.id);
     if (avail.totalCents <= 0) return err("invalid_input", "No tips available to cash out right now.");
     const uncovered = await uncoveredTipRowsCore(user.orgId, user.id);
+    const plugRows = await q`SELECT t.id, t.amount_cents FROM tire_plug_transactions t WHERE t.org_id=${user.orgId} AND t.contractor_user_id=${user.id} AND t.status='paid' AND NOT EXISTS (SELECT 1 FROM tip_cashouts tc, jsonb_array_elements_text(tc.covered_tire_plug_ids) tid WHERE tc.org_id=t.org_id AND tid=t.id) ORDER BY t.paid_at ASC, t.id ASC`;
+    const uncoveredPlugs = (plugRows as Record<string, unknown>[]).map((r) => ({ id: String(r.id), amountCents: Number(r.amount_cents ?? 0) }));
     // Walk oldest-first until the covered set sums EXACTLY to available.
-    const coveredIds: string[] = [];
+    const coveredIds: string[] = []; const coveredPlugIds: string[] = [];
     let sum = 0;
-    for (const t of uncovered) {
-      coveredIds.push(t.id);
+    for (const t of [...uncovered, ...uncoveredPlugs]) {
+      (uncovered.includes(t) ? coveredIds : coveredPlugIds).push(t.id);
       sum += t.amountCents;
       if (sum === avail.totalCents) break;
       if (sum > avail.totalCents) return err("database_error", "Tip balance changed — try again.");
@@ -213,8 +218,8 @@ export async function submitTipCashoutCore(user: { orgId: string; id: string; ac
     const handleMasked = maskHandle(rail, m.handle != null ? String(m.handle) : null, m.bank_institution_name != null ? String(m.bank_institution_name) : null, m.bank_last4 != null ? String(m.bank_last4) : null);
     const id = `tc-${Math.random().toString(36).slice(2, 12)}${Math.random().toString(36).slice(2, 6)}`;
     try {
-      const inserted = await q`INSERT INTO tip_cashouts(id, org_id, contractor_id, amount_cents, rail, handle_masked, method_id, covered_tip_ids)
-        VALUES(${id}, ${user.orgId}, ${user.id}, ${avail.totalCents}, ${rail}, ${handleMasked}, ${String(m.id)}, ${JSON.stringify(coveredIds)})
+      const inserted = await q`INSERT INTO tip_cashouts(id, org_id, contractor_id, amount_cents, rail, handle_masked, method_id, covered_tip_ids, covered_tire_plug_ids)
+        VALUES(${id}, ${user.orgId}, ${user.id}, ${avail.totalCents}, ${rail}, ${handleMasked}, ${String(m.id)}, ${JSON.stringify(coveredIds)}, ${JSON.stringify(coveredPlugIds)})
         RETURNING id, created_at`;
       const created = Array.isArray(inserted) && inserted.length > 0 ? inserted[0] as Record<string, unknown> : null;
       try {
@@ -251,6 +256,27 @@ export async function submitTipCashoutCore(user: { orgId: string; id: string; ac
 /** Owner/admin: the Money-tab list of tip cash-out requests — open first
  *  (newest first), then recently paid. Masked handles only; full payout
  *  details live on the owner payout-methods surface. */
+export async function listTirePlugLedgerCore(actor: TipCashoutActor): Promise<TipCashoutResult<TirePlugLedgerRow[]>> {
+  if (!canManage(actor)) return err("unauthorized", "Owner access required.");
+  try {
+    await ensure(); const q = await db();
+    const rows = await q`SELECT t.*, u.name AS contractor_name FROM tire_plug_transactions t JOIN users u ON u.id=t.contractor_user_id WHERE t.org_id=${actor.orgId} ORDER BY t.created_at DESC LIMIT 100`;
+    return ok((rows as Record<string, unknown>[]).map((r) => ({ id:String(r.id), contractorId:String(r.contractor_user_id), contractorName:String(r.contractor_name ?? ""), jobId:String(r.job_id), amountCents:Number(r.amount_cents ?? 0), status:String(r.status), createdAt:new Date(String(r.created_at)).toISOString(), paidAt:r.paid_at ? new Date(String(r.paid_at)).toISOString() : null })));
+  } catch (e) { return err("database_error", e instanceof Error ? e.message : "Unable to load tire-plug ledger."); }
+}
+
+export async function markTirePlugPaidCore(actor: TipCashoutActor, data: unknown): Promise<TipCashoutResult<TirePlugLedgerRow>> {
+  if (!canManage(actor)) return err("unauthorized", "Owner access required.");
+  const v = z.object({ transactionId: z.string().min(1) }).safeParse(data); if (!v.success) return err("invalid_input", "Transaction id required.");
+  try {
+    await ensure(); const q = await db();
+    const rows = await q`UPDATE tire_plug_transactions SET status='paid', paid_at=NOW() WHERE org_id=${actor.orgId} AND id=${v.data.transactionId} AND status IN ('offered','approved','charged') RETURNING *`;
+    if (!rows.length) return err("invalid_input", "Only an unpaid tire-plug request can be marked paid.");
+    const r = rows[0] as Record<string, unknown>;
+    return ok({ id:String(r.id), contractorId:String(r.contractor_user_id), contractorName:"", jobId:String(r.job_id), amountCents:Number(r.amount_cents ?? 0), status:"paid", createdAt:new Date(String(r.created_at)).toISOString(), paidAt:new Date().toISOString() });
+  } catch (e) { return err("database_error", e instanceof Error ? e.message : "Unable to mark tire-plug paid."); }
+}
+
 export async function listTipCashoutRequestsCore(actor: TipCashoutActor): Promise<TipCashoutResult<TipCashoutList>> {
   if (!canManage(actor)) return err("unauthorized", "Owner access required.");
   try {
