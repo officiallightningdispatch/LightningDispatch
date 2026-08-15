@@ -528,6 +528,7 @@ export async function loadOrgDriverQueues(orgId: string): Promise<Map<string, Dr
     WHERE org_id=${orgId}
       AND assigned_driver_towbook_id IS NOT NULL
       AND status IN ('new','offered','accepted','en_route','arrived')
+      AND NOT (towbook_job_id IS NULL AND pickup IS NULL)
     ORDER BY created_at ASC`;
   const map = new Map<string, DriverQueue>();
   for (const r of rows as Array<Record<string, unknown>>) {
@@ -1973,7 +1974,8 @@ export async function chooseBestDriverByRoad(
 }
 
 /** Final quoted ETA: ceil(base minutes) + prep buffer, clamped to
- *  [floor, ceiling] (ceiling = org max, lowered by the offer's own maxEta). */
+ *  [floor, ceiling]. The ceiling is a hard SLA cap per owner direction
+ *  2026-08-15 (org max, lowered by the offer's own maxEta). */
 export function finalEtaMinutes(
   baseMinutes: number,
   bufferMinutes: number,
@@ -1981,13 +1983,11 @@ export function finalEtaMinutes(
   ceilingMinutes: number,
 ): number {
   const raw = Math.ceil(Number.isFinite(baseMinutes) ? baseMinutes : 0) + (Number.isFinite(bufferMinutes) ? bufferMinutes : 0);
-  // ceilingMinutes remains an explicit API input for decision-gate callers;
-  // quoted ETA intentionally does not use it as a cap.
-  void ceilingMinutes;
   const floor = Math.round(floorMinutes) || 5;
-  // Keep the floor for malformed/near-zero estimates, but never clamp a real
-  // queue-inclusive ETA to the SLA ceiling (45 minutes is an acceptance goal).
-  return Math.max(floor, raw);
+  const ceiling = Math.max(floor, Math.round(ceilingMinutes) || 45);
+  // Keep the floor for malformed/near-zero estimates while hard-capping every
+  // quote at the SLA ceiling, including queue-inclusive estimates.
+  return Math.min(ceiling, Math.max(floor, raw));
 }
 
 /** Human-readable ETA breakdown for decision reasons. The label NAMES the
@@ -3070,6 +3070,7 @@ async function runAutoDispatchInternal(
           allowAssign: false,
         });
         let recalculationNote: string | null = null;
+        let recalcEscalationReason: string | null = null;
         if (!verification.ok && verification.found && dispatchDriverId > 0
           && !humanReassigned) {
           const firstChoice = dispatchDriverId;
@@ -3100,12 +3101,22 @@ async function runAutoDispatchInternal(
             chosen = recalculated;
             dispatchDriverId = Number(recalculated.driver.driverId) || 0;
             dispatchDriverName = String(recalculated.driver.driverName ?? dispatchDriverId);
+            const recalcOverCeiling = recalculated.baseMinutes + settings.etaBufferMinutes > effectiveMaxEta;
+            const recalcCrossState = recalcGuard.assignmentTier === "cross_state";
+            if (recalcOverCeiling || (recalcCrossState && recalculated.usedFallback)) {
+              const rawEta = Math.ceil(recalculated.baseMinutes) + settings.etaBufferMinutes;
+              recalcEscalationReason = `recalculated driver ${dispatchDriverId} rejected: ${recalcCrossState ? "cross-state " : ""}${recalculated.usedFallback ? "factor fallback " : ""}ETA ${rawEta} min exceeds the ${effectiveMaxEta}-min SLA ceiling; offer remains accepted and a human must assign on Towbook`;
+              dispatchDriverId = 0;
+              dispatchDriverName = null;
+            }
             etaMinutes = finalEtaMinutes(recalculated.baseMinutes, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta);
             recalculationNote = `first choice ${firstChoice} became unavailable (verification saw ${verification.driverOnCall == null ? "no eligible driver" : `driver ${verification.driverOnCall}`}) → recalculated to ${dispatchDriverId}`;
-            verification = await verifyDispatch(fetchImpl, baseUrl, cookies, offer, callIdFromAcceptResponse(accept.raw), dispatchDriverId, {
-              retryDelayMs: deps.verifyRetryDelayMs ?? 5000,
-              allowAssign: true,
-            });
+            if (!recalcEscalationReason) {
+              verification = await verifyDispatch(fetchImpl, baseUrl, cookies, offer, callIdFromAcceptResponse(accept.raw), dispatchDriverId, {
+                retryDelayMs: deps.verifyRetryDelayMs ?? 5000,
+                allowAssign: true,
+              });
+            }
           } else {
             // No remaining eligible driver: run the established repair path for
             // the original choice, which will escalate honestly if it is gone.
@@ -3180,18 +3191,20 @@ async function runAutoDispatchInternal(
           result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_dispatch_failed", escalated: true, reason });
         }
       } else {
+        const noDispatchDecision = recalcEscalationReason ? "escalated_dispatch_failed" : "auto_accept_no_driver";
+        const noDispatchReason = recalcEscalationReason ?? noDriverReason as string;
         // No dispatcheable driver (no checked-in free eligible driver with GPS
         // in the normal path; human-chosen driver ineligible/offline in the
         // manual-reassign path): accept WITHOUT dispatch so the motor-club
         // offer cannot expire or be missed — never overwrite a human's choice
         // with a different driver.
         await record({
-          decision: "auto_accept_no_driver",
+          decision: noDispatchDecision,
           driverId: null, driverName: null,
-          etaMinutes: null, zoneDistanceMiles: zoneDistance, reason: noDriverReason as string,
+          etaMinutes: recalcEscalationReason ? etaMinutes : null, zoneDistanceMiles: zoneDistance, reason: noDispatchReason,
           rawResponse: { offer, eta: etaFacts, accept: accept.raw, serviceQualification },
         });
-        result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "auto_accept_no_driver", escalated: true, reason: noDriverReason as string });
+        result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: noDispatchDecision, escalated: true, reason: noDispatchReason });
       }
       // Pull the resulting call into dispatch_jobs immediately (reconcile by
       // call.id/callNumber happens inside the sync's upsert).
