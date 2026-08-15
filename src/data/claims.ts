@@ -14,7 +14,7 @@ const passthrough = (x: unknown) => x;
 /** Owner/admin: run the read-only Gmail scan → detect → upsert claim records. */
 export const scanClaims = createServerFn({ method: "POST" })
   .validator(passthrough)
-  .handler(async ({ data }): Promise<ClaimResult<ScanClaimsResult>> => {
+  .handler(async ({ data }) => {
     const core = await import("./claims-core");
     return core.scanClaimsHandler(data, {});
   });

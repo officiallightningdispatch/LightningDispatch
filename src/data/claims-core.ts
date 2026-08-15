@@ -93,7 +93,7 @@ export type ClaimRow = {
   emailReceivedAt: string | null;
   status: ClaimStatus;
   research: { [key: string]: ClaimJson };
-  form: Record<string, unknown>;
+  form: { [key: string]: ClaimJson };
   signatureStorageKey: string | null;
   signedByUserId: string | null;
   signedByName: string | null;
@@ -397,7 +397,7 @@ function mapClaim(r: Record<string, unknown>, driverFacing = false): ClaimRow {
     emailReceivedAt: r.email_received_at ? new Date(String(r.email_received_at)).toISOString() : null,
     status: (r.status ?? "new") as ClaimStatus,
     research: (r.research ?? {}) as { [key: string]: ClaimJson },
-    form: (r.form ?? {}) as Record<string, unknown>,
+    form: (r.form ?? {}) as { [key: string]: ClaimJson },
     signatureStorageKey: str(r.signature_storage_key),
     signedByUserId: str(r.signed_by_user_id),
     signedByName: str(r.signed_by_name),
@@ -419,7 +419,7 @@ function mapClaim(r: Record<string, unknown>, driverFacing = false): ClaimRow {
     emailFrom: "",
     emailSubject: "",
     research: redactDriverClaimValue(row.research) as { [key: string]: ClaimJson },
-    form: redactDriverClaimValue(row.form) as Record<string, unknown>,
+    form: redactDriverClaimValue(row.form) as { [key: string]: ClaimJson },
     sendTo: null,
     sendMethod: null,
   };
