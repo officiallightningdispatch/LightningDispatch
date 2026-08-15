@@ -2821,7 +2821,7 @@ async function runAutoDispatchInternal(
       // job's state.
       const rawStarting = startingLocationOf(rawOffer as Record<string, unknown>);
       const tomtomKeyForGuard = resolveTomtomKey(deps.env ?? process.env);
-      const jobStateResolution = await resolveJobState(orgId, rawOffer as Record<string, unknown>, rawStarting, tomtomKeyForGuard, fetchImpl);
+      const jobStateResolution = await resolveJobState(orgId, rawOffer as Record<string, unknown>, rawStarting, tomtomKeyForGuard ?? "", fetchImpl);
       const jobState = jobStateResolution.state;
       const reverseStateCache = new Map<string, string | null>();
       // ALWAYS active (fail-closed): a null jobState (unresolvable address)
