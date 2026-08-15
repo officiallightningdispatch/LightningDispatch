@@ -32,6 +32,7 @@ export type NotifyDecision = {
   decision: string;
   reason?: string | null;
   offerExpiresAt?: string | null;
+  offerStatus?: "claimed" | "expired" | "unknown";
 };
 
 export type NotifyCashout = {
@@ -53,6 +54,19 @@ export function diffNewCashoutIds(seen: readonly string[], requests: readonly No
     out.push(r);
   }
   return out;
+}
+
+
+/** Backend-evidence-only transition for an already visible escalation.
+ * Expiry requires both an authoritative deadline having passed and refreshed
+ * evidence marked expired; a client timer alone never resolves a banner. */
+export function reconcileEscalatedBanner(decision: NotifyDecision, nowMs: number = Date.now()): "claimed" | "expired" | null {
+  if (decision.offerStatus === "claimed") return "claimed";
+  if (decision.offerStatus === "expired" && decision.offerExpiresAt) {
+    const expires = Date.parse(decision.offerExpiresAt);
+    if (Number.isFinite(expires) && nowMs >= expires) return "expired";
+  }
+  return null;
 }
 
 /** Upper bound for a seen-set — drop the oldest ids past this. */

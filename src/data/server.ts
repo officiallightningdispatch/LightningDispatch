@@ -1255,6 +1255,8 @@ export type AiDispatcherDecisionRow = {
   driverName?: string;
   etaMinutes?: number;
   zoneDistanceMiles?: number;
+  /** Refreshed dispatch/Towbook evidence. unknown means no trustworthy status. */
+  offerStatus?: "claimed" | "expired" | "unknown";
 };
 
 const aiDispatcherReader = (u: AuthUser): boolean => can(u, ["owner", "admin", "dispatcher"]);
@@ -1387,8 +1389,11 @@ export const listAiDispatcherDecisions = createServerFn({ method: "GET" }).valid
     await prepare();
     const q = sql();
     const limit = v.data.limit ?? 20;
-    const rows = await q`SELECT id, call_request_id, call_id, decision, escalated, driver_name, eta_minutes, zone_distance_miles, reason, created_at, raw_response
-      FROM ai_dispatcher_decisions WHERE org_id=${u.orgId} ${v.data.escalatedOnly ? q`AND escalated=TRUE` : q``}
+    const rows = await q`SELECT a.id, a.call_request_id, a.call_id, a.decision, a.escalated, a.driver_name, a.eta_minutes, a.zone_distance_miles, a.reason, a.created_at, a.raw_response,
+        j.status AS dispatch_status, j.towbook_status, j.assigned_driver_towbook_id
+      FROM ai_dispatcher_decisions a
+      LEFT JOIN dispatch_jobs j ON j.org_id=a.org_id AND (j.towbook_job_id=a.call_request_id OR j.id=a.call_request_id)
+      WHERE a.org_id=${u.orgId} ${v.data.escalatedOnly ? q`AND escalated=TRUE` : q``}
       ORDER BY created_at DESC LIMIT ${limit}`;
     return rows.map((r: Record<string, unknown>) => {
       const row: AiDispatcherDecisionRow = {
@@ -1399,6 +1404,14 @@ export const listAiDispatcherDecisions = createServerFn({ method: "GET" }).valid
       if (r.driver_name != null && String(r.driver_name) !== "") row.driverName = String(r.driver_name);
       if (r.eta_minutes != null) row.etaMinutes = Number(r.eta_minutes);
       if (r.zone_distance_miles != null) row.zoneDistanceMiles = Number(r.zone_distance_miles);
+      // Status is derived only from the refreshed dispatch_jobs row populated by
+      // the Towbook sync. An assignment is claimed evidence; a Towbook 255
+      // cancellation is the available expiry proxy (documented limitation).
+      const assigned = r.assigned_driver_towbook_id != null && String(r.assigned_driver_towbook_id) !== "";
+      const towbookStatus = String(r.towbook_status ?? "");
+      const dispatchStatus = String(r.dispatch_status ?? "");
+      row.offerStatus = assigned || ["accepted", "en_route", "arrived", "towing", "completed"].includes(dispatchStatus)
+        ? "claimed" : towbookStatus === "255" ? "expired" : "unknown";
       // Towbook's field is preserved only when an authoritative expiry timestamp
       // is present in the captured offer response. Do not infer one here.
       const raw = r.raw_response as unknown;

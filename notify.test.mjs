@@ -15,13 +15,14 @@ import {
   mergeSeen,
   parseSeen,
   formatCountdown,
+  reconcileEscalatedBanner,
 } from "./src/lib/notify.ts";
 
 const checks = [];
 const check = (name, cond, extra = "") => { checks.push([name, Boolean(cond), extra]); if (!cond) throw new Error(`FAIL: ${name} ${extra}`); };
 
 const J = (id, extra = {}) => ({ id, ...extra });
-const D = (id, decision, reason = "") => ({ id, decision, reason });
+const D = (id, decision, reason = decision) => ({ id, decision, reason });
 const CO = (id, amountCents = 1200, extra = {}) => ({ id, amountCents, contractorName: "Driver", rail: "cash_app", ...extra });
 
 /* --------------------------- no-fire on first load --------------------------- */
@@ -127,6 +128,16 @@ const CO = (id, amountCents = 1200, extra = {}) => ({ id, amountCents, contracto
   check("countdown formats mm:ss", formatCountdown(181) === "03:01");
   check("countdown clamps zero", formatCountdown(-4) === "00:00");
   check("unknown countdown is null", formatCountdown(null) === null);
+}
+
+/* --------------------------- backend evidence transitions --------------------------- */
+{
+  check("claimed transition uses refreshed backend evidence", reconcileEscalatedBanner(D("c", "escalated_missing_coords", "escalated_missing_coords"), Date.now()) === null);
+  check("claimed transition resolves", reconcileEscalatedBanner({ ...D("c", "escalated_missing_coords"), offerStatus: "claimed" }) === "claimed");
+  check("expired transition requires authoritative expiry plus evidence", reconcileEscalatedBanner({ ...D("e", "escalated_missing_coords"), offerStatus: "expired", offerExpiresAt: new Date(Date.now() - 1000).toISOString() }) === "expired");
+  check("expired evidence before deadline does not transition", reconcileEscalatedBanner({ ...D("e2", "escalated_missing_coords"), offerStatus: "expired", offerExpiresAt: new Date(Date.now() + 60000).toISOString() }) === null);
+  check("status unknown never transitions", reconcileEscalatedBanner({ ...D("u", "escalated_missing_coords"), offerExpiresAt: new Date(Date.now() - 1000).toISOString() }) === null);
+  check("dismissal is local-only (pure reconciliation does not mutate decision)", (() => { const d = { ...D("d", "escalated_missing_coords"), offerStatus: "claimed" }; reconcileEscalatedBanner(d); return d.offerStatus === "claimed" && d.decision === "escalated_missing_coords"; })());
 }
 /* --------------------------- cancelled-job detection --------------------------- */
 // The driver queue diff (owner-directed 2026-08-12, "like Uber — notify the

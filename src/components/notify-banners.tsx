@@ -28,7 +28,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { AlertTriangle, Volume2, VolumeX, X, XCircle, Zap } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SERVICE_LABELS } from "~/lib/job-ui";
-import { diffCancelledJobIds, diffEscalatedDecisionIds, diffNewCashoutIds, diffNewJobIds, formatCountdown, mergeSeen, type NotifyCall } from "~/lib/notify";
+import { diffCancelledJobIds, diffEscalatedDecisionIds, diffNewCashoutIds, diffNewJobIds, formatCountdown, mergeSeen, reconcileEscalatedBanner, type NotifyCall } from "~/lib/notify";
 import { getSeenIds, seenKey, setSeenIds } from "~/lib/notify-seen";
 import { playAlertSound, primeAudio, soundMuted, toggleSoundMuted, type SoundRole } from "~/lib/sound";
 import { etaMinutesLabel } from "~/components/driver-eta";
@@ -53,6 +53,8 @@ export type BannerItem = {
   etaLabel?: string | null;
   /** Grounded expiry; when absent, createdAt + 180s is explicitly estimated. */
   countdown?: { expiresAt: number; estimated: boolean } | null;
+  /** Backend-confirmed resolution; resolved banners retain local dismissal only. */
+  resolution?: "claimed" | "expired";
 };
 
 const AUTO_DISMISS_MS = 7000;
@@ -85,6 +87,16 @@ function useBannerStack(role: SoundRole) {
   const [banners, setBanners] = useState<BannerItem[]>([]);
   const timeouts = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
+  const setBannerResolutions = useCallback((decisions: readonly { id: string; offerStatus?: "claimed" | "expired"; offerExpiresAt?: string | null }[]) => {
+    setBanners((prev) => prev.map((b) => {
+      if (b.kind !== "escalation") return b;
+      const id = b.id.slice(4); const d = decisions.find((x) => x.id === id);
+      const resolution = d ? reconcileEscalatedBanner(d) : null;
+      if (!resolution) return b;
+      return { ...b, resolution, countdown: null, title: resolution === "claimed" ? "Offer claimed in Towbook" : "Offer expired — no action was recorded", body: "" };
+    }));
+  }, []);
+
   const dismiss = useCallback((id: string) => {
     setBanners((prev) => prev.filter((b) => b.id !== id));
     const t = timeouts.current.get(id);
@@ -105,7 +117,7 @@ function useBannerStack(role: SoundRole) {
 
   useEffect(() => () => { for (const t of timeouts.current.values()) clearTimeout(t); }, []);
 
-  return { banners, push, dismiss };
+  return { banners, push, dismiss, setBannerResolutions };
 }
 
 /** Shared renderer: fixed stack under the app header. Slide-in animation
@@ -229,7 +241,7 @@ function useAudioPrimer() {
  */
 export function OwnerNotificationLayer() {
   const { refresh } = useDispatchStore();
-  const { banners, push, dismiss } = useBannerStack("owner");
+  const { banners, push, dismiss, setBannerResolutions } = useBannerStack("owner");
   const booted = useRef(false);
   const previousJobs = useRef<Map<string, string>>(new Map());
   useAudioPrimer();
@@ -274,6 +286,10 @@ export function OwnerNotificationLayer() {
         const newJobs = diffNewJobIds(getSeenIds(jobsKey), jobs);
         const completedJobs = jobs.filter((j) => previousJobs.current.get(j.id) !== "completed" && (data?.jobs ?? []).find((raw) => raw.id === j.id)?.status === "completed");
         previousJobs.current = new Map(jobs.map((j) => [j.id, String((data?.jobs ?? []).find((raw) => raw.id === j.id)?.status ?? "")]));
+        // Reconcile only active escalation banners. This never changes the
+        // decision or seen-set; it updates the local presentation from refreshed
+        // dispatch/Towbook evidence.
+        setBannerResolutions(decisions);
         const newDecs = diffEscalatedDecisionIds(getSeenIds(decisionsKey), decisions);
         const newCashouts = diffNewCashoutIds(getSeenIds(cashoutsKey), cashouts);
         if (newJobs.length) setSeenIds(jobsKey, mergeSeen(getSeenIds(jobsKey), newJobs.map((j) => j.id)));
