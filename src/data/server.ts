@@ -1257,6 +1257,7 @@ export type AiDispatcherDecisionRow = {
   zoneDistanceMiles?: number;
   /** Refreshed dispatch/Towbook evidence. unknown means no trustworthy status. */
   offerStatus?: "claimed" | "expired" | "unknown";
+  offerExpiresAt?: string;
   customerName?: string;
   location?: string;
 };
