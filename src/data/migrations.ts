@@ -1214,6 +1214,7 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE INDEX IF NOT EXISTS dispatch_zones_parent_idx ON dispatch_zones(parent_zone_id)`;
     await q`CREATE INDEX IF NOT EXISTS dispatch_zones_geo_idx ON dispatch_zones(org_id,state,active,lat,lng)`;
   }],
+
   [54, async (q) => {
     // P0 Slice 3: persisted availability heartbeat. A live GO is eligible only
     // while heartbeat_at is fresh; closing a tab therefore cannot leave a
@@ -1232,6 +1233,45 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
         ], priority_weight: 1, nearby_weight: 0.5, max_backlog_before_waive: 2, enabled: true
       })}::jsonb, TRUE)
       ON CONFLICT (org_id, driver_id) DO NOTHING`;
+  }],
+
+  [57, async (q) => {
+    // OWNER-DIRECTED REGIONAL CT MARKETS: keep county rows as hierarchy, but make
+    // only regional market/corridor rows selectable. ZIPs are sourced exclusively
+    // from the existing county/corridor data; corridor ZIPs are removed from the
+    // county remainder so the leaf regions remain disjoint.
+    const org = '89e15ce587651cc47c3bc45b1c612a220955';
+    const existing = await q`SELECT id,name,zip_codes FROM dispatch_zones WHERE org_id=${org} AND state='CT' AND zone_type IN ('market','corridor') ORDER BY sort_order`;
+    const byName = new Map(existing.map((r:any) => [String(r.name), r]));
+    const countyRows = await q`SELECT id,name,zip_codes,lat,lng FROM dispatch_zones WHERE org_id=${org} AND state='CT' AND zone_type='county' AND active=TRUE`;
+    const countyByName = new Map(countyRows.map((r:any) => [String(r.name), r]));
+    const zips = (v:any) => Array.isArray(v) ? v.map(String).filter(Boolean) : [];
+    const bridge = byName.get('Bridgeport–Milford');
+    const haven = byName.get('New Haven–Branford');
+    const southwest = byName.get('Southwest CT');
+    const used = new Set<string>([...zips(bridge?.zip_codes), ...zips(haven?.zip_codes), ...zips(southwest?.zip_codes)]);
+    // All former city-market shells are retained but made inactive. The three
+    // corridor rows below are then reactivated/renamed in place to preserve ids.
+    await q`UPDATE dispatch_zones SET active=FALSE WHERE org_id=${org} AND state='CT' AND zone_type IN ('market','corridor')`;
+    const upsert = async (row:any, name:string, sort:number, parentName:string, fallbackZips:string[]) => {
+      const parent = countyByName.get(parentName);
+      if (!parent) throw new Error(`Missing CT county parent: ${parentName}`);
+      const values = row ? zips(row.zip_codes) : fallbackZips;
+      if (!values.length) throw new Error(`Regional market has no source ZIPs: ${name}`);
+      const id = row ? String(row.id) : `regional-ct-${name.toLowerCase().replace(/[^a-z0-9]+/g,'-')}`;
+      await q`INSERT INTO dispatch_zones(id,org_id,name,state,market,zone_type,zip_codes,parent_zone_id,lat,lng,radius_miles,tz,active,sort_order,updated_at)
+        VALUES(${id},${org},${name.includes('Bridgeport')||name.includes('New Haven')?'CT':name},'CT',${name},'market',${values},${String(parent.id)},${Number(parent.lat)},${Number(parent.lng)},30,'America/New_York',TRUE,${sort},NOW())
+        ON CONFLICT(id) DO UPDATE SET name=${name},market=${name},zone_type='market',zip_codes=${values},parent_zone_id=${String(parent.id)},lat=${Number(parent.lat)},lng=${Number(parent.lng)},radius_miles=30,tz='America/New_York',active=TRUE,sort_order=${sort},updated_at=NOW()`;
+    };
+    await upsert(southwest, 'Greater Stamford/Fairfield County', 3232, 'Fairfield', zips(southwest?.zip_codes));
+    await upsert(bridge, 'Greater Bridgeport', 3233, 'Fairfield', zips(bridge?.zip_codes));
+    await upsert(haven, 'Greater New Haven', 3234, 'New Haven', zips(haven?.zip_codes));
+    const regions = [['Greater Hartford','Hartford',3235],['Greater Danbury/Waterbury','Litchfield',3236],['Greater Middlesex/Shoreline','Middlesex',3237],['Greater New London','New London',3238],['Greater Tolland/NE CT','Tolland',3239],['Greater Windham/Eastern CT','Windham',3240]] as const;
+    for (const [name, county, sort] of regions) {
+      const c = countyByName.get(county); if (!c) throw new Error(`Missing CT county: ${county}`);
+      const remainder = zips(c.zip_codes).filter((x:string) => !used.has(x));
+      await upsert(null, name, sort, county, remainder);
+    }
   }],
 ];
 export async function ensureSchema() {

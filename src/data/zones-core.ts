@@ -46,7 +46,7 @@ async function batchMetrics(q:any, orgId:string, zones:any[]):Promise<Map<string
   out.set(zid,{busyness,availableDrivers:av,activeJobs:active,unassignedJobs:unassigned,recentVolume24h:inJobs.length,demandRatio:Number(ratio.toFixed(1)),assignedDriverCount:users.size}); }
  return out;
 }
-export async function getZonesCore(a:ZoneActor){ const q=qdb(); const zones=await q`SELECT id,org_id,name,lat,lng,radius_miles,tz FROM dispatch_zones WHERE org_id=${a.orgId} AND active=TRUE AND zone_type <> 'coverage' AND (zone_type IN ('market','corridor') OR cardinality(zip_codes) > 0) ORDER BY sort_order,name`; const metrics=await batchMetrics(q,a.orgId,zones); return zones.map((z:any)=>({id:String(z.id),name:String(z.name),lat:Number(z.lat),lng:Number(z.lng),radiusMiles:Number(z.radius_miles),tz:String(z.tz),...metrics.get(String(z.id))!})); }
+export async function getZonesCore(a:ZoneActor){ const q=qdb(); const zones=await q`SELECT id,org_id,name,lat,lng,radius_miles,tz FROM dispatch_zones WHERE org_id=${a.orgId} AND active=TRUE AND zone_type IN ('market','corridor') AND zone_type <> 'coverage' ORDER BY sort_order,name`; const metrics=await batchMetrics(q,a.orgId,zones); return zones.map((z:any)=>({id:String(z.id),name:String(z.name),lat:Number(z.lat),lng:Number(z.lng),radiusMiles:Number(z.radius_miles),tz:String(z.tz),...metrics.get(String(z.id))!})); }
 export async function getMyZoneStateCore(a:ZoneActor, now=new Date()){
  const q=qdb(); const zones=await q`SELECT id,name,tz FROM dispatch_zones WHERE org_id=${a.orgId} AND active=TRUE ORDER BY sort_order,name`;
  const fallback=zones[0];
@@ -62,7 +62,7 @@ export async function getMyZoneStateCore(a:ZoneActor, now=new Date()){
 }
 export async function getDispatchZonesForOwnerCore(a:ZoneActor, state?:string){
  if(!can(a))return {ok:false as const,message:'Owner access required.'}; const q=qdb();
- const zones=await q`SELECT id,org_id,name,state,market,zone_type,zip_codes,parent_zone_id,lat,lng,radius_miles,tz,active,sort_order FROM dispatch_zones WHERE org_id=${a.orgId} ${state ? q`AND state=${state.toUpperCase()}` : q``} ORDER BY sort_order,name`;
+ const zones=await q`SELECT id,org_id,name,state,market,zone_type,zip_codes,parent_zone_id,lat,lng,radius_miles,tz,active,sort_order FROM dispatch_zones WHERE org_id=${a.orgId} AND (zone_type IN ('market','corridor') OR zone_type='coverage' AND state='US') ${state ? q`AND state=${state.toUpperCase()}` : q``} ORDER BY sort_order,name`;
  const metrics=await batchMetrics(q,a.orgId,zones); const out=zones.map((z:any)=>{const s=metrics.get(String(z.id))!;return {id:String(z.id),name:String(z.name),state:String(z.state??''),market:String(z.market??''),zoneType:String(z.zone_type??''),zipCodes:Array.isArray(z.zip_codes)?z.zip_codes.map(String):[],parentZoneId:z.parent_zone_id?String(z.parent_zone_id):null,lat:Number(z.lat),lng:Number(z.lng),radiusMiles:Number(z.radius_miles),tz:String(z.tz),active:Boolean(z.active),sortOrder:Number(z.sort_order),jobsByZone:s.recentVolume24h,availableDriversByZone:s.availableDrivers,...s};});
  return {ok:true as const,zones:out};
 }
