@@ -53,15 +53,6 @@ import type { MailEnvelopeWithSource } from "./club-mail";
 
 const configured = () => Boolean(process.env.DATABASE_URL);
 
-  if (!configured()) return Promise.resolve();
-  schemaInit ??= (async () => {
-    const { ensureAuthSchema } = await import("./auth-server");
-    await ensureAuthSchema();
-    const { ensureSchema } = await import("./migrations");
-    await ensureSchema();
-  })();
-  return schemaInit;
-}
 const db = () => import("~/db").then((m) => m.sql());
 
 /* ------------------------------- result types ------------------------------- */
