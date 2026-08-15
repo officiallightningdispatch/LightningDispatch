@@ -24,8 +24,8 @@ try {
   await q`INSERT INTO organizations(id,name) VALUES(${ORG},'QA zones')`;
   await q`INSERT INTO users(id,name,email,password_hash,towbook_driver_id) VALUES(${OWNER},'QA owner',${OWNER+'@qa.local'},'x',NULL),(${DRIVER_A},'QA Driver A',${DRIVER_A+'@qa.local'},'x','910001'),(${DRIVER_B},'QA Driver B',${DRIVER_B+'@qa.local'},'x','910002')`;
   await q`INSERT INTO organization_memberships(org_id,user_id,role) VALUES(${ORG},${OWNER},'owner'),(${ORG},${DRIVER_A},'contractor'),(${ORG},${DRIVER_B},'contractor')`;
-  await upsertZoneCore(actor,{id:ZONE_IN,name:'QA In Zone',lat:41.208862,lng:-73.207253,radiusMiles:5,tz:'America/New_York',active:true});
-  await upsertZoneCore(actor,{id:ZONE_EMPTY,name:'QA Empty Zone',lat:40,lng:-75,radiusMiles:2,tz:'America/New_York',active:true});
+  await upsertZoneCore(actor,{id:ZONE_IN,state:'CT',name:'QA In Zone',lat:41.208862,lng:-73.207253,radiusMiles:5,tz:'America/New_York',active:true});
+  await upsertZoneCore(actor,{id:ZONE_EMPTY,state:'CT',name:'QA Empty Zone',lat:40,lng:-75,radiusMiles:2,tz:'America/New_York',active:true});
   created = true;
 
   await check("MIGRATION: v51 dispatch_zones/index and availability columns", async () => {
@@ -111,7 +111,7 @@ try {
   });
   await check("OWNER-ZONES: getDispatchZonesForOwnerCore lists inactive zones with full config + assigned-driver counts; guards non-owner", async () => {
     const INACTIVE=`qa-zone-off-${randomUUID()}`;
-    await upsertZoneCore(actor,{id:INACTIVE,name:'QA Off Zone',lat:41.1,lng:-73.2,radiusMiles:9,tz:'America/New_York',active:false,sortOrder:9});
+    await upsertZoneCore(actor,{id:INACTIVE,state:'CT',name:'QA Off Zone',lat:41.1,lng:-73.2,radiusMiles:9,tz:'America/New_York',active:false,sortOrder:9});
     const res=await getDispatchZonesForOwnerCore(actor);
     assert.equal(res.ok,true);
     const list=res.zones;
@@ -143,7 +143,7 @@ try {
     assert.equal(e.radiusMiles,2); assert.equal(e.tz,'America/New_York');
     // Inactive zone hidden from drivers (active=TRUE filter in getZonesCore).
     const OFF2=`qa-zone-off2-${randomUUID()}`;
-    await upsertZoneCore(actor,{id:OFF2,name:'QA Off 2',lat:41.1,lng:-73.2,radiusMiles:9,tz:'America/New_York',active:false,sortOrder:9});
+    await upsertZoneCore(actor,{id:OFF2,state:'CT',name:'QA Off 2',lat:41.1,lng:-73.2,radiusMiles:9,tz:'America/New_York',active:false,sortOrder:9});
     assert.equal(zones.some(x=>x.id===OFF2),false);
     const again=await getZonesCore(actor); assert.equal(again.some(x=>x.id===OFF2),false);
   });
