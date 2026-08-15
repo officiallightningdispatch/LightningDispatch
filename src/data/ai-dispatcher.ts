@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { resolveStateFromAddress, reverseGeocodeState, driverStateCacheKey, isAgeroPlaceholderCoords } from "./state-guard-core";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
 import { sql } from "~/db";
-import { decryptSession, findSiteRoot } from "./towbook-key";
+import { decryptSession } from "./towbook-key";
+import { resolveTomtomKey } from "./tomtom-key";
+export { resolveTomtomKey } from "./tomtom-key";
 import type { RecoveryResult } from "./towbook-recovery";
 
 /* ============================ AI dispatcher engine ============================
@@ -733,75 +733,6 @@ export async function tomtomRoadSeconds(
 ): Promise<RoadResult | null> {
   const attempt = await tomtomAttempt(apiKey, fromLat, fromLng, toLat, toLng, fetchImpl);
   return attempt.result;
-}
-
-/** Site root (walked up from this module — source runs, tests, and the
- *  published bundle all land on the same directory: the one with
- *  package.json). */
-const SITE_ROOT = findSiteRoot(import.meta.url);
-/** Stable, publish-proof TomTom key path: sibling of the site root, OUTSIDE
- *  the repo and outside the build output — /home/team/shared/.secrets/tomtom.key
- *  for this deployment (the same pattern as the Towbook session key,
- *  towbook-key.ts). A publish/clean rebuild can never touch it. */
-const STABLE_TOMTOM_KEY_FILE = join(dirname(SITE_ROOT), ".secrets", "tomtom.key");
-/** Artifact fallbacks (mirror b2-client.ts ARTIFACT_DIRS): the hosted live
- *  deployment cannot read the machine-local sibling dir, so the build embeds
- *  the key at <site-root>/dist/.secrets (preferred over the source-tree
- *  .secrets, which only local source runs would have). */
-const ARTIFACT_TOMTOM_KEY_FILES = [
-  join(SITE_ROOT, "dist", ".secrets", "tomtom.key"),
-  join(SITE_ROOT, ".secrets", "tomtom.key"),
-];
-
-/** Resolve the TomTom Routing API key for this deployment. Resolution order
- *  (first match wins, mirroring the Towbook session key + b2-client):
- *    1. env TOMTOM_API_KEY — non-empty (trimmed).
- *    2. env TOMTOM_KEY_FILE — an explicit key-file path (unreadable → null, so
- *       the chain degrades instead of crashing, and hermetic tests can pin a
- *       broken path to force "no key" without touching any real key file).
- *    3. The stable key file at <site-root-parent>/.secrets/tomtom.key (outside
- *       the repo and the build output).
- *    4. The artifact key files at <site-root>/dist/.secrets/tomtom.key then
- *       <site-root>/.secrets/tomtom.key (the hosted live deployment cannot
- *       read the machine-local sibling dir, so the build embeds the key).
- *  Returns null when nothing is configured. Whitespace/newlines are trimmed
- *  (a key file with a trailing newline resolves cleanly). The key VALUE is
- *  never logged, stored, or serialized — callers expose only the boolean
- *  (tomtomKeyConfigured).
- *
- *  Hermeticity (mirror loadB2Config): when opts.stableKeyFile is passed (tests
- *  pin their fixtures) the artifact fallback files are NOT consulted, so a
- *  test can never accidentally resolve the real production key. The artifact
- *  fallback applies only on the production path (no stableKeyFile override),
- *  or when the caller explicitly opts in with allowArtifactFallback
- *  (verification harnesses). */
-export function resolveTomtomKey(
-  env: Record<string, string | undefined>,
-  opts: { stableKeyFile?: string; allowArtifactFallback?: boolean } = {},
-): string | null {
-  const fromEnv = (env.TOMTOM_API_KEY ?? "").trim();
-  if (fromEnv) return fromEnv;
-  const explicitFile = (env.TOMTOM_KEY_FILE ?? "").trim();
-  if (explicitFile) {
-    try {
-      return readFileSync(explicitFile, "utf8").trim() || null;
-    } catch {
-      return null;
-    }
-  }
-  const stableFile = opts.stableKeyFile ?? STABLE_TOMTOM_KEY_FILE;
-  try {
-    const v = readFileSync(stableFile, "utf8").trim();
-    if (v) return v;
-  } catch { /* fall through to the artifact copies */ }
-  const artifactFiles = opts.stableKeyFile && !opts.allowArtifactFallback ? [] : ARTIFACT_TOMTOM_KEY_FILES;
-  for (const file of artifactFiles) {
-    try {
-      const v = readFileSync(file, "utf8").trim();
-      if (v) return v;
-    } catch { /* try the next candidate */ }
-  }
-  return null;
 }
 
 /** ETA v3 provider selection. Chain: TomTom (live traffic + construction, only

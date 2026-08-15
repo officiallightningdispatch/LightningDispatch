@@ -1,12 +1,13 @@
 import { createServerFn } from '@tanstack/react-start';
 import { z } from 'zod';
+import { resolveTomtomKey } from './tomtom-key';
 const pass=(x:unknown)=>x;
 async function actor(){const {currentUser}=await import('./auth-server');const u=await currentUser();return u?{orgId:u.orgId,id:u.id,role:u.role}:null;}
 async function driverActor(){const {currentUser,effectiveDriverIdentity}=await import('./auth-server');const u=await currentUser();if(!u)return null;const identity=await effectiveDriverIdentity(u);if(!identity||identity.deactivated)return null;return {orgId:u.orgId,id:identity.userRowId,role:'contractor'};}
 export const driverSelectZone=createServerFn({method:'POST'}).validator(pass).handler(async({data})=>{const v=z.object({zoneId:z.string().min(1)}).safeParse(data);const a=await driverActor();if(!v.success||!a)return {ok:false as const,message:'Sign in as a driver first.'};return (await import('./zones-core')).selectZoneCore(a,v.data.zoneId);});
 export const getZonesWithBusyness=createServerFn({method:'GET'}).handler(async()=>{const a=await driverActor();if(!a)return [];return (await import('./zones-core')).getZonesCore(a);});
 export const getMyZoneState=createServerFn({method:'GET'}).handler(async()=>{const a=await driverActor();if(!a)return {ok:false as const,message:'Sign in as a driver first.'};return (await import('./zones-core')).getMyZoneStateCore(a);});
-export const getZoneMapConfig=createServerFn({method:'GET'}).handler(async()=>{const {resolveTomtomKey}=await import('./ai-dispatcher');return {tomtomKey:resolveTomtomKey(process.env)??''};});
+export const getZoneMapConfig=createServerFn({method:'GET'}).handler(async()=>{return {tomtomKey:resolveTomtomKey(process.env)??''};});
 export const getDispatchZonesForOwner=createServerFn({method:'GET'}).validator((data: unknown)=>{const v=z.object({state:z.string().length(2).optional()}).safeParse(data??{});return v.success?v.data:{};}).handler(async({data})=>{const a=await actor();if(!a)return {ok:false as const,message:'Owner access required.'};const state='state' in data&&data.state!==undefined?data.state:undefined;return (await import('./zones-core')).getDispatchZonesForOwnerCore(a,state);});
 export const zoneContainingPoint=createServerFn({method:'GET'}).validator((data:unknown)=>z.object({lat:z.number().finite(),lng:z.number().finite(),zip:z.string().optional()}).parse(data)).handler(async({data})=>{const a=await actor();if(!a)return null;return (await import('./zones-core')).zoneContainingPointCore(a,data.lat,data.lng,data.zip);});
 export const getOwnerZoneDriverRoster=createServerFn({method:'GET'}).handler(async()=>{const a=await actor();if(!a)return {ok:false as const,message:'Owner access required.'};return (await import('./zones-core')).getOwnerZoneDriverRosterCore(a);});
