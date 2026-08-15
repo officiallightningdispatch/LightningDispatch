@@ -2829,7 +2829,7 @@ async function runAutoDispatchInternal(
               return Number.isFinite(id) && eligibleIds.has(id);
             })
           : (nd.body as unknown[]);
-      const serviceType = offer.serviceType || (typeof (rawOffer as Record<string, unknown>).serviceType === "string" ? String((rawOffer as Record<string, unknown>).serviceType) : null) || area?.serviceType || null;
+      const serviceType = offer.serviceType || (typeof (rawOffer as Record<string, unknown>).serviceType === "string" ? String((rawOffer as Record<string, unknown>).serviceType) : null) || null;
       const serviceQualification: ServiceQualificationOutcome = { serviceType, assessed: Boolean(serviceType?.trim()), excluded: [] };
       const qualificationCandidates = candidates.length;
       // MINIMAL QUALIFICATION GATE is applied immediately after Towbook's eligible-list filter.
