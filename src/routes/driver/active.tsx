@@ -9,8 +9,8 @@ import { LiveMap } from "~/components/live-map";
 import { DriverNotificationBanners } from "~/components/notify-banners";
 
 /**
- * /driver/active — the Uber-style active-trip screen (R2 spec §b): slim shell,
- * full-bleed LiveMap hero, ETA countdown overlay (EtaHero), and the TripSheet
+ * /driver/active — the active-trip screen: compact LiveMap widget, ETA
+ * countdown overlay (EtaHero), and the TripSheet
  * (pickup row · call/navigate · ProgressRail · dominant action · photo flow).
  * Banners/errors/GPS render as floating chips over the map. When there is no
  * active job but an offer is waiting, the offer-first flow claims the sheet
@@ -62,13 +62,13 @@ function ActiveView() {
 
   return (
     <AppShell portal="driver" slim title="Active job" description="" headerActions={headerActions}>
-      <div className="relative h-[calc(100dvh-3.5rem-4.25rem)] md:mx-auto md:h-[70vh] md:max-w-3xl">
+      <div className="mx-auto w-full max-w-3xl px-3 pt-3 md:px-0">
+        <div className="relative h-56 overflow-hidden rounded-2xl border border-ink-100 bg-surface shadow-sm sm:h-64">
         <LiveMap
           variant="hero"
           heightClass="h-full"
           emptyTitle="Live map unavailable"
           emptyBody="Sign in as a contractor to see your position, your active job, and nearby jobs here."
-          onTap={() => setSnap(1)}
           driverScope
         />
         {sheetCall && (
@@ -82,6 +82,7 @@ function ActiveView() {
           </p>
         )}
         <MapChips chips={chips} gps={gpsState} />
+        </div>
       </div>
 
       {sheetCall ? (
