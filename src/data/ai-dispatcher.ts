@@ -1733,10 +1733,11 @@ export async function chooseBestDriverByRoad(
   const baseEligible = drivers.filter((d): d is NearestDriver => {
     if (!d || typeof d !== "object" || Array.isArray(d)) return false;
     const o = d as NearestDriver;
+    // Offline candidates are admitted only when the state-tiered guard is
+    // active; the unguarded pure selector retains its historical online-only
+    // contract while dispatch can explicitly waive it for in-state fallback.
+    if (!area?.stateGuard && o.isCheckedIn !== true) return false;
     return (
-      // Towbook's checkIn flag defines ONLINE priority, not eligibility. The
-      // owner policy explicitly allows an offline driver with an honest
-      // last-known location when no online in-state driver exists.
       typeof o.latitude === "number" && Number.isFinite(o.latitude) && o.latitude !== 0 &&
       typeof o.longitude === "number" && Number.isFinite(o.longitude) && o.longitude !== 0 &&
       typeof o.estimatedTimeSeconds === "number" && Number.isFinite(o.estimatedTimeSeconds)
@@ -2863,14 +2864,12 @@ async function runAutoDispatchInternal(
       // anchors — the human's choice is authoritative and must never be
       // area-filtered ("do not touch the manual assign path"); the fresh-fix
       // origin still improves the ETA for the human-chosen driver.
-      // SAME-STATE GUARD (owner rule: no cross-state assignments; production
-      // evidence 2026-08-13: offers with Bridgeport placeholder coords but
-      // Georgetown/Austin TX addresses were auto-accepted and dispatched to CT
-      // drivers). Job state from the offer's ADDRESS text (never the coords);
-      // driver states reverse-geocoded from each driver's CURRENT location,
-      // cached per run. Unknown on either side FAILS CLOSED (escalate, no
-      // accept) — the engine never assigns a driver it cannot prove is in the
-      // job's state.
+      // STATE-TIERED GUARD (owner policy 2026-08-15): prefer an online driver
+      // in-state, then an offline in-state driver; permit an ETA-capped
+      // cross-state driver only when the job state has no driver; use universal
+      // fallback last. Job state comes from the authoritative address (never
+      // coordinates); driver states are reverse-geocoded from current origin,
+      // cached per run. Unknown state fails closed (never guess assignment).
       const rawStarting = startingLocationOf(rawOffer as Record<string, unknown>);
       const tomtomKeyForGuard = resolveTomtomKey(deps.env ?? process.env);
       const jobStateResolution = await resolveJobState(orgId, rawOffer as Record<string, unknown>, rawStarting, tomtomKeyForGuard ?? "", fetchImpl);

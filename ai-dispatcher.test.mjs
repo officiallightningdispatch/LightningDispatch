@@ -1757,6 +1757,40 @@ try {
       Math.abs(Number(dbFixes.get("703785")?.lat) - DARIEN.lat) < 1e-9 && dbFixes.get("717660") != null,
       JSON.stringify(dbFixes.get("703785")));
   }
+  /* ============ tiered in-state/cross-state selection regressions (1a0334c) ============ */
+  {
+    // These are end-to-end fixtures: the real state guard, candidate ordering,
+    // accept POST, verification, and decision ledger must all agree on the tier.
+    const stateByDriver = new Map();
+    const runTier = async (id, ds, opts = {}) => {
+      for (const [driverId, state] of Object.entries(opts.states ?? {})) stateByDriver.set(Number(driverId), state);
+      const m = makeFetch({ offers: [offer(id, { maxEta: opts.maxEta, drivers: ds.map((d) => d.driverId) })], drivers: ds });
+      const { deps } = makeDeps(m.fetchImpl, makeRouter(), { stateResolver: async (driverId) => stateByDriver.get(Number(driverId)) ?? null });
+      const r = await runAutoDispatch(ORG6, deps);
+      const row = (await q`SELECT decision, driver_id, reason FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id=${String(id)}`)[0];
+      return { r, m, row };
+    };
+    const online = driver(93001, "Tier online CT", { checkedIn: true, etaSec: 900 });
+    const offline = driver(93002, "Tier offline CT", { checkedIn: false, etaSec: 600 });
+    const cross = driver(93003, "Tier cross-state NY", { checkedIn: true, etaSec: 600, lat: 40.7, lng: -74.0 });
+    const farCross = driver(93004, "Tier far-state NY", { checkedIn: true, etaSec: 4000, lat: 40.7, lng: -74.0 });
+
+    const a = await runTier(93001, [online], { states: { 93001: "CT" } });
+    check("tier 1 online in-state: assigned", a.r.decisions[0]?.decision === "auto_accept_with_driver" && Number(a.row?.driver_id) === 93001 && posts(a.m.calls)[0]?.body?.driverId === 93001 && !String(a.row?.reason).includes("waiver"), JSON.stringify(a.row));
+
+    const b = await runTier(93002, [offline], { states: { 93002: "CT" } });
+    check("tier 2 offline in-state: assigned with waiver reason", b.r.decisions[0]?.decision === "auto_accept_with_driver" && Number(b.row?.driver_id) === 93002 && posts(b.m.calls)[0]?.body?.driverId === 93002 && String(b.row?.reason).includes("no online driver in state; in-state offline assignment"), JSON.stringify(b.row));
+
+    const c = await runTier(93003, [cross], { states: { 93003: "NY" }, maxEta: 45 });
+    check("tier 3 cross-state ETA-capped: assigned", c.r.decisions[0]?.decision === "auto_accept_with_driver" && Number(c.row?.driver_id) === 93003 && posts(c.m.calls)[0]?.body?.driverId === 93003 && String(c.row?.reason).includes("cross-state sole-eligible assignment"), JSON.stringify(c.row));
+
+    const d = await runTier(93004, [farCross], { states: { 93004: "NY" }, maxEta: 30 });
+    check("tier 4 cross-state over ceiling: universal fallback", d.r.decisions[0]?.decision === "auto_accept_no_driver" && d.r.decisions[0]?.escalated === true && Number(d.row?.driver_id ?? 0) === 0 && posts(d.m.calls)[0]?.body?.driverId === 0 && String(d.row?.reason).includes("cross-state sole-eligible assignment cannot make the SLA ceiling"), JSON.stringify(d.row));
+
+    const e = await runTier(93005, [cross, offline, online], { states: { 93001: "CT", 93002: "CT", 93003: "NY" } });
+    check("tier regression online same-state beats offline/cross-state", e.r.decisions[0]?.decision === "auto_accept_with_driver" && Number(e.row?.driver_id) === 93001 && posts(e.m.calls)[0]?.body?.driverId === 93001, JSON.stringify(e.row));
+  }
+
   /* ============ qualification gate (Phase B ③) ============ */
   {
     const runQ = async (id, ds, extra={}) => { const m=makeFetch({offers:[offer(id,{ drivers: ds.map((d)=>d.driverId), ...(extra.offer||{}) })],drivers:ds}); const {deps}=makeDeps(m.fetchImpl); const r=await runAutoDispatch(ORG7,deps); return {r,m,rows:await q`SELECT * FROM ai_dispatcher_decisions WHERE org_id=${ORG7} AND call_request_id=${String(id)}`}; };
