@@ -1407,11 +1407,11 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     // Optional GPS signal; existing clients omit it and retain conservative NULL.
     await q`ALTER TABLE driver_locations ADD COLUMN IF NOT EXISTS speed_mph DOUBLE PRECISION`;
   }],
+
   [64, async (q) => {
     await q`ALTER TABLE dispatch_zones ADD COLUMN IF NOT EXISTS polygon_geojson JSONB`;
     await q`ALTER TABLE dispatch_zones ADD COLUMN IF NOT EXISTS capacity INTEGER`;
-  }],
-  [63, async (q) => {
+  }],  [63, async (q) => {
     // The nudge lifecycle writes multiple decision rows per job: the
     // auto-accept (reason 'reassigned_not_headed') on reassignment, then a
     // DISTINCT escalation (reason 'reassigned_not_headed_again') when the
