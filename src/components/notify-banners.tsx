@@ -28,7 +28,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { AlertTriangle, Volume2, VolumeX, X, XCircle, Zap } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SERVICE_LABELS } from "~/lib/job-ui";
-import { diffCancelledJobIds, diffEscalatedDecisionIds, diffNewCashoutIds, diffNewJobIds, mergeSeen, type NotifyCall } from "~/lib/notify";
+import { diffCancelledJobIds, diffEscalatedDecisionIds, diffNewCashoutIds, diffNewJobIds, formatCountdown, mergeSeen, type NotifyCall } from "~/lib/notify";
 import { getSeenIds, seenKey, setSeenIds } from "~/lib/notify-seen";
 import { playAlertSound, primeAudio, soundMuted, toggleSoundMuted, type SoundRole } from "~/lib/sound";
 import { etaMinutesLabel } from "~/components/driver-eta";
@@ -51,6 +51,8 @@ export type BannerItem = {
   to: BannerTarget;
   /** Assignment banners carry the ETA pill label (etaMinutesLabel). */
   etaLabel?: string | null;
+  /** Grounded expiry; when absent, createdAt + 180s is explicitly estimated. */
+  countdown?: { expiresAt: number; estimated: boolean } | null;
 };
 
 const AUTO_DISMISS_MS = 7000;
@@ -120,6 +122,8 @@ function BannerStack({
   showSoundToggle?: boolean;
 }) {
   const nav = useNavigate();
+  const [, setClock] = useState(() => Date.now());
+  useEffect(() => { if (!banners.some((b) => b.countdown)) return; const t = setInterval(() => setClock(Date.now()), 1000); return () => clearInterval(t); }, [banners]);
   if (banners.length === 0) return null;
   return (
     <div
@@ -169,6 +173,13 @@ function BannerStack({
                   </span>
                   <span className={`mt-0.5 block text-xs leading-snug ${b.kind === "escalation" ? "text-danger-700/90" : b.kind === "cancelled" ? "text-accent-800/90" : "text-ink-500"}`}>
                     {b.body}
+                    {b.countdown && (() => {
+                      const remaining = Math.max(0, Math.ceil((b.countdown.expiresAt - Date.now()) / 1000));
+                      const label = formatCountdown(remaining) ?? "00:00";
+                      return <span className="mt-1 inline-flex rounded-full bg-danger-100 px-2 py-0.5 text-xs font-bold tabular-nums text-danger-700" aria-label={`${b.countdown.estimated ? "Estimated time remaining" : "Expires in"} ${label}`}>
+                        {b.countdown.estimated ? "Estimated time remaining" : "Expires in"} {label}
+                      </span>;
+                    })()}
                   </span>
                 </span>
                 {b.etaLabel && b.kind === "assignment" && (
@@ -290,12 +301,23 @@ export function OwnerNotificationLayer() {
             to: "/owner/queue",
           });
         }
+        const reasonCopy: Record<string, string> = {
+          escalated_unexpected_shape: "Towbook offer format needs a human review.",
+          escalated_missing_coords: "Offer has no usable location; claim it in Towbook.",
+          escalated_accept_failed: "Automatic acceptance failed; claim it in Towbook.",
+          escalated_dispatch_failed: "Dispatch verification failed; review and claim it in Towbook.",
+          escalated_driver_lookup_failed: "Driver lookup failed; review and claim it in Towbook.",
+          escalated_state_unknown: "Driver/job state could not be verified; review in Towbook.",
+          escalated_cross_state: "Cross-state assignment was blocked; review in Towbook.",
+        };
         for (const d of newDecs) {
+          const authoritative = d.offerExpiresAt ? Date.parse(d.offerExpiresAt) : NaN;
+          const created = Date.parse(d.createdAt);
+          const expiry = Number.isFinite(authoritative) ? authoritative : Number.isFinite(created) ? created + 180_000 : NaN;
           items.push({
-            id: `esc:${d.id}`,
-            kind: "escalation",
-            title: "Dispatch alert",
-            body: d.reason?.trim() || "The AI dispatcher escalated a decision.",
+            id: `esc:${d.id}`, kind: "escalation", title: "Offer needs your attention",
+            body: `${reasonCopy[d.reason ?? ""] ?? "Offer needs a human review."}${d.callRequestId ? ` Offer ${d.callRequestId}` : ""}${Number.isFinite(expiry) ? "" : " Expiry time unavailable — open Towbook now"}`,
+            countdown: Number.isFinite(expiry) ? { expiresAt: expiry, estimated: !Number.isFinite(authoritative) } : null,
             to: "/owner/ai-dispatcher",
           });
         }

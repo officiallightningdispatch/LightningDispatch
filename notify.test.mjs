@@ -14,6 +14,7 @@ import {
   isEscalationDecision,
   mergeSeen,
   parseSeen,
+  formatCountdown,
 } from "./src/lib/notify.ts";
 
 const checks = [];
@@ -106,20 +107,27 @@ const CO = (id, amountCents = 1200, extra = {}) => ({ id, amountCents, contracto
 }
 {
   const decisions = [
-    D("dec-1", "escalated_expired", "Towbook session expired"),
-    D("dec-2", "escalated_out_of_zone", "Outside the service zone"),
+    D("dec-1", "escalated_expired", "escalated_expired"),
+    D("dec-2", "escalated_missing_coords", "escalated_missing_coords"),
     D("dec-3", "auto_accept_with_driver", "Auto-accepted"),
   ];
   const seen = ["dec-1"]; // dec-1 already surfaced → must not fire again
   const fired = diffEscalatedDecisionIds(seen, decisions);
   check("escalations fire once per decision id", fired.length === 1 && fired[0].id === "dec-2");
-  check("fired escalation keeps its reason text", fired[0].reason === "Outside the service zone");
+  check("fired escalation keeps its reason text", fired[0].reason === "escalated_missing_coords");
 }
 {
   const fired = diffEscalatedDecisionIds([], [D("a", "auto_accept_no_driver"), D("b", "accepted_manual")]);
   check("non-escalated decisions never fire even when unseen", fired.length === 0);
 }
 
+{
+  check("expired escalation is excluded", diffEscalatedDecisionIds([], [D("x", "escalated_expired", "escalated_expired")]).length === 0);
+  check("unknown escalation is excluded", diffEscalatedDecisionIds([], [D("x", "escalated_out_of_zone", "escalated_out_of_zone")]).length === 0);
+  check("countdown formats mm:ss", formatCountdown(181) === "03:01");
+  check("countdown clamps zero", formatCountdown(-4) === "00:00");
+  check("unknown countdown is null", formatCountdown(null) === null);
+}
 /* --------------------------- cancelled-job detection --------------------------- */
 // The driver queue diff (owner-directed 2026-08-12, "like Uber — notify the
 // driver and move it to history"): a call that was LIVE (offered → towing) in

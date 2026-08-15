@@ -1258,6 +1258,7 @@ export type AiDispatcherDecisionRow = {
 };
 
 const aiDispatcherReader = (u: AuthUser): boolean => can(u, ["owner", "admin", "dispatcher"]);
+const aiDispatcherOwnerAlertReader = (u: AuthUser): boolean => can(u, ["owner", "admin"]);
 const aiDispatcherWriter = (u: AuthUser): boolean => can(u, ["owner", "admin"]);
 
 /** Engine status for the control panel: settings (defaults when no row), the
@@ -1381,12 +1382,12 @@ export const listAiDispatcherDecisions = createServerFn({ method: "GET" }).valid
   if (!configured()) return [];
   const { currentUser } = await import("./auth-server");
   const u = await currentUser();
-  if (!u || !aiDispatcherReader(u)) return [];
+  if (!u || (v.data.escalatedOnly ? !aiDispatcherOwnerAlertReader(u) : !aiDispatcherReader(u))) return [];
   try {
     await prepare();
     const q = sql();
     const limit = v.data.limit ?? 20;
-    const rows = await q`SELECT id, call_request_id, call_id, decision, escalated, driver_name, eta_minutes, zone_distance_miles, reason, created_at
+    const rows = await q`SELECT id, call_request_id, call_id, decision, escalated, driver_name, eta_minutes, zone_distance_miles, reason, created_at, raw_response
       FROM ai_dispatcher_decisions WHERE org_id=${u.orgId} ${v.data.escalatedOnly ? q`AND escalated=TRUE` : q``}
       ORDER BY created_at DESC LIMIT ${limit}`;
     return rows.map((r: Record<string, unknown>) => {
@@ -1398,6 +1399,21 @@ export const listAiDispatcherDecisions = createServerFn({ method: "GET" }).valid
       if (r.driver_name != null && String(r.driver_name) !== "") row.driverName = String(r.driver_name);
       if (r.eta_minutes != null) row.etaMinutes = Number(r.eta_minutes);
       if (r.zone_distance_miles != null) row.zoneDistanceMiles = Number(r.zone_distance_miles);
+      // Towbook's field is preserved only when an authoritative expiry timestamp
+      // is present in the captured offer response. Do not infer one here.
+      const raw = r.raw_response as unknown;
+      const expiryKeys = new Set(["offerExpiresAt", "offer_expires_at", "expiresAt", "expirationTime", "expiration_time"]);
+      const findExpiry = (value: unknown): string | undefined => {
+        if (!value || typeof value !== "object") return undefined;
+        for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+          if (expiryKeys.has(k) && (typeof v === "string" || typeof v === "number")) {
+            const date = new Date(v); if (!Number.isNaN(date.getTime())) return date.toISOString();
+          }
+          const nested = findExpiry(v); if (nested) return nested;
+        }
+        return undefined;
+      };
+      const expiry = findExpiry(raw); if (expiry) row.offerExpiresAt = expiry;
       return row;
     });
   } catch {

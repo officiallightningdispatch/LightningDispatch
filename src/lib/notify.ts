@@ -31,6 +31,7 @@ export type NotifyDecision = {
   id: string;
   decision: string;
   reason?: string | null;
+  offerExpiresAt?: string | null;
 };
 
 export type NotifyCashout = {
@@ -60,6 +61,20 @@ export const SEEN_CAP = 200;
 /** Every escalation decision type starts with this prefix (auto_accept_* never
  *  does) — verified against AI_DECISION_META in ai-dispatcher-views.tsx. */
 export const ESCALATION_PREFIX = "escalated_";
+/** Escalations that still need a human while the offer may be actionable. */
+export const ACTIONABLE_ESCALATION_REASONS = new Set([
+  "escalated_unexpected_shape", "escalated_missing_coords", "escalated_accept_failed",
+  "escalated_dispatch_failed", "escalated_driver_lookup_failed", "escalated_state_unknown",
+  "escalated_cross_state",
+]);
+export function isActionableEscalation(reason: unknown): boolean {
+  return typeof reason === "string" && ACTIONABLE_ESCALATION_REASONS.has(reason);
+}
+export function formatCountdown(totalSeconds: number | null | undefined): string | null {
+  if (totalSeconds == null || !Number.isFinite(totalSeconds)) return null;
+  const seconds = Math.max(0, Math.floor(totalSeconds));
+  return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+}
 
 /** A call in the driver's live queue, with enough context to render a banner
  *  (id + optional statusId + pickup/vehicle fields for the cancelled notice). */
@@ -140,7 +155,7 @@ export function diffEscalatedDecisionIds(
   const seenInBatch = new Set<string>();
   for (const d of decisions) {
     if (!d || typeof d.id !== "string" || d.id === "") continue;
-    if (!isEscalationDecision(d.decision)) continue;
+    if (!isEscalationDecision(d.decision) || !isActionableEscalation(d.reason)) continue;
     if (s.has(d.id) || seenInBatch.has(d.id)) continue;
     seenInBatch.add(d.id);
     out.push(d);
