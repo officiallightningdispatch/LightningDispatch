@@ -300,6 +300,8 @@ export type AssignmentPushPayload = {
   etaMinutes: number | null;
   /** In-app route the notification opens ("/driver"). */
   jobUrl: string;
+  /** Optional exact message for non-assignment nudges. */
+  message?: string;
   /** Notification tag override (self-test 2026-08-13: "self-test-<ts>").
    *  Defaults to job-<callId|callRequestId> when omitted. */
   tag?: string;
@@ -320,7 +322,7 @@ export function buildPushNotificationJson(p: AssignmentPushPayload): Record<stri
   const location = p.location && p.location.trim() !== "" ? p.location.trim() : `Call #${p.callId ?? "—"}`;
   return {
     title: "New job — Lightning Dispatch",
-    body: `${p.jobType || "Tow job"} · ${location} · ${eta}`,
+    body: p.message ?? `${p.jobType || "Tow job"} · ${location} · ${eta}`,
     tag: p.tag ?? `job-${p.callId ?? p.callRequestId ?? "unknown"}`,
     data: { url: p.jobUrl || "/driver" },
     icon: "/favicon.svg",

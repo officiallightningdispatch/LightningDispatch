@@ -20,6 +20,19 @@ export function isDriverHeaded(fixes: readonly GpsFix[], jobLat:number, jobLng:n
 export async function recordNudge(orgId:string, jobId:string, driverId:string|null, kind:"assignment"|"warning"|"reassigned", reason:string):Promise<void> {
   try { await sql()`INSERT INTO dispatch_nudge_events(id,org_id,job_id,driver_towbook_id,kind,reason) VALUES(gen_random_uuid()::text,${orgId},${jobId},${driverId},${kind},${reason}) ON CONFLICT (org_id,job_id,kind) DO NOTHING`; } catch { /* notifications never block dispatch */ }
 }
+
+/** Deliver the four-minute warning through the same VAPID path as assignment
+ * pushes. This is intentionally best-effort: the ledger remains authoritative
+ * when a phone has no subscription. */
+async function sendWarningPush(orgId:string, driverId:string, jobId:string):Promise<void> {
+  try {
+    const { sendAssignmentPushByTowbookDriver } = await import("./push-core");
+    await sendAssignmentPushByTowbookDriver(orgId, driverId, {
+      callId: jobId, callRequestId: null, jobType: "Dispatch warning",
+      location: "", etaMinutes: null, jobUrl: "/driver", message: "You haven't left yet — the job will be reassigned shortly", tag: `nudge-warning-${jobId}`,
+    });
+  } catch { /* push never blocks the scan */ }
+}
 /** Periodic warning ledger pass. Reassignment is deliberately delegated to the existing candidate pipeline. */
 export async function processAssignmentNudges(orgId:string, now:Date = new Date()):Promise<void> {
   const settings=await sql()`SELECT nudge_enabled,reassign_not_headed_minutes FROM org_settings WHERE org_id=${orgId}`;
@@ -30,6 +43,10 @@ export async function processAssignmentNudges(orgId:string, now:Date = new Date(
     if (already.length) continue;
     const fixes=await sql()`SELECT latitude,longitude,captured_at FROM driver_locations WHERE org_id=${orgId} AND towbook_driver_id=${String(r.assigned_driver_towbook_id)} AND captured_at >= ${String(r.assigned_at)} ORDER BY captured_at`;
     const check=isDriverHeaded((fixes as Array<Record<string,unknown>>).map(f=>({latitude:Number(f.latitude),longitude:Number(f.longitude),capturedAt:String(f.captured_at)})),Number(r.pickup_lat),Number(r.pickup_lng),String(r.assigned_at),now);
-    if (!check.headed) { await recordNudge(orgId,String(r.id),String(r.assigned_driver_towbook_id),"warning","not_headed_4m"); }
+    if (!check.headed) {
+      const jobId=String(r.id), driverId=String(r.assigned_driver_towbook_id);
+      await recordNudge(orgId,jobId,driverId,"warning","not_headed_4m");
+      await sendWarningPush(orgId,driverId,jobId);
+    }
   }
 }

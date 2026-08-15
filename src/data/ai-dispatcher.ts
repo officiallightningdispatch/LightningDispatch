@@ -3142,6 +3142,13 @@ async function runAutoDispatchInternal(
           // Assigned-offer push: notify the contractor's phone (single-strike
           // sound) — fire-and-forget, never fails the dispatch.
           await fireDispatchAssignmentPush(orgId, { driverId: dispatchDriverId, driverName: dispatchDriverName }, verification, offer, etaMinutes, deps);
+          try {
+            const jobRows = await sql() `SELECT id FROM dispatch_jobs WHERE org_id=${orgId} AND (towbook_job_id=${verification.callId} OR towbook_job_id=${offer.callRequestId}) LIMIT 1`;
+            if (jobRows.length) {
+              const { recordNudge } = await import("./nudge-reassign-core");
+              await recordNudge(orgId, String((jobRows[0] as Record<string, unknown>).id), String(dispatchDriverId), "assignment", "auto_accept");
+            }
+          } catch { /* ledger never blocks dispatch */ }
           result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "auto_accept_with_driver", escalated: false, reason });
         } else {
           const reason = `accepted (call ${verification.callId ?? "unknown"}) but dispatch NOT verified for ${dispatchDriverName ?? dispatchDriverId} (driver ${dispatchDriverId}) — ${verification.error}${verificationRecoveryNote ? `; ${verificationRecoveryNote}` : ""}${recalculationNote ? `; ${recalculationNote}` : ""}${manualNote ? `; ${manualNote}` : ""}${jobStateResolution.note ? `; ${jobStateResolution.note}` : ""}; needs a human to assign on Towbook (ETA ${etaMinutes ?? effectiveMaxEta} min quoted)`;

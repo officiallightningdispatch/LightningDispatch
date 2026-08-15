@@ -92,7 +92,6 @@ async function runTick(orgId: string): Promise<void> {
     })();
     const sync = syncForOrg(orgId, "sync:interval");
     const nudges = processAssignmentNudges(orgId);
-    const nudges = processAssignmentNudges(orgId);
     await Promise.allSettled([dispatch, sync, nudges]);
   } catch { /* best-effort — one org's failure never stops the loop */ }
 }
