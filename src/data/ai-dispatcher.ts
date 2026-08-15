@@ -528,7 +528,11 @@ export async function loadOrgDriverQueues(orgId: string): Promise<Map<string, Dr
     WHERE org_id=${orgId}
       AND assigned_driver_towbook_id IS NOT NULL
       AND status IN ('new','offered','accepted','en_route','arrived')
-      AND NOT (towbook_job_id IS NULL AND pickup IS NULL)
+      -- Exclude QA-noise rows that carry NO pickup info at all (no Towbook
+      -- link, no address text, no coordinates). Rows with pickup geometry are
+      -- real queue work and MUST count — excluding them undercounts a driver's
+      -- active jobs and can over-assign (owner ETA incident follow-up).
+      AND NOT (towbook_job_id IS NULL AND pickup IS NULL AND pickup_lat IS NULL AND pickup_lng IS NULL)
     ORDER BY created_at ASC`;
   const map = new Map<string, DriverQueue>();
   for (const r of rows as Array<Record<string, unknown>>) {
