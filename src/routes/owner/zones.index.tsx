@@ -8,11 +8,11 @@ type ZoneType = "market"|"submarket"|"rural"|"corridor"|"coverage";
 type Zone = { id:string; name:string; state:string; market:string; zoneType:ZoneType; zipCodes:string[]; parentZoneId:string|null; lat:number; lng:number; radiusMiles:number; tz:string; active:boolean; sortOrder:number; assignedDriverCount:number; busyness:"Low"|"Moderate"|"Busy"; availableDrivers?:number; activeJobs?:number; jobsByZone?:number; availableDriversByZone?:number };
 type Driver = { userId:string; name:string; active:boolean; online:boolean; zoneId:string|null; zoneName:string|null; zoneChangedAt:string|null };
 const types:ZoneType[]=["market","submarket","rural","corridor","coverage"];
- const visibleZones=zones?.filter(z=>z.zoneType!=="coverage"&&z.state!=="US")??[];
- const byState=[...new Set(visibleZones.map(z=>z.state))].sort();
 const blank:Partial<Zone>={name:"",state:"CT",market:"",zoneType:"market",zipCodes:[],parentZoneId:null,lat:0,lng:0,radiusMiles:10,tz:"America/New_York",sortOrder:0,active:true};
 function OwnerZones(){
  const toast=useToast(); const [zones,setZones]=useState<Zone[]|null>(null); const [drivers,setDrivers]=useState<Driver[]>([]); const [error,setError]=useState(""); const [editing,setEditing]=useState<Partial<Zone>|null>(null); const [selected,setSelected]=useState("");
+ const visibleZones=zones?.filter(z=>z.zoneType!=="coverage"&&z.state!=="US")??[];
+ const byState=[...new Set(visibleZones.map(z=>z.state))].sort();
  const load=async()=>{setError("");const [z,d]=await Promise.all([getDispatchZonesForOwner(),getOwnerZoneDriverRoster()]);if(z.ok)setZones(z.zones as Zone[]);else setError(z.message);if(d.ok)setDrivers(d.drivers as Driver[]);}; useEffect(()=>{void load();},[]);
  const update=(key:string,value:unknown)=>setEditing(e=>({...e,[key]:value}));
  const save=async()=>{if(!editing?.name||!editing.state){toast("Name and state are required");return;}const r=await saveDispatchZone({data:{id:editing.id,name:String(editing.name).trim(),state:String(editing.state).toUpperCase(),market:String(editing.market??"").trim(),zoneType:editing.zoneType??"market",zipCodes:(editing.zipCodes??[]).map(String).map(x=>x.trim()).filter(Boolean),parentZoneId:editing.parentZoneId||null,lat:Number(editing.lat),lng:Number(editing.lng),radiusMiles:Number(editing.radiusMiles||10),tz:editing.tz||"America/New_York",active:editing.active??true,sortOrder:Number(editing.sortOrder||0)}});if(!r.ok){toast(r.message);return;}toast("Zone saved");setEditing(null);void load();};
