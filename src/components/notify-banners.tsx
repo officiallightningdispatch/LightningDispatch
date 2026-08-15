@@ -330,10 +330,13 @@ export function OwnerNotificationLayer() {
           const authoritative = d.offerExpiresAt ? Date.parse(d.offerExpiresAt) : NaN;
           const created = Date.parse(d.createdAt);
           const expiry = Number.isFinite(authoritative) ? authoritative : Number.isFinite(created) ? created + 180_000 : NaN;
+          const rejectedTow = d.decision === "rejected_tow_no_eligible_driver";
           items.push({
-            id: `esc:${d.id}`, kind: "escalation", title: "Offer needs your attention",
-            body: `${reasonCopy[d.reason ?? ""] ?? "Offer needs a human review."}${d.callRequestId ? ` Offer ${d.callRequestId}` : ""}${Number.isFinite(expiry) ? "" : " Expiry time unavailable — open Towbook now"}`,
-            countdown: Number.isFinite(expiry) ? { expiresAt: expiry, estimated: !Number.isFinite(authoritative) } : null,
+            id: `esc:${d.id}`, kind: "escalation", title: rejectedTow ? "REJECTED TOW JOB" : "Offer needs your attention",
+            body: rejectedTow
+              ? `Call ${d.callId ?? d.callRequestId}${d.customerName ? ` · ${d.customerName}` : ""}${d.location ? ` · ${d.location}` : ""} · ${d.reason}`
+              : `${reasonCopy[d.reason ?? ""] ?? "Offer needs a human review."}${d.callRequestId ? ` Offer ${d.callRequestId}` : ""}${Number.isFinite(expiry) ? "" : " Expiry time unavailable — open Towbook now"}`,
+            countdown: rejectedTow ? null : (Number.isFinite(expiry) ? { expiresAt: expiry, estimated: !Number.isFinite(authoritative) } : null),
             to: "/owner/ai-dispatcher",
           });
         }
