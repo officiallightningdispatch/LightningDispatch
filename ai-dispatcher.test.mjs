@@ -1443,7 +1443,9 @@ try {
     const runStateCase = async (id, opts = {}) => {
       const m = makeFetch({ offers: [offer(id, { startingLocation: opts.address ?? ct, lat: opts.lat ?? 41.31, lng: opts.lng ?? -73.06, purchaseOrderNumber: opts.po ?? `state-${id}` })], drivers: [driver(703785, "Jayden Fountain")] });
       const { deps } = makeDeps(m.fetchImpl, null, opts.stateResolver ? { stateResolver: opts.stateResolver } : {});
-      return { m, r: await runAutoDispatch(ORG6, deps) };
+      const r = await runAutoDispatch(ORG6, deps);
+      const row = (await q`SELECT decision, driver_id, reason FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id=${String(id)}`)[0];
+      return { m, r, row };
     };
     const insertJob = (id, towbookId, po, pickup, lat, lng) => q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, pickup, raw_json, pickup_lat, pickup_lng)
       VALUES(${id}, ${ORG6}, 'QA State Job', '', 0, 0, 'TX', 'tow', 'accepted', NOW(), '', ${towbookId}, ${pickup}, ${JSON.stringify({ purchaseOrderNumber: po, startingLocation: pickup })}::jsonb, ${lat}, ${lng})`;
