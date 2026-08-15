@@ -1332,10 +1332,10 @@ try {
     });
     const r = await runAutoDispatch(ORG6, deps);
     check("coords cotulla: universal fallback accept", fallbackAccept(r, m.calls, "6003"), JSON.stringify({ decision: r.decisions[0], post: posts(m.calls)[0] }));
-    check("coords cotulla: reason notes the resolution failure + score floor", String(r.decisions[0]?.reason).includes("pickup-coords resolution failed") && String(r.decisions[0]?.reason).includes("score 14"), String(r.decisions[0]?.reason));
-    const rows = await q`SELECT call_request_id, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND decision='escalated_unexpected_shape'`;
-    const sr = rows.find((x) => String(x.call_request_id).startsWith("shape-"));
-    check("coords cotulla: fallback row carries full raw offer + accept", sr && sr.raw_response?.offer?.accountName === "Agero (Swoop) Bridgeport" && sr.raw_response?.accept, JSON.stringify(sr));
+    check("coords cotulla: reason notes coords-0 fallback + awaiting driver assignment", String(r.decisions[0]?.reason).includes("no usable pickup coordinates") && String(r.decisions[0]?.reason).includes("awaiting driver assignment"), String(r.decisions[0]?.reason));
+    const rows = await q`SELECT call_request_id, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='6003'`;
+    const sr = rows[0];
+    check("coords cotulla: fallback row keyed by callRequestId, evidence carries full raw offer + accept", sr && String(sr.call_request_id) === "6003" && sr.raw_response?.evidence?.offer?.accountName === "Agero (Swoop) Bridgeport" && sr.raw_response?.accept, JSON.stringify(sr));
   }
   {
     // (e) no startingLocation text at all + no coords → escalates (unchanged
@@ -1343,7 +1343,7 @@ try {
     const m = makeFetch({ offers: [offer(6004, { omitLat: true, omitLng: true, startingLocation: "" })], drivers: [] });
     const { deps } = makeDeps(m.fetchImpl);
     const r = await runAutoDispatch(ORG6, deps);
-    check("coords no-address: escalated_unexpected_shape + reason names no startingLocation, zero POSTs", r.decisions[0]?.decision === "escalated_unexpected_shape" && r.decisions[0]?.escalated === true && posts(m.calls).length === 0 && String(r.decisions[0]?.reason).includes("no startingLocation text"), String(r.decisions[0]?.reason));
+    check("coords no-address: universal fallback accept, driverId 0, SLA accept", r.decisions[0]?.decision === "auto_accept_no_driver" && r.decisions[0]?.driverId === "0" && r.decisions[0]?.escalated === true && posts(m.calls).length === 1 && String(posts(m.calls)[0].body.driverId) === "0" && Number(posts(m.calls)[0].body.ETA) === 45, JSON.stringify({ decision: r.decisions[0], post: posts(m.calls)[0] }));
   }
   {
     // (f) dedupe stays sane: the DB-resolved offer (6001, same content) is
