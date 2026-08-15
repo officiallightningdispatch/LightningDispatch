@@ -456,7 +456,7 @@ async function tbPhotoUpload(fetchImpl: typeof fetch, session: DriverSession, ca
 
 export type CompleteJobResult =
   | { ok: true; photosUploaded: number; towbookCompleted: boolean; changed: boolean }
-  | { ok: false; code: "not_found" | "unauthorized" | "photos_incomplete" | "photo_upload_failed" | "towbook_failed" | "no_session" | "invalid_state" | "completion_capture_required" | "battery_test_required"; message: string; failures?: Array<{ label: string; status: number | null }> };
+  | { ok: false; code: "not_found" | "unauthorized" | "photos_incomplete" | "photo_upload_failed" | "towbook_failed" | "no_session" | "invalid_state" | "completion_capture_required" | "battery_test_required" | "tire_plug_payment_required"; message: string; failures?: Array<{ label: string; status: number | null }> };
 
 /** THE completion push (owner spec): the customer completion capture (signature
  *  + survey from the v13 job_completions table) must already be stored, then
@@ -494,6 +494,15 @@ export async function completeJobCore(user: PhotoUser, data: unknown, opts: { fe
           return { ok: false, code: "battery_test_required", message: "The battery is faulty — finish the battery sale (paid or customer declined) before completing the job." };
         }
       }
+    }
+
+    // Gate: an accepted tire plug is a customer-authorized sale and must be
+    // paid before completion. Declined/voided/never-offered is non-blocking.
+    if (/tire[ _-]*change/i.test(String(job.serviceType ?? ""))) {
+      const plugRows = await q`SELECT status FROM tire_plug_transactions WHERE org_id=${user.orgId} AND job_id=${job.id} ORDER BY created_at DESC LIMIT 1`;
+      const plugStatus = plugRows.length ? String(plugRows[0].status) : null;
+      const gate = (await import("./tire-plug-core")).tirePlugCompletionGate(plugStatus as any);
+      if (!gate.allowed) return { ok: false, code: "tire_plug_payment_required", message: gate.reason ?? "Complete the optional tire plug payment before finishing." };
     }
 
     // Gate (completion flow): the customer completion capture — signature + survey —

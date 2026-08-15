@@ -10,6 +10,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { Check, LogOut, MapPin, Navigation, Radar, RefreshCw, ThumbsUp, Truck, Unplug, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BatterySalesAgent, isJumpstartService } from "~/components/battery-agent-ui";
+import { TirePlugOffer } from "~/components/tire-plug-ui";
 import { JobDetailDisclosure } from "~/components/job-detail";
 import { JobPhotoFlow } from "~/components/driver-photos-ui";
 import { DriverNotificationBanners, SoundToggle } from "~/components/notify-banners";
@@ -336,6 +337,9 @@ export function JobCardActions({ call, acting, onAct, onQueueChanged }: { call: 
       )}
       {(call.statusId === 3 || call.statusId === 4) && isJumpstartService(call.serviceName) && (
         <BatterySalesAgent callId={call.id} />
+      )}
+      {(call.statusId === 3 || call.statusId === 4) && /tire[ _-]*(change|service)|tyre/i.test(call.serviceName || "") && (
+        <TirePlugOffer jobId={call.id} />
       )}
       <JobDetailDisclosure jobId={call.id} label="Details & photos" />
     </>
