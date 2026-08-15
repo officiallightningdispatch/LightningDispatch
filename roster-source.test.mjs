@@ -26,7 +26,7 @@ const check = (name, cond, extra = "") => {
 
 const ORG = `qa-roster-${randomUUID()}`;
 const OWNER = `qa-roster-owner-${randomUUID()}`;
-const DRIVER_TB = `qa-roster-driver-tb-${randomUUID()}`;    // Towbook session (driver kind) + owner-kind session + ping → online
+const DRIVER_TB = `qa-roster-driver-tb-${randomUUID()}`;    // GO + fresh availability heartbeat (plus Towbook sessions/ping) → online
 const DRIVER_LD = `qa-roster-driver-ld-${randomUUID()}`;    // live portal session only → online
 const DRIVER_NONE = `qa-roster-driver-none-${randomUUID()}`; // no signals → offline
 const DRIVER_OWNER = `qa-roster-driver-owner-${randomUUID()}`; // OWNER role WITH towbook_driver_id → MUST appear (2026-08-12 owner direction)
@@ -57,10 +57,9 @@ try {
   // Dana is deactivated (the soft-delete the remove flow uses) — excluded from the roster.
   await q`UPDATE users SET deactivated_at = NOW() WHERE id = ${DRIVER_DEACT}`;
 
-  // DRIVER_TB: BOTH a per-driver Towbook session AND an owner-kind Towbook
-  // session linked to their driver id (the BUG 2 scenario — the owner connects
-  // Towbook through the portal with their own driver login, so the owner's own
-  // roster row must read signed in) + a GPS ping for the location.
+  // DRIVER_TB: GO + fresh availability heartbeat (the current Slice 3
+  // online definition), BOTH a per-driver Towbook session AND an owner-kind
+  // Towbook session linked to their driver id, plus a GPS ping for location.
   await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status, session_kind, towbook_driver_id, updated_at) VALUES
     (${ORG}, ${"enc-tb"}, ${"connected"}, ${"driver"}, ${"9001"}, NOW()),
     (${ORG}, ${"enc-owner"}, ${"connected"}, ${"owner"}, ${"9001"}, NOW())`;
@@ -69,6 +68,11 @@ try {
   // DRIVER_DEACT: session exists but the account is deactivated — must still be hidden.
   await q`INSERT INTO sessions(id, user_id, expires_at) VALUES(${`sess-${randomUUID()}`}, ${DRIVER_DEACT}, NOW() + interval '1 day')`;
   // DRIVER_TB: one ping (the newest wins).
+  // Mirror the shipped GO/heartbeat UPSERT shape from availability lease code.
+  await q`INSERT INTO driver_availability_log(org_id,user_id,day,online_minutes,ping_count,session_started_at,heartbeat_at,updated_at)
+    VALUES(${ORG},${DRIVER_TB},CURRENT_DATE,0,1,NOW(),NOW(),NOW()),
+          (${ORG},${DRIVER_OWNER},CURRENT_DATE,0,1,NOW(),NOW(),NOW())
+    ON CONFLICT(org_id,user_id,day) DO UPDATE SET heartbeat_at=NOW(),updated_at=NOW(),session_started_at=COALESCE(driver_availability_log.session_started_at,EXCLUDED.session_started_at)`;
   await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES
     (${`loc-${randomUUID()}`}, ${ORG}, ${DRIVER_TB}, ${"9001"}, ${40.0}, ${-73.0}, NOW() - interval '2 minutes'),
     (${`loc-${randomUUID()}`}, ${ORG}, ${DRIVER_TB}, ${"9001"}, ${41.175}, ${-73.5}, NOW())`;
@@ -89,7 +93,7 @@ try {
   check("ROSTER-2026-08-12: owner-role user WITHOUT towbook_driver_id NEVER appears (pure owner login)", !("Roster QA Owner" in byName), JSON.stringify(roster.map((c) => c.name)));
 
   const adam = byName["Adam Towbook"];
-  check("BUG2: driver with owner-kind Towbook session linked to their id → online", adam.status === "online", JSON.stringify(adam));
+  check("BUG2: driver with GO + fresh heartbeat → online (Slice 3 availability semantics)", adam.status === "online", JSON.stringify(adam));
   check("BUG1: location = newest GPS ping", Math.abs(adam.location.lat - 41.175) < 1e-6 && Math.abs(adam.location.lng - -73.5) < 1e-6, JSON.stringify(adam.location));
   check("BUG1: completedJobCount counts ONLY completed jobs by their Towbook driver id", adam.completedJobCount === 1, `count=${adam.completedJobCount}`);
 
