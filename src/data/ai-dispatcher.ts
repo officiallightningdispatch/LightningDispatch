@@ -3210,20 +3210,20 @@ async function runAutoDispatchInternal(
           result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_dispatch_failed", escalated: true, reason });
         }
       } else {
-        const noDispatchDecision = recalcEscalationReason ? "escalated_dispatch_failed" : "auto_accept_no_driver";
-        const noDispatchReason = recalcEscalationReason ?? noDriverReason as string;
         // No dispatcheable driver (no checked-in free eligible driver with GPS
         // in the normal path; human-chosen driver ineligible/offline in the
         // manual-reassign path): accept WITHOUT dispatch so the motor-club
         // offer cannot expire or be missed — never overwrite a human's choice
-        // with a different driver.
+        // with a different driver. (Recalc-escalations are handled INSIDE the
+        // dispatchDriverId > 0 block above; reaching this else means there was
+        // never a chosen driver, so the decision is always auto_accept_no_driver.)
         await record({
-          decision: noDispatchDecision,
+          decision: "auto_accept_no_driver",
           driverId: null, driverName: null,
-          etaMinutes: recalcEscalationReason ? etaMinutes : null, zoneDistanceMiles: zoneDistance, reason: noDispatchReason,
+          etaMinutes: null, zoneDistanceMiles: zoneDistance, reason: noDriverReason as string,
           rawResponse: { offer, eta: etaFacts, accept: accept.raw, serviceQualification },
         });
-        result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: noDispatchDecision, escalated: true, reason: noDispatchReason });
+        result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "auto_accept_no_driver", escalated: true, reason: noDriverReason as string });
       }
       // Pull the resulting call into dispatch_jobs immediately (reconcile by
       // call.id/callNumber happens inside the sync's upsert).

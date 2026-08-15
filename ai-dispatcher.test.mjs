@@ -686,7 +686,7 @@ try {
     const rows = await decisions();
     const nd = rows.find((x) => String(x.call_request_id) === "7012");
     check("busy-at-cap: no-GPS/offline drivers still excluded (eligible list honored)", nd && String(nd.driver_id) === "603482", String(nd?.driver_id));
-    check("busy-at-cap: reason names workload-aware chain + unlocated jobs, ETA recorded", nd && String(nd.reason).includes("workload-aware") && String(nd.reason).includes("unlocated") && Number(nd.eta_minutes) === 45, String(nd?.reason));
+    check("busy-at-cap: reason names workload-aware chain + unlocated jobs, ETA recorded", nd && String(nd.reason).includes("queue-aware ETA") && String(nd.reason).includes("unlocated") && Number(nd.eta_minutes) === 45, String(nd?.reason));
     check("busy-at-cap: raw_response now captures the FULL offer + accept response", nd && nd.raw_response?.offer?.callRequestId === "7012" && nd.raw_response?.accept?.callNumber === 25000, JSON.stringify(nd?.raw_response));
   }
 
@@ -799,7 +799,7 @@ try {
     check("no-GPS: dispatched to 703785 with workload ETA clamped to 45", p.length === 1 && p[0]?.body?.driverId === 703785 && p[0]?.body?.ETA === 45, JSON.stringify(p[0]?.body));
     const rows = await decisions();
     const ng = rows.find((x) => String(x.call_request_id) === "7019");
-    check("no-GPS: ETA recorded in the ledger (workload model, clamped 45)", ng && Number(ng.eta_minutes) === 45 && String(ng.reason).includes("workload-aware"), String(ng?.reason));
+    check("no-GPS: ETA recorded in the ledger (workload model, clamped 45)", ng && Number(ng.eta_minutes) === 45 && String(ng.reason).includes("queue-aware ETA"), String(ng?.reason));
   }
 
   /* ============ 26a) post-accept dispatch verification (2026-08-10 incident fix) ============ */
@@ -1224,7 +1224,7 @@ try {
       check("engine all-loaded: accept posts driverId 3002 + workload ETA 135", p.length === 1 && p[0]?.body?.driverId === 3002 && p[0]?.body?.ETA === 135, JSON.stringify(p[0]?.body));
       const rows = await q`SELECT call_request_id, decision, driver_id, eta_minutes, reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG4} AND call_request_id='8031'`;
       const row = rows[0];
-      check("engine all-loaded: reason names winner + chain math (3 active jobs ≈ 115 min; ETA 135 min)", row && String(row.driver_id) === "3002" && Number(row.eta_minutes) === 135 && String(row.reason).includes("3 active jobs ≈ 115 min") && String(row.reason).includes("final leg 15") && String(row.reason).includes("ETA 135 min"), String(row?.reason));
+      check("engine all-loaded: reason names winner + chain math (3 active jobs ≈ 115 min; ETA 135 min)", row && String(row.driver_id) === "3002" && Number(row.eta_minutes) === 135 && String(row.reason).includes("queue-aware ETA") && String(row.reason).includes("15 min final leg") && String(row.reason).includes("ETA 135 min"), String(row?.reason));
       check("engine all-loaded: raw_response.eta chain facts recorded", row && row.raw_response?.eta?.queueInclusive === true && row.raw_response?.eta?.queueMinutes === 115 && row.raw_response?.eta?.queuedJobCount === 3 && row.raw_response?.eta?.finalLegMinutes === 15 && row.raw_response?.eta?.startedOnScene === false && row.raw_response?.eta?.unlocatedJobs === 0 && row.raw_response?.eta?.finalMinutes === 135, JSON.stringify(row?.raw_response?.eta));
     }
     // (a/b) engine: under-cap driver beats an over-cap driver, even when
@@ -1241,7 +1241,7 @@ try {
       const p = posts(m.calls);
       check("engine under-cap: 2-job driver 3003 dispatched over 3-job 3001, workload ETA 100", r.decisions[0]?.decision === "auto_accept_with_driver" && p[0]?.body?.driverId === 3003 && p[0]?.body?.ETA === 100, JSON.stringify({ d: r.decisions[0], p: p[0]?.body }));
       const rows = await q`SELECT reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG4} AND call_request_id='8032'`;
-      check("engine under-cap: reason names workload-aware chain (2 active jobs ≈ 80 min + final leg 15)", rows[0] && String(rows[0].reason).includes("workload-aware: 2 active jobs ≈ 80 min") && String(rows[0].reason).includes("final leg 15") && rows[0].raw_response?.eta?.queueInclusive === true && rows[0].raw_response?.eta?.queueMinutes === 80 && rows[0].raw_response?.eta?.finalLegMinutes === 15, String(rows[0]?.reason));
+      check("engine under-cap: reason names workload-aware chain (2 active jobs ≈ 80 min + final leg 15)", rows[0] && String(rows[0].reason).includes("queue-aware ETA") && String(rows[0].reason).includes("15 min final leg") && rows[0].raw_response?.eta?.queueInclusive === true && rows[0].raw_response?.eta?.queueMinutes === 80 && rows[0].raw_response?.eta?.finalLegMinutes === 15, String(rows[0]?.reason));
     }
     // (e) regression: single-driver happy path with dispatch_jobs EMPTY still
     // dispatches (no queue rows → 0 active → eligible, ETA normal).
@@ -1281,7 +1281,7 @@ try {
       const r = await runAutoDispatch(ORG4, deps);
       const p = posts(m.calls);
       const rows = await q`SELECT reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG4} AND call_request_id='8035'`;
-      check("engine workload tomtom-429: busy-driver chain records tomtomFailure HTTP 429 (no silent fallback)", rows[0] && rows[0].raw_response?.eta?.tomtomFailure === "HTTP 429" && rows[0].raw_response?.eta?.provider === "osrm" && String(rows[0].reason).includes("tomtom failed (HTTP 429) → osrm") && String(rows[0].reason).includes("workload-aware: 2 active jobs ≈ 80 min"), String(rows[0]?.reason));
+      check("engine workload tomtom-429: busy-driver chain records tomtomFailure HTTP 429 (no silent fallback)", rows[0] && rows[0].raw_response?.eta?.tomtomFailure === "HTTP 429" && rows[0].raw_response?.eta?.provider === "osrm" && String(rows[0].reason).includes("tomtom failed (HTTP 429) → osrm") && String(rows[0].reason).includes("queue-aware ETA"), String(rows[0]?.reason));
       check("engine workload tomtom-429: still dispatches 3003 with the workload ETA 100", r.decisions[0]?.decision === "auto_accept_with_driver" && p[0]?.body?.driverId === 3003 && p[0]?.body?.ETA === 100, JSON.stringify({ d: r.decisions[0], p: p[0]?.body }));
     }
   }
