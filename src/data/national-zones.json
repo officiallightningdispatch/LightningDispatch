@@ -10244,7 +10244,7 @@
     "zone_type": "market",
     "lat": 38.9072,
     "lng": -77.0369,
-    "radius_miles": null,
+    "radius_miles": 10,
     "tz": "America/New_York",
     "parent": "DC|coverage|STATE",
     "zip_codes": [
