@@ -16,7 +16,7 @@ export function isDriverHeaded(fixes: readonly GpsFix[], jobLat:number, jobLng:n
   if (usable.filter(f=>Number(f.speedMph)>=10).length>=2) return {headed:true,arrived:false,reason:"speed"};
   return {headed:false,arrived:false,reason:"no_meaningful_movement"};
 }
-export async function recordNudge(orgId:string, jobId:string, driverId:string|null, kind:"assignment"|"warning"|"reassigned", reason:string):Promise<void> {
+export async function recordNudge(orgId:string, jobId:string, driverId:string|null, kind:"assignment"|"warning"|"reassigned"|"reassign_attempted", reason:string):Promise<void> {
   try { await sql()`INSERT INTO dispatch_nudge_events(id,org_id,job_id,driver_towbook_id,kind,reason) VALUES(gen_random_uuid()::text,${orgId},${jobId},${driverId},${kind},${reason}) ON CONFLICT (org_id,job_id,kind) DO NOTHING`; } catch { /* ledger is best effort */ }
 }
 async function sendPush(orgId:string, driverId:string, jobId:string, message:string):Promise<void> {
@@ -39,8 +39,27 @@ async function reassignNotHeaded(orgId:string, job:Record<string,unknown>, oldId
   const queues=await loadOrgDriverQueues(orgId), gps=await loadDriverGpsFixes(orgId), anchors=await loadDriverAnchors(orgId);
   const serviceQualification={serviceType:job.service_type?String(job.service_type):null,assessed:Boolean(job.service_type),excluded:[] as Array<{driverId:number;reason:string}>};
   const state=resolveStateFromAddress(String(job.pickup??""));
+  const router=resolveRouter(process.env);
+  const stateGuard={jobState:state,resolveDriverState:async(_id:number,la:number,lo:number)=>reverseGeocodeState(la,lo,process.env.TOMTOM_API_KEY||"",fetch)};
+  const areaBase={anchors,gpsFixes:gps,serviceType:serviceQualification.serviceType,serviceQualification,stateGuard};
+  const zoneMatches=await loadZoneMatches(orgId,drivers,lat,lng,state);
+  const regionalPreference=await loadRegionalPreferenceMatches(orgId,drivers,lat,lng,queues);
+  const area={...areaBase,zoneMatches,regionalPreference};
+  const activeCount=(d:unknown) => {
+    const o=d as Record<string,unknown>;
+    const db=Number(queues.get(String(o.driverId))?.activeCount ?? 0);
+    const calls=Array.isArray(o.calls) ? o.calls.length : 0;
+    return Math.max(db,calls);
+  };
+  const available=drivers.filter(d=>activeCount(d)===0);
   const guard:StateGuardOutcome={active:false,jobState:state,blocked:false,blockedReason:null,checked:0,inState:0,excluded:[]};
-  const chosen=await chooseBestDriverByRoad(drivers,lat,lng,resolveRouter(process.env),queues,{anchors,gpsFixes:gps,serviceType:serviceQualification.serviceType,serviceQualification,stateGuard:{jobState:state,resolveDriverState:async(_id,la,lo)=>reverseGeocodeState(la,lo,process.env.TOMTOM_API_KEY||"",fetch)}} ,{stateGuard:guard});
+  let chosen=await chooseBestDriverByRoad(available,lat,lng,router,queues,area,{stateGuard:guard});
+  // If no free candidate survives all rails, use the same chooser on the busy pool.
+  if (!chosen) {
+    guard.blocked=false; guard.blockedReason=null; guard.checked=0; guard.inState=0; guard.excluded=[];
+    const busy=drivers.filter(d=>!available.includes(d) && Number(queues.get(String((d as Record<string,unknown>).driverId))?.activeCount??0)>0);
+    chosen=await chooseBestDriverByRoad(busy,lat,lng,router,queues,area,{stateGuard:guard});
+  }
   if (!chosen || guard.blocked) return escalate(orgId,jobId,oldId,"reassigned_no_candidate",guard.blockedReason||"no eligible available driver");
   const newId=String(chosen.driver.driverId);
   const roster=await sql()`SELECT u.id,u.name,u.towbook_driver_id FROM users u JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${orgId} WHERE u.towbook_driver_id=${newId} AND u.deactivated_at IS NULL LIMIT 1`;
@@ -67,9 +86,17 @@ export async function processAssignmentNudges(orgId:string, now:Date = new Date(
     const check=isDriverHeaded((fixes as Array<Record<string,unknown>>).map(f=>({latitude:Number(f.latitude),longitude:Number(f.longitude),capturedAt:String(f.captured_at),speedMph:f.speed_mph==null?null:Number(f.speed_mph)})),Number(r.pickup_lat),Number(r.pickup_lng),String(r.assigned_at),now);
     if (check.headed) continue;
     const reassigned=await sql()`SELECT 1 FROM dispatch_nudge_events WHERE org_id=${orgId} AND job_id=${jobId} AND kind='reassigned' LIMIT 1`;
-    if (reassigned.length) continue;
+    const attempted=await sql()`SELECT 1 FROM dispatch_nudge_events WHERE org_id=${orgId} AND job_id=${jobId} AND kind='reassign_attempted' LIMIT 1`;
+    if (reassigned.length) {
+      const alreadyAlerted=await sql()`SELECT 1 FROM ai_dispatcher_decisions WHERE org_id=${orgId} AND call_request_id=${jobId} AND reason='reassigned_not_headed_again' LIMIT 1`;
+      if (!alreadyAlerted.length) await escalate(orgId,jobId,oldId,"reassigned_not_headed_again","replacement driver is not headed");
+      continue;
+    }
+    if (attempted.length) continue;
     const warning=await sql()`SELECT 1 FROM dispatch_nudge_events WHERE org_id=${orgId} AND job_id=${jobId} AND kind='warning' LIMIT 1`;
     if (!warning.length && mins>=4) { await recordNudge(orgId,jobId,oldId,"warning","not_headed_4m"); await sendWarningPush(orgId,oldId,jobId); }
     await reassignNotHeaded(orgId,r,oldId,now);
+    const completed=await sql()`SELECT 1 FROM dispatch_nudge_events WHERE org_id=${orgId} AND job_id=${jobId} AND kind='reassigned' LIMIT 1`;
+    if (!completed.length) await recordNudge(orgId,jobId,oldId,"reassign_attempted","reassigned_no_candidate");
   }
 }
