@@ -1302,7 +1302,7 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     const org = '89e15ce587651cc47c3bc45b1c612a220955';
     const existing = await q`SELECT id,name,zone_type,zip_codes,active FROM dispatch_zones WHERE org_id=${org} AND state='CT' AND zone_type IN ('market','corridor') ORDER BY sort_order,id`;
     const counties = await q`SELECT id,name,zip_codes,lat,lng FROM dispatch_zones WHERE org_id=${org} AND state='CT' AND zone_type='county' AND active=TRUE`;
-    const plan = computeRegionalCtPlan(existing, counties);
+    const plan = computeRegionalCtPlan(existing as RegionalCtInput[], counties as RegionalCtCounty[]);
     if (plan.gaps.length || plan.duplicates.length) throw new Error(`CT regional partition failed closed: ${plan.gaps.length} gaps, ${plan.duplicates.length} duplicates`);
     const byId = new Map(existing.map((r:any) => [String(r.id), r]));
     await q`UPDATE dispatch_zones SET active=FALSE WHERE org_id=${org} AND state='CT' AND zone_type IN ('market','corridor')`;
