@@ -296,7 +296,7 @@ export async function addContractorCore(actor: ContractorMgmtActor, data: unknow
     const contractor: ContractorRow = {
       id: userId, name, email, loginHandle: handle, towbookDriverId: driverId, towbookUserId: null,
       status: "not_signed_in", lastActivityAt: null, createdAt: new Date().toISOString(), removedAt: null,
-      payrateCents: null, requiredDocCount: 0, onFileDocCount: 0, approvedDocCount: 0, expiringSoonCount: 0, vehicleType: vehicleType !== undefined ? effectiveVehicleType : (row.vehicle_type != null ? String(row.vehicle_type) : null),
+      payrateCents: null, requiredDocCount: 0, onFileDocCount: 0, approvedDocCount: 0, expiringSoonCount: 0, vehicleType: vehicleType === "" ? null : (vehicleType ?? null),
     };
     return { ok: true, data: contractor };
   } catch (err) {
