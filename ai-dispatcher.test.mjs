@@ -1266,7 +1266,11 @@ try {
       const r = await runAutoDispatch(ORG4, deps);
       const rows = await q`SELECT reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG4} AND call_request_id='8034'`;
       check("engine tomtom-429: reason surfaces 'tomtom failed (HTTP 429) → osrm' + ETA still quoted", rows[0] && String(rows[0].reason).includes("tomtom failed (HTTP 429) → osrm") && String(rows[0].reason).includes("osrm road 10 + buffer 5") && rows[0].raw_response?.eta?.tomtomFailure === "HTTP 429", String(rows[0]?.reason));
-      check("engine tomtom-429: 1 TomTom call, 1 OSRM call (chain attempted live first)", rf.tomtomCalls.length === 1 && rf.osrmCalls.length === 1, `${rf.tomtomCalls.length}/${rf.osrmCalls.length}`);
+      // The engine-level path makes two TomTom requests: the routing attempt
+      // (which 429s → OSRM fallback) and the reverse-geocode corroboration for
+      // the same-state guard. The assertion still proves the chain attempted
+      // TomTom live first and fell to OSRM only after the 429.
+      check("engine tomtom-429: TomTom routing attempt + state corroboration, 1 OSRM fallback (chain attempted live first)", rf.tomtomCalls.length === 2 && rf.osrmCalls.length === 1, `${rf.tomtomCalls.length}/${rf.osrmCalls.length}`);
     }
     // ETA honesty in the WORKLOAD chain (busy driver): the decision records the
     // TomTom failure when a chain leg fell back — provider osrm + tomtomFailure
