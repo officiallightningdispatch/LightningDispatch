@@ -1407,6 +1407,19 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     // Optional GPS signal; existing clients omit it and retain conservative NULL.
     await q`ALTER TABLE driver_locations ADD COLUMN IF NOT EXISTS speed_mph DOUBLE PRECISION`;
   }],
+  [63, async (q) => {
+    // The nudge lifecycle writes multiple decision rows per job: the
+    // auto-accept (reason 'reassigned_not_headed') on reassignment, then a
+    // DISTINCT escalation (reason 'reassigned_not_headed_again') when the
+    // replacement never heads out. The old (org_id, call_request_id) unique
+    // index silently swallowed that escalation via ON CONFLICT DO NOTHING, so
+    // the owner "replacement not headed" alert never landed in the ledger.
+    // Scope uniqueness by reason: the re-poll backstop (same offer + same
+    // reason reprocessed) is preserved, while distinct lifecycle stages can
+    // each record. The engine also SELECTs before acting either way.
+    await q`DROP INDEX IF EXISTS ai_dispatcher_decisions_org_callreq_uidx`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS ai_dispatcher_decisions_org_callreq_reason_uidx ON ai_dispatcher_decisions(org_id, call_request_id, reason) WHERE call_request_id IS NOT NULL`;
+  }],
  ];
 export async function ensureSchema() {
   const q = sql();
