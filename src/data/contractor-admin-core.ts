@@ -1353,6 +1353,22 @@ export type MyCompliance = {
   neededNames: string[];
   pendingNames: string[];
 };
+export type ComplianceReducerRow = { docTypeName: string; requiresFacialVerification?: boolean; storedStatus?: string | null; expiresOn?: unknown; hasSelfie?: boolean };
+export function deriveComplianceSnapshot(rows: readonly ComplianceReducerRow[]): MyCompliance {
+  let required = 0, approved = 0, onFile = 0, neededCount = 0, pendingCount = 0;
+  const neededNames: string[] = [], pendingNames: string[] = [];
+  for (const r of rows) {
+    required += 1;
+    const pairComplete = r.requiresFacialVerification !== true || r.hasSelfie === true;
+    const status = r.storedStatus != null ? deriveDocStatus(String(r.storedStatus), formatYmd(r.expiresOn)) : "missing";
+    if (status === "verified" && pairComplete) { approved += 1; onFile += 1; continue; }
+    if ((status === "uploaded" || status === "verified") && pairComplete) onFile += 1;
+    if (status === "missing" || status === "expired" || status === "rejected") { neededCount += 1; neededNames.push(r.docTypeName); continue; }
+    if (status === "uploaded") { pendingCount += 1; pendingNames.push(r.docTypeName); continue; }
+    if (!pairComplete) { neededCount += 1; neededNames.push(`${r.docTypeName} — live selfie`); }
+  }
+  return { required, approved, onFile, neededCount, pendingCount, neededNames, pendingNames };
+}
 export async function getMyComplianceCore(actor: ContractorAdminActor): Promise<ContractorAdminResult<MyCompliance>> {
   if (actor.role !== "contractor") return err("unauthorized", "Driver access required.");
   try {
@@ -1365,25 +1381,8 @@ export async function getMyComplianceCore(actor: ContractorAdminActor): Promise<
       LEFT JOIN contractor_documents d ON d.org_id=${actor.orgId} AND d.contractor_id=${actor.id} AND d.doc_type_id=t.id
       LEFT JOIN contractor_doc_selfies s ON s.org_id=${actor.orgId} AND s.contractor_id=${actor.id} AND s.doc_type_id=t.id
       WHERE t.org_id=${actor.orgId} AND t.active=TRUE`;
-    let required = 0, approved = 0, onFile = 0, neededCount = 0, pendingCount = 0;
-    const neededNames: string[] = [];
-    const pendingNames: string[] = [];
-    for (const r of rows as Record<string, unknown>[]) {
-      required += 1;
-      const name = String(r.doc_type_name ?? "");
-      const pairComplete = r.requires_facial_verification !== true || r.has_selfie === true;
-      const stored = r.stored_status != null ? String(r.stored_status) : null;
-      const expiresOn = formatYmd(r.expires_on);
-      const status = stored ? deriveDocStatus(stored, expiresOn) : "missing";
-      const isVerified = status === "verified";
-      if (isVerified && pairComplete) { approved += 1; onFile += 1; continue; }
-      if ((status === "uploaded" || status === "verified") && pairComplete) { onFile += 1; }
-      if (status === "missing" || status === "expired" || status === "rejected") { neededCount += 1; neededNames.push(name); continue; }
-      if (status === "uploaded") { pendingCount += 1; pendingNames.push(name); continue; }
-      // verified-but-pair-incomplete (selfie missing) → the driver must act
-      if (!pairComplete) { neededCount += 1; neededNames.push(`${name} — live selfie`); }
-    }
-    return ok({ required, approved, onFile, neededCount, pendingCount, neededNames, pendingNames });
+    const snapshot = deriveComplianceSnapshot((rows as Record<string, unknown>[]).map((r) => ({ docTypeName: String(r.doc_type_name ?? ""), requiresFacialVerification: r.requires_facial_verification === true, storedStatus: r.stored_status != null ? String(r.stored_status) : null, expiresOn: r.expires_on, hasSelfie: r.has_selfie === true })));
+    return ok(snapshot);
   } catch (e) {
     return err("database_error", e instanceof Error ? e.message : "Unable to load your compliance.");
   }
