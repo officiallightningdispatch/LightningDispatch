@@ -1409,7 +1409,7 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
   }],
 
 
-  ,  [63, async (q) => {
+  [63, async (q) => {
     // The nudge lifecycle writes multiple decision rows per job: the
     // auto-accept (reason 'reassigned_not_headed') on reassignment, then a
     // DISTINCT escalation (reason 'reassigned_not_headed_again') when the
