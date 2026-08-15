@@ -1353,8 +1353,19 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     for (const row of before) for (const zip of (Array.isArray(row.zip_codes) ? row.zip_codes : []).map(String)) {
       const previous = seen.get(zip); if (previous) throw new Error(`TX ZIP already overlaps ${previous}/${row.name}: ${zip}`); seen.set(zip, String(row.name));
     }
-    for (const [market, zips] of Object.entries(zipSets)) for (const zip of zips) {
-      const previous = seen.get(zip); if (previous && !['Houston','San Antonio','El Paso','Corpus Christi'].includes(previous)) throw new Error(`TX ZIP ${zip} belongs to existing market ${previous}`);
+    // Non-overlap by construction: any ZIP already owned by a live existing
+    // market (Austin/DFW) stays with that market. Detected 2026-08-15: Comal
+    // County ZIPs 78623/78638/78670 are owned by TX Capital Region (Austin) —
+    // excluded from San Antonio's set so Austin stays byte-identical and no TX
+    // ZIP appears in two markets. Overlaps among the four new markets cannot
+    // occur (county sets are disjoint) and the four current arrays are empty.
+    for (const [market, zips] of Object.entries(zipSets)) {
+      const kept = zips.filter((zip) => {
+        const previous = seen.get(zip);
+        return !(previous && !['Houston','San Antonio','El Paso','Corpus Christi'].includes(previous));
+      });
+      if (!kept.length) throw new Error(`TX ${market} partition produced no ZIPs after overlap exclusion`);
+      zipSets[market] = kept;
     }
     // Nueces is the county parent for Corpus Christi. Existing national seed
     // uses this stable ID; create only if absent, never rewrite another parent.
