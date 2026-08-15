@@ -1204,10 +1204,17 @@ async function resolveJobState(
       return { state: null, source: "unknown", mismatch: true,
         note: `authoritative pickup discrepancy (call ${authoritative.id}: address=${pickupState.state}, coords=${callState})`, authoritativeId: authoritative.id, authoritativeLat: authoritative.lat, authoritativeLng: authoritative.lng };
     }
+    if (!placeholder && Number.isFinite(lat) && Number.isFinite(lng)) {
+      const offerState = await reverseGeocodeState(lat, lng, apiKey, fetchImpl);
+      if (offerState && offerState !== pickupState.state) {
+        return { state: null, source: "unknown", mismatch: true,
+          note: `offer coordinates discrepancy (offer coords ${lat},${lng} resolve to ${offerState}; authoritative record ${authoritative.id} resolves to ${pickupState.state})`, authoritativeId: authoritative.id, authoritativeLat: authoritative.lat, authoritativeLng: authoritative.lng };
+      }
+    }
     const state = pickupState.state;
     const note = placeholder
       ? `offer coordinates are known Agero CT placeholder (${lat},${lng}); authoritative pickup record ${authoritative.id} / address resolves to ${state}`
-      : `authoritative pickup record ${authoritative.id} resolves to ${state}`;
+      : `authoritative pickup record ${authoritative.id} resolves to ${state}${Number.isFinite(lat) && Number.isFinite(lng) ? `; offer coordinates agree (${lat},${lng})` : ""}`;
     return { state, source: "authoritative", mismatch: false, note, authoritativeId: authoritative.id, authoritativeLat: authoritative.lat, authoritativeLng: authoritative.lng };
   }
   if (placeholder) {

@@ -1223,9 +1223,8 @@ export const towbookSyncNow = createServerFn({ method: "POST" }).handler(async (
 
 export type AiDispatcherStatus = {
   enabled: boolean;
-  zoneLat: number;
-  zoneLng: number;
-  zoneRadiusMiles: number;
+  activeZoneCount: number;
+  coveredStates: string[];
   maxEtaMinutes: number;
   etaBufferMinutes: number;
   etaFloorMinutes: number;
@@ -1279,9 +1278,11 @@ export const getAiDispatcherStatus = createServerFn({ method: "GET" }).handler(a
       COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours')::int AS last24h,
       COUNT(*) FILTER (WHERE escalated)::int AS escalations_open
       FROM ai_dispatcher_decisions WHERE org_id=${u.orgId}`;
+    const coverage = await q`SELECT COUNT(*)::int AS active_zone_count, COALESCE(array_agg(DISTINCT state ORDER BY state) FILTER (WHERE state IS NOT NULL AND state <> ''), ARRAY[]::text[]) AS covered_states FROM dispatch_zones WHERE org_id=${u.orgId} AND active=TRUE AND zone_type <> 'county'`;
     const sess = await q`SELECT status, last_sync_at FROM towbook_sessions WHERE org_id=${u.orgId} AND session_kind='owner'`;
     const a = (agg[0] ?? {}) as Record<string, unknown>;
     const s = sess[0] as Record<string, unknown> | undefined;
+    const c = (coverage[0] ?? {}) as Record<string, unknown>;
     // ETA provider surface for the panel (v3): tomtom when a key is configured
     // (env TOMTOM_API_KEY or the stable key file — resolveTomtomKey), else osrm
     // static, else factor. Only the boolean presence of the key is ever exposed
@@ -1289,9 +1290,8 @@ export const getAiDispatcherStatus = createServerFn({ method: "GET" }).handler(a
     const etaStatus = etaProviderStatus(process.env as Record<string, string | undefined>);
     const st: AiDispatcherStatus = {
       enabled: settings.aiDispatcherEnabled,
-      zoneLat: settings.zoneLat,
-      zoneLng: settings.zoneLng,
-      zoneRadiusMiles: settings.zoneRadiusMiles,
+      activeZoneCount: Number(c.active_zone_count ?? 0),
+      coveredStates: Array.isArray(c.covered_states) ? c.covered_states.map(String) : [],
       maxEtaMinutes: settings.maxEtaMinutes,
       etaBufferMinutes: settings.etaBufferMinutes,
       etaFloorMinutes: settings.etaFloorMinutes,

@@ -138,16 +138,16 @@ function OwnerAiDispatcher() {
                 <MapPin className="size-5" />
               </span>
               <div>
-                <p className="text-sm font-bold">Service zone</p>
-                <p className="text-xs text-ink-400">Offers inside this radius are auto-accepted</p>
+                <p className="text-sm font-bold">National coverage</p>
+                <p className="text-xs text-ink-400">Offers resolved to an active coverage zone are auto-accepted</p>
               </div>
             </div>
             <div className="mt-4 space-y-1.5 text-sm">
-              <p className="flex justify-between gap-3"><span className="text-ink-400">Center</span><span className="font-semibold">Bridgeport, CT 06606</span></p>
-              <p className="flex justify-between gap-3"><span className="text-ink-400">Radius</span><span className="font-semibold">{status ? status.zoneRadiusMiles : 30} miles</span></p>
+              <p className="flex justify-between gap-3"><span className="text-ink-400">Active zones</span><span className="font-semibold">{status?.activeZoneCount ?? "—"}</span></p>
+              <p className="flex justify-between gap-3"><span className="text-ink-400">States covered</span><span className="font-semibold">{status?.coveredStates.length ?? "—"}</span></p>
               <p className="flex justify-between gap-3">
-                <span className="text-ink-400">Coordinates</span>
-                <span className="font-mono text-xs">{status ? `${status.zoneLat.toFixed(6)}, ${status.zoneLng.toFixed(6)}` : "41.208862, -73.207253"}</span>
+                <span className="text-ink-400">Coverage map</span>
+                <span className="text-right text-xs font-semibold">{status?.coveredStates.length ? status.coveredStates.join(" · ") : "—"}</span>
               </p>
             </div>
           </Card>
