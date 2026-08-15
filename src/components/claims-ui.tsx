@@ -196,7 +196,7 @@ export function OwnerClaimsView() {
         <EmptyState
           icon={Inbox}
           title="No damage claims yet"
-          body="Tap “Scan inbox” to check the owner's email for damage notifications from Agero, Sixt, and other companies."
+          body="Tap “Scan inbox” to check the owner's email for damage notifications from motor clubs and other companies."
         />
       ) : (
         <ul className="space-y-2.5">

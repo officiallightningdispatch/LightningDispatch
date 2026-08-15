@@ -378,9 +378,21 @@ async function claimRow(q: Awaited<ReturnType<typeof db>>, orgId: string, id: st
   return mapClaim(rows[0] as Record<string, unknown>);
 }
 
-function mapClaim(r: Record<string, unknown>): ClaimRow {
+const MOTOR_CLUB_NAME_RE = /agero|sixt|allied(?: dispatch)?|honk|allstate/gi;
+
+/** Driver claims are white-label: do not cross club identity, source mail, or
+ * raw researched/form content to the contractor client. Owner reads retain the
+ * complete claim row via the default map. */
+function redactDriverClaimValue(value: unknown): unknown {
+  if (typeof value === "string") return value.replace(MOTOR_CLUB_NAME_RE, "motor club");
+  if (Array.isArray(value)) return value.map(redactDriverClaimValue);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, redactDriverClaimValue(v)]));
+  return value;
+}
+
+function mapClaim(r: Record<string, unknown>, driverFacing = false): ClaimRow {
   const str = (v: unknown) => (v == null ? null : String(v));
-  return {
+  const row = {
     id: str(r.id)!,
     orgId: str(r.org_id)!,
     claimNumber: str(r.claim_number),
@@ -407,6 +419,18 @@ function mapClaim(r: Record<string, unknown>): ClaimRow {
     resolvedReason: str(r.resolved_reason),
     createdAt: new Date(String(r.created_at)).toISOString(),
     updatedAt: new Date(String(r.updated_at)).toISOString(),
+  } satisfies ClaimRow;
+  if (!driverFacing) return row;
+  return {
+    ...row,
+    company: "motor club",
+    emailMessageId: null,
+    emailFrom: "",
+    emailSubject: "",
+    research: redactDriverClaimValue(row.research) as Record<string, unknown>,
+    form: redactDriverClaimValue(row.form) as Record<string, unknown>,
+    sendTo: null,
+    sendMethod: null,
   };
 }
 
@@ -839,7 +863,7 @@ export async function listMyClaimSignRequestsCore(actor: ClaimActor): Promise<Cl
     WHERE c.org_id = ${actor.orgId} AND c.driver_user_id = ${actor.driverUserRowId}
       AND c.status IN ('form_ready','pending_approval')
     ORDER BY c.created_at DESC`;
-  return ok(rows.map((r) => mapClaim(r as Record<string, unknown>)));
+  return ok(rows.map((r) => mapClaim(r as Record<string, unknown>, true)));
 }
 
 export async function getClaimSignatureFileCore(actor: ClaimActor, claimId: unknown, opts: { fetchImpl?: typeof fetch; b2StableDir?: string } = {}): Promise<ClaimResult<{ dataUrl: string | null }>> {
