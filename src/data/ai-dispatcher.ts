@@ -3158,7 +3158,7 @@ async function runAutoDispatchInternal(
             callId: verification.callId,
             driverId: String(dispatchDriverId), driverName: dispatchDriverName ?? null,
             etaMinutes, zoneDistanceMiles: zoneDistance, reason,
-            rawResponse: { offer, eta: etaFacts, accept: accept.raw, verification },
+            rawResponse: { offer, eta: etaFacts, accept: accept.raw, verification, serviceQualification },
           });
           // Assigned-offer push: notify the contractor's phone (single-strike
           // sound) — fire-and-forget, never fails the dispatch.
@@ -3178,7 +3178,7 @@ async function runAutoDispatchInternal(
             callId: verification.callId,
             driverId: String(dispatchDriverId), driverName: dispatchDriverName ?? null,
             etaMinutes, zoneDistanceMiles: zoneDistance, reason,
-            rawResponse: { offer, eta: etaFacts, accept: accept.raw, verification },
+            rawResponse: { offer, eta: etaFacts, accept: accept.raw, verification, serviceQualification },
           });
           result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_dispatch_failed", escalated: true, reason });
         }
@@ -3192,7 +3192,7 @@ async function runAutoDispatchInternal(
           decision: "auto_accept_no_driver",
           driverId: null, driverName: null,
           etaMinutes: null, zoneDistanceMiles: zoneDistance, reason: noDriverReason as string,
-          rawResponse: { offer, eta: etaFacts, accept: accept.raw },
+          rawResponse: { offer, eta: etaFacts, accept: accept.raw, serviceQualification },
         });
         result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "auto_accept_no_driver", escalated: true, reason: noDriverReason as string });
       }
