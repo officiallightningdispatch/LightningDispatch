@@ -7,10 +7,12 @@ import { decryptSession, findSiteRoot } from "./towbook-key";
 import type { RecoveryResult } from "./towbook-recovery";
 
 /* ============================ AI dispatcher engine ============================
- * Owner-directed 2026-08-10: auto-accept ALL Towbook motor-club offers inside
- * the approved zone (30-mile radius of zip 06606), dispatch the best available
- * driver with an accurate ETA, log EVERY decision, and escalate uncertainty —
- * never guess.
+ * Owner-directed: every pending, unexpired Towbook motor-club offer is claimed
+ * by an accept POST. The engine dispatches the closest eligible driver when it
+ * can prove one; otherwise it accepts with driverId 0 and the club SLA ceiling
+ * (honest "awaiting driver assignment"). Eligibility, geography, malformed
+ * payloads, and missing driver data never leave an offer unaccepted. Only an
+ * accept POST failure or an offer already expired may escalate before acceptance.
  *
  * ETA accuracy (owner-directed 2026-08-10, live incident 2026-08-10 23:33:52Z —
  * offer 326520203 quoted Towbook's straight-line estimatedTimeSeconds (~3 min)
@@ -45,8 +47,9 @@ import type { RecoveryResult } from "./towbook-recovery";
  * Per-offer sequence (the accept POST is the ONLY state-changing call this
  * module makes):
  *   1. GET /api/callRequests/            → pending offers (status == 0)
- *   2. Zone check (haversine vs 06606 centroid) — out of zone / no coords → escalate
- *   3. Expiration check — expired → escalate (we never use acceptMissedRequest)
+ *   2. Expiration check — expired → escalate (we never use acceptMissedRequest)
+ *   3. Resolve coordinates/zone/driver data when available; uncertainty falls
+ *      through to the universal driverId 0 SLA-ceiling accept
  *   4. GET /api/nearestDrivers?latitude=<pickup>&longitude=<pickup>&checkInForAllDrivers=true
  *      → choose best driver: checked in && has GPS && < MAX_DRIVER_QUEUE active
  *        jobs (queue-aware), minimizing ROAD drive time (OSRM per candidate;
@@ -69,10 +72,11 @@ import type { RecoveryResult } from "./towbook-recovery";
  *      accepted call lands in dispatch_jobs immediately (reconcile by
  *      call.id/callNumber)
  *
- * Hard rails: only act on the documented offer shape (callRequestId, status,
- * startLocationLatitude/Longitude, expirationDateUtc); ANY unexpected shape →
- * escalated_unexpected_shape with the full offer JSON, NO accept. Out-of-zone
- * and unverifiable → never accept. Fetch, the env bag, and the router provider
+ * Hard rails: a pending offer with callRequestId + expiration is accepted even
+ * when coordinates or driver data are absent (driverId 0 + SLA ceiling). A shape
+ * lacking callRequestId/expiration cannot be claimed and is escalated. Out-of-zone
+ * and cross-state are eligibility outcomes, not no-accept rails: they use the
+ * universal fallback. Accept POST failure and already-expired offers remain hard rails. Fetch, the env bag, and the router provider
  * are injectable (tests never hit real Towbook, TomTom, or OSRM); the loop
  * wiring resolves the provider from the server env (TomTom when a key is
  * configured — env TOMTOM_API_KEY or the stable key file — else OSRM static;
@@ -2642,18 +2646,31 @@ async function runAutoDispatchInternal(
         }
       }
       if (!shape.ok) {
-        const resolutionNote = coordsResolutionFailure ? `; pickup-coords resolution failed: ${coordsResolutionFailure}` : "";
-        const reason = `offer shape unexpected — missing/mistyped: ${shape.missing.join(", ")}${resolutionNote} (no accept; full offer in raw_response)`;
+        const raw = rawOffer as Record<string, unknown>;
         const key = shapeKeyOf(rawOffer);
-        if (await alreadyProcessed(orgId, key)) continue; // same malformed offer re-polled
-        await recordDecision(orgId, actor, {
-          callRequestId: key, callId: null, decision: "escalated_unexpected_shape",
-          driverId: null, driverName: null, etaMinutes: null, zoneDistanceMiles: null,
-          reason, rawResponse: { offer: rawOffer },
-        });
-        result.processed++;
-        result.decisions.push({ callRequestId: key, decision: "escalated_unexpected_shape", escalated: true, reason });
-        continue;
+        const id = numeric(raw.callRequestId);
+        const status = numeric(raw.status);
+        const expiration = typeof raw.expirationDateUtc === "string" && !Number.isNaN(Date.parse(raw.expirationDateUtc)) ? raw.expirationDateUtc : null;
+        if (id != null && status === 0 && expiration) {
+          if (await alreadyProcessed(orgId, String(id))) continue;
+          const synthetic = buildOfferShape(raw, 0, 0);
+          if (synthetic.ok) { shape = synthetic; }
+          else {
+            // Coordinates are deliberately irrelevant to the fallback claim.
+            const offer = { callRequestId: String(id), status: 0, startLocationLatitude: 0, startLocationLongitude: 0, expirationDateUtc: expiration, maxEta: numeric(raw.maxEta), purchaseOrderNumber: null, drivers: null } as OfferShape;
+            if (Date.parse(expiration) < Date.now()) {
+              const reason = `offer expired (expirationDateUtc=${expiration}) — not auto-accepted`;
+              await recordDecision(orgId, actor, { callRequestId: String(id), callId: null, decision: "escalated_expired", driverId: null, driverName: null, etaMinutes: null, zoneDistanceMiles: null, reason, rawResponse: { offer: raw } }); result.processed++; result.decisions.push({ callRequestId: String(id), decision: "escalated_expired", escalated: true, reason }); continue;
+            }
+            const recordFallback = async (reason: string) => { const eta = Number(numeric(raw.maxEta) ?? settings.maxEtaMinutes); const a = await postAccept(fetchImpl, baseUrl, cookies, String(id), eta, 0, "auto-accept by Lightning Dispatch; awaiting driver assignment"); const decision = a.ok ? "auto_accept_no_driver" : "escalated_accept_failed"; const msg = a.ok ? `${reason} — accepted with driverId 0 at the ${eta}-minute SLA ceiling` : `accept POST failed after retry (${a.attempts.map((x) => x.error ?? `HTTP ${x.status}`).join("; ")})`; await recordDecision(orgId, actor, { callRequestId: String(id), callId: null, decision, driverId: a.ok ? "0" : null, driverName: null, etaMinutes: a.ok ? eta : null, zoneDistanceMiles: null, reason: msg, rawResponse: { offer: raw, accept: a.raw, attempts: a.attempts } }); result.processed++; result.decisions.push({ callRequestId: String(id), decision, escalated: decision !== "auto_accept_no_driver", reason: msg }); };
+            await recordFallback(`offer shape incomplete (${shape.missing.join(", ")})`); continue;
+          }
+        }
+        if (!shape.ok) {
+          const reason = `offer shape cannot be accepted — missing/mistyped: ${shape.missing.join(", ")}`;
+          if (await alreadyProcessed(orgId, key)) continue;
+          await recordDecision(orgId, actor, { callRequestId: key, callId: null, decision: "escalated_unexpected_shape", driverId: null, driverName: null, etaMinutes: null, zoneDistanceMiles: null, reason, rawResponse: { offer: rawOffer } }); result.processed++; result.decisions.push({ callRequestId: key, decision: "escalated_unexpected_shape", escalated: true, reason }); continue;
+        }
       }
       const { offer } = shape;
       if (coordsProvenance) offer.coords = coordsProvenance;
@@ -2675,11 +2692,25 @@ async function runAutoDispatchInternal(
           rawResponse: d.rawResponse ?? null,
         });
 
+      // Universal claim fallback: eligibility or data uncertainty must never
+      // strand a live offer. The SLA ceiling is an honest not-yet-assigned ETA.
+      const acceptFallback = async (reason: string, rawResponse: unknown) => {
+        const eta = Math.min(settings.maxEtaMinutes, offer.maxEta ?? settings.maxEtaMinutes);
+        const accept = await postAccept(fetchImpl, baseUrl, cookies, offer.callRequestId, eta, 0, "auto-accept by Lightning Dispatch; awaiting driver assignment");
+        if (!accept.ok) {
+          const failed = `accept POST failed after retry (${accept.attempts.map((a) => a.error ?? `HTTP ${a.status}`).join("; ")}) — offer could not be claimed`;
+          await record({ decision: "escalated_accept_failed", etaMinutes: null, zoneDistanceMiles: null, reason: failed, rawResponse: { offer, cause: reason, accept: accept.raw, attempts: accept.attempts, evidence: rawResponse } });
+          result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_accept_failed", escalated: true, reason: failed });
+          return;
+        }
+        const accepted = `${reason} — accepted with driverId 0 at the ${eta}-minute SLA ceiling; awaiting driver assignment`;
+        await record({ decision: "auto_accept_no_driver", driverId: "0", etaMinutes: eta, zoneDistanceMiles: null, reason: accepted, rawResponse: { offer, cause: reason, accept: accept.raw, evidence: rawResponse } });
+        result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "auto_accept_no_driver", escalated: true, reason: accepted });
+      };
+
       // --- multi-zone check (dispatch_zones; org_settings centroid is deprecated) ---
       if (offer.startLocationLatitude === 0 || offer.startLocationLongitude === 0) {
-        const reason = `no usable pickup coordinates (lat=${offer.startLocationLatitude}, lng=${offer.startLocationLongitude}) — cannot verify zone (no accept)`;
-        await record({ decision: "escalated_missing_coords", reason, rawResponse: { offer } });
-        result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_missing_coords", escalated: true, reason });
+        await acceptFallback(`no usable pickup coordinates (lat=${offer.startLocationLatitude}, lng=${offer.startLocationLongitude})`, { offer });
         continue;
       }
       const rawStartingForZone = startingLocationOf(rawOffer as Record<string, unknown>);
@@ -2716,9 +2747,7 @@ async function runAutoDispatchInternal(
       }).filter((z) => z.matched).sort((a, b) => a.distance - b.distance);
       const zoneDistance = usableZones[0]?.distance ?? null;
       if (!usableZones.length) {
-        const reason = `pickup does not resolve to an active ${zoneState.state.toUpperCase()} dispatch zone (no accept)`;
-        await record({ decision: "escalated_out_of_zone", zoneDistanceMiles: nearestZoneDistance, reason, rawResponse: { offer, state: zoneState, zonesChecked: zoneRows.length } });
-        result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_out_of_zone", escalated: true, reason });
+        await acceptFallback(`pickup is outside active ${zoneState.state.toUpperCase()} dispatch zones`, { offer, state: zoneState, zonesChecked: zoneRows.length });
         continue;
       }
 
@@ -2737,9 +2766,7 @@ async function runAutoDispatchInternal(
         cookies,
       );
       if (!nd.ok || !Array.isArray(nd.body)) {
-        const reason = `driver lookup failed (${nd.error ?? `HTTP ${nd.status}`}) — cannot dispatch (no accept)`;
-        await record({ decision: "escalated_driver_lookup_failed", zoneDistanceMiles: zoneDistance, reason, rawResponse: { offer, nearestDrivers: nd.bodyText.slice(0, 400) } });
-        result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_driver_lookup_failed", escalated: true, reason });
+        await acceptFallback(`driver lookup failed (${nd.error ?? `HTTP ${nd.status}`})`, { offer, nearestDrivers: nd.bodyText.slice(0, 400) });
         continue;
       }
       // --- road-aware driver choice: route EVERY candidate from its precise
@@ -2841,17 +2868,7 @@ async function runAutoDispatchInternal(
         { stateGuard: guardOutcome },
       );
       if (guardOutcome.blocked) {
-        const isUnknownJob = guardOutcome.blockedReason === "job_state_unknown";
-        const reason = isUnknownJob
-          ? `job state UNKNOWN (offer address ${rawStarting ? `"${rawStarting}"` : "missing"} did not resolve to a US state; state_resolution=unknown${jobStateResolution.note ? `; ${jobStateResolution.note}` : ""}) — same-state rule cannot be verified, offer NOT auto-accepted (no cross-state dispatch)`
-          : `no driver currently in state ${jobState?.toUpperCase() ?? "UNKNOWN"} (state_resolution=${addressResolution.source}${addressResolution.mismatch ? ",address_zip_mismatch" : ""}${jobStateResolution.note ? `; ${jobStateResolution.note}` : ""}) — ${guardOutcome.excluded.length} candidate(s) checked, ${guardOutcome.inState} in-state, ${guardOutcome.excluded.filter((e) => !e.state).length} with unknown state; offer NOT auto-accepted (no cross-state dispatch)`;
-        await record({
-          decision: isUnknownJob ? "escalated_state_unknown" : "escalated_cross_state",
-          driverId: null, driverName: null, etaMinutes: null, reason,
-          rawResponse: { offer, stateGuard: guardOutcome.excluded },
-        });
-        result.processed++;
-        result.decisions.push({ callRequestId: offer.callRequestId, decision: isUnknownJob ? "escalated_state_unknown" : "escalated_cross_state", escalated: true, reason });
+        await acceptFallback(guardOutcome.blockedReason === "job_state_unknown" ? "job state unknown" : "no eligible same-state driver; using universal fallback", { offer, stateGuard: guardOutcome.excluded });
         continue;
       }
       const driver = chosen?.driver ?? null;
