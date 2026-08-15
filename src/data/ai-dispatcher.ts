@@ -2690,23 +2690,23 @@ async function runAutoDispatchInternal(
 
       // Universal claim fallback: eligibility or data uncertainty must never
       // strand a live offer. The SLA ceiling is an honest not-yet-assigned ETA.
-      const acceptFallback = async (reason: string, rawResponse: unknown) => {
+      const acceptFallback = async (reason: string, rawResponse: unknown, zoneDistanceMiles: number | null = null) => {
         const eta = Math.min(settings.maxEtaMinutes, offer.maxEta ?? settings.maxEtaMinutes);
         const accept = await postAccept(fetchImpl, baseUrl, cookies, offer.callRequestId, eta, 0, "auto-accept by Lightning Dispatch; awaiting driver assignment");
         if (!accept.ok) {
           const failed = `accept POST failed after retry (${accept.attempts.map((a) => a.error ?? `HTTP ${a.status}`).join("; ")}) — offer could not be claimed`;
-          await record({ decision: "escalated_accept_failed", etaMinutes: null, zoneDistanceMiles: null, reason: failed, rawResponse: { offer, cause: reason, accept: accept.raw, attempts: accept.attempts, evidence: rawResponse } });
+          await record({ decision: "escalated_accept_failed", etaMinutes: null, zoneDistanceMiles, reason: failed, rawResponse: { offer, cause: reason, accept: accept.raw, attempts: accept.attempts, evidence: rawResponse } });
           result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_accept_failed", escalated: true, reason: failed });
           return;
         }
         const accepted = `${reason} — accepted with driverId 0 at the ${eta}-minute SLA ceiling; awaiting driver assignment`;
-        await record({ decision: "auto_accept_no_driver", driverId: "0", etaMinutes: eta, zoneDistanceMiles: null, reason: accepted, rawResponse: { offer, cause: reason, accept: accept.raw, evidence: rawResponse } });
+        await record({ decision: "auto_accept_no_driver", driverId: "0", etaMinutes: eta, zoneDistanceMiles, reason: accepted, rawResponse: { offer, cause: reason, accept: accept.raw, evidence: rawResponse } });
         result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "auto_accept_no_driver", escalated: true, reason: accepted });
       };
 
       // --- multi-zone check (dispatch_zones; org_settings centroid is deprecated) ---
       if (offer.startLocationLatitude === 0 || offer.startLocationLongitude === 0) {
-        await acceptFallback(`no usable pickup coordinates (lat=${offer.startLocationLatitude}, lng=${offer.startLocationLongitude})`, { offer });
+        await acceptFallback(`no usable pickup coordinates (lat=${offer.startLocationLatitude}, lng=${offer.startLocationLongitude})`, { offer: rawOffer });
         continue;
       }
       const rawStartingForZone = startingLocationOf(rawOffer as Record<string, unknown>);
@@ -2736,7 +2736,13 @@ async function runAutoDispatchInternal(
       }).filter((z) => z.matched).sort((a, b) => a.distance - b.distance);
       const zoneDistance = usableZones[0]?.distance ?? null;
       if (!usableZones.length) {
-        await acceptFallback(`pickup is outside active ${zoneState.state.toUpperCase()} dispatch zones`, { offer, state: zoneState, zonesChecked: zoneRows.length });
+        // Keep the nearest resolved-state zone distance for the out-of-zone
+        // ledger too (the fallback claim still records it as a diagnostic).
+        const nearestZoneDistance = zoneRows.reduce((nearest, z) => {
+          const distance = haversineMiles(lat, lng, Number(z.lat), Number(z.lng));
+          return nearest == null || distance < nearest ? distance : nearest;
+        }, null as number | null);
+        await acceptFallback(`pickup is outside active ${zoneState.state.toUpperCase()} dispatch zones`, { offer, state: zoneState, zonesChecked: zoneRows.length }, nearestZoneDistance);
         continue;
       }
 

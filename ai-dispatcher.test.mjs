@@ -558,8 +558,8 @@ try {
     const r = await runAutoDispatch(ORG, deps);
     check("shape: auto_accept_no_driver, driverId 0, SLA accept", r.decisions[0]?.decision === "auto_accept_no_driver" && r.decisions[0]?.escalated === true && posts(m.calls).length === 1 && String(posts(m.calls)[0].body.driverId) === "0" && Number(posts(m.calls)[0].body.ETA) === 45 && String(posts(m.calls)[0].body.notes).includes("awaiting driver assignment"), JSON.stringify({ decision: r.decisions[0], post: posts(m.calls)[0] }));
     const rows = await decisions();
-    const sr = rows.find((x) => String(x.call_request_id).startsWith("shape-"));
-    check("shape: decision keyed by content hash, raw_response carries the full offer JSON", sr && String(sr.call_request_id).startsWith("shape-") && sr.raw_response?.offer?.accountName === bad.accountName && sr.raw_response?.offer?.startLocationLatitude === undefined, JSON.stringify(sr));
+    const sr = rows.find((x) => String(x.call_request_id) === "7008");
+    check("shape: decision keyed by callRequestId, evidence carries the full original offer", sr && String(sr.call_request_id) === "7008" && sr.raw_response?.evidence?.offer?.accountName === bad.accountName && sr.raw_response?.evidence?.offer?.startLocationLatitude === undefined, JSON.stringify(sr));
   }
 
   /* ============ 15) driver lookup failure escalation ============ */
