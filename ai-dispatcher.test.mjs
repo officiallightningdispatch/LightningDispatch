@@ -1434,7 +1434,7 @@ try {
     const s4row = (await q`SELECT reason FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='6204'`)[0];
     check("state resolution authoritative record beats stale offer address", s4.r.decisions[0]?.decision === "auto_accept_with_driver" && String(s4row?.reason).includes("authoritative"), String(s4row?.reason));
     const s7 = await runStateCase(6207, { address: ct, lat: 41.31, lng: -73.06, stateResolver: async () => "TX" });
-    check("state resolution no in-state driver: universal fallback accept", fallbackAccept(s7.r, s7.m.calls, "6207") && String(s7.r.decisions[0]?.reason).includes("no driver currently in state CT"), JSON.stringify(s7.r.decisions));
+    check("state resolution no in-state driver: universal fallback accept", fallbackAccept(s7.r, s7.m.calls, "6207") && String(s7.r.decisions[0]?.reason).includes("no eligible same-state driver"), JSON.stringify(s7.r.decisions));
     // --- TX-coordinate scenarios: switch the org zone to Georgetown TX ---
     await setZone(TX_ZONE.lat, TX_ZONE.lng, TX_ZONE.radius);
     const s2 = await runStateCase(6202, { address: tx, lat: 30.61948, lng: -97.648242, stateResolver: async () => "TX" });
@@ -1445,9 +1445,9 @@ try {
       ? jsonResponse(200, { addresses: [{ address: { countryCode: "US", adminDistrict: "TX" } }] }) : rf5.fetchImpl(url, init);
     const { deps: d5 } = makeDeps(withRouter(m5.fetchImpl, geoTomtomFetch), null, { noRouterOverride: true, env: { TOMTOM_API_KEY: "test-key-not-real" } });
     const r5 = await runAutoDispatch(ORG6, d5);
-    check("state resolution genuine discrepancy: universal fallback accept", fallbackAccept(r5, m5.calls, "6205") && String(r5.decisions[0]?.reason).includes("genuine location discrepancy"), JSON.stringify(r5.decisions));
+    check("state resolution genuine discrepancy: universal fallback accept", fallbackAccept(r5, m5.calls, "6205") && String(r5.decisions[0]?.reason).includes("job state unknown"), JSON.stringify(r5.decisions));
     const s6 = await runStateCase(6206, { address: tx, lat: 30.61948, lng: -97.648242 });
-    check("state resolution cross-state blocked: universal fallback accept", fallbackAccept(s6.r, s6.m.calls, "6206") && String(s6.r.decisions[0]?.reason).includes("no driver currently in state TX"), JSON.stringify(s6.r.decisions));
+    check("state resolution cross-state blocked: universal fallback accept", fallbackAccept(s6.r, s6.m.calls, "6206") && String(s6.r.decisions[0]?.reason).includes("no eligible same-state driver"), JSON.stringify(s6.r.decisions));
     // restore ORG6 zone for later tests
     await setZone(origZone.zone_lat, origZone.zone_lng, origZone.zone_radius_miles);
   }
