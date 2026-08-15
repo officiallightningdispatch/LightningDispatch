@@ -1831,8 +1831,9 @@ export async function chooseBestDriverByRoad(
       statePool = inState; guardOut.assignmentTier = "offline_in_state";
     } else {
       // No driver in the job state: cross-state is the last dispatch tier.
+      // Only provable out-of-state drivers qualify; unknown-state drivers fail closed.
       // The caller applies the SLA ceiling before accepting this choice.
-      statePool = statePool.filter((d) => !excluded.some((e) => e.driverId === Number(d.driverId) && e.state != null));
+      statePool = statePool.filter((d) => excluded.some((e) => e.driverId === Number(d.driverId) && e.state != null));
       guardOut.assignmentTier = "cross_state";
       if (!statePool.length) { guardOut.blocked = true; guardOut.blockedReason = "no_in_state_driver"; return null; }
     }
