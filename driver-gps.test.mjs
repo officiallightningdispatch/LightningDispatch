@@ -2,9 +2,11 @@
 // Hermetic driver-gps tests (2026-08-11, milestone #3): ping storage + pruning,
 // geofence auto-arrive inside/outside radius, the on-platform + Towbook write +
 // verification path (mocked fetch), escalation on Towbook write failure, and
-// the no-fire rails (wrong status, no GPS fix, wrong driver, photos gate when
-// enabled). Real Towbook calls never happen; every Towbook-facing function takes
-// an injectable fetchImpl. DB-backed against throwaway QA orgs that are fully
+// the no-fire rails (wrong status, no GPS fix, wrong driver). Arrival is
+// distance-driven even when mandatory completion photos are missing; the
+// completion gate is covered by driver-photos.test.mjs. Real Towbook calls never
+// happen; every Towbook-facing function takes an injectable fetchImpl. DB-backed
+// against throwaway QA orgs that are fully
 // deleted at the end (zero rows left anywhere). Run:
 //   DATABASE_URL=... bun driver-gps.test.mjs
 import { randomUUID } from "node:crypto";
@@ -112,9 +114,8 @@ async function setup() {
       VALUES(${org}, ${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))}, 'connected', 'driver', ${tbDriver})`;
     await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, pickup, towbook_status, raw_json, pickup_lat, pickup_lng)
       VALUES(${job}, ${org}, 'QA Customer', '', 0, 0, 'Bridgeport', 'flatbed_tow', 'en_route', NOW(), '', ${callId}, '70 Pitt Street', '3', ${JSON.stringify(rawCall(callId, Number(tbDriver), 3))}::jsonb, ${PICKUP.lat}, ${PICKUP.lng})`;
-    // Milestone #4: photos_required now defaults ON (migration v12). The main
-    // gps flow (ORG) and the Towbook-write-failure flow (ORG3) are exercised
-    // with the gate OFF (photos aren't their subject); ORG2 is the gate org.
+    // photos_required defaults ON (migration v12). Arrival remains
+    // distance-driven; completion photo enforcement is covered separately.
     await q`INSERT INTO org_settings(org_id, geofence_radius_meters, photos_required) VALUES(${org}, 150, ${org === ORG2})`;
   }
 }
@@ -134,8 +135,8 @@ await setup();
   const s = await getGeofenceSettings(ORG);
   check("default radius 150m", s.geofenceRadiusMeters === 150, JSON.stringify(s));
   check("photos gate off for the main gps org (explicit)", s.photosRequired === false, JSON.stringify(s));
-  // Migration v12 flips the org_settings default to TRUE (owner spec: auto-
-  // arrive is gated on photos) — a brand-new org gets the gate ON.
+  // Migration v12 flips the org_settings default to TRUE for mandatory
+  // completion photos — a brand-new org gets the gate ON.
   const freshOrg = `qa-gps-default-${randomUUID()}`;
   await q`INSERT INTO organizations(id, name) VALUES(${freshOrg}, 'qa driver-gps')`;
   const fresh = await getGeofenceSettings(freshOrg);
@@ -215,34 +216,29 @@ await setup();
 {
   const c = CONF[ORG2];
   const { fetchImpl, calls } = makeFetch({ callId: c.call, getStatusId: 3 });
-  // photos_required=true with no photos → blocked. (ORG2's org_settings row was
-  // created in setup with the gate ON — re-assert and keep it on.)
+  // photos_required=true does not gate arrival. The setting remains enabled,
+  // but arrival is distance-driven; mandatory photos are enforced at completion.
   const s = await getGeofenceSettings(ORG2);
   check("photos flag on for gate org", s.photosRequired === true);
-  const blocked = await evaluateGeofence({ orgId: ORG2, userId: c.userId, towbookDriverId: c.tbDriver, lat: PICKUP.lat, lng: PICKUP.lng, fetchImpl });
-  check("photos gate enabled + no photos → no fire", blocked.action === "none" && blocked.reason.includes("photos gate"), JSON.stringify(blocked));
-  check("no Towbook calls when gated", calls.length === 0);
+  const arrivedWithoutPhotos = await evaluateGeofence({ orgId: ORG2, userId: c.userId, towbookDriverId: c.tbDriver, lat: PICKUP.lat, lng: PICKUP.lng, fetchImpl });
+  check("arrival fires without photos; completion gate enforces them", arrivedWithoutPhotos.action === "arrived" && arrivedWithoutPhotos.towbookOk && arrivedWithoutPhotos.verified, JSON.stringify(arrivedWithoutPhotos));
+  check("Towbook arrival write happened despite missing photos", calls.length === 2, JSON.stringify(calls));
   const jobB = await q`SELECT status FROM dispatch_jobs WHERE id=${c.job}`;
-  check("job still en_route when gated", String(jobB[0].status) === "en_route");
+  check("job arrived before mandatory photos", String(jobB[0].status) === "arrived");
 
-  // 3 photos + match confirmed → still blocked (needs 4).
+  // Photo completeness remains an independent completion concern: 3/4 is
+  // incomplete, while 4/4 plus match is complete; neither changes arrival.
   const SIDES = ["front", "driver_side", "passenger_side", "rear"];
   for (let i = 0; i < 3; i++) {
     await q`INSERT INTO job_photos(id, org_id, job_id, phase, side, storage_key, uploaded_by_user_id, match_confirmed)
       VALUES(gen_random_uuid()::text, ${ORG2}, ${c.job}, 'pre_arrival', ${SIDES[i]}, ${`photo-${i}`}, ${c.userId}, ${i === 0})`;
   }
-  check("photosComplete 3/4 → false", (await photosCompleteForJob(ORG2, c.job)) === false);
-  const blocked3 = await evaluateGeofence({ orgId: ORG2, userId: c.userId, towbookDriverId: c.tbDriver, lat: PICKUP.lat, lng: PICKUP.lng, fetchImpl });
-  check("3 photos → still gated", blocked3.action === "none");
-
-  // 4th photo + match confirmed → gate passes → auto-arrive fires.
+  check("completion photo gate: 3/4 → false", (await photosCompleteForJob(ORG2, c.job)) === false);
   await q`INSERT INTO job_photos(id, org_id, job_id, phase, side, storage_key, uploaded_by_user_id, match_confirmed)
     VALUES(gen_random_uuid()::text, ${ORG2}, ${c.job}, 'pre_arrival', ${SIDES[3]}, 'photo-3', ${c.userId}, TRUE)`;
-  check("photosComplete 4/4 + confirmed → true", (await photosCompleteForJob(ORG2, c.job)) === true);
-  const passed = await evaluateGeofence({ orgId: ORG2, userId: c.userId, towbookDriverId: c.tbDriver, lat: PICKUP.lat, lng: PICKUP.lng, fetchImpl });
-  check("4 photos + match → auto-arrive fires", passed.action === "arrived" && passed.towbookOk && passed.verified, JSON.stringify(passed));
-  const jobP = await q`SELECT status FROM dispatch_jobs WHERE id=${c.job}`;
-  check("gated job arrived after photos", String(jobP[0].status) === "arrived");
+  check("completion photo gate: 4/4 + confirmed → true", (await photosCompleteForJob(ORG2, c.job)) === true);
+  const again = await evaluateGeofence({ orgId: ORG2, userId: c.userId, towbookDriverId: c.tbDriver, lat: PICKUP.lat, lng: PICKUP.lng, fetchImpl });
+  check("photos do not cause a duplicate arrival", again.action === "none" && calls.length === 2, JSON.stringify(again));
 }
 
 /* -------------------- Towbook write failure → escalation -------------------- */
