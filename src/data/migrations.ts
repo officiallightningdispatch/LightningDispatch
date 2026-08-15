@@ -14,7 +14,7 @@ export function computeRegionalCtPlan(existing: RegionalCtInput[], counties: Reg
     'Greater New Haven': zips(corridor('New Haven–Branford')?.zip_codes),
   };
   const names = ['Greater Stamford/Fairfield County','Greater Bridgeport','Greater New Haven','Greater Hartford','Greater Danbury/Waterbury','Greater Middlesex/Shoreline','Greater New London','Greater Tolland/NE CT','Greater Windham/Eastern CT'];
-  const countyMap: Record<string,string> = {'Greater Hartford':'Hartford','Greater Middlesex/Shoreline':'Middlesex','Greater New London':'New London','Greater Tolland/NE CT':'Tolland','Greater Windham/Eastern CT':'Windham'};
+  const countyMap: Record<string,string> = {'Greater Hartford':'Hartford','Greater Danbury/Waterbury':'Litchfield','Greater Middlesex/Shoreline':'Middlesex','Greater New London':'New London','Greater Tolland/NE CT':'Tolland','Greater Windham/Eastern CT':'Windham'};
   const all = new Set<string>(); for (const c of counties) for (const z of zips(c.zip_codes)) all.add(z);
   const assigned = new Map<string,string>();
   for (const [name, zs] of Object.entries(seeds)) for (const z of zs) { if (!all.has(z)) continue; if (assigned.has(z)) throw new Error(`seed ZIP overlaps: ${z}`); assigned.set(z,name); }
