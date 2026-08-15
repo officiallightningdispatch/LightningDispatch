@@ -13,8 +13,24 @@ const idFor = (key) => `qa-zips-zone-${key.replace(/[^A-Za-z0-9]+/g, "-").toLowe
 const checks = [];
 async function check(name, fn) { try { await fn(); checks.push([name, true]); console.log(`PASS ${name}`); } catch (e) { checks.push([name, false]); console.error(`FAIL ${name}: ${e.message}`); throw e; } }
 let created = false;
+async function cleanupStaleFixtures() {
+  // Re-runs can fail before the normal finally block when a deterministic zone
+  // id is left behind. Only ever remove organizations proven to be QA fixtures.
+  const staleOrgs = await q`SELECT id, name FROM organizations WHERE id LIKE 'qa-zips-%'`;
+  for (const org of staleOrgs) {
+    assertQaOrg(org.id, org.name);
+    await q`DELETE FROM organizations WHERE id=${org.id}`;
+  }
+  // Clean orphaned deterministic zones left by an interrupted fixture teardown.
+  const staleZones = await q`SELECT id, org_id FROM dispatch_zones WHERE id LIKE 'qa-zips-zone-%'`;
+  for (const zone of staleZones) {
+    assertQaOrg(zone.org_id);
+    await q`DELETE FROM dispatch_zones WHERE id=${zone.id} AND org_id=${zone.org_id}`;
+  }
+}
 try {
   await ensureSchema();
+  await cleanupStaleFixtures();
   await q`INSERT INTO organizations(id,name) VALUES(${ORG},'QA zones ZIP invariants')`;
   await q`INSERT INTO users(id,name,email,password_hash) VALUES(${OWNER},'QA ZIP owner',${OWNER+'@qa.local'},'x')`;
   await q`INSERT INTO organization_memberships(org_id,user_id,role) VALUES(${ORG},${OWNER},'owner')`;
