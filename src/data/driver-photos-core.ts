@@ -468,7 +468,7 @@ export type CompleteJobResult =
  *  STAYS arrived — a job never reaches completed without its photos on the PO
  *  or its customer capture. Injectable fetchImpl. */
 export async function completeJobCore(user: PhotoUser, data: unknown, opts: { fetchImpl?: typeof fetch; b2StableDir?: string } = {}): Promise<CompleteJobResult> {
-  const v = z.object({ jobId: z.string().min(1).max(128) }).safeParse(data);
+  const v = z.object({ jobId: z.string().min(1).max(128), photosFlaggedMissing: z.boolean().optional().default(false) }).safeParse(data);
   if (!v.success) return { ok: false, code: "invalid_state", message: "Invalid request." };
   try {
     await ensure();
@@ -506,8 +506,20 @@ export async function completeJobCore(user: PhotoUser, data: unknown, opts: { fe
     // Gate: all three phases complete.
     const photos = await jobPhotoRows(user.orgId, job.id);
     const { counts, complete } = summarizePhotos(photos);
-    if (!complete.pre_arrival || !complete.service || !complete.final) {
-      return { ok: false, code: "photos_incomplete", message: `Photos incomplete — ${counts.pre_arrival}/4 arrival, ${counts.service}/4 service, ${counts.final}/4 final required.` };
+    if ((!complete.pre_arrival || !complete.service || !complete.final) && !v.data.photosFlaggedMissing) {
+      return { ok: false, code: "photos_incomplete", message: `Photos incomplete — ${counts.pre_arrival}/4 arrival, ${counts.service}/4 service, ${counts.final}/4 final required. Retry uploads or choose "Proceed with missing photos" after bounded failures.` };
+    }
+    if (v.data.photosFlaggedMissing) {
+      await q`UPDATE dispatch_jobs SET photos_flagged_missing=TRUE, photos_flagged_missing_at=NOW() WHERE org_id=${user.orgId} AND id=${job.id}`;
+      try { await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
+        SELECT gen_random_uuid()::text, ${user.orgId}, ${user.id}, 'contractor', 'job_completed_photos_flagged_missing', 'job', ${job.id}, ${JSON.stringify({ counts, policy: 'driver-explicit-escape-after-upload-failures' })}::jsonb, 'driver-photos'`; } catch { /* audit best effort */ }
+    }
+
+    // Explicit bounded-failure escape: do not retry a broken Towbook/B2 path;
+    // finish on-platform with the immutable missing-evidence flag above.
+    if (v.data.photosFlaggedMissing) {
+      await markPlatformCompleted(user, job, { towbook: "photos_flagged_missing (driver escape)", photosUploaded: counts.pre_arrival + counts.service + counts.final });
+      return { ok: true, photosUploaded: counts.pre_arrival + counts.service + counts.final, towbookCompleted: false, changed: true };
     }
 
     // No Towbook id → nothing to attach to; complete on-platform only (audited).

@@ -165,6 +165,8 @@ export function JobPhotoFlow({ callId, jobStatus, onCompleted }: { callId: strin
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [completionError, setCompletionError] = useState("");
   const [completionDetail, setCompletionDetail] = useState("");
+  const [failedUploads, setFailedUploads] = useState(0);
+  const [allowMissingPhotos, setAllowMissingPhotos] = useState(false);
   const [capture, setCapture] = useState<CompletionCaptureStatus | null>(null);
   const [squareConfigured, setSquareConfigured] = useState(false);
   const toast = useToast();
@@ -204,10 +206,12 @@ export function JobPhotoFlow({ callId, jobStatus, onCompleted }: { callId: strin
         setSlots((s) => ({ ...s, [key]: { preview: dataUrl, busy: false, error: null } }));
         await refresh();
       } else {
-        setSlots((s) => ({ ...s, [key]: { preview: null, busy: false, error: r.message } }));
+        setFailedUploads((n) => n + 1);
+        setSlots((s) => ({ ...s, [key]: { preview: dataUrl, busy: false, error: `${r.message} (attempt failed; retry this slot)` } }));
       }
     } catch {
-      setSlots((s) => ({ ...s, [key]: { preview: null, busy: false, error: "Upload failed — check your connection and retry." } }));
+      setFailedUploads((n) => n + 1);
+      setSlots((s) => ({ ...s, [key]: { preview: dataUrl, busy: false, error: "Upload failed — check your connection and retry." } }));
     }
   };
 
@@ -249,12 +253,12 @@ export function JobPhotoFlow({ callId, jobStatus, onCompleted }: { callId: strin
     setActionBusy(null);
   };
 
-  const complete = async () => {
+  const complete = async (flagMissing = allowMissingPhotos) => {
     setActionBusy("complete");
     setCompletionError("");
     setCompletionDetail("Pushing all 12 photos to the job…");
     try {
-      const r = await completeJobWithPhotos({ data: { jobId: callId } });
+      const r = await completeJobWithPhotos({ data: { jobId: callId, photosFlaggedMissing: flagMissing } });
       if (r.ok) {
         setCompletionDetail("Done — job completed and photos attached to the PO.");
         await refresh();
@@ -397,6 +401,11 @@ export function JobPhotoFlow({ callId, jobStatus, onCompleted }: { callId: strin
           >
             <ShieldCheck className="size-5" /> Complete job — finish it
           </Button>
+          {failedUploads >= 3 && (
+            <Button className="mt-2 w-full" variant="secondary" loading={actionBusy === "complete"} onClick={() => { setAllowMissingPhotos(true); void complete(true); }}>
+              Proceed with missing photos (flag for owner follow-up)
+            </Button>
+          )}
           {capture && capture.signatureCaptured && capture.survey ? null : (
             <p className="mt-1.5 text-center text-[11px] text-ink-400">Needs the customer&apos;s signature and rating first.</p>
           )}

@@ -152,9 +152,9 @@ export async function getGeofenceSettings(orgId: string): Promise<GeofenceSettin
   await q`INSERT INTO org_settings(org_id) VALUES(${orgId}) ON CONFLICT(org_id) DO NOTHING`;
   const rows = await q`SELECT geofence_radius_meters, photos_required FROM org_settings WHERE org_id=${orgId}`;
   const r = rows[0] as Record<string, unknown> | undefined;
-  const radius = Number(r?.geofence_radius_meters ?? 150);
+  const radius = Number(r?.geofence_radius_meters ?? 160.9344);
   return {
-    geofenceRadiusMeters: Number.isFinite(radius) && radius > 0 ? radius : 150,
+    geofenceRadiusMeters: Number.isFinite(radius) && radius > 0 ? radius : 160.9344,
     photosRequired: r ? r.photos_required !== false : true,
   };
 }
@@ -226,7 +226,7 @@ async function findEnRouteJobs(orgId: string): Promise<GeofenceJob[]> {
   const q = await db();
   const rows = await q`SELECT id, towbook_job_id, pickup_lat, pickup_lng, raw_json, assigned_contractor_id
     FROM dispatch_jobs
-    WHERE org_id=${orgId} AND status='en_route' AND pickup_lat IS NOT NULL AND pickup_lng IS NOT NULL`;
+    WHERE org_id=${orgId} AND status IN ('en_route','accepted','dispatched') AND pickup_lat IS NOT NULL AND pickup_lng IS NOT NULL`;
   return rows.map((r: Record<string, unknown>) => ({
     id: String(r.id),
     towbookJobId: r.towbook_job_id != null ? String(r.towbook_job_id) : null,
@@ -298,13 +298,15 @@ export async function evaluateGeofence(opts: {
     if (job.assignedContractorId && contractorId && job.assignedContractorId === contractorId) assigned = true;
     if (!assigned && job.raw && driverIdNum > 0 && Number.isFinite(driverIdNum)) assigned = callHasDriver(job.raw, driverIdNum);
     if (!assigned) continue;
+    // Fail closed on the known Agero placeholder. Only persisted, resolved
+    // pickup coordinates may trigger an automatic arrival.
+    // The known bridge placeholder is exact; nearby real Bridgeport pickups are
+    // still valid. A placeholder-only row is never a trigger.
+    if (Math.abs(job.lat - 41.214889) < 0.0005 && Math.abs(job.lng + 73.195803) < 0.0005) continue;
     const meters = haversineMeters(opts.lat, opts.lng, job.lat, job.lng);
     if (meters > settings.geofenceRadiusMeters) continue;
-    // Photos gate (owner spec) — only when the org requires it.
-    if (settings.photosRequired) {
-      const ok = await photosCompleteForJob(opts.orgId, job.id);
-      if (!ok) return { action: "none", reason: "photos gate not satisfied (photos_required=true)" };
-    }
+    // Arrival is automatic once the driver reaches the resolved pickup. Photos
+    // are mandatory for service/completion, never for the arrival transition.
     return await autoArrive({ orgId: opts.orgId, userId: opts.userId, towbookDriverId: opts.towbookDriverId, job, fetchImpl: opts.fetchImpl });
   }
   return { action: "none", reason: "driver not inside an assigned job geofence" };

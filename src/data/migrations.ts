@@ -1501,6 +1501,12 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
   // tow gate is fail-closed on exact 'tow truck', so stale values must not
   // masquerade as capabilities; 'Other' also broke the editor select which now
   // validates against the same three values the save path accepts.
+  [67, async (q) => {
+    await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS photos_flagged_missing BOOLEAN NOT NULL DEFAULT FALSE`;
+    await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS photos_flagged_missing_at TIMESTAMPTZ`;
+    await q`ALTER TABLE job_photos ADD COLUMN IF NOT EXISTS upload_attempts INTEGER NOT NULL DEFAULT 1`;
+    await q`ALTER TABLE job_photos ADD COLUMN IF NOT EXISTS last_upload_error TEXT`;
+  }],
   [66, async (q) => {
     await q`UPDATE contractor_profiles SET vehicle_type = 'tow truck' WHERE vehicle_type IN ('Flatbed','Wheel-lift','Integrated','Landoll')`;
     await q`UPDATE contractor_profiles SET vehicle_type = 'other' WHERE vehicle_type = 'Other'`;
