@@ -674,6 +674,15 @@ async function applyDriverTransition(
       if (assignedTo && assignedTo !== user.towbookDriverId) {
         return { ok: false, code: "unauthorized", message: "This job is not assigned to you." };
       }
+      if (action === "accept") {
+        const { enforceReservedZoneEligibility, containingZone } = await import("./reserved-zone-core");
+        const zoneRows = await q`SELECT id, state, zone_type, lat, lng, radius_miles, polygon_geojson, zip_codes, is_reserved, unlock_jobs_required FROM dispatch_zones WHERE org_id=${user.orgId} AND active=TRUE`;
+        const jobCoords = await q`SELECT lat, lng, pickup_lat, pickup_lng, area FROM dispatch_jobs WHERE id=${callId} AND org_id=${user.orgId} LIMIT 1`;
+        const j = jobCoords[0] as any;
+        const zone = j ? containingZone(zoneRows as any, Number(j.pickup_lat ?? j.lat), Number(j.pickup_lng ?? j.lng), String(j.area ?? "")) : null;
+        const gate = await enforceReservedZoneEligibility(q, { orgId: user.orgId, userId: user.userId, towbookDriverId: user.towbookDriverId, zone, actorRole: actor.role, explicitOwnerOverride: actor.ownerInDriverView });
+        if (zone && !gate.ok) return { ok: false, code: "invalid_state", message: gate.message };
+      }
       const fromTo: Record<string, string | null> = { offered: "en_route", new: "en_route", en_route: "arrived" };
       const next = fromTo[currentLd] ?? null;
       if (next === null) {
@@ -715,6 +724,16 @@ async function applyDriverTransition(
     return { ok: false, code: "unauthorized", message: "This job is not assigned to you." };
   }
   const required = toStatus === 2 ? 1 : 2; // accept needs offered; en-route needs accepted
+  if (toStatus === 2) {
+    const q = await db();
+    const { enforceReservedZoneEligibility, containingZone } = await import("./reserved-zone-core");
+    const zoneRows = await q`SELECT id, state, zone_type, lat, lng, radius_miles, polygon_geojson, zip_codes, is_reserved, unlock_jobs_required FROM dispatch_zones WHERE org_id=${user.orgId} AND active=TRUE`;
+    const jobRows = await q`SELECT lat, lng, pickup_lat, pickup_lng, area FROM dispatch_jobs WHERE org_id=${user.orgId} AND (id=${callId} OR towbook_job_id=${callId}) LIMIT 1`;
+    const j = jobRows[0] as any;
+    const zone = j ? containingZone(zoneRows as any, Number(j.pickup_lat ?? j.lat), Number(j.pickup_lng ?? j.lng), String(j.area ?? "")) : null;
+    const gate = await enforceReservedZoneEligibility(q, { orgId: user.orgId, userId: user.userId, towbookDriverId: user.towbookDriverId, zone, actorRole: actor.role, explicitOwnerOverride: actor.ownerInDriverView });
+    if (!gate.ok) return { ok: false, code: "invalid_state", message: gate.message };
+  }
   if (currentId !== required) {
     const label = toStatus === 2 ? "accept" : "go en route";
     return { ok: false, code: "invalid_state", message: `This job cannot be ${label}ed from its current status.` };
@@ -1091,6 +1110,11 @@ export const driverSetAvailability = createServerFn({ method: "POST" }).validato
       const { selectZoneCore } = await import("./zones-core");
       const zoneResult = await selectZoneCore({ orgId: ctx.u.orgId, id: ctx.identity.userRowId, role: "contractor" }, v.data.zoneId);
       if (!zoneResult.ok) return zoneResult;
+      const q = await db();
+      const zoneRows = await q`SELECT id, is_reserved, unlock_jobs_required FROM dispatch_zones WHERE id=${v.data.zoneId} AND org_id=${ctx.u.orgId} AND active=TRUE LIMIT 1`;
+      const { enforceReservedZoneEligibility } = await import("./reserved-zone-core");
+      const reservedGate = await enforceReservedZoneEligibility(q, { orgId: ctx.u.orgId, userId: ctx.identity.userRowId, towbookDriverId: ctx.identity.towbookDriverId, zone: (zoneRows[0] as any) ?? null, actorRole: ctx.u.role, explicitOwnerOverride: false });
+      if (!reservedGate.ok) return reservedGate;
       // Compliance gate FIRST — no Towbook call, no checkin, until approved.
       const { getComplianceGateCore } = await import("./contractor-admin-core");
       const gate = await getComplianceGateCore({ orgId: ctx.u.orgId, id: ctx.identity.userRowId, role: "contractor" });
