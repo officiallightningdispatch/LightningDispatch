@@ -3133,6 +3133,25 @@ async function runAutoDispatchInternal(
             allowAssign: true,
           });
         }
+        // A recalculated candidate that fails the hard SLA/state rail is an
+        // intentional escalation, not a failed verification. The candidate
+        // was never dispatched; record the accepted offer with its capped ETA.
+        if (recalcEscalationReason) {
+          await record({
+            decision: "escalated_dispatch_failed",
+            callId: callIdFromAcceptResponse(accept.raw),
+            driverId: null,
+            driverName: null,
+            etaMinutes,
+            zoneDistanceMiles: zoneDistance,
+            reason: recalcEscalationReason,
+            rawResponse: { offer, eta: etaFacts, accept: accept.raw, verification, serviceQualification },
+          });
+          result.processed++;
+          result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_dispatch_failed", escalated: true, reason: recalcEscalationReason });
+          try { await deps.syncForOrg(orgId, "sync:auto-accept", actor ?? undefined); } catch { /* engine never throws */ }
+          continue;
+        }
         let verificationRecoveryNote: string | null = null;
         if (!verification.ok && hasSessionExpiredVerification(verification.attempts)) {
           const recovery = await recoverSession(orgId);
