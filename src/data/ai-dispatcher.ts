@@ -1324,6 +1324,37 @@ async function resolveOfferPickupCoords(
   };
 }
 
+type LookupAnchor = { lat: number; lng: number; note: string };
+
+/** Choose the coordinate used by Towbook nearestDrivers and road ranking.
+ * Agero broadcasts a Bridgeport placeholder for some real jobs; never use it
+ * as a geographic search origin when our authoritative sync row or validated
+ * startingLocation geocode has the real pickup. Non-placeholder offers retain
+ * their exact existing coordinates. */
+async function resolveDriverLookupAnchor(
+  orgId: string,
+  rawOffer: Record<string, unknown>,
+  offer: OfferShape,
+  stateResolution: JobStateResolution,
+  deps: AiDispatcherDeps,
+  fetchImpl: typeof fetch,
+): Promise<LookupAnchor> {
+  const lat = Number(offer.startLocationLatitude);
+  const lng = Number(offer.startLocationLongitude);
+  if (!isAgeroPlaceholderCoords(lat, lng)) {
+    return { lat, lng, note: `lookup anchored at offer coordinates (${lat},${lng})` };
+  }
+  if (stateResolution.authoritativeLat != null && stateResolution.authoritativeLng != null) {
+    const realLat = stateResolution.authoritativeLat, realLng = stateResolution.authoritativeLng;
+    return { lat: realLat, lng: realLng, note: `lookup anchored at authoritative pickup (${realLat},${realLng}) — placeholder coords suppressed` };
+  }
+  const resolved = await resolveOfferPickupCoords(orgId, rawOffer, deps, fetchImpl);
+  if (resolved.ok) {
+    return { lat: resolved.lat, lng: resolved.lng, note: `lookup anchored at ${resolved.source === "geocode" ? "geocoded startingLocation" : "synced pickup"} (${resolved.lat},${resolved.lng}) — placeholder coords suppressed` };
+  }
+  return { lat, lng, note: `lookup retained known Agero placeholder (${lat},${lng}) — real pickup unresolved (${resolved.reason})` };
+}
+
 /** Build the OfferShape from the raw offer record with the given pickup
  *  coordinates (lat/lng null = missing). Shared by validateOfferShape (coords
  *  from the payload) and the coordinate-less resolution path (coords from a
@@ -2631,6 +2662,7 @@ async function runAutoDispatchInternal(
       if (await alreadyProcessed(orgId, offer.callRequestId)) continue;
       if (offer.status !== 0) continue; // not a pending offer — not ours to touch
 
+      let lookupAnchorNote = "";
       const record = async (d: Partial<Omit<DecisionRecord, "callRequestId">>) =>
         recordDecision(orgId, actor, {
           callRequestId: offer.callRequestId,
@@ -2640,7 +2672,7 @@ async function runAutoDispatchInternal(
           driverName: d.driverName ?? null,
           etaMinutes: d.etaMinutes ?? null,
           zoneDistanceMiles: d.zoneDistanceMiles ?? null,
-          reason: d.reason ? `${d.reason}${coordsProvenance ? ` (pickup coords: ${coordsProvenance.source} — ${coordsProvenance.detail})` : ""}` : "",
+          reason: d.reason ? `${d.reason}${lookupAnchorNote ? `; ${lookupAnchorNote}` : ""}${coordsProvenance ? ` (pickup coords: ${coordsProvenance.source} — ${coordsProvenance.detail})` : ""}` : lookupAnchorNote,
           rawResponse: d.rawResponse ?? null,
         });
 
@@ -2710,10 +2742,17 @@ async function runAutoDispatchInternal(
         continue;
       }
 
-      // --- driver lookup: nearestDrivers from the pickup point ---
+      // Resolve once and reuse for the initial lookup, road ranking, and the
+      // verification re-read. This is deliberately after state resolution so
+      // authoritative pickup coordinates have already passed its safety rails.
+      const lookupAnchor = await resolveDriverLookupAnchor(
+        orgId, rawOffer as Record<string, unknown>, offer, zoneState, deps, fetchImpl,
+      );
+      lookupAnchorNote = lookupAnchor.note;
+      // --- driver lookup: nearestDrivers from the real pickup point ---
       const nd = await towbookFetch(
         fetchImpl,
-        `${baseUrl}/api/nearestDrivers?latitude=${offer.startLocationLatitude}&longitude=${offer.startLocationLongitude}&checkInForAllDrivers=true`,
+        `${baseUrl}/api/nearestDrivers?latitude=${lookupAnchor.lat}&longitude=${lookupAnchor.lng}&checkInForAllDrivers=true`,
         cookies,
       );
       if (!nd.ok || !Array.isArray(nd.body)) {
@@ -2845,15 +2884,15 @@ async function runAutoDispatchInternal(
         }),
       };
       const guardOutcome: StateGuardOutcome = { active: false, jobState: null, blocked: false, blockedReason: null, checked: 0, inState: 0, excluded: [] };
-      const zoneMatches = await loadZoneMatches(orgId, candidates, offer.startLocationLatitude, offer.startLocationLongitude, zoneState.state);
-      const regionalPreference = await loadRegionalPreferenceMatches(orgId, candidates, offer.startLocationLatitude, offer.startLocationLongitude, driverQueues);
+      const zoneMatches = await loadZoneMatches(orgId, candidates, lookupAnchor.lat, lookupAnchor.lng, zoneState.state);
+      const regionalPreference = await loadRegionalPreferenceMatches(orgId, candidates, lookupAnchor.lat, lookupAnchor.lng, driverQueues);
       const areaCtx: AreaContext = humanReassigned
         ? { gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches, regionalPreference }
         : { anchors: driverAnchors, gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches, regionalPreference };
       let chosen = await chooseBestDriverByRoad(
         candidates,
-        offer.startLocationLatitude,
-        offer.startLocationLongitude,
+        lookupAnchor.lat,
+        lookupAnchor.lng,
         resolved.router,
         driverQueues,
         areaCtx,
@@ -3028,7 +3067,7 @@ async function runAutoDispatchInternal(
           // preserves the offer's explicit eligible-id restriction.
           const latestNd = await towbookFetch(
             fetchImpl,
-            `${baseUrl}/api/nearestDrivers?latitude=${offer.startLocationLatitude}&longitude=${offer.startLocationLongitude}&checkInForAllDrivers=true`,
+            `${baseUrl}/api/nearestDrivers?latitude=${lookupAnchor.lat}&longitude=${lookupAnchor.lng}&checkInForAllDrivers=true`,
             cookies,
           );
           const livePool = latestNd.ok && Array.isArray(latestNd.body) ? latestNd.body as unknown[] : [];
@@ -3039,8 +3078,8 @@ async function runAutoDispatchInternal(
           const recalcGuard: StateGuardOutcome = { active: false, jobState: null, blocked: false, blockedReason: null, checked: 0, inState: 0, excluded: [] };
           const recalculated = await chooseBestDriverByRoad(
             remainingCandidates,
-            offer.startLocationLatitude,
-            offer.startLocationLongitude,
+            lookupAnchor.lat,
+            lookupAnchor.lng,
             resolved.router,
             driverQueues,
             { anchors: driverAnchors, gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches, regionalPreference },
