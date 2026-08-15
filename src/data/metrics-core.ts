@@ -680,7 +680,7 @@ function computeServiceTime(
 ): ServiceTimeBreakdown {
   const acc = new Map<string, { seconds: number[]; over: number; under: number }>();
   for (const j of periodJobs) {
-    const dur = serviceDurationSeconds({ durationSeconds: j.durationSeconds, completedAtMs: j.completedAt, arrivedAtMs: j.arrivedAt, assignedAtMs: j.assignedAt ?? null });
+    const dur = serviceDurationSeconds({ durationSeconds: j.durationSeconds ?? null, completedAtMs: j.completedAt, arrivedAtMs: j.arrivedAt, assignedAtMs: j.assignedAt ?? null });
     if (dur == null) continue;
     const { goalSeconds, serviceKey } = goalSecondsFor(goals, j.serviceType ?? "", batteryVariantByJobId.get(j.id) ?? null);
     if (!serviceKey) continue;
@@ -789,7 +789,7 @@ function computeDriver(
     else timeToComplete.push(j.completedAt - j.createdAt);
   }
   const serviceTime = computeServiceTime(
-    periodJobs.map((j) => ({ id: j.jobId, serviceType: j.serviceType, durationSeconds: j.durationSeconds ?? null, completedAt: j.completedAt, arrivedAt: j.arrivedAt, assignedAt: j.assignedAt ?? null })),
+    periodJobs.map((j) => ({ id: j.jobId, serviceType: j.serviceType ?? null, durationSeconds: j.durationSeconds ?? null, completedAt: j.completedAt, arrivedAt: j.arrivedAt, assignedAt: j.assignedAt ?? null })),
     data.serviceTimeGoals,
     data.batteryVariantByJobId,
   );

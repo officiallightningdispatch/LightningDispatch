@@ -492,8 +492,8 @@ export async function scanClaimsCore(actor: ClaimActor, opts: ScanClaimsOptions 
   // Config check FIRST — fast early return when the site secrets lack gmail-*.
   try {
     await loadGmailConfig(process.env, { stableDir: opts.stableDir });
-  } catch (err: unknown) {
-    return err("scan_failed", err instanceof Error ? err.message : "Gmail scanning is not configured.");
+  } catch (e: unknown) {
+    return err("scan_failed", e instanceof Error ? e.message : "Gmail scanning is not configured.");
   }
   let mail;
   try {
@@ -503,8 +503,8 @@ export async function scanClaimsCore(actor: ClaimActor, opts: ScanClaimsOptions 
       connectImpl: opts.connectImpl as never,
       stableDir: opts.stableDir,
     });
-  } catch (err: unknown) {
-    return err("scan_failed", err instanceof Error ? err.message : "Gmail scan failed.");
+  } catch (e: unknown) {
+    return err("scan_failed", e instanceof Error ? e.message : "Gmail scan failed.");
   }
   if (!mail.ok) return err("scan_failed", mail.error ?? "Gmail scan failed.");
   const q = await db();

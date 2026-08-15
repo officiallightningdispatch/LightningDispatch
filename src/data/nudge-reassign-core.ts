@@ -43,7 +43,7 @@ async function reassignNotHeaded(orgId:string, job:Record<string,unknown>, oldId
   const router=resolveRouter(process.env).router;
   const stateGuard={jobState:state,resolveDriverState:async(_id:number,la:number,lo:number)=>reverseGeocodeState(la,lo,process.env.TOMTOM_API_KEY||"",fetch)};
   const areaBase={anchors,gpsFixes:gps,serviceType:serviceQualification.serviceType,serviceQualification,stateGuard};
-  const zoneMatches=await loadZoneMatches(orgId,drivers,lat,lng,state);
+  const zoneMatches=await loadZoneMatches(orgId,drivers,lat,lng,state ?? undefined);
   const regionalPreference=await loadRegionalPreferenceMatches(orgId,drivers,lat,lng,queues);
   const area={...areaBase,zoneMatches,regionalPreference};
   const activeCount=(d:unknown) => {
