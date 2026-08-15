@@ -221,7 +221,8 @@ export type AiDispatcherDecision =
   | "escalated_unexpected_shape"
   | "escalated_dispatch_failed"
   | "escalated_state_unknown"
-  | "escalated_cross_state";
+  | "escalated_cross_state"
+  | "rejected_tow_no_eligible_driver";
 
 export type AutoDispatchRunResult = {
   gated: boolean; // ai_dispatcher_enabled=false → engine did nothing
@@ -2684,8 +2685,14 @@ async function runAutoDispatchInternal(
         }
       }
       const { offer } = shape;
-      const jobTypeRows = await sql() `SELECT service_type FROM dispatch_jobs WHERE org_id=${orgId} AND towbook_job_id=${offer.callRequestId} ORDER BY created_at DESC LIMIT 1`;
-      if (!offer.serviceType && jobTypeRows[0]?.service_type) offer.serviceType = String(jobTypeRows[0].service_type);
+      const jobTypeRows = await sql() `SELECT service_type, note, raw_json FROM dispatch_jobs WHERE org_id=${orgId} AND towbook_job_id=${offer.callRequestId} ORDER BY created_at DESC LIMIT 1`;
+      // dispatch_jobs is authoritative. If older sync data left service_type blank,
+      // preserve the tow safety rail by inspecting the captured note/raw payload.
+      const jobRow = jobTypeRows[0] as Record<string, unknown> | undefined;
+      const rawText = JSON.stringify({ note: jobRow?.note ?? "", raw: jobRow?.raw_json ?? null });
+      const inferredTow = /service\s*needed\s*[:=]\s*(tow|heavy)|\btow\b|\bheavy\b|\bflatbed\b/i.test(rawText) ? "tow" : null;
+      if (jobRow?.service_type != null && String(jobRow.service_type).trim()) offer.serviceType = String(jobRow.service_type).trim();
+      else if (inferredTow) offer.serviceType = inferredTow;
       if (coordsProvenance) offer.coords = coordsProvenance;
       // dedupe: never double-process an offer (SELECT before acting; unique
       // partial index is the hard backstop against races)
