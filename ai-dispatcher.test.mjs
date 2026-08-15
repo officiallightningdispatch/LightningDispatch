@@ -1778,7 +1778,13 @@ try {
     };
     const online = driver(93001, "Tier online CT", { checkedIn: true, etaSec: 900 });
     const offline = driver(93002, "Tier offline CT", { checkedIn: false, etaSec: 600 });
-    const cross = driver(93003, "Tier cross-state NY", { checkedIn: true, etaSec: 600, lat: 40.7, lng: -74.0 });
+    // Cross-state driver physically NEAR the Bridgeport pickup (mock router:
+    // seconds = miles*(3600/30)*1.35 — 40.7,-74.0 is ~55 mi => ~147 min, over
+    // the 45-min ceiling). State comes from the injected resolver ("NY"), so
+    // the driver can sit ~8 mi away and still be provably out-of-state while
+    // its road ETA (~22 min + 5 buffer) fits the ceiling — the ETA-capped
+    // ASSIGN path, not the fallback path.
+    const cross = driver(93003, "Tier cross-state NY", { checkedIn: true, etaSec: 600, lat: 41.15, lng: -73.10 });
     const farCross = driver(93004, "Tier far-state NY", { checkedIn: true, etaSec: 4000, lat: 40.7, lng: -74.0 });
 
     const a = await runTier(93001, [online], { states: { 93001: "CT" } });
