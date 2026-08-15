@@ -77,6 +77,8 @@ const ORG5 = `qa-ad5-${randomUUID()}`; // lost-race classification tests
 const ORG6 = `qa-ad6-${randomUUID()}`; // coordinate-less offer resolution (owner 2026-08-13)
 const ORG7 = `qa-ad7-${randomUUID()}`; // geography: area anchors + fresh-GPS ETA origins (owner 2026-08-13)
 const USER = `qa-ad-user-${randomUUID()}`;
+const QUAL_USERS = [1,2,3,4,5,6,7].map(() => `qa-ad-qual-${randomUUID()}`);
+const QUAL_TB = [9910001,9910002,9910003,9910004,9910005,9910006,9910007];
 let created = false;
 
 /* ------------------------------ fixtures ------------------------------ */
@@ -84,7 +86,7 @@ let created = false;
 const ZONE = { lat: 41.208862, lng: -73.207253, radiusMi: 30 };
 const northOf = (dMiles) => ZONE.lat + dMiles / 69.09; // ~1° lat = 69.09 mi
 
-const offer = (id, { lat = 41.2, lng = -73.2, status = 0, expiresInMin = 10, maxEta = null, omitLat = false, omitLng = false, startingLocation = "123 MAIN ST, BRIDGEPORT CT 06606", purchaseOrderNumber = `1125${id}`, past = false } = {}) => {
+const offer = (id, { lat = 41.2, lng = -73.2, status = 0, expiresInMin = 10, maxEta = null, omitLat = false, omitLng = false, startingLocation = "123 MAIN ST, BRIDGEPORT CT 06606", purchaseOrderNumber = `1125${id}`, past = false, serviceType = null } = {}) => {
   const o = {
     callRequestId: id,
     masterAccountId: 29,
@@ -102,6 +104,7 @@ const offer = (id, { lat = 41.2, lng = -73.2, status = 0, expiresInMin = 10, max
     availableActions: ["NearestDrivers", "REQUEST_CALL", "ACKNOWLEDGE"],
   };
   if (maxEta) o.maxEta = maxEta;
+  if (serviceType) o.serviceType = serviceType;
   if (startingLocation) o.startingLocation = startingLocation;
   if (omitLat) delete o.startLocationLatitude;
   if (omitLng) delete o.startLocationLongitude;
@@ -303,11 +306,23 @@ try {
   await q`INSERT INTO organizations(id, name) VALUES(${ORG6}, 'qa ai-dispatcher coords')`;
   await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES(${ORG6}, ${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))}, 'connected')`;
   await q`INSERT INTO organizations(id, name) VALUES(${ORG7}, 'qa ai-dispatcher geography')`;
+  await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES(${ORG7}, ${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))}, 'connected')`;
+  for (let i=0;i<QUAL_USERS.length;i++) await q`INSERT INTO users(id,name,email,password_hash,towbook_driver_id) VALUES(${QUAL_USERS[i]},${'QA Qual '+i},${'qual'+i+'-'+randomUUID()+'@qa.local'},'x',${String(QUAL_TB[i])})`;
   // Legacy dispatcher fixtures intentionally exercise pre-gate behavior; the
   // qualification-specific hermetic cases can opt their org back on.
   for (const qaOrg of [ORG, ORG2, ORG3, ORG4, ORG5, ORG6, ORG7]) {
     await q`INSERT INTO org_settings(org_id, qualification_gate_enabled) VALUES(${qaOrg}, FALSE) ON CONFLICT(org_id) DO UPDATE SET qualification_gate_enabled=FALSE`;
   }
+  await q`INSERT INTO organization_memberships(org_id,user_id,role) VALUES(${ORG7},${QUAL_USERS[0]},'contractor')`;
+  await q`INSERT INTO organization_memberships(org_id,user_id,role) VALUES(${ORG7},${QUAL_USERS[1]},'contractor')`;
+  await q`INSERT INTO organization_memberships(org_id,user_id,role) VALUES(${ORG7},${QUAL_USERS[2]},'contractor')`;
+  await q`INSERT INTO organization_memberships(org_id,user_id,role) VALUES(${ORG7},${QUAL_USERS[3]},'contractor')`;
+  await q`INSERT INTO organization_memberships(org_id,user_id,role) VALUES(${ORG7},${QUAL_USERS[4]},'contractor')`;
+  await q`INSERT INTO organization_memberships(org_id,user_id,role) VALUES(${ORG7},${QUAL_USERS[5]},'contractor')`;
+  await q`INSERT INTO contractor_profiles(org_id,user_id,vehicle_type) VALUES(${ORG7},${QUAL_USERS[0]},'car'),(${ORG7},${QUAL_USERS[1]},'car'),(${ORG7},${QUAL_USERS[2]},'car'),(${ORG7},${QUAL_USERS[3]},'car'),(${ORG7},${QUAL_USERS[4]},'tow truck'),(${ORG7},${QUAL_USERS[5]},'car')`;
+  await q`INSERT INTO contractor_doc_types(id,org_id,name) VALUES('qual-doc-a',${ORG7},'License A'),('qual-doc-b',${ORG7},'License B')`;
+  await q`INSERT INTO contractor_documents(id,org_id,contractor_id,doc_type_id,storage_key,status,uploaded_by_user_id) VALUES('qual-doc-one',${ORG7},${QUAL_USERS[4]},'qual-doc-a','x','verified',${USER}),('qual-doc-two',${ORG7},${QUAL_USERS[4]},'qual-doc-b','x','verified',${USER})`;
+  await q`UPDATE org_settings SET qualification_gate_enabled=TRUE WHERE org_id=${ORG7}`;
   created = true;
   // Production-shaped zoning fixture: auto-accept now resolves state + active
   // org-scoped dispatch_zones (legacy org_settings centroid is not consulted).
@@ -1738,6 +1753,32 @@ try {
       Math.abs(Number(dbFixes.get("703785")?.lat) - DARIEN.lat) < 1e-9 && dbFixes.get("717660") != null,
       JSON.stringify(dbFixes.get("703785")));
   }
+  /* ============ qualification gate (Phase B ③) ============ */
+  {
+    const runQ = async (id, ds, extra={}) => { const m=makeFetch({offers:[offer(id,extra.offer||{})],drivers:ds}); const {deps}=makeDeps(m.fetchImpl); const r=await runAutoDispatch(ORG7,deps); return {r,m,rows:await q`SELECT * FROM ai_dispatcher_decisions WHERE org_id=${ORG7} AND call_request_id=${String(id)}`}; };
+    const cases = [
+      ['deactivated', QUAL_TB[0], 'deactivated'], ['org-inactive', QUAL_TB[6], 'org-inactive'],
+      ['missing-compliance', QUAL_TB[1], 'missing-compliance'], ['expired-compliance', QUAL_TB[2], 'missing-compliance'],
+      ['duplicate-type regression', QUAL_TB[3], 'missing-compliance'], ['capability mismatch', QUAL_TB[5], 'capability-mismatch']
+    ];
+    await q`UPDATE users SET deactivated_at=NOW() WHERE id=${QUAL_USERS[0]}`;
+    for (const [label,id,reason] of cases) {
+      const extra = label==='capability mismatch' ? {serviceType:'heavy tow'} : {};
+      const {r,m,rows}=await runQ(92000+cases.indexOf(cases.find(x=>x[0]===label)),[driver(id,label)] ,{offer:extra});
+      check(`qualification ${label}: excluded ${reason}, never assigned`, r.decisions[0]?.decision==='escalated_qualification_failed' && posts(m.calls).length===0 && String(rows[0]?.reason).includes(reason), JSON.stringify({r,rows}));
+    }
+    await q`UPDATE users SET deactivated_at=NULL WHERE id=${QUAL_USERS[0]}`;
+    const {r: noMember,m: nm}=await runQ(92010,[driver(QUAL_TB[6],'no membership')]);
+    check('qualification org-inactive user without membership: excluded, never assigned',noMember.decisions[0]?.decision==='escalated_qualification_failed'&&posts(nm.calls).length===0);
+    await q`UPDATE org_settings SET qualification_gate_enabled=FALSE WHERE org_id=${ORG7}`;
+    const {r: off,m: om}=await runQ(92011,[driver(QUAL_TB[1],'flag off')]);
+    check('qualification flag-off: skipped and candidate flows through',off.decisions[0]?.decision==='auto_accept_with_driver'&&posts(om.calls).length===1);
+    await q`UPDATE org_settings SET qualification_gate_enabled=TRUE WHERE org_id=${ORG7}`;
+    const {r: good,m: gm,rows: gr}=await runQ(92012,[driver(QUAL_TB[4],'qualified',{etaSec:600})]);
+    check('qualification qualified: assigned with ordering rails and no exclusions',good.decisions[0]?.decision==='auto_accept_with_driver'&&posts(gm.calls)[0]?.body?.driverId===QUAL_TB[4]&&gr[0]?.raw_response?.serviceQualification?.excluded?.length===0);
+    const {r: sole,m: sm}=await runQ(92013,[driver(QUAL_TB[1],'sole unqualified')]);
+    check('qualification sole-unqualified: zero POSTs, no-driver fallback hard blocked',sole.decisions[0]?.decision==='escalated_qualification_failed'&&posts(sm.calls).length===0&&!sm.calls.some(c=>c.method==='POST'));
+  }
   console.log("\nALL AI-DISPATCHER CHECKS PASSED");
   for (const [name, ok, extra] of checks) console.log(`  ${ok ? "PASS" : "FAIL"}  ${name}${extra ? ` (${extra})` : ""}`);
 } finally {
@@ -1751,6 +1792,7 @@ try {
     assertQaOrg(ORG6); await q`DELETE FROM organizations WHERE id=${ORG6}`.catch(() => {});
     assertQaOrg(ORG7); await q`DELETE FROM organizations WHERE id=${ORG7}`.catch(() => {});
     await q`DELETE FROM users WHERE id=${USER}`.catch(() => {});
+    for (const id of QUAL_USERS) await q`DELETE FROM users WHERE id=${id}`.catch(() => {});
   }
   const leftover = await q`SELECT
     (SELECT count(*) FROM ai_dispatcher_decisions WHERE org_id=${ORG}) AS ad,
