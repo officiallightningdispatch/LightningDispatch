@@ -99,6 +99,11 @@ function MoneyView() {
   // Tip cash-outs (owner-directed 2026-08-12) — open requests + recently paid.
   const [cashouts, setCashouts] = useState<TipCashoutList | null>(null);
   const [markingCashoutId, setMarkingCashoutId] = useState<string | null>(null);
+  // Top Tips KPI disclosure: load the real ledger only when the owner opens it.
+  const [tipsExpanded, setTipsExpanded] = useState(false);
+  const [tipsBreakdown, setTipsBreakdown] = useState<TipLedgerRow[] | null>(null);
+  const [tipsBreakdownLoading, setTipsBreakdownLoading] = useState(false);
+  const [tipsBreakdownError, setTipsBreakdownError] = useState(false);
   // Bank rail micro-deposit recording (blocked card) — the owner sends a small
   // test deposit from their own bank app and records the amount here (the
   // driver confirms it; the amount is never shown to the contractor client).
@@ -115,6 +120,21 @@ function MoneyView() {
     const res = await listTipCashoutRequests();
     if (res.ok) setCashouts(res.data);
   }, []);
+
+  const loadTipsBreakdown = useCallback(async () => {
+    setTipsBreakdownLoading(true);
+    setTipsBreakdownError(false);
+    const res = await listTips();
+    setTipsBreakdownLoading(false);
+    if (res.ok) setTipsBreakdown(res.data);
+    else setTipsBreakdownError(true);
+  }, []);
+
+  const toggleTips = () => {
+    const next = !tipsExpanded;
+    setTipsExpanded(next);
+    if (next && tipsBreakdown === null && !tipsBreakdownLoading) void loadTipsBreakdown();
+  };
 
   const loadDetail = useCallback(async (periodId: string) => {
     setDetailError(null);
@@ -307,11 +327,19 @@ function MoneyView() {
             value={<span className="text-brand-700">{money(overview.revenueCents)}</span>}
             detail={`Motor-club card charges — ${money(overview.revenueCents)} charged · ${overview.revenueStagedCount} staged`}
           />
-          <StatCard
-            label="Tips"
-            value={<span className="text-success-600">{money(overview.tipsCents)}</span>}
-            detail={`${overview.tipsCount} paid tips — attributed to drivers${(cashouts?.openTotalCents ?? 0) > 0 ? ` · ${money(cashouts!.openTotalCents)} in open cash-outs` : ""}`}
-          />
+          <button
+            type="button"
+            className="min-h-[92px] rounded-2xl text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
+            aria-expanded={tipsExpanded}
+            aria-controls="tips-breakdown"
+            onClick={toggleTips}
+          >
+            <StatCard
+              label="Tips"
+              value={<span className="text-success-600">{money(overview.tipsCents)}</span>}
+              detail={`${overview.tipsCount} paid tips — attributed to drivers${(cashouts?.openTotalCents ?? 0) > 0 ? ` · ${money(cashouts!.openTotalCents)} in open cash-outs` : ""}`}
+            />
+          </button>
           <StatCard
             label="Payouts due"
             value={<span className="text-brand-700">{money(overview.payoutsDueCents)}</span>}
@@ -322,6 +350,55 @@ function MoneyView() {
             }
           />
         </div>
+
+        {tipsExpanded && (
+          <section id="tips-breakdown" aria-label="Tips breakdown" className="-mt-2">
+            {tipsBreakdownLoading ? (
+              <div className="h-40 animate-pulse rounded-2xl bg-ink-100/70" aria-busy="true" aria-label="Loading tips breakdown" />
+            ) : tipsBreakdownError ? (
+              <Alert variant="danger">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <span>Tips could not be loaded. Try again.</span>
+                  <Button size="sm" variant="secondary" onClick={() => void loadTipsBreakdown()}>Try again</Button>
+                </div>
+              </Alert>
+            ) : tipsBreakdown?.length === 0 ? (
+              <EmptyState icon={Wallet} title="No tips yet" body="Customer tips will appear here after a completed job records a tip." />
+            ) : tipsBreakdown ? (
+              <Card className="overflow-hidden">
+                <div className="border-b border-ink-100 bg-ink-50/50 px-4 py-3">
+                  <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                    <h2 className="text-sm font-bold text-ink-800">Tips breakdown</h2>
+                    <span className="text-sm font-bold tabular-nums text-ink-900">{money(overview.tipsCents)} · {overview.tipsCount} {overview.tipsCount === 1 ? "tip" : "tips"}{(cashouts?.openTotalCents ?? 0) > 0 ? ` · ${money(cashouts!.openTotalCents)} open cash-outs` : ""}</span>
+                  </div>
+                </div>
+                <div className="divide-y divide-ink-100">
+                  {tipsBreakdown.map((tip) => {
+                    const badge = STATUS_BADGE[tip.status] ?? STATUS_BADGE.voided;
+                    return (
+                      <div key={tip.id} className="flex flex-wrap items-center gap-3 px-4 py-3.5">
+                        <Avatar name={tip.driverName ?? "Driver"} className="size-9" />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-semibold text-ink-800">{tip.driverName ?? "Driver"}</p>
+                          <p className="flex flex-wrap gap-x-1 text-xs text-ink-400">
+                            {tip.driverTowbookId ? <span>{tip.driverTowbookId}</span> : null}
+                            {tip.jobId ? <span>· Job {tip.jobId}</span> : null}
+                            <span>· {fmtDate(tip.createdAt)}</span>
+                            {tip.squarePaymentId && tip.status === "charged" ? <span>· Square ✓</span> : null}
+                          </p>
+                        </div>
+                        <div className="ml-auto flex shrink-0 items-center gap-2">
+                          <StatusBadge className={badge.cls} dot={badge.dot}>{badge.label}</StatusBadge>
+                          <p className="text-[15px] font-extrabold tabular-nums text-ink-900">{money(tip.amountCents)}</p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </Card>
+            ) : null}
+          </section>
+        )}
 
         {/* ---------------------- battery sales (owner-spec'd 2026-08-13) ---------------------- */}
         <BatterySalesSection />
