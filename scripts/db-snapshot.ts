@@ -14,9 +14,9 @@
  *     installed (full SQL dump embedded as text); otherwise every table is
  *     SELECT *'d into a JSON rows array. Per-table row counts are always
  *     reported.
- *  3. Writes ONE snapshot object to the B2 bucket under
- *     <prefix><db>-<timestamp>.json using the existing b2-client pattern
- *     (loadB2Config -> authorizeAccount -> putObject).
+ *  3. Writes ONE gzip-compressed JSON snapshot object to B2 under
+ *     <prefix><db>-<timestamp>.json.gz. Compression keeps the single object
+ *     below B2's 100 MiB plain-upload limit; restore clients gunzip first.
  *  4. Retention: keeps the NEWEST 14 objects under the prefix, deletes older.
  *  5. Prints one line: object key, row counts, byte size.
  *
@@ -25,7 +25,8 @@
 import { neon } from "@neondatabase/serverless";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { loadB2Config, authorizeAccount, putObject, listObjects, deleteObject } from "../src/data/b2-client";
+import { gzipSync, gunzipSync } from "node:zlib";
+import { loadB2Config, authorizeAccount, putObject, listObjects, deleteObject, getObject } from "../src/data/b2-client";
 
 const execFileAsync = promisify(execFile);
 
@@ -45,7 +46,7 @@ const dbName = (() => {
     return "db";
   }
 })();
-const KEY = `${PREFIX}${dbName}-${STAMP}.json`;
+const KEY = `${PREFIX}${dbName}-${STAMP}.json.gz`;
 
 /** Enumerate public-schema base tables + per-table row counts. */
 interface SqlTag {
@@ -53,8 +54,15 @@ interface SqlTag {
   unsafe(sql: string): string;
 }
 async function tablesWithCounts(q: SqlTag) {
-  const names = (await q`SELECT table_name FROM information_schema.tables
-    WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name`) as Record<string, unknown>[];
+  // Always enumerate from the live catalog. Do not read a schema snapshot or
+  // cache: nightly backups must track migrations made since the previous run.
+  // pg_class also includes partitioned tables (relkind p), which information_schema
+  // can omit depending on server version/configuration.
+  const names = (await q`SELECT c.relname AS table_name
+    FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p')
+    ORDER BY c.relname`) as Record<string, unknown>[];
   const counts: Record<string, number> = {};
   for (const r of names) {
     const table = String(r.table_name);
@@ -102,11 +110,24 @@ async function main(): Promise<void> {
       // JSON fallback remains a real complete dump rather than failing on one
       // oversized SELECT * result.
       const rows: unknown[] = [];
-      const pageSize = 1;
       const identifier = `"public"."${name.replaceAll('"', '""')}"`;
-      for (let offset = 0;; offset += pageSize) {
-        const page = (await q`SELECT * FROM ${q.unsafe(identifier)} LIMIT ${pageSize} OFFSET ${offset}`) as unknown[];
+      // Start with efficient pages, shrinking only if Neon rejects a response
+      // as too large. This keeps the fallback practical while guaranteeing no
+      // single HTTP query approaches the 64 MiB cap.
+      let pageSize = 500;
+      for (let offset = 0;;) {
+        let page: unknown[];
+        try {
+          page = (await q`SELECT * FROM ${q.unsafe(identifier)} LIMIT ${pageSize} OFFSET ${offset}`) as unknown[];
+        } catch (err) {
+          if (pageSize > 1 && /507|too large|64\s*MiB|response/i.test(String(err))) {
+            pageSize = Math.max(1, Math.floor(pageSize / 2));
+            continue;
+          }
+          throw new Error(`table ${name} page offset ${offset} failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
         rows.push(...page);
+        offset += page.length;
         if (page.length < pageSize) break;
       }
       tables[name] = { rowCount: rows.length, rows };
@@ -123,13 +144,27 @@ async function main(): Promise<void> {
     perTableRowCounts: counts,
     data,
   };
-  const bytes = Buffer.from(JSON.stringify(snapshot));
+  // Neon limits one HTTP query response to 64 MiB and B2 plain PUTs to 100 MiB.
+  // The JSON is assembled locally (never selected back through Neon) then gzip
+  // compressed before upload. A failed compression/upload is fatal.
+  const rawBytes = Buffer.from(JSON.stringify(snapshot));
+  const bytes = gzipSync(rawBytes, { level: 9 });
 
   // ---- upload ----
   const config = await loadB2Config();
   const auth = await authorizeAccount({ keyId: config.keyId, applicationKey: config.applicationKey });
   const up = await putObject({ config, s3ApiUrl: auth.s3ApiUrl, key: KEY, bytes, contentType: "application/json" });
   if (!up.ok) throw new Error(`snapshot upload failed (HTTP ${up.status ?? "?"}): ${JSON.stringify(up.body ?? "").slice(0, 300)}`);
+  // Verify the exact object after PUT, including nonzero size and parseable gzip.
+  const check = await getObject({ config, s3ApiUrl: auth.s3ApiUrl, key: KEY });
+  if (!check.ok || !check.bytes?.length) throw new Error(`snapshot verification failed (HTTP ${check.status ?? "?"})`);
+  let verified: unknown;
+  try { verified = JSON.parse(gunzipSync(check.bytes).toString("utf8")); } catch (err) {
+    throw new Error(`snapshot verification failed: uploaded object is not valid gzip JSON (${err instanceof Error ? err.message : String(err)})`);
+  }
+  if (!verified || typeof verified !== "object" || (verified as Record<string, unknown>).database !== dbName) {
+    throw new Error("snapshot verification failed: database metadata mismatch");
+  }
 
   // ---- retention: keep newest RETENTION, delete older ----
   const list = await listObjects({ config, s3ApiUrl: auth.s3ApiUrl, prefix: PREFIX });
@@ -145,7 +180,7 @@ async function main(): Promise<void> {
 
   const kept = Math.min(sorted.length, RETENTION);
   console.log(
-    `SNAPSHOT OK key=${KEY} tables=${names.length} rows=${totalRows} bytes=${bytes.length} retention=kept:${kept}/deleted:${deleted} (bucket objects under prefix: ${sorted.length})`
+    `SNAPSHOT OK key=${KEY} tables=${names.length} rows=${totalRows} bytes=${bytes.length} rawBytes=${rawBytes.length} retention=kept:${kept}/deleted:${deleted} (bucket objects under prefix: ${sorted.length})`
   );
 }
 
