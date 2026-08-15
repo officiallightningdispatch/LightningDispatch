@@ -222,6 +222,7 @@ export type AiDispatcherDecision =
   | "escalated_dispatch_failed"
   | "escalated_state_unknown"
   | "escalated_cross_state"
+  | "escalated_qualification_failed"
   | "rejected_tow_no_eligible_driver";
 
 export type AutoDispatchRunResult = {
@@ -2831,7 +2832,6 @@ async function runAutoDispatchInternal(
           : (nd.body as unknown[]);
       const serviceType = offer.serviceType || (typeof (rawOffer as Record<string, unknown>).serviceType === "string" ? String((rawOffer as Record<string, unknown>).serviceType) : null) || null;
       const serviceQualification: ServiceQualificationOutcome = { serviceType, assessed: Boolean(serviceType?.trim()), excluded: [] };
-      const qualificationCandidates = candidates.length;
       // MINIMAL QUALIFICATION GATE is applied immediately after Towbook's eligible-list filter.
       if (settings.qualificationGateEnabled && candidates.length) {
         const ids = candidates.map((d) => Number((d as Record<string, unknown>).driverId)).filter(Number.isFinite);

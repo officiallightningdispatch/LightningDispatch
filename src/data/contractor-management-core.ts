@@ -262,6 +262,7 @@ export async function addContractorCore(actor: ContractorMgmtActor, data: unknow
   }
   const name = v.data.name;
   const driverId = v.data.towbookDriverId;
+  const vehicleType = v.data.vehicleType;
   const handle = deriveLoginHandle(name, driverId);
   const providedEmail = v.data.email && v.data.email.trim() ? v.data.email.trim() : "";
   if (providedEmail && !emailLike(providedEmail)) {

@@ -31,6 +31,11 @@ export type NotifyDecision = {
   id: string;
   decision: string;
   reason?: string | null;
+  createdAt: string;
+  callId?: string;
+  callRequestId: string;
+  customerName?: string;
+  location?: string;
   offerExpiresAt?: string | null;
   offerStatus?: "claimed" | "expired" | "unknown";
 };
