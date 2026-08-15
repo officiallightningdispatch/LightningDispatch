@@ -16,7 +16,7 @@
  */
 import { sql } from "~/db";
 import { deriveDocStatus, type DocStatus } from "./contractor-admin-core";
-import { serviceDurationSeconds, goalSecondsFor, normalizeServiceType, SERVICE_TIME_LABELS, formatGoalSeconds } from "./service-time-core";
+import { serviceDurationSeconds, goalSecondsFor, SERVICE_TIME_LABELS, formatGoalSeconds } from "./service-time-core";
 
 export type MetricsPeriod = "week" | "month" | "all";
 export const METRICS_PERIODS: MetricsPeriod[] = ["week", "month", "all"];
@@ -435,6 +435,9 @@ type JobMetric = {
   surveyRating: number | null;
   surveyComment: string | null;
   tipCents: number;
+  serviceType?: string | null;
+  durationSeconds?: number | null;
+  assignedAt?: string | null;
 };
 
 const JOB_PHASES = ["pre_arrival", "service", "final"] as const;

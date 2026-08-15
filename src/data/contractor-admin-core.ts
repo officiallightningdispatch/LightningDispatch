@@ -111,7 +111,7 @@ export type DocTypeRow = {
   createdAt: string;
 };
 
-export type DocStatus = "missing" | "uploaded" | "verified" | "expired" | "rejected";
+export type DocStatus = "missing" | "uploaded" | "verified" | "expired" | "rejected" | "voided";
 export const DOC_STATUSES = ["missing", "uploaded", "verified", "expired", "rejected"] as const;
 
 /** One required type + the contractor's CURRENT file row (or null = MISSING),

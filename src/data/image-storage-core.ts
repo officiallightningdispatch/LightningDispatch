@@ -39,7 +39,7 @@ export async function verify(contract: ImageBlobContract, opts: ImageStorageOpti
   try {
     const b2 = await b2Connection(opts);
     const result = await headObject({ ...b2, key: contract.key, fetchImpl: opts.fetchImpl });
-    return result.ok && result.contentLength === contract.byteLength && result.contentType.toLowerCase() === contract.contentType.toLowerCase();
+    return result.ok && result.contentType != null && result.contentLength === contract.byteLength && result.contentType.toLowerCase() === contract.contentType.toLowerCase();
   } catch {
     return false;
   }
@@ -61,7 +61,7 @@ export async function run(contract: ImageBlobContract, bytes: Uint8Array, opts: 
 
 async function verifyWithConnection(b2: Awaited<ReturnType<typeof b2Connection>>, contract: ImageBlobContract, opts: ImageStorageOptions) {
   const result = await headObject({ ...b2, key: contract.key, fetchImpl: opts.fetchImpl });
-  return result.ok && result.contentLength === contract.byteLength && result.contentType.toLowerCase() === contract.contentType.toLowerCase();
+  return result.ok && result.contentType != null && result.contentLength === contract.byteLength && result.contentType.toLowerCase() === contract.contentType.toLowerCase();
 }
 
 /** Read-only path: DB resolution/authorization remains the caller's concern.

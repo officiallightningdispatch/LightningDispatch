@@ -2,11 +2,11 @@ import { createFileRoute } from "@tanstack/react-router";
 import { BarChart3, CheckCircle2, Star, Users, Zap } from "lucide-react";
 import { AppShell } from "~/components/app-shell";
 import { LiveMap } from "~/components/live-map";
-import { InlineError } from "~/components/mutation-status";
+import { InlineError as _InlineError } from "~/components/mutation-status";
 import {
   Avatar,
   BoardSkeleton,
-  Button,
+  Button as _Button,
   Card,
   EmptyState,
   StatCard,
@@ -32,7 +32,7 @@ export const Route = createFileRoute("/owner/")({ component: OwnerDashboard });
 
 function OwnerDashboard() {
   const { state, loading } = useDispatchStore();
-  const toast = useToast();
+  const _toast = useToast();
   const active = state.jobs.filter((j) => ACTIVE_STATUSES.includes(j.status));
   const completed = state.jobs.filter((j) => j.status === "completed");
   const online = state.contractors.filter((c) => c.status === "online").length;

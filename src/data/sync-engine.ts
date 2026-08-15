@@ -36,7 +36,7 @@ import {
 
 const configured = () => Boolean(process.env.DATABASE_URL);
 
-const syncResult = (code: TowbookSyncCode, message: string, extra?: Partial<TowbookSyncResult>): TowbookSyncResult => ({ ok: code === "ok", code, message, added: 0, updated: 0, failed: 0, diagnostics: [], ranAt: new Date().toISOString(), ...extra });
+export const syncResult = (code: TowbookSyncCode, message: string, extra?: Partial<TowbookSyncResult>): TowbookSyncResult => ({ ok: code === "ok", code, message, added: 0, updated: 0, failed: 0, diagnostics: [], ranAt: new Date().toISOString(), ...extra });
 
 const TOWBOOK_JOB_PATHS = [
   // Service-Platform API (JSON) FIRST — the authoritative, status-complete

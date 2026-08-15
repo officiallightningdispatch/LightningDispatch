@@ -152,7 +152,6 @@ export async function resolvePushActor(u: AuthUser): Promise<PushActor> {
 
 /* ------------------------------ subscription CRUD ------------------------------ */
 
-const SUB_COLS = `id, org_id, user_id, endpoint, p256dh, auth, user_agent, created_at, last_seen_at`;
 
 function mapSub(r: Record<string, unknown>): PushSubscriptionRow {
   return {
@@ -426,7 +425,7 @@ export async function sendAssignmentPush(
         const res = await fetchImpl(endpoint, {
           method: "POST",
           headers: { ...headers },
-          body,
+          body: new Uint8Array(body),
         });
         const status = res.status ?? 0;
         if (status === 404 || status === 410) {
