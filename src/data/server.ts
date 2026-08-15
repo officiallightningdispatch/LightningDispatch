@@ -1257,6 +1257,8 @@ export type AiDispatcherDecisionRow = {
   zoneDistanceMiles?: number;
   /** Refreshed dispatch/Towbook evidence. unknown means no trustworthy status. */
   offerStatus?: "claimed" | "expired" | "unknown";
+  customerName?: string;
+  location?: string;
 };
 
 const aiDispatcherReader = (u: AuthUser): boolean => can(u, ["owner", "admin", "dispatcher"]);
@@ -1391,7 +1393,7 @@ export const listAiDispatcherDecisions = createServerFn({ method: "GET" }).valid
     const q = sql();
     const limit = v.data.limit ?? 20;
     const rows = await q`SELECT a.id, a.call_request_id, a.call_id, a.decision, a.escalated, a.driver_name, a.eta_minutes, a.zone_distance_miles, a.reason, a.created_at, a.raw_response,
-        j.status AS dispatch_status, j.towbook_status, j.assigned_driver_towbook_id
+        j.status AS dispatch_status, j.towbook_status, j.assigned_driver_towbook_id, j.customer_name, j.area
       FROM ai_dispatcher_decisions a
       LEFT JOIN dispatch_jobs j ON j.org_id=a.org_id AND (j.towbook_job_id=a.call_request_id OR j.id=a.call_request_id)
       WHERE a.org_id=${u.orgId} ${v.data.escalatedOnly ? q`AND escalated=TRUE` : q``}
@@ -1405,6 +1407,8 @@ export const listAiDispatcherDecisions = createServerFn({ method: "GET" }).valid
       if (r.driver_name != null && String(r.driver_name) !== "") row.driverName = String(r.driver_name);
       if (r.eta_minutes != null) row.etaMinutes = Number(r.eta_minutes);
       if (r.zone_distance_miles != null) row.zoneDistanceMiles = Number(r.zone_distance_miles);
+      if (r.customer_name != null && String(r.customer_name) !== "") row.customerName = String(r.customer_name);
+      if (r.area != null && String(r.area) !== "") row.location = String(r.area);
       // Status is derived only from the refreshed dispatch_jobs row populated by
       // the Towbook sync. An assignment is claimed evidence; a Towbook 255
       // cancellation is the available expiry proxy (documented limitation).
