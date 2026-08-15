@@ -81,7 +81,12 @@ async function main(): Promise<void> {
   let totalRows = 0;
   for (const n of names) totalRows += counts[n] ?? 0;
 
-  if (await pgDumpAvailable()) {
+  // pg_dump is an optimization only: any runtime failure (including server/
+  // client version mismatch) must fall back to the read-only JSON-row export.
+  // Availability probing alone is insufficient because pg_dump --version can
+  // succeed while the actual connection fails.
+  try {
+    if (!(await pgDumpAvailable())) throw new Error("pg_dump is unavailable");
     // Preferred: pg_dump's full SQL (schema + data) — restores with psql.
     const { stdout } = await execFileAsync(
       "pg_dump",
@@ -89,11 +94,21 @@ async function main(): Promise<void> {
       { timeout: 120_000, maxBuffer: 512 * 1024 * 1024 }
     );
     data = { format: "pg_dump-sql", sql: stdout };
-  } else {
-    // Fallback (this sandbox has no pg_dump): SELECT * per table into JSON.
+  } catch (err) {
+    console.warn(`db-snapshot: pg_dump failed; using JSON-row fallback (${err instanceof Error ? err.message : String(err)})`);
     const tables: Record<string, { rowCount: number; rows: unknown[] }> = {};
     for (const name of names) {
-      const rows = (await q`SELECT * FROM ${q.unsafe(name)}`) as unknown[];
+      // Neon caps an individual response at 64 MiB. Page large tables so the
+      // JSON fallback remains a real complete dump rather than failing on one
+      // oversized SELECT * result.
+      const rows: unknown[] = [];
+      const pageSize = 1;
+      const identifier = `"public"."${name.replaceAll('"', '""')}"`;
+      for (let offset = 0;; offset += pageSize) {
+        const page = (await q`SELECT * FROM ${q.unsafe(identifier)} LIMIT ${pageSize} OFFSET ${offset}`) as unknown[];
+        rows.push(...page);
+        if (page.length < pageSize) break;
+      }
       tables[name] = { rowCount: rows.length, rows };
     }
     data = { format: "json-rows", tables };
