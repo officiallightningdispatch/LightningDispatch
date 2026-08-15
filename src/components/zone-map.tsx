@@ -1,18 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { demandLevelToColor } from '~/lib/zone-model';
+import { zoneCirclePolygon } from '~/lib/zone-circle';
 import '@tomtom-international/web-sdk-maps/dist/maps.css';
 export type ZoneMapItem={id:string;name:string;state:string;market:string;geometry:any;lat:number;lng:number;radiusMiles:number;demandLevel:number|null;demandSource:'set'|'computed'|'unavailable';status:'available'|'busy'|'reserved'|'at_capacity';isReserved:boolean;unlockJobsRequired:number;capacity:number|null;color:string|null;active:boolean};
+export { zoneCirclePolygon } from '~/lib/zone-circle';
 type Point=[number,number];
-
-/** Build a closed GeoJSON circle ring from a zone's center and radius. */
-export function zoneCirclePolygon(lat:number,lng:number,radiusMiles:number):{type:'Polygon';coordinates:[Point[]]} {
- const vertices=64, safeRadius=Math.max(0,Number(radiusMiles)||0), latRad=lat*Math.PI/180;
- const dLat=safeRadius/69, dLng=safeRadius/(69*Math.max(Math.abs(Math.cos(latRad)),0.01));
- const ring:Point[]=[];
- for(let i=0;i<vertices;i++){const angle=(i/vertices)*Math.PI*2;ring.push([lng+dLng*Math.cos(angle),lat+dLat*Math.sin(angle)]);}
- ring.push(ring[0]);
- return {type:'Polygon',coordinates:[ring]};
-}
 
 export function ZoneMap({zones,selectedZoneId,onSelectZone,onDeleteZone,mode='view',tomtomKey,onGeometryChange}:{zones:ZoneMapItem[];selectedZoneId:string|null;onSelectZone:(id:string|null)=>void;onDeleteZone?: (id:string)=>void;mode?:'view'|'draw'|'edit';tomtomKey?:string;onGeometryChange?:(geometry:any)=>void}){
  const ref=useRef<HTMLDivElement>(null); const handles=useRef<HTMLDivElement>(null); const map=useRef<any>(null); const [unavailable,setUnavailable]=useState(false); const [tool,setTool]=useState<'draw'|'edit'|null>(null); const [points,setPoints]=useState<Point[]>([]); const drag=useRef<{index:number;midpoint:boolean}|null>(null); const frame=useRef<number|null>(null);
