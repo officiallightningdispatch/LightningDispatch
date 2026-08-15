@@ -1459,7 +1459,7 @@ try {
     const s4row = (await q`SELECT reason FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='6204'`)[0];
     check("state resolution authoritative record beats stale offer address", s4.r.decisions[0]?.decision === "auto_accept_with_driver" && String(s4row?.reason).includes("authoritative"), String(s4row?.reason));
     const s7 = await runStateCase(6207, { address: ct, lat: 41.31, lng: -73.06, stateResolver: async () => "TX" });
-    check("state resolution no in-state driver: universal fallback accept", fallbackAccept(s7.r, s7.m.calls, "6207") && String(s7.r.decisions[0]?.reason).includes("no eligible same-state driver"), JSON.stringify(s7.r.decisions));
+    check("state resolution no in-state driver: cross-state auto-assign when ETA fits ceiling", s7.r.decisions[0]?.decision === "auto_accept_with_driver" && Number(s7.row?.driver_id) === 703785 && posts(s7.m.calls)[0]?.body?.driverId === 703785 && String(s7.row?.reason).includes("cross-state sole-eligible assignment"), JSON.stringify(s7.row));
     // --- TX-coordinate scenarios: switch the org zone to Georgetown TX ---
     await setZone(TX_ZONE.lat, TX_ZONE.lng, TX_ZONE.radius);
     const s2 = await runStateCase(6202, { address: tx, lat: 30.61948, lng: -97.648242, stateResolver: async () => "TX" });
@@ -1472,7 +1472,7 @@ try {
     const r5 = await runAutoDispatch(ORG6, d5);
     check("state resolution genuine discrepancy: escalates state unknown, no accept (fail closed, never cross-state)", r5.decisions[0]?.decision === "escalated_state_unknown" && r5.decisions[0]?.escalated === true && posts(m5.calls).length === 0 && String(r5.decisions[0]?.reason).includes("genuine location discrepancy") && String(r5.decisions[0]?.reason).includes("cannot verify zone"), JSON.stringify(r5.decisions));
     const s6 = await runStateCase(6206, { address: tx, lat: 30.61948, lng: -97.648242 });
-    check("state resolution cross-state blocked: universal fallback accept", fallbackAccept(s6.r, s6.m.calls, "6206") && String(s6.r.decisions[0]?.reason).includes("no eligible same-state driver"), JSON.stringify(s6.r.decisions));
+    check("state resolution cross-state: auto-assign when ETA fits ceiling", s6.r.decisions[0]?.decision === "auto_accept_with_driver" && Number(s6.row?.driver_id) === 703785 && posts(s6.m.calls)[0]?.body?.driverId === 703785 && String(s6.row?.reason).includes("cross-state sole-eligible assignment"), JSON.stringify(s6.row));
     // restore ORG6 zone for later tests
     await setZone(origZone.zone_lat, origZone.zone_lng, origZone.zone_radius_miles);
   }
