@@ -9,7 +9,7 @@
  * imports of core types are erased at compile time and are safe.
  */
 import { createServerFn } from "@tanstack/react-start";
-import type { AssignOnTimeResult, ServiceTimeGoalRow, ServiceTimeGoalsResult } from "./service-time-core";
+import type { AssignOnTimeResult, ServiceTimeGoalsResult } from "./service-time-core";
 export type { ServiceTimeGoalRow } from "./service-time-core";
 const passthrough = (x: unknown) => x;
 /** Any signed-in user: the org's service-time goals (driver counter needs them

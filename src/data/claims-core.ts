@@ -492,7 +492,7 @@ export async function scanClaimsCore(actor: ClaimActor, opts: ScanClaimsOptions 
   // Config check FIRST — fast early return when the site secrets lack gmail-*.
   try {
     await loadGmailConfig(process.env, { stableDir: opts.stableDir });
-  } catch (err) {
+  } catch (err: unknown) {
     return err("scan_failed", err instanceof Error ? err.message : "Gmail scanning is not configured.");
   }
   let mail;
@@ -503,7 +503,7 @@ export async function scanClaimsCore(actor: ClaimActor, opts: ScanClaimsOptions 
       connectImpl: opts.connectImpl as never,
       stableDir: opts.stableDir,
     });
-  } catch (err) {
+  } catch (err: unknown) {
     return err("scan_failed", err instanceof Error ? err.message : "Gmail scan failed.");
   }
   if (!mail.ok) return err("scan_failed", mail.error ?? "Gmail scan failed.");
@@ -921,7 +921,7 @@ async function resolveDriverActor(): Promise<ClaimActor | null> {
   return { orgId: u.orgId, id: u.id, role: u.role, driverUserRowId: identity.userRowId };
 }
 
-export async function scanClaimsHandler(data: unknown, opts?: ScanClaimsOptions) {
+export async function scanClaimsHandler(_data: unknown, opts?: ScanClaimsOptions) {
   const actor = await resolveOwnerActor();
   if (!actor) return err("unauthorized", "Owner access required.");
   return scanClaimsCore(actor, opts ?? {});

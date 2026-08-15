@@ -106,7 +106,7 @@ export const getPayPeriodDetail = createServerFn({ method: "POST" }).validator(p
 
 /** Owner/admin: compute (or recompute) a closed period's payday. Idempotent —
  *  recompute replaces the period's non-paid records; paid rows never change. */
-export const computePayday = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<PayoutResult<PayPeriodDetail>> => {
+export const computePayday = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<PayoutResult<PayPeriodDetail | null>> => {
   const core = await import("./payouts-core");
   const { currentUser } = await import("./auth-server");
   const u = await currentUser();
@@ -118,7 +118,7 @@ export const computePayday = createServerFn({ method: "POST" }).validator(passth
 
 /** Owner/admin: mark ONE payout record paid (owner confirmed the send in
  *  their own app). The period flips to paid when no computed rows remain. */
-export const markPayoutPaid = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<PayoutResult<PayPeriodDetail>> => {
+export const markPayoutPaid = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<PayoutResult<PayPeriodDetail | null>> => {
   const core = await import("./payouts-core");
   const { currentUser } = await import("./auth-server");
   const u = await currentUser();
@@ -127,7 +127,7 @@ export const markPayoutPaid = createServerFn({ method: "POST" }).validator(passt
 });
 
 /** Owner/admin: mark the WHOLE period paid (all computed rows at once). */
-export const markPaydayPeriodPaid = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<PayoutResult<PayPeriodDetail>> => {
+export const markPaydayPeriodPaid = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<PayoutResult<PayPeriodDetail | null>> => {
   const core = await import("./payouts-core");
   const { currentUser } = await import("./auth-server");
   const u = await currentUser();

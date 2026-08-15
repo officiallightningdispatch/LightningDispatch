@@ -7,7 +7,7 @@
  * auth-server code (client-graph rule).
  */
 import { createServerFn } from "@tanstack/react-start";
-import type { ClaimResult, ClaimRow, ScanClaimsResult } from "./claims-core";
+import type { ClaimResult, ClaimRow } from "./claims-core";
 export type { ClaimResult, ClaimRow, ClaimStatus } from "./claims-core";
 const passthrough = (x: unknown) => x;
 

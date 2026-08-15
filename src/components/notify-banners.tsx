@@ -87,7 +87,7 @@ function useBannerStack(role: SoundRole) {
   const [banners, setBanners] = useState<BannerItem[]>([]);
   const timeouts = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
-  const setBannerResolutions = useCallback((decisions: readonly { id: string; offerStatus?: "claimed" | "expired"; offerExpiresAt?: string | null }[]) => {
+  const setBannerResolutions = useCallback((decisions: readonly { id: string; offerStatus?: "claimed" | "expired" | "unknown"; offerExpiresAt?: string | null }[]) => {
     setBanners((prev) => prev.map((b) => {
       if (b.kind !== "escalation") return b;
       const id = b.id.slice(4); const d = decisions.find((x) => x.id === id);
@@ -108,7 +108,7 @@ function useBannerStack(role: SoundRole) {
     setBanners((prev) => [...prev, ...items].slice(-MAX_STACK));
     // One alert per notification — never a loop. The OWNER'S EXACT MP3
     // (playAlertSound; synthesized fallback if the asset is blocked).
-    for (const item of items) playAlertSound(role);
+    for (const _ of items) playAlertSound(role);
     for (const it of items) {
       const t = setTimeout(() => dismiss(it.id), AUTO_DISMISS_MS);
       timeouts.current.set(it.id, t);

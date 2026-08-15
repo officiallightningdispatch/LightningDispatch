@@ -437,7 +437,7 @@ type JobMetric = {
   tipCents: number;
   serviceType?: string | null;
   durationSeconds?: number | null;
-  assignedAt?: string | null;
+  assignedAt?: number | null;
 };
 
 const JOB_PHASES = ["pre_arrival", "service", "final"] as const;
@@ -674,15 +674,15 @@ export type ServiceTimeBreakdown = {
  *  duration or no goal are excluded from the ratio but still counted under
  *  the service when the goal exists. */
 function computeServiceTime(
-  periodJobs: { id: string; serviceType: string; durationSeconds: number | null; completedAt: number; arrivedAt: number | null; assignedAt: number | null }[],
+  periodJobs: { id: string; serviceType: string | null; durationSeconds: number | null | undefined; completedAt: number; arrivedAt: number | null; assignedAt: number | null }[],
   goals: OrgData["serviceTimeGoals"],
   batteryVariantByJobId: Map<string, string>,
 ): ServiceTimeBreakdown {
   const acc = new Map<string, { seconds: number[]; over: number; under: number }>();
   for (const j of periodJobs) {
-    const dur = serviceDurationSeconds({ durationSeconds: j.durationSeconds, completedAtMs: j.completedAt, arrivedAtMs: j.arrivedAt, assignedAtMs: j.assignedAt });
+    const dur = serviceDurationSeconds({ durationSeconds: j.durationSeconds, completedAtMs: j.completedAt, arrivedAtMs: j.arrivedAt, assignedAtMs: j.assignedAt ?? null });
     if (dur == null) continue;
-    const { goalSeconds, serviceKey } = goalSecondsFor(goals, j.serviceType, batteryVariantByJobId.get(j.id) ?? null);
+    const { goalSeconds, serviceKey } = goalSecondsFor(goals, j.serviceType ?? "", batteryVariantByJobId.get(j.id) ?? null);
     if (!serviceKey) continue;
     let a = acc.get(serviceKey);
     if (!a) { a = { seconds: [], over: 0, under: 0 }; acc.set(serviceKey, a); }
@@ -789,7 +789,7 @@ function computeDriver(
     else timeToComplete.push(j.completedAt - j.createdAt);
   }
   const serviceTime = computeServiceTime(
-    periodJobs.map((j) => ({ id: j.jobId, serviceType: j.serviceType, durationSeconds: j.durationSeconds, completedAt: j.completedAt, arrivedAt: j.arrivedAt, assignedAt: j.assignedAt })),
+    periodJobs.map((j) => ({ id: j.jobId, serviceType: j.serviceType, durationSeconds: j.durationSeconds ?? null, completedAt: j.completedAt, arrivedAt: j.arrivedAt, assignedAt: j.assignedAt ?? null })),
     data.serviceTimeGoals,
     data.batteryVariantByJobId,
   );

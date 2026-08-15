@@ -407,7 +407,7 @@ export async function loadZoneMatches(orgId: string, candidates: unknown[], lat:
   if (state instanceof Date) { now = state; state = undefined; }
   const out = new Map<string, boolean>(); for (const d of candidates) out.set(String((d as Record<string, unknown>).driverId ?? ''), false);
   try {
-    const zones = await sql()`SELECT id,state,zone_type,lat,lng,radius_miles,tz FROM dispatch_zones WHERE org_id=${orgId} AND active=TRUE` as Array<Record<string,unknown>>;
+    const zones = await sql()`SELECT id,state,zone_type,lat,lng,radius_miles,tz FROM dispatch_zones WHERE org_id=${orgId} AND active=TRUE` as Array<{ id: string; state: string | null; zone_type: string | null; lat: number; lng: number; radius_miles: number; tz: string | null }>;
     const miles=(a:number,b:number,c:number,d:number)=>{const r=Math.PI/180,p=Math.sin((c-a)*r/2)**2+Math.cos(a*r)*Math.cos(c*r)*Math.sin((d-b)*r/2)**2;return 3958.7613*2*Math.atan2(Math.sqrt(p),Math.sqrt(1-p));};
     const scoped = state ? zones.filter(z=>String(z.state??"").toUpperCase()===state.toUpperCase()) : zones.filter(z=>String(z.zone_type??"").toLowerCase()!=="coverage");
     const containing = scoped.map(z=>({...z,distance:miles(lat,lng,Number(z.lat),Number(z.lng))})).filter(z=>z.distance<=Number(z.radius_miles));
@@ -2933,11 +2933,6 @@ async function runAutoDispatchInternal(
         areaFallback: chosen.areaFallback,
       } : null;
       const allLoadedNote: string | null = null;
-      const stateTierReason = guardOutcome.assignmentTier === "offline_in_state"
-        ? "no online driver in state; in-state offline assignment"
-        : guardOutcome.assignmentTier === "cross_state"
-          ? "cross-state sole-eligible assignment (ETA fits ceiling)"
-          : null;
       const noDriverReason = driver
         ? null
         : humanReassigned

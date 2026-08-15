@@ -11,7 +11,6 @@ import {
   EmptyState,
   StatCard,
   StatusBadge,
-  useToast,
 } from "~/components/ui";
 import type { Contractor, Job } from "~/data/seed";
 import { avgResponseMinutes, recommendForJob } from "~/lib/dispatch-recommendation";
@@ -25,14 +24,13 @@ import {
   SERVICE_LABELS,
   timeAgo,
 } from "~/lib/job-ui";
-import { mutationKey, useDispatchStore } from "~/lib/store";
+import { useDispatchStore } from "~/lib/store";
 import { JobDetailDisclosure } from "~/components/job-detail";
 
 export const Route = createFileRoute("/owner/")({ component: OwnerDashboard });
 
 function OwnerDashboard() {
   const { state, loading } = useDispatchStore();
-  const _toast = useToast();
   const active = state.jobs.filter((j) => ACTIVE_STATUSES.includes(j.status));
   const completed = state.jobs.filter((j) => j.status === "completed");
   const online = state.contractors.filter((c) => c.status === "online").length;

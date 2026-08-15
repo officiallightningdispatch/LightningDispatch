@@ -65,7 +65,7 @@ export function diffNewCashoutIds(seen: readonly string[], requests: readonly No
 /** Backend-evidence-only transition for an already visible escalation.
  * Expiry requires both an authoritative deadline having passed and refreshed
  * evidence marked expired; a client timer alone never resolves a banner. */
-export function reconcileEscalatedBanner(decision: NotifyDecision, nowMs: number = Date.now()): "claimed" | "expired" | null {
+export function reconcileEscalatedBanner(decision: Pick<NotifyDecision, "offerStatus" | "offerExpiresAt">, nowMs: number = Date.now()): "claimed" | "expired" | null {
   if (decision.offerStatus === "claimed") return "claimed";
   if (decision.offerStatus === "expired" && decision.offerExpiresAt) {
     const expires = Date.parse(decision.offerExpiresAt);

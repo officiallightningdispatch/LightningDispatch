@@ -178,6 +178,7 @@ function MoneyView() {
     const res = await computePayday({ data: { periodId: selectedId } });
     setComputing(false);
     if (!res.ok) { setDetailError(res.message); return; }
+    if (!res.data) { setDetailError("Pay period not found."); return; }
     setDetail(res.data);
     toast(`Payday computed — ${res.data.totals.contractorCount} contractor${res.data.totals.contractorCount === 1 ? "" : "s"} · ${money(res.data.totals.totalCents)} due`);
     void loadOverview();
@@ -191,6 +192,7 @@ function MoneyView() {
     setConfirmMarkId(null);
     setMarkNote("");
     if (!res.ok) { setDetailError(res.message); return; }
+    if (!res.data) { setDetailError("Pay period not found."); return; }
     setDetail(res.data);
     const rec = res.data.records.find((r) => r.id === confirmMarkId);
     toast(`${rec?.contractorName ?? "Payout"} — ${money(rec?.totalCents ?? 0)} marked paid`);

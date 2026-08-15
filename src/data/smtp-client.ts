@@ -27,7 +27,6 @@
  */
 import { connect as tlsConnect, type TLSSocket } from "node:tls";
 import { connect as netConnect, type Socket } from "node:net";
-import type { Socket as NetSocket } from "node:net";
 
 export type SmtpMessage = {
   from: string;

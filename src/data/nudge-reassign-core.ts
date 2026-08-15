@@ -38,7 +38,7 @@ async function reassignNotHeaded(orgId:string, job:Record<string,unknown>, oldId
   drivers=drivers.filter(d=>Number((d as Record<string,unknown>)?.driverId)!==Number(oldId));
   const queues=await loadOrgDriverQueues(orgId), gps=await loadDriverGpsFixes(orgId), anchors=await loadDriverAnchors(orgId);
   const serviceQualification={serviceType:job.service_type?String(job.service_type):null,assessed:Boolean(job.service_type),excluded:[] as Array<{driverId:number;reason:string}>};
-  const resolution=resolveStateFromAddress(String(job.pickup??""));
+  const resolution=resolveStateFromAddress(String(job.pickup ?? ""));
   const state=resolution.state;
   const router=resolveRouter(process.env).router;
   const stateGuard={jobState:state,resolveDriverState:async(_id:number,la:number,lo:number)=>reverseGeocodeState(la,lo,process.env.TOMTOM_API_KEY||"",fetch)};
