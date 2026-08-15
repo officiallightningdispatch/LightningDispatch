@@ -387,10 +387,15 @@ export function ContractorProfileEditor({ contractorId, initialSection = "profil
     toast("Contact saved — Lightning Dispatch only, not pushed to Towbook");
   };
   const saveVehicle = async (vehicle: ContractorVehicle): Promise<void> => {
+    // Capability is part of the owner contractor record, not the legacy
+    // structured vehicle-profile mutation. Save it through the same validated
+    // edit flow used by the identity editor, then persist descriptive fields.
+    const capability = await editContractor({ data: { contractorId, name: detail?.name ?? "", vehicleType: vehicle.type ?? "" } });
+    if (!capability.ok) throw new Error(capability.message);
     const r = await setContractorVehicle({ data: { contractorId, ...vehicle } });
     if (!r.ok) throw new Error(r.message);
     setDetail((d) => (d ? { ...d, vehicle: r.data.vehicle, vehicleDesc: r.data.vehicleDesc } : d));
-    toast("Vehicle saved — Lightning Dispatch only, not pushed to Towbook");
+    toast("Vehicle capability saved — Lightning Dispatch only, not pushed to Towbook");
   };
   const saveSchedule = async (schedule: ScheduleDay[]): Promise<void> => {
     const r = await setContractorSchedule({ data: { contractorId, schedule } });
