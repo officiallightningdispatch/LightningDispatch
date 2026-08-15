@@ -327,6 +327,7 @@ try {
   // Idempotent after an interrupted run: stable fixture IDs must not collide.
   await q`INSERT INTO contractor_doc_types(id,org_id,name) VALUES('qual-doc-a',${ORG7},'License A'),('qual-doc-b',${ORG7},'License B') ON CONFLICT (id) DO UPDATE SET org_id=EXCLUDED.org_id, name=EXCLUDED.name`;
   await q`INSERT INTO contractor_documents(id,org_id,contractor_id,doc_type_id,storage_key,status,uploaded_by_user_id) VALUES('qual-doc-one',${ORG7},${QUAL_USERS[4]},'qual-doc-a','x','verified',${USER}),('qual-doc-two',${ORG7},${QUAL_USERS[4]},'qual-doc-b','x','verified',${USER}) ON CONFLICT (id) DO UPDATE SET org_id=EXCLUDED.org_id, contractor_id=EXCLUDED.contractor_id, doc_type_id=EXCLUDED.doc_type_id, storage_key=EXCLUDED.storage_key, status=EXCLUDED.status, uploaded_by_user_id=EXCLUDED.uploaded_by_user_id`;
+  await q`INSERT INTO contractor_documents(id,org_id,contractor_id,doc_type_id,storage_key,status,uploaded_by_user_id) VALUES('qual-doc-capability',${ORG7},${QUAL_USERS[5]},'qual-doc-a','x','verified',${USER}) ON CONFLICT (id) DO UPDATE SET org_id=EXCLUDED.org_id, contractor_id=EXCLUDED.contractor_id, doc_type_id=EXCLUDED.doc_type_id, storage_key=EXCLUDED.storage_key, status=EXCLUDED.status, uploaded_by_user_id=EXCLUDED.uploaded_by_user_id`;
   await q`UPDATE org_settings SET qualification_gate_enabled=TRUE WHERE org_id=${ORG7}`;
   created = true;
   // Production-shaped zoning fixture: auto-accept now resolves state + active
@@ -1796,8 +1797,19 @@ try {
     const c = await runTier(93003, [cross], { states: { 93003: "NY" }, maxEta: 45 });
     check("tier 3 cross-state ETA-capped: assigned", c.r.decisions[0]?.decision === "auto_accept_with_driver" && Number(c.row?.driver_id) === 93003 && posts(c.m.calls)[0]?.body?.driverId === 93003 && String(c.row?.reason).includes("cross-state sole-eligible assignment"), JSON.stringify(c.row));
 
+    const offlineCross = driver(93006, "Tier offline cross-state NY", { checkedIn: false, etaSec: 600, lat: 41.15, lng: -73.10 });
+    const c3b = await runTier(93006, [offlineCross], { states: { 93006: "NY" }, maxEta: 45 });
+    check("tier 3b offline cross-state within ceiling: assigned", c3b.r.decisions[0]?.decision === "auto_accept_with_driver" && Number(c3b.row?.driver_id) === 93006 && String(c3b.row?.reason).includes("cross-state sole-eligible assignment"), JSON.stringify(c3b.row));
+
     const d = await runTier(93004, [farCross], { states: { 93004: "NY" }, maxEta: 30 });
     check("tier 4 cross-state over ceiling: universal fallback", d.r.decisions[0]?.decision === "auto_accept_no_driver" && d.r.decisions[0]?.escalated === true && Number(d.row?.driver_id ?? 0) === 0 && posts(d.m.calls)[0]?.body?.driverId === 0 && String(d.row?.reason).includes("cross-state sole-eligible assignment cannot make the SLA ceiling"), JSON.stringify(d.row));
+
+    const failedCross = driver(93007, "Tier routing-failure NY", { checkedIn: true, etaSec: 60, lat: 41.15, lng: -73.10 });
+    const mf = makeFetch({ offers: [offer(93007, { maxEta: 45, drivers: [93007] })], drivers: [failedCross] });
+    const { deps: fd } = makeDeps(mf.fetchImpl, null, { noRouterOverride: true, env: { ETA_ROUTER: "off" }, stateResolver: async () => "NY" });
+    const fr = await runAutoDispatch(ORG6, fd);
+    const frow = (await q`SELECT decision, driver_id, reason FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='93007'`)[0];
+    check("tier 4b cross-state routing failure: universal fallback", fr.decisions[0]?.decision === "auto_accept_no_driver" && fr.decisions[0]?.escalated === true && Number(frow?.driver_id ?? 0) === 0 && String(frow?.reason).includes("actual road time unavailable"), JSON.stringify(frow));
 
     const e = await runTier(93005, [cross, offline, online], { states: { 93001: "CT", 93002: "CT", 93003: "NY" } });
     check("tier regression online same-state beats offline/cross-state", e.r.decisions[0]?.decision === "auto_accept_with_driver" && Number(e.row?.driver_id) === 93001 && posts(e.m.calls)[0]?.body?.driverId === 93001, JSON.stringify(e.row));

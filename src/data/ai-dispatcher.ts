@@ -2866,9 +2866,11 @@ async function runAutoDispatchInternal(
       // area-filtered ("do not touch the manual assign path"); the fresh-fix
       // origin still improves the ETA for the human-chosen driver.
       // STATE-TIERED GUARD (owner policy 2026-08-15): prefer an online driver
-      // in-state, then an offline in-state driver; permit an ETA-capped
-      // cross-state driver only when the job state has no driver; use universal
-      // fallback last. Job state comes from the authoritative address (never
+      // in-state, then an offline in-state driver; permit a cross-state driver
+      // only when the job state has no driver; use universal fallback last.
+      // Cross-state requires ACTUAL ROAD TIME (no factor fallback); routing
+      // failure fails closed. Offline cross-state drivers remain eligible.
+      // Job state comes from the authoritative address (never
       // coordinates); driver states are reverse-geocoded from current origin,
       // cached per run. Unknown state fails closed (never guess assignment).
       const rawStarting = startingLocationOf(rawOffer as Record<string, unknown>);
@@ -2910,8 +2912,13 @@ async function runAutoDispatchInternal(
         continue;
       }
       const effectiveMaxEta = Math.min(settings.maxEtaMinutes, offer.maxEta ?? settings.maxEtaMinutes);
-      // Cross-state is permitted only as the final tier and only when the
-      // honest arrival estimate (including prep buffer) fits the SLA ceiling.
+      // Cross-state is permitted only as the final tier, only with ACTUAL ROAD
+      // TIME (never a factor estimate), and only when that road ETA plus buffer
+      // fits the 45-minute SLA ceiling. Offline cross-state drivers are eligible.
+      if (guardOutcome.assignmentTier === "cross_state" && chosen && chosen.usedFallback) {
+        await acceptFallback("cross-state assignment: actual road time unavailable (routing failed); cannot verify SLA ceiling", { offer, stateGuard: guardOutcome.excluded, chosenBaseMinutes: chosen.baseMinutes, etaBufferMinutes: settings.etaBufferMinutes, ceilingMinutes: effectiveMaxEta });
+        continue;
+      }
       if (guardOutcome.assignmentTier === "cross_state" && chosen && chosen.baseMinutes + settings.etaBufferMinutes > effectiveMaxEta) {
         await acceptFallback("cross-state sole-eligible assignment cannot make the SLA ceiling", { offer, stateGuard: guardOutcome.excluded, chosenBaseMinutes: chosen.baseMinutes, etaBufferMinutes: settings.etaBufferMinutes, ceilingMinutes: effectiveMaxEta });
         continue;
