@@ -1372,6 +1372,8 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     // explicit and the ZIP universe is the repository's us-zips.json; this
     // keeps the migration deterministic and prevents cross-market overlap.
     const org = '89e15ce587651cc47c3bc45b1c612a220955';
+    const { createHash } = await import("node:crypto");
+    const stableZoneId = (key: string) => { const h=createHash('sha256').update(`dispatch-zone:${key}`).digest('hex'); return `${h.slice(0,8)}-${h.slice(8,12)}-5${h.slice(13,16)}-${((parseInt(h.slice(16,18),16)&0x3f)|0x80).toString(16).padStart(2,'0')}${h.slice(18,20)}-${h.slice(20,32)}`; };
     // One-time migration data: read from disk at apply time so the multi-MB
     // national ZIP/county datasets never enter the bundle (build memory + server
     // footprint). The migration runs once and is recorded in schema_migrations.
@@ -1391,6 +1393,25 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
       'El Paso': ['El Paso'],
       'Corpus Christi': ['Nueces','San Patricio','Aransas','Kleberg'],
     };
+    // Fresh-bootstrap self-seed: production had these national TX prerequisites,
+    // but a zero-state database does not. Keep stable IDs and NOT EXISTS guards
+    // so this is byte-for-byte a no-op on the production-like rows.
+    const national = await readRepoJson("src/data/national-zones.json") as Array<any>;
+    const txState = national.find(n => n.key === 'TX|coverage|STATE');
+    await q`INSERT INTO dispatch_zones(id,org_id,name,state,market,zone_type,zip_codes,parent_zone_id,lat,lng,radius_miles,tz,active,sort_order,updated_at)
+      SELECT 'national-zone-tx-state',${org},${txState?.name||'TX'},'TX',${txState?.market||'TX'},'coverage',${[]},NULL,${Number(txState?.lat)||30.2747},${Number(txState?.lng)||-97.7403},${Number(txState?.radius_miles)||180},${txState?.tz||'America/Chicago'},TRUE,1000,NOW()
+      WHERE NOT EXISTS (SELECT 1 FROM dispatch_zones WHERE id='national-zone-tx-state' AND org_id=${org})`;
+    const txMarkets = [
+      ['Houston',29.7604,-95.3698,45], ['San Antonio',29.4241,-98.4936,35],
+      ['El Paso',31.7619,-106.485,35], ['Corpus Christi',27.8006,-97.3964,30],
+    ] as const;
+    for (const [name, lat, lng, radius] of txMarkets) {
+      const node = national.find(n => n.key === `TX|market|${name}`);
+      const id = stableZoneId(`${org}|TX|market|${name}`);
+      await q`INSERT INTO dispatch_zones(id,org_id,name,state,market,zone_type,zip_codes,parent_zone_id,lat,lng,radius_miles,tz,active,sort_order,updated_at)
+        SELECT ${id},${org},${name},'TX',${name},'market',${[]},NULL,${Number(node?.lat)||lat},${Number(node?.lng)||lng},${Number(node?.radius_miles)||radius},${node?.tz||'America/Chicago'},TRUE,${3000+txMarkets.findIndex(x => x[0] === name)},NOW()
+        WHERE NOT EXISTS (SELECT 1 FROM dispatch_zones WHERE org_id=${org} AND state='TX' AND zone_type='market' AND name=${name})`;
+    }
     const zipSets = Object.fromEntries(Object.entries(countySets).map(([market, counties]) => {
       const zips = Object.entries(zipCounty as Record<string, {county:string;state:string}>)
         .filter(([zip, value]) => value.state === 'TX' && counties.includes(value.county) && Object.prototype.hasOwnProperty.call(usZips, zip))
