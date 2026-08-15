@@ -78,7 +78,11 @@ const ORG6 = `qa-ad6-${randomUUID()}`; // coordinate-less offer resolution (owne
 const ORG7 = `qa-ad7-${randomUUID()}`; // geography: area anchors + fresh-GPS ETA origins (owner 2026-08-13)
 const USER = `qa-ad-user-${randomUUID()}`;
 const QUAL_USERS = [1,2,3,4,5,6,7].map(() => `qa-ad-qual-${randomUUID()}`);
-const QUAL_TB = [9910001,9910002,9910003,9910004,9910005,9910006,9910007];
+// Per-run random Towbook IDs (global unique users_towbook_driver_id_idx): a
+// crashed run's leftovers must never collide with the next run (23505). Real
+// Towbook driver IDs are 6-digit or 279xxxxxx - 9xxxxxx is collision-safe.
+const QUAL_TB_BASE = 9_000_000 + Math.floor(Math.random() * 999_999);
+const QUAL_TB = [0,1,2,3,4,5,6].map((i) => QUAL_TB_BASE + i);
 let created = false;
 
 /* ------------------------------ fixtures ------------------------------ */
@@ -86,7 +90,7 @@ let created = false;
 const ZONE = { lat: 41.208862, lng: -73.207253, radiusMi: 30 };
 const northOf = (dMiles) => ZONE.lat + dMiles / 69.09; // ~1° lat = 69.09 mi
 
-const offer = (id, { lat = 41.2, lng = -73.2, status = 0, expiresInMin = 10, maxEta = null, omitLat = false, omitLng = false, startingLocation = "123 MAIN ST, BRIDGEPORT CT 06606", purchaseOrderNumber = `1125${id}`, past = false, serviceType = null } = {}) => {
+const offer = (id, { lat = 41.2, lng = -73.2, status = 0, expiresInMin = 10, maxEta = null, omitLat = false, omitLng = false, startingLocation = "123 MAIN ST, BRIDGEPORT CT 06606", purchaseOrderNumber = `1125${id}`, past = false, serviceType = null, drivers = [603482, 703785] } = {}) => {
   const o = {
     callRequestId: id,
     masterAccountId: 29,
@@ -100,7 +104,7 @@ const offer = (id, { lat = 41.2, lng = -73.2, status = 0, expiresInMin = 10, max
     sound: false,
     startLocationLatitude: lat,
     startLocationLongitude: lng,
-    drivers: [603482, 703785],
+    drivers,
     availableActions: ["NearestDrivers", "REQUEST_CALL", "ACKNOWLEDGE"],
   };
   if (maxEta) o.maxEta = maxEta;
@@ -1755,7 +1759,7 @@ try {
   }
   /* ============ qualification gate (Phase B ③) ============ */
   {
-    const runQ = async (id, ds, extra={}) => { const m=makeFetch({offers:[offer(id,extra.offer||{})],drivers:ds}); const {deps}=makeDeps(m.fetchImpl); const r=await runAutoDispatch(ORG7,deps); return {r,m,rows:await q`SELECT * FROM ai_dispatcher_decisions WHERE org_id=${ORG7} AND call_request_id=${String(id)}`}; };
+    const runQ = async (id, ds, extra={}) => { const m=makeFetch({offers:[offer(id,{ drivers: ds.map((d)=>d.driverId), ...(extra.offer||{}) })],drivers:ds}); const {deps}=makeDeps(m.fetchImpl); const r=await runAutoDispatch(ORG7,deps); return {r,m,rows:await q`SELECT * FROM ai_dispatcher_decisions WHERE org_id=${ORG7} AND call_request_id=${String(id)}`}; };
     const cases = [
       ['deactivated', QUAL_TB[0], 'deactivated'], ['org-inactive', QUAL_TB[6], 'org-inactive'],
       ['missing-compliance', QUAL_TB[1], 'missing-compliance'], ['expired-compliance', QUAL_TB[2], 'missing-compliance'],
