@@ -17,7 +17,10 @@ export function checkReservedZoneEligibility(input: {
   explicitOwnerOverride?: boolean;
 }): ReservedZoneDecision {
   const zone = input.zone;
-  if (!zone) return { ok: false, code: "reserved_zone_locked", message: "Zone not found." };
+  // A missing containing zone means this job is outside the configured zone
+  // system. Reserved-zone policy must not turn unzoned/non-reserved work into a
+  // rejection; Go Online still requires an explicitly selected zone upstream.
+  if (!zone) return { ok: true };
   if (!zone.is_reserved) return { ok: true };
   // Only an explicit, existing owner/admin override may bypass the gate.
   if (input.explicitOwnerOverride === true && (input.actorRole === "owner" || input.actorRole === "admin")) return { ok: true };
