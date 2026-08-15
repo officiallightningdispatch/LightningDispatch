@@ -1328,7 +1328,7 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
       const node = national.find(n => n.key === `CT|county|${name}`);
       const id = stableZoneId(`${org}|CT|county|${name}`);
       await q`INSERT INTO dispatch_zones(id,org_id,name,state,market,zone_type,zip_codes,parent_zone_id,lat,lng,radius_miles,tz,active,sort_order,updated_at)
-        VALUES(${id},${org},${name},'CT',${name},'county',${zips},NULL,${Number(node?.lat)||41.5},${Number(node?.lng)||-72.7},${Number(node?.radius_miles)||30},${node?.tz||'America/New_York'},TRUE,${3200+countiesWanted.indexOf(name)},NOW())
+        SELECT ${id},${org},${name},'CT',${name},'county',${zips},NULL,${Number(node?.lat)||41.5},${Number(node?.lng)||-72.7},${Number(node?.radius_miles)||30},${node?.tz||'America/New_York'},TRUE,${3200+countiesWanted.indexOf(name)},NOW()
         WHERE NOT EXISTS (SELECT 1 FROM dispatch_zones WHERE org_id=${org} AND state='CT' AND zone_type='county' AND name=${name})`;
     }
     const marketsWanted = ['Southwest CT','Bridgeport–Milford','New Haven–Branford','CT Capital Region'];
@@ -1338,7 +1338,7 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
       if (!zips.length) throw new Error(`CT market ${name} has no seed ZIPs`);
       const id = stableZoneId(`${org}|CT|market|${name}`);
       await q`INSERT INTO dispatch_zones(id,org_id,name,state,market,zone_type,zip_codes,parent_zone_id,lat,lng,radius_miles,tz,active,sort_order,updated_at)
-        VALUES(${id},${org},${name},'CT',${name},'market',${zips},NULL,${Number(node?.lat)||41.5},${Number(node?.lng)||-72.7},${Number(node?.radius_miles)||20},${node?.tz||'America/New_York'},TRUE,${3000+marketsWanted.indexOf(name)},NOW())
+        SELECT ${id},${org},${name},'CT',${name},'market',${zips},NULL,${Number(node?.lat)||41.5},${Number(node?.lng)||-72.7},${Number(node?.radius_miles)||20},${node?.tz||'America/New_York'},TRUE,${3000+marketsWanted.indexOf(name)},NOW()
         WHERE NOT EXISTS (SELECT 1 FROM dispatch_zones WHERE org_id=${org} AND state='CT' AND zone_type='market' AND name=${name})`;
     }
     const existing = await q`SELECT id,name,zone_type,zip_codes,active FROM dispatch_zones WHERE org_id=${org} AND state='CT' AND zone_type IN ('market','corridor') ORDER BY sort_order,id`;
