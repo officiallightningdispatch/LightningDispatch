@@ -39,7 +39,7 @@ export async function enforceReservedZoneEligibility(
   q: any,
   args: { orgId: string; userId: string; towbookDriverId?: string | null; zone: ReservedZoneRecord | null | undefined; actorRole?: string; explicitOwnerOverride?: boolean },
 ): Promise<ReservedZoneDecision> {
-  if (!args.zone) return checkReservedZoneEligibility({ zone: null });
+  if (!args.zone) return checkReservedZoneEligibility({ zone: null, completedJobs: null });
   if (!args.zone.is_reserved || (args.explicitOwnerOverride === true && (args.actorRole === "owner" || args.actorRole === "admin"))) {
     return checkReservedZoneEligibility({ zone: args.zone, completedJobs: 0, actorRole: args.actorRole, explicitOwnerOverride: args.explicitOwnerOverride });
   }
