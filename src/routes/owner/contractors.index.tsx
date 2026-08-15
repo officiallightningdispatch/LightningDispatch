@@ -588,7 +588,7 @@ function ContractorRowView({ c, last, onChanged, onPayrate, onEdit, payoutMethod
             <p className="mt-0.5 break-words text-xs text-ink-500">
               {c.email}
               {c.loginHandle ? ` · handle ${c.loginHandle}` : ""}
-              {c.vehicleType ? ` · ${c.vehicleType} truck` : ""}
+              {c.vehicleType ? ` · ${{car: "Car", "tow truck": "Tow truck", other: "Other"}[c.vehicleType] ?? c.vehicleType}` : ""}
             </p>
             {!removed && (
               <p className="mt-1.5 flex flex-wrap items-center gap-2">

@@ -696,7 +696,7 @@ function ContactSection({ detail, onSaved }: {
 }
 
 /* ------------------------------ vehicle ------------------------------ */
-const VEHICLE_TYPES = ["Flatbed", "Wheel-lift", "Integrated", "Landoll", "Other"] as const;
+const VEHICLE_TYPES = ["car", "tow truck", "other"] as const;
 export function vehicleDisplay(v: ContractorVehicle): string {
   const parts = [
     [v.year, v.make, v.model].filter((x): x is string | number => x != null && String(x).trim() !== "").map((x) => String(x).trim()).join(" "),

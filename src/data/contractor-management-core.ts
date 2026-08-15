@@ -245,6 +245,7 @@ const ADD_SCHEMA = z.object({
   name: z.string().trim().min(1).max(120),
   towbookDriverId: z.string().trim().min(1).max(24).regex(/^\d+$/, "Towbook driver ID must be numeric."),
   email: z.string().trim().max(200).optional().or(z.literal("")),
+  vehicleType: z.enum(["car", "tow truck", "other"]).optional().or(z.literal("")),
 });
 
 /** Owner enters name + Towbook driver ID (+ optional email) → creates the LD
@@ -295,7 +296,7 @@ export async function addContractorCore(actor: ContractorMgmtActor, data: unknow
     const contractor: ContractorRow = {
       id: userId, name, email, loginHandle: handle, towbookDriverId: driverId, towbookUserId: null,
       status: "not_signed_in", lastActivityAt: null, createdAt: new Date().toISOString(), removedAt: null,
-      payrateCents: null, requiredDocCount: 0, onFileDocCount: 0, approvedDocCount: 0, expiringSoonCount: 0, vehicleType: null,
+      payrateCents: null, requiredDocCount: 0, onFileDocCount: 0, approvedDocCount: 0, expiringSoonCount: 0, vehicleType: vehicleType !== undefined ? effectiveVehicleType : (row.vehicle_type != null ? String(row.vehicle_type) : null),
     };
     return { ok: true, data: contractor };
   } catch (err) {
@@ -495,7 +496,7 @@ export async function importContractorsCore(actor: ContractorMgmtActor, opts: { 
     // Deactivated rows stay IN the map so a removed driver is never re-added —
     // upsertRosterDriver returns the explicit skip for them.
     const existingRows = await q`SELECT u.id, u.name, u.login_handle, u.towbook_driver_id, u.deactivated_at
-      FROM users u JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND (m.role = 'contractor' OR EXISTS (
+      FROM users u LEFT JOIN contractor_profiles cp ON cp.user_id=u.id AND cp.org_id=${actor.orgId} JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND (m.role = 'contractor' OR EXISTS (
           SELECT 1 FROM towbook_sessions ts_identity
           WHERE ts_identity.org_id = ${actor.orgId}
             AND ts_identity.towbook_driver_id = u.towbook_driver_id
@@ -759,6 +760,7 @@ const EDIT_SCHEMA = z.object({
   contractorId: z.string().trim().min(1).max(128),
   name: z.string().trim().min(1).max(120),
   email: z.string().trim().max(200).optional().or(z.literal("")),
+  vehicleType: z.enum(["car", "tow truck", "other"]).optional().or(z.literal("")),
 });
 
 export type ContractorEditResult = { contractor: ContractorRow; towbook: TowbookPushOutcome };
@@ -775,7 +777,7 @@ export async function editContractorCore(actor: ContractorMgmtActor, data: unkno
     const issue = v.error.issues[0];
     return { ok: false, code: "invalid_input", message: issue ? issue.message : "Enter a name." };
   }
-  const { contractorId, name } = v.data;
+  const { contractorId, name, vehicleType } = v.data;
   const providedEmail = v.data.email && v.data.email.trim() ? v.data.email.trim() : "";
   if (providedEmail && !emailLike(providedEmail)) {
     return { ok: false, code: "invalid_input", message: "That email address doesn't look valid." };
@@ -806,13 +808,17 @@ export async function editContractorCore(actor: ContractorMgmtActor, data: unkno
     // writing '' would collide once a second contractor is edited without an
     // email. Keep the stored value (usually the derived placeholder).
     const effectiveEmail = email || String(row.email ?? "");
+    const effectiveVehicleType = vehicleType === "" ? null : vehicleType ?? null;
     if (email) {
       await q`UPDATE users SET name = ${name}, email = ${email} WHERE id = ${contractorId} AND deactivated_at IS NULL`;
     } else {
       await q`UPDATE users SET name = ${name} WHERE id = ${contractorId} AND deactivated_at IS NULL`;
     }
+    if (vehicleType !== undefined) {
+      await q`UPDATE contractor_profiles SET vehicle_type = ${effectiveVehicleType} WHERE user_id = ${contractorId} AND org_id = ${actor.orgId}`;
+    }
     const before = { name: String(row.name ?? ""), email: String(row.email ?? "") };
-    await recordAudit(actor, "contractor_updated", contractorId, { contractorId, from: before, to: { name, email: effectiveEmail } });
+    await recordAudit(actor, "contractor_updated", contractorId, { contractorId, from: before, to: { name, email: effectiveEmail, ...(vehicleType !== undefined ? { vehicleType: effectiveVehicleType } : {}) } });
 
     const driverId = row.towbook_driver_id != null ? String(row.towbook_driver_id) : "";
     let towbook: TowbookPushOutcome;
