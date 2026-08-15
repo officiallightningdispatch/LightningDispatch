@@ -1474,7 +1474,10 @@ try {
     const r5 = await runAutoDispatch(ORG6, d5);
     check("state resolution genuine discrepancy: escalates state unknown, no accept (fail closed, never cross-state)", r5.decisions[0]?.decision === "escalated_state_unknown" && r5.decisions[0]?.escalated === true && posts(m5.calls).length === 0 && String(r5.decisions[0]?.reason).includes("genuine location discrepancy") && String(r5.decisions[0]?.reason).includes("cannot verify zone"), JSON.stringify(r5.decisions));
     const s6 = await runStateCase(6206, { address: tx, lat: 30.61948, lng: -97.648242 });
-    check("state resolution cross-state: auto-assign when ETA fits ceiling", s6.r.decisions[0]?.decision === "auto_accept_with_driver" && Number(s6.row?.driver_id) === 703785 && posts(s6.m.calls)[0]?.body?.driverId === 703785 && String(s6.row?.reason).includes("cross-state sole-eligible assignment"), JSON.stringify(s6.row));
+    // Driver 703785 resolves to CT (default resolver) and is physically at CT
+    // coords; a CT driver cannot make the 45-min ceiling to Georgetown TX, so
+    // the ETA-cap correctly holds the offer: universal fallback, driverId 0.
+    check("state resolution cross-state over ceiling: universal fallback", s6.r.decisions[0]?.decision === "auto_accept_no_driver" && s6.r.decisions[0]?.escalated === true && Number(s6.row?.driver_id ?? 0) === 0 && posts(s6.m.calls)[0]?.body?.driverId === 0 && String(s6.row?.reason).includes("cross-state sole-eligible assignment cannot make the SLA ceiling"), JSON.stringify(s6.row));
     // restore ORG6 zone for later tests
     await setZone(origZone.zone_lat, origZone.zone_lng, origZone.zone_radius_miles);
   }
