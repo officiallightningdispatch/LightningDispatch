@@ -1299,7 +1299,48 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`ALTER TABLE dispatch_zones ADD CONSTRAINT dispatch_zones_zone_type_check CHECK (zone_type IN ('market','submarket','rural','corridor','coverage','county'))`;
   }],
   [57, async (q) => {
+    // Fresh-bootstrap self-seed added 2026-08-15 after the R2 gate rehearsal
+    // failed with `missing seed row: Southwest CT`. Production never re-runs
+    // this recorded migration, so this only affects fresh databases; NOT EXISTS
+    // guards make it a no-op on a production-like state. Historical CT market
+    // ZIP splits are not reconstructible, so fresh bootstrap uses deterministic
+    // national-node subsets and county-derived ZIP universes that form a valid
+    // gap-free, overlap-free partition; production rows remain byte-for-byte
+    // untouched when already present.
     const org = '89e15ce587651cc47c3bc45b1c612a220955';
+    const readRepoJson = async (rel: string): Promise<unknown> => {
+      const { readFileSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      for (const base of [process.cwd(), join(process.cwd(), "dist/server")]) {
+        try { return JSON.parse(readFileSync(join(base, rel), "utf8")); } catch { /* try next base */ }
+      }
+      throw new Error(`migration 57: cannot read ${rel} from ${process.cwd()}`);
+    };
+    const { createHash } = await import("node:crypto");
+    const stableZoneId = (key: string) => { const h=createHash("sha256").update(`dispatch-zone:${key}`).digest("hex"); return `${h.slice(0,8)}-${h.slice(8,12)}-5${h.slice(13,16)}-${((parseInt(h.slice(16,18),16)&0x3f)|0x80).toString(16).padStart(2,"0")}${h.slice(18,20)}-${h.slice(20,32)}`; };
+    const zipCounty = await readRepoJson("src/data/zip-county.json") as Record<string, {county:string;state:string}>;
+    const usZips = await readRepoJson("src/data/us-zips.json") as Record<string, unknown>;
+    const national = await readRepoJson("src/data/national-zones.json") as Array<any>;
+    const countiesWanted = ['Fairfield','New Haven','Hartford','Litchfield','Middlesex','New London','Tolland','Windham'];
+    const countyZips = Object.fromEntries(countiesWanted.map(name => [name, Object.entries(zipCounty).filter(([zip,v]) => v.state==='CT' && v.county===name && Object.prototype.hasOwnProperty.call(usZips,zip)).map(([zip])=>zip).sort()]));
+    for (const name of countiesWanted) {
+      const zips = countyZips[name]; if (!zips.length) throw new Error(`CT county ${name} has no ZIPs`);
+      const node = national.find(n => n.key === `CT|county|${name}`);
+      const id = stableZoneId(`${org}|CT|county|${name}`);
+      await q`INSERT INTO dispatch_zones(id,org_id,name,state,market,zone_type,zip_codes,parent_zone_id,lat,lng,radius_miles,tz,active,sort_order,updated_at)
+        VALUES(${id},${org},${name},'CT',${name},'county',${zips},NULL,${Number(node?.lat)||41.5},${Number(node?.lng)||-72.7},${Number(node?.radius_miles)||30},${node?.tz||'America/New_York'},TRUE,${3200+countiesWanted.indexOf(name)},NOW())
+        WHERE NOT EXISTS (SELECT 1 FROM dispatch_zones WHERE org_id=${org} AND state='CT' AND zone_type='county' AND name=${name})`;
+    }
+    const marketsWanted = ['Southwest CT','Bridgeport–Milford','New Haven–Branford','CT Capital Region'];
+    for (const name of marketsWanted) {
+      const node = national.find(n => n.name === name && n.state === 'CT' && n.zone_type === 'market');
+      const zips = [...new Set((node?.zip_codes || []).filter((zip:string) => countyZips[zipCounty[zip]?.county]?.includes(zip)))].sort();
+      if (!zips.length) throw new Error(`CT market ${name} has no seed ZIPs`);
+      const id = stableZoneId(`${org}|CT|market|${name}`);
+      await q`INSERT INTO dispatch_zones(id,org_id,name,state,market,zone_type,zip_codes,parent_zone_id,lat,lng,radius_miles,tz,active,sort_order,updated_at)
+        VALUES(${id},${org},${name},'CT',${name},'market',${zips},NULL,${Number(node?.lat)||41.5},${Number(node?.lng)||-72.7},${Number(node?.radius_miles)||20},${node?.tz||'America/New_York'},TRUE,${3000+marketsWanted.indexOf(name)},NOW())
+        WHERE NOT EXISTS (SELECT 1 FROM dispatch_zones WHERE org_id=${org} AND state='CT' AND zone_type='market' AND name=${name})`;
+    }
     const existing = await q`SELECT id,name,zone_type,zip_codes,active FROM dispatch_zones WHERE org_id=${org} AND state='CT' AND zone_type IN ('market','corridor') ORDER BY sort_order,id`;
     const counties = await q`SELECT id,name,zip_codes,lat,lng FROM dispatch_zones WHERE org_id=${org} AND state='CT' AND zone_type='county' AND active=TRUE`;
     const plan = computeRegionalCtPlan(existing as RegionalCtInput[], counties as RegionalCtCounty[]);
