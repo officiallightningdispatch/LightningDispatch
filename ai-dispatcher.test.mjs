@@ -1445,7 +1445,7 @@ try {
       ? jsonResponse(200, { addresses: [{ address: { countryCode: "US", adminDistrict: "TX" } }] }) : rf5.fetchImpl(url, init);
     const { deps: d5 } = makeDeps(withRouter(m5.fetchImpl, geoTomtomFetch), null, { noRouterOverride: true, env: { TOMTOM_API_KEY: "test-key-not-real" } });
     const r5 = await runAutoDispatch(ORG6, d5);
-    check("state resolution genuine discrepancy: universal fallback accept", fallbackAccept(r5, m5.calls, "6205") && String(r5.decisions[0]?.reason).includes("job state unknown"), JSON.stringify(r5.decisions));
+    check("state resolution genuine discrepancy: escalates state unknown, no accept (fail closed, never cross-state)", r5.decisions[0]?.decision === "escalated_state_unknown" && r5.decisions[0]?.escalated === true && posts(m5.calls).length === 0 && String(r5.decisions[0]?.reason).includes("genuine location discrepancy") && String(r5.decisions[0]?.reason).includes("cannot verify zone"), JSON.stringify(r5.decisions));
     const s6 = await runStateCase(6206, { address: tx, lat: 30.61948, lng: -97.648242 });
     check("state resolution cross-state blocked: universal fallback accept", fallbackAccept(s6.r, s6.m.calls, "6206") && String(s6.r.decisions[0]?.reason).includes("no eligible same-state driver"), JSON.stringify(s6.r.decisions));
     // restore ORG6 zone for later tests
