@@ -147,9 +147,10 @@ export function LiveMap({
   const mapRef = useRef<HTMLDivElement>(null);
   const geomRef = useRef({ center, zoom, viewport });
   geomRef.current = { center, zoom, viewport };
-  const dragRef = useRef<{ sx: number; sy: number; cwx: number; cwy: number } | null>(null);
+  const dragRef = useRef<{ sx: number; sy: number; cwx: number; cwy: number; startedAt: number; moved: boolean } | null>(null);
   const pointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
   const pinchRef = useRef<{ startDist: number; mid: { x: number; y: number }; zoom: number } | null>(null);
+  const pinchUsedRef = useRef(false);
   const tileOkRef = useRef<Set<string>>(new Set());
   const tileFailRef = useRef<Set<string>>(new Set());
 
@@ -281,12 +282,44 @@ export function LiveMap({
         eta: j.etaMinutes,
       });
     }
-    return list;
+    // Never let malformed or known geolocation-denied coordinates poison the
+    // viewport. Keep this client-side guard because feeds can contain legacy
+    // rows and the map is also consumed by staff-scoped views.
+    const usable = (p: MapPin) => Number.isFinite(p.lat) && Number.isFinite(p.lng) &&
+      !(p.lat === 0 && p.lng === 0) && p.lat >= -90 && p.lat <= 90 && p.lng >= -180 && p.lng <= 180;
+    const clean = list.filter(usable);
+    const self = clean.find((p) => p.kind === "self");
+    if (driverScope && self) {
+      // A stale/placeholder pin from another feed must not move a driver's
+      // first view across the country. 100 miles is intentionally generous.
+      const maxLat = 100 / 69;
+      const maxLng = 100 / (69 * Math.max(0.2, Math.cos(self.lat * Math.PI / 180)));
+      return clean.filter((p) => p === self || (Math.abs(p.lat - self.lat) <= maxLat && Math.abs(p.lng - self.lng) <= maxLng));
+    }
+    return clean;
   }, [data, driverScope, browserSelf]);
 
   /* --------------------------- fit to pins (once) --------------------------- */
   const fit = useCallback((pts: MapPin[], vw: number, vh: number) => {
     if (!pts.length || vw <= 0 || vh <= 0) return;
+    const self = driverScope ? pts.find((p) => p.kind === "self") : undefined;
+    if (self) {
+      const miles = 5;
+      const latPad = miles / 69;
+      const lngPad = miles / (69 * Math.max(0.2, Math.cos(self.lat * Math.PI / 180)));
+      const lats = [self.lat - latPad, self.lat + latPad];
+      const lngs = [self.lng - lngPad, self.lng + lngPad];
+      const pad = 64;
+      let z = 14;
+      for (; z >= MIN_ZOOM; z--) {
+        const tl = latLngToWorld(Math.max(...lats), Math.min(...lngs), z);
+        const br = latLngToWorld(Math.min(...lats), Math.max(...lngs), z);
+        if (br.x - tl.x <= vw - pad * 2 && br.y - tl.y <= vh - pad * 2) break;
+      }
+      setZoom(z);
+      setCenter({ lat: self.lat, lng: self.lng });
+      return;
+    }
     const lats = pts.map((p) => p.lat);
     const lngs = pts.map((p) => p.lng);
     const minLat = Math.min(...lats);
@@ -358,9 +391,10 @@ export function LiveMap({
     e.currentTarget.setPointerCapture(e.pointerId);
     if (pointersRef.current.size === 1) {
       const cw = latLngToWorld(center.lat, center.lng, zoom);
-      dragRef.current = { sx: e.clientX, sy: e.clientY, cwx: cw.x, cwy: cw.y };
+      dragRef.current = { sx: e.clientX, sy: e.clientY, cwx: cw.x, cwy: cw.y, startedAt: Date.now(), moved: false };
     } else if (pointersRef.current.size === 2) {
       dragRef.current = null;
+      pinchUsedRef.current = true;
       const pts = [...pointersRef.current.values()];
       pinchRef.current = {
         startDist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y),
@@ -393,17 +427,21 @@ export function LiveMap({
     }
     const d = dragRef.current;
     if (!d) return;
+    if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) >= 10) d.moved = true;
     panBy(e.clientX - d.sx, e.clientY - d.sy);
   };
   const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
     pointersRef.current.delete(e.pointerId);
     if (pointersRef.current.size < 2) pinchRef.current = null;
     if (pointersRef.current.size === 0) {
-      // Tap = single pointer, <6px of travel, no pinch, not on a control: the
-      // driver portal uses it to expand the bottom sheet (R2 spec §b).
+      // A tap is intentionally strict: short press, <10px movement, and no
+      // drag/pinch. This keeps map gestures from triggering sheet actions.
       const d = dragRef.current;
       const onControl = e.target instanceof Element && e.target.closest("button") != null;
-      if (d && onTap && !onControl && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 6) onTap();
+      const elapsed = d ? Date.now() - d.startedAt : Infinity;
+      const distance = d ? Math.hypot(e.clientX - d.sx, e.clientY - d.sy) : Infinity;
+      if (d && onTap && !pinchUsedRef.current && !d.moved && elapsed <= 250 && distance < 10 && !onControl) onTap();
+      pinchUsedRef.current = false;
       dragRef.current = null;
     }
   };
