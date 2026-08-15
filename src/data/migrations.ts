@@ -1397,6 +1397,12 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`ALTER TABLE org_settings ADD COLUMN IF NOT EXISTS qualification_gate_enabled BOOLEAN NOT NULL DEFAULT TRUE`;
     await q`UPDATE org_settings SET qualification_gate_enabled=TRUE WHERE qualification_gate_enabled IS NULL`;
   }],
+  [61, async (q) => {
+    await q`ALTER TABLE org_settings ADD COLUMN IF NOT EXISTS nudge_enabled BOOLEAN NOT NULL DEFAULT TRUE`;
+    await q`ALTER TABLE org_settings ADD COLUMN IF NOT EXISTS reassign_not_headed_minutes INTEGER NOT NULL DEFAULT 5`;
+    await q`CREATE TABLE IF NOT EXISTS dispatch_nudge_events (id TEXT PRIMARY KEY, org_id TEXT NOT NULL, job_id TEXT NOT NULL, driver_towbook_id TEXT, kind TEXT NOT NULL, reason TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(org_id, job_id, kind))`;
+    await q`CREATE INDEX IF NOT EXISTS dispatch_nudge_events_org_job ON dispatch_nudge_events(org_id, job_id)`;
+  }],
  ];
 export async function ensureSchema() {
   const q = sql();

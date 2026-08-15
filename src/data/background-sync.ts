@@ -26,6 +26,7 @@
  */
 import { sqlWithTimeout } from "~/db";
 import { runAutoDispatch } from "./ai-dispatcher";
+import { processAssignmentNudges } from "./nudge-reassign-core";
 import { resolveOrgActor, SYNC_TICK_TIMEOUT_MS } from "./server";
 import { syncForOrg, withHardTimeout } from "./sync-engine";
 import type { AuthUser } from "./auth-server";
@@ -90,6 +91,8 @@ async function runTick(orgId: string): Promise<void> {
       return p;
     })();
     const sync = syncForOrg(orgId, "sync:interval");
-    await Promise.allSettled([dispatch, sync]);
+    const nudges = processAssignmentNudges(orgId);
+    const nudges = processAssignmentNudges(orgId);
+    await Promise.allSettled([dispatch, sync, nudges]);
   } catch { /* best-effort — one org's failure never stops the loop */ }
 }

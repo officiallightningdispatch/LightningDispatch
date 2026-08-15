@@ -196,6 +196,8 @@ export type OrgAiSettings = {
   etaFloorMinutes: number;
   /** Hard qualification safety rail; default ON and org-configurable for rollback. */
   qualificationGateEnabled: boolean;
+  nudgeEnabled: boolean;
+  reassignNotHeadedMinutes: number;
 };
 
 /** Decision taxonomy — every row in ai_dispatcher_decisions carries one of these.
@@ -1017,7 +1019,7 @@ export async function tomtomGeocodeLookup(
 export async function getOrgSettings(orgId: string): Promise<OrgAiSettings> {
   const q = sql();
   await q`INSERT INTO org_settings(org_id) VALUES(${orgId}) ON CONFLICT(org_id) DO NOTHING`;
-  const rows = await q`SELECT ai_dispatcher_enabled, qualification_gate_enabled, zone_lat, zone_lng, zone_radius_miles, max_eta_minutes, eta_buffer_minutes, eta_floor_minutes FROM org_settings WHERE org_id=${orgId}`;
+  const rows = await q`SELECT ai_dispatcher_enabled, qualification_gate_enabled, nudge_enabled, reassign_not_headed_minutes, zone_lat, zone_lng, zone_radius_miles, max_eta_minutes, eta_buffer_minutes, eta_floor_minutes FROM org_settings WHERE org_id=${orgId}`;
   const r = rows[0] as Record<string, unknown>;
   return {
     aiDispatcherEnabled: r.ai_dispatcher_enabled !== false,
@@ -1028,6 +1030,8 @@ export async function getOrgSettings(orgId: string): Promise<OrgAiSettings> {
     etaBufferMinutes: Number(r.eta_buffer_minutes) || 5,
     etaFloorMinutes: Number(r.eta_floor_minutes) || 5,
     qualificationGateEnabled: r.qualification_gate_enabled !== false,
+    nudgeEnabled: r.nudge_enabled !== false,
+    reassignNotHeadedMinutes: Number(r.reassign_not_headed_minutes) || 5,
   };
 }
 
