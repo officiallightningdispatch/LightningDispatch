@@ -1,4 +1,6 @@
 import { sql } from "~/db";
+import zipCounty from "./zip-county.json";
+import usZips from "./us-zips.json";
 
 /** Append-only, idempotent database migrations. Each step is recorded once. */
 export type RegionalCtInput = { id:string; name:string; zone_type?:string; zip_codes?:unknown; active?:boolean; };
@@ -1325,6 +1327,48 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
       SELECT gen_random_uuid()::text, org_id, ${"Driver's License — Back"}, requires_expiry, FALSE, NULL, FALSE, sort_order + 1, active
       FROM contractor_doc_types t WHERE LOWER(t.name)=${"driver's license — front"}
       AND NOT EXISTS (SELECT 1 FROM contractor_doc_types x WHERE x.org_id=t.org_id AND LOWER(x.name)=${"driver's license — back"})`;
+  }],
+  [59, async (q) => {
+    // Owner-directed TX market partition. County membership is deliberately
+    // explicit and the ZIP universe is the repository's us-zips.json; this
+    // keeps the migration deterministic and prevents cross-market overlap.
+    const org = '89e15ce587651cc47c3bc45b1c612a220955';
+    const countySets: Record<string, string[]> = {
+      Houston: ['Harris','Fort Bend','Montgomery','Brazoria','Galveston','Waller','Liberty','Chambers'],
+      'San Antonio': ['Bexar','Comal','Guadalupe','Medina','Kendall','Bandera','Wilson','Atascosa'],
+      'El Paso': ['El Paso'],
+      'Corpus Christi': ['Nueces','San Patricio','Aransas','Kleberg'],
+    };
+    const zipSets = Object.fromEntries(Object.entries(countySets).map(([market, counties]) => {
+      const zips = Object.entries(zipCounty as Record<string, {county:string;state:string}>)
+        .filter(([zip, value]) => value.state === 'TX' && counties.includes(value.county) && Object.prototype.hasOwnProperty.call(usZips, zip))
+        .map(([zip]) => zip).sort();
+      if (!zips.length) throw new Error(`TX ${market} partition produced no ZIPs`);
+      return [market, zips];
+    })) as Record<string, string[]>;
+    const markets = await q`SELECT id,name,zip_codes,parent_zone_id FROM dispatch_zones WHERE org_id=${org} AND state='TX' AND zone_type='market' AND name IN ('Houston','San Antonio','El Paso','Corpus Christi')`;
+    if (markets.length !== 4) throw new Error(`TX partition expected 4 markets, found ${markets.length}`);
+    const before = await q`SELECT name,zip_codes FROM dispatch_zones WHERE org_id=${org} AND state='TX' AND zone_type IN ('market','corridor')`;
+    const seen = new Map<string,string>();
+    for (const row of before) for (const zip of (Array.isArray(row.zip_codes) ? row.zip_codes : []).map(String)) {
+      const previous = seen.get(zip); if (previous) throw new Error(`TX ZIP already overlaps ${previous}/${row.name}: ${zip}`); seen.set(zip, String(row.name));
+    }
+    for (const [market, zips] of Object.entries(zipSets)) for (const zip of zips) {
+      const previous = seen.get(zip); if (previous && !['Houston','San Antonio','El Paso','Corpus Christi'].includes(previous)) throw new Error(`TX ZIP ${zip} belongs to existing market ${previous}`);
+    }
+    // Nueces is the county parent for Corpus Christi. Existing national seed
+    // uses this stable ID; create only if absent, never rewrite another parent.
+    let nueces = await q`SELECT id FROM dispatch_zones WHERE org_id=${org} AND state='TX' AND zone_type='county' AND name='Nueces' LIMIT 1`;
+    if (!nueces.length) {
+      await q`INSERT INTO dispatch_zones(id,org_id,name,state,market,zone_type,zip_codes,parent_zone_id,lat,lng,radius_miles,tz,active,sort_order,updated_at) VALUES('national-zone-tx-county-nueces',${org},'Nueces','TX','Nueces','county',${[]},'national-zone-tx-state',27.7371,-97.4128,30,'America/Chicago',TRUE,3200,NOW()) ON CONFLICT(id) DO NOTHING`;
+      nueces = await q`SELECT id FROM dispatch_zones WHERE id='national-zone-tx-county-nueces' AND org_id=${org}`;
+    }
+    if (!nueces.length) throw new Error('Unable to ensure Nueces county parent');
+    for (const [market, zips] of Object.entries(zipSets)) {
+      const parent = market === 'Corpus Christi' ? String(nueces[0].id) : undefined;
+      if (parent) await q`UPDATE dispatch_zones SET zip_codes=${zips}, parent_zone_id=${parent}, updated_at=NOW() WHERE org_id=${org} AND state='TX' AND zone_type='market' AND name=${market}`;
+      else await q`UPDATE dispatch_zones SET zip_codes=${zips}, updated_at=NOW() WHERE org_id=${org} AND state='TX' AND zone_type='market' AND name=${market}`;
+    }
   }],
   [60, async (q) => {
     // Minimal AI qualification gate. Default ON; owner can roll back per org without deploy.
