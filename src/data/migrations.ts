@@ -1434,6 +1434,15 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`ALTER TABLE dispatch_zones ADD COLUMN IF NOT EXISTS unlock_jobs_required INTEGER NOT NULL DEFAULT 30`;
     await q`ALTER TABLE dispatch_zones ADD COLUMN IF NOT EXISTS color TEXT`;
   }],
+  // 66 (2026-08-15): vehicle-type vocabulary — normalize legacy/case variants to
+  // the owner-specified capability set (car | tow truck | other). The dispatch
+  // tow gate is fail-closed on exact 'tow truck', so stale values must not
+  // masquerade as capabilities; 'Other' also broke the editor select which now
+  // validates against the same three values the save path accepts.
+  [66, async (q) => {
+    await q`UPDATE contractor_profiles SET vehicle_type = 'tow truck' WHERE vehicle_type IN ('Flatbed','Wheel-lift','Integrated','Landoll')`;
+    await q`UPDATE contractor_profiles SET vehicle_type = 'other' WHERE vehicle_type = 'Other'`;
+  }],
 
  ];
 export async function ensureSchema() {

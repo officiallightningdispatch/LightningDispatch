@@ -836,7 +836,7 @@ export type ContractorScheduleRow = {
   updatedAt: string | null;
 };
 
-const VEHICLE_TYPE_OPTIONS = ["Flatbed", "Wheel-lift", "Integrated", "Landoll", "Other"] as const;
+const VEHICLE_TYPE_OPTIONS = ["car", "tow truck", "other"] as const;
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 /** "2019 Ford F-350 · Flatbed · CT ABC-123" — non-empty structured fields
