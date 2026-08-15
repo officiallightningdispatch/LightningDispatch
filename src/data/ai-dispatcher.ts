@@ -2795,7 +2795,9 @@ async function runAutoDispatchInternal(
       // explicit `drivers[]` eligible list (the UI dropdown is built from it),
       // ONLY those ids may be dispatched — accept-with-driverId for an
       // ineligible driver is silently ignored by Towbook. ---
-      const eligibleIds = offer.drivers && offer.drivers.length ? new Set(offer.drivers) : null;
+      // Preserve omitted vs explicit empty: Towbook omitted means any company driver;
+      // an explicit empty eligible list means nobody is eligible.
+      const eligibleIds = Array.isArray(offer.drivers) ? new Set(offer.drivers) : null;
       // MANUAL-REASSIGN GUARD (owner-directed 2026-08-13): when a HUMAN already
       // reassigned a call tied to this offer (purchase-order / address match on
       // a dispatch_jobs row carrying the manual-reassign marker), the human's
@@ -2862,8 +2864,10 @@ async function runAutoDispatchInternal(
       // claim an offer when every Towbook-eligible candidate failed the gate.
       // Persist the exclusion reasons in the same decision ledger used by all
       // other outcomes, then leave the offer for human handling (zero writes).
-      if (settings.qualificationGateEnabled && qualificationCandidates > 0 && candidates.length === 0 && serviceQualification.excluded.length > 0) {
-        const reason = `qualification gate excluded every eligible candidate: ${serviceQualification.excluded.map((e) => `driver ${e.driverId}: ${e.reason}`).join("; ")}`;
+      if (settings.qualificationGateEnabled && candidates.length === 0 && (serviceQualification.excluded.length > 0 || (serviceType && /(?:tow|heavy|flatbed|wheel[- ]?lift)/i.test(serviceType)))) {
+        const reason = serviceQualification.excluded.length
+          ? `qualification gate excluded every eligible candidate: ${serviceQualification.excluded.map((e) => `driver ${e.driverId}: ${e.reason}`).join("; ")}`
+          : "qualification gate rejected tow job: no eligible candidates";
         await record({ decision: serviceType && /(?:tow|heavy|flatbed|wheel[- ]?lift)/i.test(serviceType) ? "rejected_tow_no_eligible_driver" : "escalated_qualification_failed", driverId: null, driverName: null, etaMinutes: null, zoneDistanceMiles: null, reason, rawResponse: { offer, serviceQualification } });
         result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: serviceType && /(?:tow|heavy|flatbed|wheel[- ]?lift)/i.test(serviceType) ? "rejected_tow_no_eligible_driver" : "escalated_qualification_failed", escalated: serviceType && /(?:tow|heavy|flatbed|wheel[- ]?lift)/i.test(serviceType) ? false : true, reason });
         continue;
