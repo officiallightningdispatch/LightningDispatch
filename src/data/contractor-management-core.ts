@@ -182,7 +182,12 @@ export async function listContractorsCore(actor: ContractorMgmtActor, opts: { in
            WHERE d.org_id = ${actor.orgId} AND d.contractor_id = u.id
              AND d.expires_on >= CURRENT_DATE AND d.expires_on <= CURRENT_DATE + INTERVAL '14 days') AS expiring_soon_count
       FROM users u
-      JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND m.role = 'contractor'
+      JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND (m.role = 'contractor' OR EXISTS (
+          SELECT 1 FROM towbook_sessions ts_identity
+          WHERE ts_identity.org_id = ${actor.orgId}
+            AND ts_identity.towbook_driver_id = u.towbook_driver_id
+            AND u.towbook_driver_id IS NOT NULL
+        ))
       LEFT JOIN contractor_profiles cp ON cp.org_id = ${actor.orgId} AND cp.user_id = u.id
       LEFT JOIN LATERAL (
         SELECT MAX(updated_at) AS session_updated_at
@@ -490,7 +495,12 @@ export async function importContractorsCore(actor: ContractorMgmtActor, opts: { 
     // Deactivated rows stay IN the map so a removed driver is never re-added —
     // upsertRosterDriver returns the explicit skip for them.
     const existingRows = await q`SELECT u.id, u.name, u.login_handle, u.towbook_driver_id, u.deactivated_at
-      FROM users u JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND m.role = 'contractor'
+      FROM users u JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND (m.role = 'contractor' OR EXISTS (
+          SELECT 1 FROM towbook_sessions ts_identity
+          WHERE ts_identity.org_id = ${actor.orgId}
+            AND ts_identity.towbook_driver_id = u.towbook_driver_id
+            AND u.towbook_driver_id IS NOT NULL
+        ))
       WHERE u.towbook_driver_id IS NOT NULL`;
     const orgContractors = new Map<string, { id: string; name: string; handle: string | null; deactivated: boolean }>();
     for (const r of existingRows as Record<string, unknown>[]) {
@@ -776,7 +786,12 @@ export async function editContractorCore(actor: ContractorMgmtActor, data: unkno
     await ensure();
     const q = await db();
     const rows = await q`SELECT u.id, u.name, u.email, u.login_handle, u.towbook_driver_id, u.towbook_user_id, u.deactivated_at
-      FROM users u JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND m.role = 'contractor'
+      FROM users u JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND (m.role = 'contractor' OR EXISTS (
+          SELECT 1 FROM towbook_sessions ts_identity
+          WHERE ts_identity.org_id = ${actor.orgId}
+            AND ts_identity.towbook_driver_id = u.towbook_driver_id
+            AND u.towbook_driver_id IS NOT NULL
+        ))
       WHERE u.id = ${contractorId} LIMIT 1`;
     if (!rows.length) return { ok: false, code: "not_found", message: "That contractor is not on this account." };
     const row = rows[0] as Record<string, unknown>;
@@ -863,7 +878,12 @@ export async function removeContractorCore(actor: ContractorMgmtActor, data: unk
     await ensure();
     const q = await db();
     const rows = await q`SELECT u.id, u.name, u.email, u.login_handle, u.towbook_driver_id, u.towbook_user_id, u.created_at, u.deactivated_at
-      FROM users u JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND m.role = 'contractor'
+      FROM users u JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND (m.role = 'contractor' OR EXISTS (
+          SELECT 1 FROM towbook_sessions ts_identity
+          WHERE ts_identity.org_id = ${actor.orgId}
+            AND ts_identity.towbook_driver_id = u.towbook_driver_id
+            AND u.towbook_driver_id IS NOT NULL
+        ))
       WHERE u.id = ${contractorId} LIMIT 1`;
     if (!rows.length) return { ok: false, code: "not_found", message: "That contractor is not on this account." };
     const row = rows[0] as Record<string, unknown>;

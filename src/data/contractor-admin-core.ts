@@ -535,7 +535,7 @@ export async function setContractorPayrateCore(actor: ContractorAdminActor, data
   try {
     await ensure();
     const q = await db();
-    const member = await q`SELECT 1 FROM organization_memberships m WHERE m.org_id=${actor.orgId} AND m.user_id=${v.data.contractorId} AND m.role='contractor' LIMIT 1`;
+    const member = await q`SELECT 1 FROM organization_memberships m WHERE m.org_id=${actor.orgId} AND m.user_id=${v.data.contractorId} AND (m.role='contractor' OR EXISTS (SELECT 1 FROM users u JOIN towbook_sessions ts ON ts.org_id=${actor.orgId} AND ts.towbook_driver_id=u.towbook_driver_id WHERE u.id=m.user_id AND u.towbook_driver_id IS NOT NULL)) LIMIT 1`;
     if (!member.length) return err("not_found", "That contractor isn't on this account.");
     const before = await q`SELECT payrate_cents FROM contractor_profiles WHERE org_id=${actor.orgId} AND user_id=${v.data.contractorId} LIMIT 1`;
     await q`INSERT INTO contractor_profiles(org_id, user_id, payrate_cents, updated_at)
@@ -580,7 +580,12 @@ export async function listContractorComplianceCore(actor: ContractorAdminActor):
                SELECT 1 FROM contractor_doc_selfies s
                WHERE s.org_id = d.org_id AND s.contractor_id = d.contractor_id AND s.doc_type_id = d.doc_type_id))) AS approved_doc_count
       FROM users u
-      JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND m.role = 'contractor'
+      JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND (m.role = 'contractor' OR EXISTS (
+          SELECT 1 FROM towbook_sessions ts_identity
+          WHERE ts_identity.org_id = ${actor.orgId}
+            AND ts_identity.towbook_driver_id = u.towbook_driver_id
+            AND u.towbook_driver_id IS NOT NULL
+        ))
       WHERE u.deactivated_at IS NULL
       ORDER BY LOWER(u.name)`;
     const out: ContractorComplianceRow[] = (rows as Record<string, unknown>[]).map((r) => ({
@@ -675,7 +680,12 @@ export async function getContractorDetailCore(actor: ContractorAdminActor, data:
            WHERE j.org_id = ${actor.orgId} AND j.assigned_contractor_id = u.id
              AND j.status = 'completed' AND j.completed_at >= ${payPeriodStart()}) AS completed_this_period
       FROM users u
-      JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND m.role = 'contractor'
+      JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${actor.orgId} AND (m.role = 'contractor' OR EXISTS (
+          SELECT 1 FROM towbook_sessions ts_identity
+          WHERE ts_identity.org_id = ${actor.orgId}
+            AND ts_identity.towbook_driver_id = u.towbook_driver_id
+            AND u.towbook_driver_id IS NOT NULL
+        ))
       LEFT JOIN contractor_profiles cp ON cp.org_id = ${actor.orgId} AND cp.user_id = u.id
       LEFT JOIN contractor_schedules cs ON cs.org_id = ${actor.orgId} AND cs.user_id = u.id
       LEFT JOIN LATERAL (
@@ -775,7 +785,7 @@ export async function setContractorContactCore(actor: ContractorAdminActor, data
   try {
     await ensure();
     const q = await db();
-    const member = await q`SELECT 1 FROM organization_memberships m WHERE m.org_id=${actor.orgId} AND m.user_id=${v.data.contractorId} AND m.role='contractor' LIMIT 1`;
+    const member = await q`SELECT 1 FROM organization_memberships m WHERE m.org_id=${actor.orgId} AND m.user_id=${v.data.contractorId} AND (m.role='contractor' OR EXISTS (SELECT 1 FROM users u JOIN towbook_sessions ts ON ts.org_id=${actor.orgId} AND ts.towbook_driver_id=u.towbook_driver_id WHERE u.id=m.user_id AND u.towbook_driver_id IS NOT NULL)) LIMIT 1`;
     if (!member.length) return err("not_found", "That contractor isn't on this account.");
     const before = await q`SELECT phone, vehicle_desc, address FROM contractor_profiles WHERE org_id=${actor.orgId} AND user_id=${v.data.contractorId} LIMIT 1`;
     await q`INSERT INTO contractor_profiles(org_id, user_id, payrate_cents, phone, vehicle_desc, address, updated_at)
@@ -875,7 +885,7 @@ export async function setContractorVehicleCore(actor: ContractorAdminActor, data
   try {
     await ensure();
     const q = await db();
-    const member = await q`SELECT 1 FROM organization_memberships m WHERE m.org_id=${actor.orgId} AND m.user_id=${v.data.contractorId} AND m.role='contractor' LIMIT 1`;
+    const member = await q`SELECT 1 FROM organization_memberships m WHERE m.org_id=${actor.orgId} AND m.user_id=${v.data.contractorId} AND (m.role='contractor' OR EXISTS (SELECT 1 FROM users u JOIN towbook_sessions ts ON ts.org_id=${actor.orgId} AND ts.towbook_driver_id=u.towbook_driver_id WHERE u.id=m.user_id AND u.towbook_driver_id IS NOT NULL)) LIMIT 1`;
     if (!member.length) return err("not_found", "That contractor isn't on this account.");
     const before = await q`SELECT vehicle_type, vehicle_make, vehicle_model, vehicle_year, vehicle_plate, vehicle_plate_state, vehicle_color, vehicle_desc
       FROM contractor_profiles WHERE org_id=${actor.orgId} AND user_id=${v.data.contractorId} LIMIT 1`;
@@ -933,7 +943,7 @@ export async function getContractorScheduleCore(actor: ContractorAdminActor, dat
   try {
     await ensure();
     const q = await db();
-    const member = await q`SELECT 1 FROM organization_memberships m WHERE m.org_id=${actor.orgId} AND m.user_id=${v.data.contractorId} AND m.role='contractor' LIMIT 1`;
+    const member = await q`SELECT 1 FROM organization_memberships m WHERE m.org_id=${actor.orgId} AND m.user_id=${v.data.contractorId} AND (m.role='contractor' OR EXISTS (SELECT 1 FROM users u JOIN towbook_sessions ts ON ts.org_id=${actor.orgId} AND ts.towbook_driver_id=u.towbook_driver_id WHERE u.id=m.user_id AND u.towbook_driver_id IS NOT NULL)) LIMIT 1`;
     if (!member.length) return err("not_found", "That contractor isn't on this account.");
     const rows = await q`SELECT schedule, source, owner_override, updated_at FROM contractor_schedules
       WHERE org_id=${actor.orgId} AND user_id=${v.data.contractorId} LIMIT 1`;
@@ -972,7 +982,7 @@ export async function setContractorScheduleCore(actor: ContractorAdminActor, dat
   try {
     await ensure();
     const q = await db();
-    const member = await q`SELECT 1 FROM organization_memberships m WHERE m.org_id=${actor.orgId} AND m.user_id=${parsed.contractorId} AND m.role='contractor' LIMIT 1`;
+    const member = await q`SELECT 1 FROM organization_memberships m WHERE m.org_id=${actor.orgId} AND m.user_id=${parsed.contractorId} AND (m.role='contractor' OR EXISTS (SELECT 1 FROM users u JOIN towbook_sessions ts ON ts.org_id=${actor.orgId} AND ts.towbook_driver_id=u.towbook_driver_id WHERE u.id=m.user_id AND u.towbook_driver_id IS NOT NULL)) LIMIT 1`;
     if (!member.length) return err("not_found", "That contractor isn't on this account.");
     const before = await q`SELECT source, owner_override FROM contractor_schedules
       WHERE org_id=${actor.orgId} AND user_id=${parsed.contractorId} LIMIT 1`;
@@ -1089,7 +1099,7 @@ async function listContractorDocumentsUnchecked(actor: ContractorAdminActor, con
     const self = contractorId === actor.id;
     const member = self
       ? await q`SELECT 1 FROM organization_memberships m WHERE m.org_id=${actor.orgId} AND m.user_id=${contractorId} LIMIT 1`
-      : await q`SELECT 1 FROM organization_memberships m WHERE m.org_id=${actor.orgId} AND m.user_id=${contractorId} AND m.role='contractor' LIMIT 1`;
+      : await q`SELECT 1 FROM organization_memberships m WHERE m.org_id=${actor.orgId} AND m.user_id=${contractorId} AND (m.role='contractor' OR EXISTS (SELECT 1 FROM users u JOIN towbook_sessions ts ON ts.org_id=${actor.orgId} AND ts.towbook_driver_id=u.towbook_driver_id WHERE u.id=m.user_id AND u.towbook_driver_id IS NOT NULL)) LIMIT 1`;
     if (!member.length) return err("not_found", "That contractor isn't on this account.");
     if (self) {
       const ident = await q`SELECT towbook_driver_id, linked_driver_user_id, deactivated_at FROM users WHERE id=${contractorId} LIMIT 1`;
