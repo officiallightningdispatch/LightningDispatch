@@ -2618,7 +2618,6 @@ async function runAutoDispatchInternal(
     for (const rawOffer of offers) {
       let shape: { ok: true; offer: OfferShape } | { ok: false; missing: string[] } = validateOfferShape(rawOffer);
       let coordsProvenance: { source: "db" | "geocode"; detail: string } | null = null;
-      let coordsResolutionFailure: string | null = null;
       if (!shape.ok) {
         // Coordinate-less offers (owner-directed 2026-08-13, live offer
         // 326885213 — the first offer ever with NO startLocationLatitude/
@@ -2640,8 +2639,6 @@ async function runAutoDispatchInternal(
               shape = rebuilt;
               coordsProvenance = { source: resolved.source, detail: resolved.detail };
             }
-          } else {
-            coordsResolutionFailure = resolved.reason;
           }
         }
       }
@@ -2657,7 +2654,6 @@ async function runAutoDispatchInternal(
           if (synthetic.ok) { shape = synthetic; }
           else {
             // Coordinates are deliberately irrelevant to the fallback claim.
-            const offer = { callRequestId: String(id), status: 0, startLocationLatitude: 0, startLocationLongitude: 0, expirationDateUtc: expiration, maxEta: numeric(raw.maxEta), purchaseOrderNumber: null, drivers: null } as OfferShape;
             if (Date.parse(expiration) < Date.now()) {
               const reason = `offer expired (expirationDateUtc=${expiration}) — not auto-accepted`;
               await recordDecision(orgId, actor, { callRequestId: String(id), callId: null, decision: "escalated_expired", driverId: null, driverName: null, etaMinutes: null, zoneDistanceMiles: null, reason, rawResponse: { offer: raw } }); result.processed++; result.decisions.push({ callRequestId: String(id), decision: "escalated_expired", escalated: true, reason }); continue;
@@ -2728,13 +2724,6 @@ async function runAutoDispatchInternal(
         ? zoneState.authoritativeLng : Number(offer.startLocationLongitude);
       const jobZip = rawStartingForZone ? zipOf(rawStartingForZone) : null;
       const lat = zoneLat, lng = zoneLng;
-      // Keep the nearest resolved-state zone distance for the out-of-zone
-      // ledger too. Matching is evaluated separately so ZIP membership and
-      // radius eligibility remain unchanged.
-      const nearestZoneDistance = zoneRows.reduce((nearest, z) => {
-        const distance = haversineMiles(lat, lng, Number(z.lat), Number(z.lng));
-        return nearest == null || distance < nearest ? distance : nearest;
-      }, null as number | null);
       const usableZones = zoneRows.map((z) => {
         const zLat = Number(z.lat), zLng = Number(z.lng), radius = Number(z.radius_miles);
         const zips = Array.isArray(z.zip_codes) ? z.zip_codes.map(String) : [];
@@ -2833,7 +2822,6 @@ async function runAutoDispatchInternal(
       const rawStarting = startingLocationOf(rawOffer as Record<string, unknown>);
       const tomtomKeyForGuard = resolveTomtomKey(deps.env ?? process.env);
       const jobStateResolution = await resolveJobState(orgId, rawOffer as Record<string, unknown>, rawStarting, tomtomKeyForGuard, fetchImpl);
-      const addressResolution = jobStateResolution;
       const jobState = jobStateResolution.state;
       const reverseStateCache = new Map<string, string | null>();
       // ALWAYS active (fail-closed): a null jobState (unresolvable address)
