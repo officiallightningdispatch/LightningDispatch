@@ -213,6 +213,24 @@ export async function authorizeAccount(opts: { keyId: string; applicationKey: st
 
 export type B2PutResult = { ok: boolean; status: number | null; body: unknown };
 export type B2GetResult = { ok: boolean; status: number | null; bytes: Uint8Array | null };
+export type B2HeadResult = { ok: boolean; status: number | null; contentLength: number | null; contentType: string | null };
+
+/** SigV4 HEAD of an object, returning the metadata needed to verify a DB/blob contract. */
+export async function headObject(opts: {
+  config: B2Config;
+  s3ApiUrl: string;
+  key: string;
+  fetchImpl?: typeof fetch;
+  now?: Date;
+}): Promise<B2HeadResult> {
+  const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
+  const region = regionFromS3Url(opts.s3ApiUrl);
+  const u = new URL(`${opts.s3ApiUrl}/${encodeBucketPath(opts.config.bucketName)}/${encodeKey(opts.key)}`);
+  const signed = signV4({ accessKeyId: opts.config.keyId, secretAccessKey: opts.config.applicationKey, region, method: "HEAD", host: u.host, path: u.pathname, payloadHash: sha256Hex(""), now: opts.now });
+  const res = await fetchImpl(u.toString(), { method: "HEAD", headers: { authorization: signed.authorization, "x-amz-date": signed.xAmzDate, "x-amz-content-sha256": signed.xAmzContentSha256 }, signal: AbortSignal.timeout(30000) });
+  const length = res.headers?.get("content-length");
+  return { ok: res.ok, status: res.status, contentLength: length == null ? null : Number(length), contentType: res.headers?.get("content-type") };
+}
 
 /** SigV4 PUT of an object. The body is fully buffered, so the payload SHA-256
  *  is signed (the most compatible form). Injectable fetchImpl for tests. */
