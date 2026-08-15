@@ -1097,6 +1097,7 @@ type OfferShape = {
   startLocationLongitude: number;
   expirationDateUtc: string;
   maxEta: number | null;
+  serviceType: string | null;
   /** Motor-club purchase order number — the field that TIES the created call
    *  to this offer (every observed call record carries `purchaseOrderNumber`;
    *  the offer carries it as the "Dispatch #"). Captured so post-accept
@@ -1411,6 +1412,7 @@ function buildOfferShape(
   if (!expirationDateUtc || Number.isNaN(Date.parse(expirationDateUtc))) missing.push("expirationDateUtc");
   if (missing.length) return { ok: false, missing };
   const maxEta = numeric(o.maxEta);
+  const serviceType = typeof o.serviceType === "string" && o.serviceType.trim() ? o.serviceType.trim() : null;
   const drivers = Array.isArray(o.drivers)
     ? o.drivers.map((d) => numeric(d)).filter((d): d is number => d != null && d > 0)
     : null;
@@ -1431,6 +1433,7 @@ function buildOfferShape(
       startLocationLongitude: lng as number,
       expirationDateUtc: expirationDateUtc as string,
       maxEta: maxEta != null && maxEta > 0 ? maxEta : null,
+      serviceType,
       purchaseOrderNumber,
       drivers,
     },
@@ -2681,6 +2684,8 @@ async function runAutoDispatchInternal(
         }
       }
       const { offer } = shape;
+      const jobTypeRows = await sql() `SELECT service_type FROM dispatch_jobs WHERE org_id=${orgId} AND towbook_job_id=${offer.callRequestId} ORDER BY created_at DESC LIMIT 1`;
+      if (!offer.serviceType && jobTypeRows[0]?.service_type) offer.serviceType = String(jobTypeRows[0].service_type);
       if (coordsProvenance) offer.coords = coordsProvenance;
       // dedupe: never double-process an offer (SELECT before acting; unique
       // partial index is the hard backstop against races)
@@ -2815,7 +2820,7 @@ async function runAutoDispatchInternal(
               return Number.isFinite(id) && eligibleIds.has(id);
             })
           : (nd.body as unknown[]);
-      const serviceType = typeof (rawOffer as Record<string, unknown>).serviceType === "string" ? String((rawOffer as Record<string, unknown>).serviceType) : null;
+      const serviceType = offer.serviceType || (typeof (rawOffer as Record<string, unknown>).serviceType === "string" ? String((rawOffer as Record<string, unknown>).serviceType) : null) || area?.serviceType || null;
       const serviceQualification: ServiceQualificationOutcome = { serviceType, assessed: Boolean(serviceType?.trim()), excluded: [] };
       const qualificationCandidates = candidates.length;
       // MINIMAL QUALIFICATION GATE is applied immediately after Towbook's eligible-list filter.
@@ -2830,12 +2835,17 @@ async function runAutoDispatchInternal(
           LEFT JOIN contractor_profiles cp ON cp.user_id=u.id AND cp.org_id=${orgId}
           WHERE u.towbook_driver_id = ANY(${ids})`;
         const byId = new Map(gateRows.map((r) => [String(r.towbook_driver_id), r as Record<string, unknown>]));
+        const towJob = /(?:tow|heavy|flatbed|wheel[- ]?lift)/i.test(serviceType?.toLowerCase() || "");
+        const onlineRows = towJob ? await sql() `SELECT u.towbook_driver_id, (l.heartbeat_at > NOW() - INTERVAL '90 seconds') AS online, COALESCE((SELECT COUNT(*) FROM dispatch_jobs j WHERE j.org_id=${orgId} AND j.assigned_driver_towbook_id=u.towbook_driver_id AND j.status NOT IN ('completed','cancelled')),0)::int AS active_count FROM users u LEFT JOIN driver_availability_log l ON l.user_id=u.id AND l.org_id=${orgId} AND l.session_started_at IS NOT NULL ORDER BY l.heartbeat_at DESC NULLS LAST` : [];
+        const onlineById = new Map(onlineRows.map((r) => [String(r.towbook_driver_id), r as Record<string, unknown>]));
         const qualified = candidates.filter((d) => {
           const id = String((d as Record<string, unknown>).driverId), r = byId.get(id);
           const wanted = serviceType?.trim().toLowerCase() || "";
           const vehicle = String(r?.vehicle_type ?? "").toLowerCase();
-          const capabilityMismatch = wanted && vehicle && ((wanted.includes("tow") || wanted.includes("heavy")) && !vehicle.includes("tow") && !vehicle.includes("heavy"));
-          const reason = !r ? "org-inactive" : r.deactivated_at != null ? "deactivated" : r.member_id == null ? "org-inactive" : Number(r.required_docs) > Number(r.approved_docs) ? "missing-compliance" : capabilityMismatch ? "capability-mismatch" : null;
+          const towJob = /(?:tow|heavy|flatbed|wheel[- ]?lift)/i.test(wanted);
+          const towCapable = /(?:tow truck|tow|heavy|flatbed|wheel[- ]?lift)/i.test(vehicle);
+          const capabilityMismatch = towJob && !towCapable;
+          const reason = !r ? "org-inactive" : r.deactivated_at != null ? "deactivated" : r.member_id == null ? "org-inactive" : Number(r.required_docs) > Number(r.approved_docs) ? "missing-compliance" : capabilityMismatch ? "capability-mismatch" : towJob && onlineById.get(id)?.online !== true ? "offline" : towJob && Number(onlineById.get(id)?.active_count ?? 0) > 0 ? "unavailable" : null;
           if (reason) serviceQualification.excluded.push({ driverId: Number(id), reason });
           return !reason;
         });
@@ -2847,8 +2857,8 @@ async function runAutoDispatchInternal(
       // other outcomes, then leave the offer for human handling (zero writes).
       if (settings.qualificationGateEnabled && qualificationCandidates > 0 && candidates.length === 0 && serviceQualification.excluded.length > 0) {
         const reason = `qualification gate excluded every eligible candidate: ${serviceQualification.excluded.map((e) => `driver ${e.driverId}: ${e.reason}`).join("; ")}`;
-        await record({ decision: "escalated_qualification_failed", driverId: null, driverName: null, etaMinutes: null, zoneDistanceMiles: null, reason, rawResponse: { offer, serviceQualification } });
-        result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_qualification_failed", escalated: true, reason });
+        await record({ decision: serviceType && /(?:tow|heavy|flatbed|wheel[- ]?lift)/i.test(serviceType) ? "rejected_tow_no_eligible_driver" : "escalated_qualification_failed", driverId: null, driverName: null, etaMinutes: null, zoneDistanceMiles: null, reason, rawResponse: { offer, serviceQualification } });
+        result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: serviceType && /(?:tow|heavy|flatbed|wheel[- ]?lift)/i.test(serviceType) ? "rejected_tow_no_eligible_driver" : "escalated_qualification_failed", escalated: serviceType && /(?:tow|heavy|flatbed|wheel[- ]?lift)/i.test(serviceType) ? false : true, reason });
         continue;
       }
       // ETA v3 provider resolution: TomTom when TOMTOM_API_KEY is set (with
