@@ -1831,7 +1831,8 @@ try {
     for (const [label,id,reason] of cases) {
       const extra = label==='capability mismatch' ? {serviceType:'heavy tow'} : {};
       const {r,m,rows}=await runQ(92000+cases.indexOf(cases.find(x=>x[0]===label)),[driver(id,label)] ,{offer:extra});
-      check(`qualification ${label}: excluded ${reason}, never assigned`, r.decisions[0]?.decision==='escalated_qualification_failed' && posts(m.calls).length===0 && String(rows[0]?.reason).includes(reason), JSON.stringify({r,rows}));
+      const expectedDecision = label === 'capability mismatch' ? 'rejected_tow_no_eligible_driver' : 'escalated_qualification_failed';
+      check(`qualification ${label}: excluded ${reason}, never assigned`, r.decisions[0]?.decision===expectedDecision && posts(m.calls).length===0 && String(rows[0]?.reason).includes(reason), JSON.stringify({r,rows}));
     }
     await q`UPDATE users SET deactivated_at=NULL WHERE id=${QUAL_USERS[0]}`;
     const {r: noMember,m: nm}=await runQ(92010,[driver(QUAL_TB[6],'no membership')]);
@@ -1842,6 +1843,8 @@ try {
     await q`UPDATE org_settings SET qualification_gate_enabled=TRUE WHERE org_id=${ORG7}`;
     const {r: good,m: gm,rows: gr}=await runQ(92012,[driver(QUAL_TB[4],'qualified',{etaSec:600})]);
     check('qualification qualified: assigned with ordering rails and no exclusions',good.decisions[0]?.decision==='auto_accept_with_driver'&&posts(gm.calls)[0]?.body?.driverId===QUAL_TB[4]&&gr[0]?.raw_response?.serviceQualification?.excluded?.length===0);
+    const {r: towCapable,m: towCapableM,rows: towCapableRows}=await runQ(92014,[driver(QUAL_TB[4],'tow-capable online',{etaSec:600})],{offer:{serviceType:'heavy tow'}});
+    check('tow capability companion: online tow-capable driver assigned',towCapable.decisions[0]?.decision==='auto_accept_with_driver'&&posts(towCapableM.calls)[0]?.body?.driverId===QUAL_TB[4]&&!String(towCapableRows[0]?.reason||'').includes('capability-mismatch'),JSON.stringify({r:towCapable,rows:towCapableRows}));
     const {r: sole,m: sm}=await runQ(92013,[driver(QUAL_TB[1],'sole unqualified')]);
     check('qualification sole-unqualified: zero POSTs, no-driver fallback hard blocked',sole.decisions[0]?.decision==='escalated_qualification_failed'&&posts(sm.calls).length===0&&!sm.calls.some(c=>c.method==='POST'));
   }
