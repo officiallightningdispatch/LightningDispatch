@@ -280,6 +280,7 @@ const decisions3 = () => q`SELECT call_request_id, call_id, decision, escalated,
 const decisions5 = () => q`SELECT call_request_id, call_id, decision, escalated, driver_id, driver_name, eta_minutes, zone_distance_miles, reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG5} ORDER BY created_at, call_request_id`;
 const audits = () => q`SELECT count(*)::int n FROM audit_log WHERE org_id=${ORG} AND action='ai_dispatcher:accept'`;
 const posts = (calls) => calls.filter((c) => c.method === "POST");
+const fallbackAccept = (r, calls, id, eta = 45) => r.decisions[0]?.decision === "auto_accept_no_driver" && r.decisions[0]?.driverId === "0" && r.decisions[0]?.etaMinutes === eta && r.decisions[0]?.escalated === true && posts(calls).length === 1 && String(posts(calls)[0].url).includes(`/api/callRequests/${id}`) && String(posts(calls)[0].body.driverId) === "0" && Number(posts(calls)[0].body.eta) === eta && String(posts(calls)[0].body.notes).includes("awaiting driver assignment");
 
 try {
   // ---- setup: schema (idempotent; applies v8), QA orgs + owner + encrypted session
@@ -519,7 +520,7 @@ try {
     check("boundary inside: accepted (29.5 mi ≤ 30)", r.decisions[0]?.decision === "auto_accept_with_driver" && posts(m.calls).length === 1, JSON.stringify(r.decisions));
   }
 
-  /* ============ 11) out-of-zone escalation (30.5 mi) — never accept ============ */
+  /* ============ 11) out-of-zone universal fallback ============ */
   {
     const m = makeFetch({
       offers: [offer(7005, { lat: northOf(30.5), lng: ZONE.lng, startingLocation: "123 MAIN ST, BRIDGEPORT CT 06607" })],
@@ -527,7 +528,7 @@ try {
     });
     const { deps } = makeDeps(m.fetchImpl);
     const r = await runAutoDispatch(ORG, deps);
-    check("out-of-zone: escalated_out_of_zone, zero POSTs", r.decisions[0]?.decision === "escalated_out_of_zone" && r.decisions[0]?.escalated === true && posts(m.calls).length === 0, JSON.stringify(r.decisions));
+    check("out-of-zone: auto_accept_no_driver, driverId 0, SLA accept", r.decisions[0]?.decision === "auto_accept_no_driver" && r.decisions[0]?.driverId === "0" && r.decisions[0]?.escalated === true && posts(m.calls).length === 1 && String(posts(m.calls)[0].body.driverId) === "0" && Number(posts(m.calls)[0].body.eta) === 45 && String(posts(m.calls)[0].body.notes).includes("awaiting driver assignment"), JSON.stringify({ decision: r.decisions[0], post: posts(m.calls)[0] }));
     const rows = await decisions();
     const oz = rows.find((x) => String(x.call_request_id) === "7005");
     check("out-of-zone: zone_distance_miles recorded > 30", oz && Number(oz.zone_distance_miles) > 30, String(oz?.zone_distance_miles));
@@ -538,7 +539,7 @@ try {
     const m = makeFetch({ offers: [offer(7006, { lat: 0, lng: 0 })], drivers: [] });
     const { deps } = makeDeps(m.fetchImpl);
     const r = await runAutoDispatch(ORG, deps);
-    check("missing coords: escalated_missing_coords, zero POSTs", r.decisions[0]?.decision === "escalated_missing_coords" && posts(m.calls).length === 0, JSON.stringify(r.decisions));
+    check("missing coords: auto_accept_no_driver, driverId 0, SLA accept", r.decisions[0]?.decision === "auto_accept_no_driver" && r.decisions[0]?.driverId === "0" && r.decisions[0]?.escalated === true && posts(m.calls).length === 1 && String(posts(m.calls)[0].body.driverId) === "0" && Number(posts(m.calls)[0].body.eta) === 45 && String(posts(m.calls)[0].body.notes).includes("awaiting driver assignment"), JSON.stringify({ decision: r.decisions[0], post: posts(m.calls)[0] }));
   }
 
   /* ============ 13) expired offer escalation ============ */
@@ -555,7 +556,7 @@ try {
     const m = makeFetch({ offers: [bad], drivers: [] });
     const { deps } = makeDeps(m.fetchImpl);
     const r = await runAutoDispatch(ORG, deps);
-    check("shape: escalated_unexpected_shape, zero POSTs", r.decisions[0]?.decision === "escalated_unexpected_shape" && r.decisions[0]?.escalated === true && posts(m.calls).length === 0, JSON.stringify(r.decisions));
+    check("shape: auto_accept_no_driver, driverId 0, SLA accept", r.decisions[0]?.decision === "auto_accept_no_driver" && r.decisions[0]?.driverId === "0" && r.decisions[0]?.escalated === true && posts(m.calls).length === 1 && String(posts(m.calls)[0].body.driverId) === "0" && Number(posts(m.calls)[0].body.eta) === 45 && String(posts(m.calls)[0].body.notes).includes("awaiting driver assignment"), JSON.stringify({ decision: r.decisions[0], post: posts(m.calls)[0] }));
     const rows = await decisions();
     const sr = rows.find((x) => String(x.call_request_id).startsWith("shape-"));
     check("shape: decision keyed by content hash, raw_response carries the full offer JSON", sr && String(sr.call_request_id).startsWith("shape-") && sr.raw_response?.offer?.accountName === bad.accountName && sr.raw_response?.offer?.startLocationLatitude === undefined, JSON.stringify(sr));
@@ -566,7 +567,7 @@ try {
     const m = makeFetch({ offers: [offer(7009)], drivers: [], nearestDriversStatus: 500 });
     const { deps } = makeDeps(m.fetchImpl);
     const r = await runAutoDispatch(ORG, deps);
-    check("driver lookup 500: escalated_driver_lookup_failed, zero POSTs", r.decisions[0]?.decision === "escalated_driver_lookup_failed" && posts(m.calls).length === 0, JSON.stringify(r.decisions));
+    check("driver lookup 500: auto_accept_no_driver, driverId 0, SLA accept", r.decisions[0]?.decision === "auto_accept_no_driver" && r.decisions[0]?.driverId === "0" && r.decisions[0]?.escalated === true && posts(m.calls).length === 1 && String(posts(m.calls)[0].body.driverId) === "0" && Number(posts(m.calls)[0].body.eta) === 45 && String(posts(m.calls)[0].body.notes).includes("awaiting driver assignment"), JSON.stringify({ decision: r.decisions[0], post: posts(m.calls)[0] }));
   }
 
   /* ============ 16) accept failure: one retry, then escalation (never dropped) ============ */
@@ -1330,11 +1331,11 @@ try {
       geocodeOverride: async () => ({ lat: 29.03, lng: -98.99, score: 14, freeformAddress: "500 Frontage Rd, Cotulla, TX 78014" }),
     });
     const r = await runAutoDispatch(ORG6, deps);
-    check("coords cotulla: STILL escalated_unexpected_shape, zero POSTs", r.decisions[0]?.decision === "escalated_unexpected_shape" && r.decisions[0]?.escalated === true && posts(m.calls).length === 0, JSON.stringify(r.decisions));
+    check("coords cotulla: universal fallback accept", fallbackAccept(r, m.calls, "6003"), JSON.stringify({ decision: r.decisions[0], post: posts(m.calls)[0] }));
     check("coords cotulla: reason notes the resolution failure + score floor", String(r.decisions[0]?.reason).includes("pickup-coords resolution failed") && String(r.decisions[0]?.reason).includes("score 14"), String(r.decisions[0]?.reason));
     const rows = await q`SELECT call_request_id, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND decision='escalated_unexpected_shape'`;
     const sr = rows.find((x) => String(x.call_request_id).startsWith("shape-"));
-    check("coords cotulla: escalated row keyed by content hash + full raw offer intact", sr && String(sr.call_request_id).startsWith("shape-") && sr.raw_response?.offer?.accountName === "Agero (Swoop) Bridgeport" && sr.raw_response?.offer?.startLocationLatitude === undefined, JSON.stringify(sr));
+    check("coords cotulla: fallback row carries full raw offer + accept", sr && sr.raw_response?.offer?.accountName === "Agero (Swoop) Bridgeport" && sr.raw_response?.accept, JSON.stringify(sr));
   }
   {
     // (e) no startingLocation text at all + no coords → escalates (unchanged
@@ -1433,7 +1434,7 @@ try {
     const s4row = (await q`SELECT reason FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='6204'`)[0];
     check("state resolution authoritative record beats stale offer address", s4.r.decisions[0]?.decision === "auto_accept_with_driver" && String(s4row?.reason).includes("authoritative"), String(s4row?.reason));
     const s7 = await runStateCase(6207, { address: ct, lat: 41.31, lng: -73.06, stateResolver: async () => "TX" });
-    check("state resolution no in-state driver: CT job with TX drivers", s7.r.decisions[0]?.decision === "escalated_cross_state" && String(s7.r.decisions[0]?.reason).includes("no driver currently in state CT"), JSON.stringify(s7.r.decisions));
+    check("state resolution no in-state driver: universal fallback accept", fallbackAccept(s7.r, s7.m.calls, "6207") && String(s7.r.decisions[0]?.reason).includes("no driver currently in state CT"), JSON.stringify(s7.r.decisions));
     // --- TX-coordinate scenarios: switch the org zone to Georgetown TX ---
     await setZone(TX_ZONE.lat, TX_ZONE.lng, TX_ZONE.radius);
     const s2 = await runStateCase(6202, { address: tx, lat: 30.61948, lng: -97.648242, stateResolver: async () => "TX" });
@@ -1444,9 +1445,9 @@ try {
       ? jsonResponse(200, { addresses: [{ address: { countryCode: "US", adminDistrict: "TX" } }] }) : rf5.fetchImpl(url, init);
     const { deps: d5 } = makeDeps(withRouter(m5.fetchImpl, geoTomtomFetch), null, { noRouterOverride: true, env: { TOMTOM_API_KEY: "test-key-not-real" } });
     const r5 = await runAutoDispatch(ORG6, d5);
-    check("state resolution genuine discrepancy: escalated_state_unknown with zero accept POSTs", r5.decisions[0]?.decision === "escalated_state_unknown" && String(r5.decisions[0]?.reason).includes("genuine location discrepancy") && posts(m5.calls).length === 0, JSON.stringify(r5.decisions));
+    check("state resolution genuine discrepancy: universal fallback accept", fallbackAccept(r5, m5.calls, "6205") && String(r5.decisions[0]?.reason).includes("genuine location discrepancy"), JSON.stringify(r5.decisions));
     const s6 = await runStateCase(6206, { address: tx, lat: 30.61948, lng: -97.648242 });
-    check("state resolution cross-state blocked: TX job with CT drivers", s6.r.decisions[0]?.decision === "escalated_cross_state" && String(s6.r.decisions[0]?.reason).includes("no driver currently in state TX"), JSON.stringify(s6.r.decisions));
+    check("state resolution cross-state blocked: universal fallback accept", fallbackAccept(s6.r, s6.m.calls, "6206") && String(s6.r.decisions[0]?.reason).includes("no driver currently in state TX"), JSON.stringify(s6.r.decisions));
     // restore ORG6 zone for later tests
     await setZone(origZone.zone_lat, origZone.zone_lng, origZone.zone_radius_miles);
   }
