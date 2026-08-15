@@ -31,7 +31,8 @@ try {
  await q`INSERT INTO towbook_sessions(org_id,encrypted_session,status) VALUES(${ORG},${await encryptSession(JSON.stringify({cookies:'qa',baseUrl:'https://app.towbook.com'}))},'connected')`;
  await q`INSERT INTO org_settings(org_id,nudge_enabled,reassign_not_headed_minutes,qualification_gate_enabled) VALUES(${ORG},TRUE,5,FALSE)`;
  await q`INSERT INTO dispatch_zones(id,org_id,name,state,market,zone_type,lat,lng,radius_miles,tz,active,sort_order,zip_codes) VALUES(${uid('zone')},${ORG},'QA CT','CT','QA','market',41.208862,-73.207253,30,'America/New_York',TRUE,1,ARRAY['06606'])`;
- const run=async(id,drivers,opts={})=>{globalThis.fetch=mockFetch(drivers,opts).f; await processAssignmentNudges(ORG,now);};
+ const realFetch=globalThis.fetch;
+ const run=async(id,drivers,opts={})=>{const f=mockFetch(drivers,opts).f; globalThis.fetch=(url,init)=>String(url).includes("app.towbook.com")?f(url,init):realFetch(url,init); await processAssignmentNudges(ORG,now);};
  // a
  {const id=await job('headed');await q`INSERT INTO driver_locations(id,org_id,driver_id,towbook_driver_id,latitude,longitude,captured_at) VALUES(${uid('gps1')},${ORG},${OLD},${String(IDS.old)},41.3,-73.3,${new Date(now.getTime()-120000).toISOString()}),(${uid('gps2')},${ORG},${OLD},${String(IDS.old)},41.2,-73.2,${new Date(now.getTime()-60000).toISOString()})`;await run(id,[drv(IDS.near,'Near')]);check('a headed at threshold: no reassignment/no ledger',(await events(id)).length===0);}
  // b

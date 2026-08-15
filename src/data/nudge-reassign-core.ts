@@ -38,8 +38,9 @@ async function reassignNotHeaded(orgId:string, job:Record<string,unknown>, oldId
   drivers=drivers.filter(d=>Number((d as Record<string,unknown>)?.driverId)!==Number(oldId));
   const queues=await loadOrgDriverQueues(orgId), gps=await loadDriverGpsFixes(orgId), anchors=await loadDriverAnchors(orgId);
   const serviceQualification={serviceType:job.service_type?String(job.service_type):null,assessed:Boolean(job.service_type),excluded:[] as Array<{driverId:number;reason:string}>};
-  const state=resolveStateFromAddress(String(job.pickup??""));
-  const router=resolveRouter(process.env);
+  const resolution=resolveStateFromAddress(String(job.pickup??""));
+  const state=resolution.state;
+  const router=resolveRouter(process.env).router;
   const stateGuard={jobState:state,resolveDriverState:async(_id:number,la:number,lo:number)=>reverseGeocodeState(la,lo,process.env.TOMTOM_API_KEY||"",fetch)};
   const areaBase={anchors,gpsFixes:gps,serviceType:serviceQualification.serviceType,serviceQualification,stateGuard};
   const zoneMatches=await loadZoneMatches(orgId,drivers,lat,lng,state);
@@ -82,7 +83,7 @@ export async function processAssignmentNudges(orgId:string, now:Date = new Date(
   const rows=await sql()`SELECT id,assigned_driver_towbook_id,assigned_at,pickup_lat,pickup_lng,pickup,service_type,towbook_job_id,status FROM dispatch_jobs WHERE org_id=${orgId} AND assigned_driver_towbook_id IS NOT NULL AND assigned_at IS NOT NULL AND status IN ('offered','accepted','en_route') AND assigned_at <= ${new Date(now.getTime()-mins*60000).toISOString()}`;
   for (const r of rows as Array<Record<string,unknown>>) {
     const jobId=String(r.id), oldId=String(r.assigned_driver_towbook_id);
-    const fixes=await sql()`SELECT latitude,longitude,captured_at,speed_mph FROM driver_locations WHERE org_id=${orgId} AND towbook_driver_id=${oldId} AND captured_at >= ${String(r.assigned_at)} ORDER BY captured_at`;
+    const fixes=await sql()`SELECT latitude,longitude,captured_at,speed_mph FROM driver_locations WHERE org_id=${orgId} AND towbook_driver_id=${oldId} AND captured_at >= ${new Date(String(r.assigned_at)).toISOString()} ORDER BY captured_at`;
     const check=isDriverHeaded((fixes as Array<Record<string,unknown>>).map(f=>({latitude:Number(f.latitude),longitude:Number(f.longitude),capturedAt:String(f.captured_at),speedMph:f.speed_mph==null?null:Number(f.speed_mph)})),Number(r.pickup_lat),Number(r.pickup_lng),String(r.assigned_at),now);
     if (check.headed) continue;
     const reassigned=await sql()`SELECT 1 FROM dispatch_nudge_events WHERE org_id=${orgId} AND job_id=${jobId} AND kind='reassigned' LIMIT 1`;
