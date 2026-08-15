@@ -1257,9 +1257,25 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE TABLE IF NOT EXISTS driver_region_preferences (org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, driver_id TEXT NOT NULL, config JSONB NOT NULL DEFAULT '{}'::jsonb, enabled BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(org_id, driver_id))`;
     await q`CREATE INDEX IF NOT EXISTS driver_region_preferences_org_idx ON driver_region_preferences(org_id, enabled)`;
   }],
-  [56, async (q) => {
-    await q`ALTER TABLE dispatch_zones DROP CONSTRAINT IF EXISTS dispatch_zones_zone_type_check`;
-    await q`ALTER TABLE dispatch_zones ADD CONSTRAINT dispatch_zones_zone_type_check CHECK (zone_type IN ('market','submarket','rural','corridor','coverage','county'))`;
+  [53, async (q) => {
+    await q`INSERT INTO driver_region_preferences (org_id, driver_id, config, enabled)
+      VALUES ('89e15ce587651cc47c3bc45b1c612a220955', '717660', ${JSON.stringify({
+        core_centers: [{ name: 'Bridgeport', lat: 41.1792, lng: -73.1894, radius_miles: 4 }, { name: 'Milford', lat: 41.2307, lng: -73.064, radius_miles: 4 }],
+        nearby_centers: [
+          { name: 'Stratford', lat: 41.2043, lng: -73.1332, radius_miles: 3 }, { name: 'Fairfield', lat: 41.1412, lng: -73.2637, radius_miles: 3 },
+          { name: 'Orange', lat: 41.2787, lng: -73.0257, radius_miles: 3 }, { name: 'Shelton', lat: 41.3165, lng: -73.0932, radius_miles: 3 },
+          { name: 'Trumbull', lat: 41.2429, lng: -73.2007, radius_miles: 3 }, { name: 'West Haven', lat: 41.2707, lng: -72.947, radius_miles: 3 }
+        ], priority_weight: 1, nearby_weight: 0.5, max_backlog_before_waive: 2, enabled: true
+      })}::jsonb, TRUE)
+      ON CONFLICT (org_id, driver_id) DO NOTHING`;
+  }],
+
+  [54, async (q) => {
+    // P0 Slice 3: persisted availability heartbeat. A live GO is eligible only
+    // while heartbeat_at is fresh; closing a tab therefore cannot leave a
+    // driver available forever, while device handoff has a 90-second grace.
+    await q`ALTER TABLE driver_availability_log ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ`;
+    await q`CREATE INDEX IF NOT EXISTS driver_availability_heartbeat_idx ON driver_availability_log(org_id, heartbeat_at) WHERE session_started_at IS NOT NULL`;
   }],
   [55, async (q) => {
     // National zone metadata. Append-only and idempotent: existing P0 zones are
@@ -1278,26 +1294,10 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE INDEX IF NOT EXISTS dispatch_zones_geo_idx ON dispatch_zones(org_id,state,active,lat,lng)`;
   }],
 
-  [54, async (q) => {
-    // P0 Slice 3: persisted availability heartbeat. A live GO is eligible only
-    // while heartbeat_at is fresh; closing a tab therefore cannot leave a
-    // driver available forever, while device handoff has a 90-second grace.
-    await q`ALTER TABLE driver_availability_log ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ`;
-    await q`CREATE INDEX IF NOT EXISTS driver_availability_heartbeat_idx ON driver_availability_log(org_id, heartbeat_at) WHERE session_started_at IS NOT NULL`;
+  [56, async (q) => {
+    await q`ALTER TABLE dispatch_zones DROP CONSTRAINT IF EXISTS dispatch_zones_zone_type_check`;
+    await q`ALTER TABLE dispatch_zones ADD CONSTRAINT dispatch_zones_zone_type_check CHECK (zone_type IN ('market','submarket','rural','corridor','coverage','county'))`;
   }],
-  [53, async (q) => {
-    await q`INSERT INTO driver_region_preferences (org_id, driver_id, config, enabled)
-      VALUES ('89e15ce587651cc47c3bc45b1c612a220955', '717660', ${JSON.stringify({
-        core_centers: [{ name: 'Bridgeport', lat: 41.1792, lng: -73.1894, radius_miles: 4 }, { name: 'Milford', lat: 41.2307, lng: -73.064, radius_miles: 4 }],
-        nearby_centers: [
-          { name: 'Stratford', lat: 41.2043, lng: -73.1332, radius_miles: 3 }, { name: 'Fairfield', lat: 41.1412, lng: -73.2637, radius_miles: 3 },
-          { name: 'Orange', lat: 41.2787, lng: -73.0257, radius_miles: 3 }, { name: 'Shelton', lat: 41.3165, lng: -73.0932, radius_miles: 3 },
-          { name: 'Trumbull', lat: 41.2429, lng: -73.2007, radius_miles: 3 }, { name: 'West Haven', lat: 41.2707, lng: -72.947, radius_miles: 3 }
-        ], priority_weight: 1, nearby_weight: 0.5, max_backlog_before_waive: 2, enabled: true
-      })}::jsonb, TRUE)
-      ON CONFLICT (org_id, driver_id) DO NOTHING`;
-  }],
-
   [57, async (q) => {
     const org = '89e15ce587651cc47c3bc45b1c612a220955';
     const existing = await q`SELECT id,name,zone_type,zip_codes,active FROM dispatch_zones WHERE org_id=${org} AND state='CT' AND zone_type IN ('market','corridor') ORDER BY sort_order,id`;
@@ -1448,7 +1448,9 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
 export async function ensureSchema() {
   const q = sql();
   await q`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
-  for (const [version, apply] of migrations) {
+  // Apply numerically, not by source position: historical entries 25–30 were
+  // introduced out of order, and upgrade databases may have any pending subset.
+  for (const [version, apply] of [...migrations].sort(([a], [b]) => a - b)) {
     const done = await q`SELECT 1 FROM schema_migrations WHERE version=${version}`;
     if (!done.length) { await apply(q); await q`INSERT INTO schema_migrations(version) VALUES(${version})`; }
   }
