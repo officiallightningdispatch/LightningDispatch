@@ -1501,6 +1501,14 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
   // tow gate is fail-closed on exact 'tow truck', so stale values must not
   // masquerade as capabilities; 'Other' also broke the editor select which now
   // validates against the same three values the save path accepts.
+  [68, async (q) => {
+    await q`ALTER TABLE org_settings ADD COLUMN IF NOT EXISTS tire_plug_rate_cents INTEGER NOT NULL DEFAULT 4500`;
+    await q`CREATE TABLE IF NOT EXISTS tire_plug_transactions (id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, job_id TEXT NOT NULL, contractor_user_id TEXT NOT NULL REFERENCES users(id), amount_cents INTEGER NOT NULL CHECK (amount_cents >= 0), status TEXT NOT NULL CHECK (status IN ('offered','approved','charged','paid','voided','declined')), square_charge_id TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), paid_at TIMESTAMPTZ, declined_reason TEXT)`;
+    await q`CREATE INDEX IF NOT EXISTS tire_plug_transactions_org_created_idx ON tire_plug_transactions(org_id,created_at)`;
+    await q`CREATE OR REPLACE FUNCTION reject_paid_tire_plug_mutation() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.status IN ('charged','paid') AND (NEW.status,NEW.amount_cents,NEW.square_charge_id,NEW.paid_at) IS DISTINCT FROM (OLD.status,OLD.amount_cents,OLD.square_charge_id,OLD.paid_at) THEN RAISE EXCEPTION 'paid tire plug transactions are immutable'; END IF; RETURN NEW; END; $$`;
+    await q`DROP TRIGGER IF EXISTS tire_plug_paid_immutable ON tire_plug_transactions`;
+    await q`CREATE TRIGGER tire_plug_paid_immutable BEFORE UPDATE ON tire_plug_transactions FOR EACH ROW EXECUTE FUNCTION reject_paid_tire_plug_mutation()`;
+  }],
   [67, async (q) => {
     await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS photos_flagged_missing BOOLEAN NOT NULL DEFAULT FALSE`;
     await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS photos_flagged_missing_at TIMESTAMPTZ`;
