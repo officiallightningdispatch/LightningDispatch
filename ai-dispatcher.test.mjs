@@ -303,6 +303,11 @@ try {
   await q`INSERT INTO organizations(id, name) VALUES(${ORG6}, 'qa ai-dispatcher coords')`;
   await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES(${ORG6}, ${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))}, 'connected')`;
   await q`INSERT INTO organizations(id, name) VALUES(${ORG7}, 'qa ai-dispatcher geography')`;
+  // Legacy dispatcher fixtures intentionally exercise pre-gate behavior; the
+  // qualification-specific hermetic cases can opt their org back on.
+  for (const qaOrg of [ORG, ORG2, ORG3, ORG4, ORG5, ORG6, ORG7]) {
+    await q`INSERT INTO org_settings(org_id, qualification_gate_enabled) VALUES(${qaOrg}, FALSE) ON CONFLICT(org_id) DO UPDATE SET qualification_gate_enabled=FALSE`;
+  }
   created = true;
   // Production-shaped zoning fixture: auto-accept now resolves state + active
   // org-scoped dispatch_zones (legacy org_settings centroid is not consulted).

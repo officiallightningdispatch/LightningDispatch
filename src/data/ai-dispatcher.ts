@@ -2808,12 +2808,15 @@ async function runAutoDispatchInternal(
           : (nd.body as unknown[]);
       const serviceType = typeof (rawOffer as Record<string, unknown>).serviceType === "string" ? String((rawOffer as Record<string, unknown>).serviceType) : null;
       const serviceQualification: ServiceQualificationOutcome = { serviceType, assessed: Boolean(serviceType?.trim()), excluded: [] };
+      const qualificationCandidates = candidates.length;
       // MINIMAL QUALIFICATION GATE is applied immediately after Towbook's eligible-list filter.
       if (settings.qualificationGateEnabled && candidates.length) {
         const ids = candidates.map((d) => Number((d as Record<string, unknown>).driverId)).filter(Number.isFinite);
         const gateRows = await sql()`SELECT u.towbook_driver_id, u.deactivated_at, m.user_id AS member_id, cp.vehicle_type,
-          (SELECT COUNT(*)::int FROM contractor_doc_types t WHERE t.org_id=${orgId} AND t.active) AS required_docs,
-          (SELECT COUNT(*)::int FROM contractor_documents d JOIN contractor_doc_types t ON t.id=d.doc_type_id AND t.active WHERE d.org_id=${orgId} AND d.contractor_id=u.id AND d.status='verified' AND (d.expires_on IS NULL OR d.expires_on >= CURRENT_DATE)) AS approved_docs
+          (SELECT COUNT(DISTINCT t.id)::int FROM contractor_doc_types t WHERE t.org_id=${orgId} AND t.active) AS required_docs,
+          /* Existing GO/compliance model: every active type needs a current verified doc.
+           * DISTINCT prevents legacy re-uploads from satisfying a missing type. */
+          (SELECT COUNT(DISTINCT d.doc_type_id)::int FROM contractor_documents d JOIN contractor_doc_types t ON t.id=d.doc_type_id AND t.active WHERE d.org_id=${orgId} AND d.contractor_id=u.id AND d.status='verified' AND (d.expires_on IS NULL OR d.expires_on >= CURRENT_DATE)) AS approved_docs
           FROM users u LEFT JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${orgId}
           LEFT JOIN contractor_profiles cp ON cp.user_id=u.id AND cp.org_id=${orgId}
           WHERE u.towbook_driver_id = ANY(${ids})`;
@@ -2828,6 +2831,16 @@ async function runAutoDispatchInternal(
           return !reason;
         });
         candidates.splice(0, candidates.length, ...qualified);
+      }
+      // Qualification is a hard safety rail: unlike geographic fallback, never
+      // claim an offer when every Towbook-eligible candidate failed the gate.
+      // Persist the exclusion reasons in the same decision ledger used by all
+      // other outcomes, then leave the offer for human handling (zero writes).
+      if (settings.qualificationGateEnabled && qualificationCandidates > 0 && candidates.length === 0 && serviceQualification.excluded.length > 0) {
+        const reason = `qualification gate excluded every eligible candidate: ${serviceQualification.excluded.map((e) => `driver ${e.driverId}: ${e.reason}`).join("; ")}`;
+        await record({ decision: "escalated_qualification_failed", driverId: null, driverName: null, etaMinutes: null, zoneDistanceMiles: null, reason, rawResponse: { offer, serviceQualification } });
+        result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_qualification_failed", escalated: true, reason });
+        continue;
       }
       // ETA v3 provider resolution: TomTom when TOMTOM_API_KEY is set (with
       // automatic fall-through to OSRM on any TomTom failure), else OSRM static,
