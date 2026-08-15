@@ -1,7 +1,7 @@
 import { sql } from "~/db";
 import { randomUUID, createHash } from "node:crypto";
 import nationalZones from "./national-zones.json";
-import { clampDemandLevel, computedDemandLevel, demandLevelToColor, validateHexColor, validateUnlockJobs, validateZoneStatus } from "../lib/zone-model";
+import { clampDemandLevel, computedDemandLevel, validateHexColor, validateUnlockJobs, validateZoneStatus } from "../lib/zone-model";
 export type ZoneActor={orgId:string;id:string;role:string};
 
 type NationalNode={state:string;name:string;zone_type:string;lat:number;lng:number;radius_miles:number;tz:string;parent:string|null};
