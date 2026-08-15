@@ -1059,7 +1059,7 @@ async function recordDecision(
   d: DecisionRecord,
 ): Promise<boolean> {
   const q = sql();
-  const escalated = d.decision.startsWith("escalated_") || d.decision === "auto_accept_no_driver";
+  const escalated = d.decision.startsWith("escalated_") || d.decision === "auto_accept_no_driver" || d.decision === "rejected_tow_no_eligible_driver";
   const inserted = await q`INSERT INTO ai_dispatcher_decisions(id, org_id, call_request_id, call_id, decision, escalated, driver_id, driver_name, eta_minutes, zone_distance_miles, reason, raw_response)
     VALUES(gen_random_uuid()::text, ${orgId}, ${d.callRequestId}, ${d.callId}, ${d.decision}, ${escalated}, ${d.driverId}, ${d.driverName}, ${d.etaMinutes}, ${d.zoneDistanceMiles}, ${d.reason}, ${JSON.stringify(d.rawResponse ?? null)}::jsonb)
     ON CONFLICT DO NOTHING RETURNING id`;
