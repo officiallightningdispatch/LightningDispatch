@@ -194,6 +194,8 @@ export type OrgAiSettings = {
   etaBufferMinutes: number;
   /** Never quote below this (migration v9). */
   etaFloorMinutes: number;
+  /** Hard qualification safety rail; default ON and org-configurable for rollback. */
+  qualificationGateEnabled: boolean;
 };
 
 /** Decision taxonomy — every row in ai_dispatcher_decisions carries one of these.
@@ -1015,7 +1017,7 @@ export async function tomtomGeocodeLookup(
 export async function getOrgSettings(orgId: string): Promise<OrgAiSettings> {
   const q = sql();
   await q`INSERT INTO org_settings(org_id) VALUES(${orgId}) ON CONFLICT(org_id) DO NOTHING`;
-  const rows = await q`SELECT ai_dispatcher_enabled, zone_lat, zone_lng, zone_radius_miles, max_eta_minutes, eta_buffer_minutes, eta_floor_minutes FROM org_settings WHERE org_id=${orgId}`;
+  const rows = await q`SELECT ai_dispatcher_enabled, qualification_gate_enabled, zone_lat, zone_lng, zone_radius_miles, max_eta_minutes, eta_buffer_minutes, eta_floor_minutes FROM org_settings WHERE org_id=${orgId}`;
   const r = rows[0] as Record<string, unknown>;
   return {
     aiDispatcherEnabled: r.ai_dispatcher_enabled !== false,
@@ -1025,6 +1027,7 @@ export async function getOrgSettings(orgId: string): Promise<OrgAiSettings> {
     maxEtaMinutes: Number(r.max_eta_minutes) || 45,
     etaBufferMinutes: Number(r.eta_buffer_minutes) || 5,
     etaFloorMinutes: Number(r.eta_floor_minutes) || 5,
+    qualificationGateEnabled: r.qualification_gate_enabled !== false,
   };
 }
 
@@ -2803,6 +2806,29 @@ async function runAutoDispatchInternal(
               return Number.isFinite(id) && eligibleIds.has(id);
             })
           : (nd.body as unknown[]);
+      const serviceType = typeof (rawOffer as Record<string, unknown>).serviceType === "string" ? String((rawOffer as Record<string, unknown>).serviceType) : null;
+      const serviceQualification: ServiceQualificationOutcome = { serviceType, assessed: Boolean(serviceType?.trim()), excluded: [] };
+      // MINIMAL QUALIFICATION GATE is applied immediately after Towbook's eligible-list filter.
+      if (settings.qualificationGateEnabled && candidates.length) {
+        const ids = candidates.map((d) => Number((d as Record<string, unknown>).driverId)).filter(Number.isFinite);
+        const gateRows = await sql()`SELECT u.towbook_driver_id, u.deactivated_at, m.user_id AS member_id, cp.vehicle_type,
+          (SELECT COUNT(*)::int FROM contractor_doc_types t WHERE t.org_id=${orgId} AND t.active) AS required_docs,
+          (SELECT COUNT(*)::int FROM contractor_documents d JOIN contractor_doc_types t ON t.id=d.doc_type_id AND t.active WHERE d.org_id=${orgId} AND d.contractor_id=u.id AND d.status='verified' AND (d.expires_on IS NULL OR d.expires_on >= CURRENT_DATE)) AS approved_docs
+          FROM users u LEFT JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${orgId}
+          LEFT JOIN contractor_profiles cp ON cp.user_id=u.id AND cp.org_id=${orgId}
+          WHERE u.towbook_driver_id = ANY(${ids})`;
+        const byId = new Map(gateRows.map((r) => [String(r.towbook_driver_id), r as Record<string, unknown>]));
+        const qualified = candidates.filter((d) => {
+          const id = String((d as Record<string, unknown>).driverId), r = byId.get(id);
+          const wanted = serviceType?.trim().toLowerCase() || "";
+          const vehicle = String(r?.vehicle_type ?? "").toLowerCase();
+          const capabilityMismatch = wanted && vehicle && ((wanted.includes("tow") || wanted.includes("heavy")) && !vehicle.includes("tow") && !vehicle.includes("heavy"));
+          const reason = !r ? "org-inactive" : r.deactivated_at != null ? "deactivated" : r.member_id == null ? "org-inactive" : Number(r.required_docs) > Number(r.approved_docs) ? "missing-compliance" : capabilityMismatch ? "capability-mismatch" : null;
+          if (reason) serviceQualification.excluded.push({ driverId: Number(id), reason });
+          return !reason;
+        });
+        candidates.splice(0, candidates.length, ...qualified);
+      }
       // ETA v3 provider resolution: TomTom when TOMTOM_API_KEY is set (with
       // automatic fall-through to OSRM on any TomTom failure), else OSRM static,
       // else null (ETA_ROUTER=off → factor model only). Tests inject
@@ -2845,8 +2871,6 @@ async function runAutoDispatchInternal(
         }),
       };
       const guardOutcome: StateGuardOutcome = { active: false, jobState: null, blocked: false, blockedReason: null, checked: 0, inState: 0, excluded: [] };
-      const serviceType = typeof (rawOffer as Record<string, unknown>).serviceType === "string" ? String((rawOffer as Record<string, unknown>).serviceType) : null;
-      const serviceQualification: ServiceQualificationOutcome = { serviceType, assessed: Boolean(serviceType?.trim()), excluded: [] };
       const zoneMatches = await loadZoneMatches(orgId, candidates, offer.startLocationLatitude, offer.startLocationLongitude, zoneState.state);
       const regionalPreference = await loadRegionalPreferenceMatches(orgId, candidates, offer.startLocationLatitude, offer.startLocationLongitude, driverQueues);
       const areaCtx: AreaContext = humanReassigned

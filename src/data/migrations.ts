@@ -1326,6 +1326,11 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
       FROM contractor_doc_types t WHERE LOWER(t.name)=${"driver's license — front"}
       AND NOT EXISTS (SELECT 1 FROM contractor_doc_types x WHERE x.org_id=t.org_id AND LOWER(x.name)=${"driver's license — back"})`;
   }],
+  [60, async (q) => {
+    // Minimal AI qualification gate. Default ON; owner can roll back per org without deploy.
+    await q`ALTER TABLE org_settings ADD COLUMN IF NOT EXISTS qualification_gate_enabled BOOLEAN NOT NULL DEFAULT TRUE`;
+    await q`UPDATE org_settings SET qualification_gate_enabled=TRUE WHERE qualification_gate_enabled IS NULL`;
+  }],
  ];
 export async function ensureSchema() {
   const q = sql();
