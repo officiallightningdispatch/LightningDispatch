@@ -328,6 +328,7 @@ try {
   await q`INSERT INTO contractor_doc_types(id,org_id,name) VALUES('qual-doc-a',${ORG7},'License A'),('qual-doc-b',${ORG7},'License B') ON CONFLICT (id) DO UPDATE SET org_id=EXCLUDED.org_id, name=EXCLUDED.name`;
   await q`INSERT INTO contractor_documents(id,org_id,contractor_id,doc_type_id,storage_key,status,uploaded_by_user_id) VALUES('qual-doc-one',${ORG7},${QUAL_USERS[4]},'qual-doc-a','x','verified',${USER}),('qual-doc-two',${ORG7},${QUAL_USERS[4]},'qual-doc-b','x','verified',${USER}) ON CONFLICT (id) DO UPDATE SET org_id=EXCLUDED.org_id, contractor_id=EXCLUDED.contractor_id, doc_type_id=EXCLUDED.doc_type_id, storage_key=EXCLUDED.storage_key, status=EXCLUDED.status, uploaded_by_user_id=EXCLUDED.uploaded_by_user_id`;
   await q`INSERT INTO contractor_documents(id,org_id,contractor_id,doc_type_id,storage_key,status,uploaded_by_user_id) VALUES('qual-doc-capability',${ORG7},${QUAL_USERS[5]},'qual-doc-a','x','verified',${USER}) ON CONFLICT (id) DO UPDATE SET org_id=EXCLUDED.org_id, contractor_id=EXCLUDED.contractor_id, doc_type_id=EXCLUDED.doc_type_id, storage_key=EXCLUDED.storage_key, status=EXCLUDED.status, uploaded_by_user_id=EXCLUDED.uploaded_by_user_id`;
+  await q`UPDATE contractor_profiles SET vehicle_type='van' WHERE user_id=${QUAL_USERS[5]} AND org_id=${ORG7}`;
   await q`UPDATE org_settings SET qualification_gate_enabled=TRUE WHERE org_id=${ORG7}`;
   created = true;
   // Production-shaped zoning fixture: auto-accept now resolves state + active
