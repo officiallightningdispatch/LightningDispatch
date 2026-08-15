@@ -1,6 +1,4 @@
 import { sql } from "~/db";
-import zipCounty from "./zip-county.json";
-import usZips from "./us-zips.json";
 
 /** Append-only, idempotent database migrations. Each step is recorded once. */
 export type RegionalCtInput = { id:string; name:string; zone_type?:string; zip_codes?:unknown; active?:boolean; };
@@ -1333,6 +1331,19 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     // explicit and the ZIP universe is the repository's us-zips.json; this
     // keeps the migration deterministic and prevents cross-market overlap.
     const org = '89e15ce587651cc47c3bc45b1c612a220955';
+    // One-time migration data: read from disk at apply time so the multi-MB
+    // national ZIP/county datasets never enter the bundle (build memory + server
+    // footprint). The migration runs once and is recorded in schema_migrations.
+    const readRepoJson = async (rel: string): Promise<unknown> => {
+      const { readFileSync } = await import("node:fs");
+      const { join } = await import("node:path");
+      for (const base of [process.cwd(), join(process.cwd(), "dist/server")]) {
+        try { return JSON.parse(readFileSync(join(base, rel), "utf8")); } catch { /* try next base */ }
+      }
+      throw new Error(`migration 59: cannot read ${rel} from ${process.cwd()}`);
+    };
+    const zipCounty = await readRepoJson("src/data/zip-county.json") as Record<string, {county:string;state:string}>;
+    const usZips = await readRepoJson("src/data/us-zips.json") as Record<string, unknown>;
     const countySets: Record<string, string[]> = {
       Houston: ['Harris','Fort Bend','Montgomery','Brazoria','Galveston','Waller','Liberty','Chambers'],
       'San Antonio': ['Bexar','Comal','Guadalupe','Medina','Kendall','Bandera','Wilson','Atascosa'],
