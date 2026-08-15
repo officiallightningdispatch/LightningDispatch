@@ -12,8 +12,10 @@ export function NativeContractorStatus({ contractorOnline }: { contractorOnline:
     void nativeOnline().then((v) => live && setConnected(v)).catch(() => live && setConnected(false));
     const net = onConnectivityChange((v) => { if (live) setConnected(v); });
     void registerPush().then((r) => { if (live) setPush(r.granted ? 'ready' : 'blocked'); }).catch(() => live && setPush('error'));
-    const tokenListener = onNativePushToken((token) => { void saveNativePushToken(token).then((r) => live && setPush(r.ok ? 'ready' : 'error')); });
-    return () => { live = false; void tokenListener.remove(); void net.remove(); };
+    let tokenListener: ReturnType<typeof onNativePushToken>;
+    void (async () => { tokenListener = await onNativePushToken((token) => { void saveNativePushToken(token).then((r) => live && setPush(r.ok ? 'ready' : 'error')); });
+    })();
+    return () => { live = false; void Promise.resolve(tokenListener).then((h) => h.remove()); void Promise.resolve(net).then((h) => h.remove()); };
   }, []);
   useEffect(() => {
     if (!isNative() || !contractorOnline || !connected) { setLocation('idle'); return; }

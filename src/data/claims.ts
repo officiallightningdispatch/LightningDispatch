@@ -7,14 +7,14 @@
  * auth-server code (client-graph rule).
  */
 import { createServerFn } from "@tanstack/react-start";
-import type { ClaimResult, ClaimRow } from "./claims-core";
+import type { ClaimResult, ClaimRow, ScanClaimsResult } from "./claims-core";
 export type { ClaimResult, ClaimRow, ClaimStatus } from "./claims-core";
 const passthrough = (x: unknown) => x;
 
 /** Owner/admin: run the read-only Gmail scan → detect → upsert claim records. */
 export const scanClaims = createServerFn({ method: "POST" })
   .validator(passthrough)
-  .handler(async ({ data }) => {
+  .handler(async ({ data }): Promise<ClaimResult<ScanClaimsResult>> => {
     const core = await import("./claims-core");
     return core.scanClaimsHandler(data, {});
   });

@@ -335,6 +335,7 @@ export function DocStatusBadge({ status, className }: { status: DocStatus; class
     uploaded: { cls: "bg-info-50 text-info-700", dot: "bg-info-500", label: "Submitted" },
     verified: { cls: "bg-success-50 text-success-700", dot: "bg-success-500", label: "Verified ✓" },
     expired: { cls: "bg-danger-50 text-danger-700", dot: "bg-danger-500", label: "Expired" },
+    voided: { cls: "bg-ink-100 text-ink-500", dot: "bg-ink-400", label: "Voided" },
     rejected: { cls: "bg-accent-100 text-accent-700", dot: "bg-accent-500", label: "Reupload requested" },
   } as const;
   const m = map[status];

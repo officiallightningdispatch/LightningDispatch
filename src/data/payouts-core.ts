@@ -647,7 +647,7 @@ export async function getPayPeriodDetailCore(actor: PayoutActor, periodId: strin
  *  Payout amounts are mirrored into payment_transactions (kind 'payout',
  *  status 'staged', idempotency key payout-<recordId>) when the ledger table
  *  exists. */
-export async function computePaydayCore(actor: PayoutActor, periodId: string): Promise<PayoutResult<PayPeriodDetail>> {
+export async function computePaydayCore(actor: PayoutActor, periodId: string): Promise<PayoutResult<PayPeriodDetail | null>> {
   if (!canManage(actor)) return err("unauthorized", "Owner access required.");
   try {
     await ensure();
@@ -877,7 +877,7 @@ async function buildDetailFallback(actor: PayoutActor, periodId: string, records
 /** Owner/admin: mark ONE payout record paid (owner confirmed the send in
  *  their own app — the confirm sheet is the gate, nothing is optimistic).
  *  Flips the period to 'paid' when no 'computed' rows remain. */
-export async function markPayoutPaidCore(actor: PayoutActor, data: unknown): Promise<PayoutResult<PayPeriodDetail>> {
+export async function markPayoutPaidCore(actor: PayoutActor, data: unknown): Promise<PayoutResult<PayPeriodDetail | null>> {
   if (!canManage(actor)) return err("unauthorized", "Owner access required.");
   const v = z.object({ recordId: z.string().min(1), note: z.string().max(300).nullable().optional() }).safeParse(data);
   if (!v.success) return err("invalid_input", "Record id required.");
@@ -914,7 +914,7 @@ export async function markPayoutPaidCore(actor: PayoutActor, data: unknown): Pro
 
 /** Owner/admin: mark the WHOLE period paid (all 'computed' rows) — the
  *  period-level "paid out" action. Blocked rows stay blocked. */
-export async function markPaydayPeriodPaidCore(actor: PayoutActor, periodId: string): Promise<PayoutResult<PayPeriodDetail>> {
+export async function markPaydayPeriodPaidCore(actor: PayoutActor, periodId: string): Promise<PayoutResult<PayPeriodDetail | null>> {
   if (!canManage(actor)) return err("unauthorized", "Owner access required.");
   try {
     await ensure();

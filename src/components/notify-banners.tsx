@@ -108,7 +108,7 @@ function useBannerStack(role: SoundRole) {
     setBanners((prev) => [...prev, ...items].slice(-MAX_STACK));
     // One alert per notification — never a loop. The OWNER'S EXACT MP3
     // (playAlertSound; synthesized fallback if the asset is blocked).
-    for (const _ of items) playAlertSound(role);
+    for (const item of items) playAlertSound(role);
     for (const it of items) {
       const t = setTimeout(() => dismiss(it.id), AUTO_DISMISS_MS);
       timeouts.current.set(it.id, t);

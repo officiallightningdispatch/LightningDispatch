@@ -59,7 +59,8 @@ const STATUS_META: Record<DocRow["status"], { label: string; cls: string; icon: 
   uploaded: { label: "Submitted — pending owner review", cls: "bg-info-50 text-info-700", icon: Clock3 },
   verified: { label: "Approved ✓", cls: "bg-success-50 text-success-700", icon: CheckCircle2 },
   expired: { label: "Expired — reupload needed", cls: "bg-danger-50 text-danger-700", icon: Clock3 },
-  rejected: { label: "Rejected — please fix", cls: "bg-accent-100 text-accent-700", icon: Clock3 },
+  voided: { label: "Voided", cls: "bg-ink-100 text-ink-500", icon: FileText },
+    rejected: { label: "Rejected — please fix", cls: "bg-accent-100 text-accent-700", icon: Clock3 },
 };
 
 function DocStatusBadge({ status }: { status: DocRow["status"] }) {

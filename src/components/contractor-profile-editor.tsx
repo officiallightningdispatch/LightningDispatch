@@ -868,6 +868,7 @@ function DocumentsSection({ docs, removed, onVerify, onReject, onSetExpiry, onCo
             onReject={onReject}
             onSetExpiry={onSetExpiry}
             onView={() => Promise.resolve()}
+            onVoid={async () => {}}
             onViewSelfie={doc.requiresFacialVerification && doc.selfieStatus === "uploaded" ? () => Promise.resolve() : undefined}
             onReviewPair={doc.requiresFacialVerification && doc.selfieStatus === "uploaded" ? async () => { onCompare(doc); } : undefined}
           />

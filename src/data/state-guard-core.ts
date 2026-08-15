@@ -76,8 +76,8 @@ export function resolveStateFromAddress(value: string): AddressStateResolution {
   const normalized = value.replace(/[^A-Za-z0-9 ]/g, " ").split(/\s+/).filter(Boolean);
   const compact = normalized.join(" ").toUpperCase();
   let explicit: string | null = null;
-  for (const [name, code] of Object.entries(STATE_NAMES)) {
-    if (new RegExp(`(^| )${name}( |$)`).test(compact)) { explicit = code; break; }
+  for (const [stateName, code] of Object.entries(STATE_NAMES)) {
+    if (new RegExp(`(^| )${stateName}( |$)`).test(compact)) { explicit = code; break; }
   }
   if (!explicit) {
     // Accept punctuation-separated postal forms such as "C.T." deterministically.

@@ -52,8 +52,7 @@ import type { SmtpMessage } from "./smtp-client";
 import type { MailEnvelopeWithSource } from "./club-mail";
 
 const configured = () => Boolean(process.env.DATABASE_URL);
-let schemaInit: Promise<void> | undefined;
-function ensure() {
+
   if (!configured()) return Promise.resolve();
   schemaInit ??= (async () => {
     const { ensureAuthSchema } = await import("./auth-server");
@@ -88,6 +87,7 @@ export type ClaimStatus = "new" | "researched" | "form_ready" | "pending_approva
 export const CLAIM_STATUSES: ClaimStatus[] = ["new", "researched", "form_ready", "pending_approval", "approved", "sent", "resolved", "closed"];
 
 /** Seroval-safe claim row as crossed to the client. */
+export type ClaimJson = string | number | boolean | null | ClaimJson[] | { [key: string]: ClaimJson };
 export type ClaimRow = {
   id: string;
   orgId: string;
@@ -101,7 +101,7 @@ export type ClaimRow = {
   emailSubject: string;
   emailReceivedAt: string | null;
   status: ClaimStatus;
-  research: Record<string, unknown>;
+  research: { [key: string]: ClaimJson };
   form: Record<string, unknown>;
   signatureStorageKey: string | null;
   signedByUserId: string | null;
@@ -405,7 +405,7 @@ function mapClaim(r: Record<string, unknown>, driverFacing = false): ClaimRow {
     emailSubject: str(r.email_subject) ?? "",
     emailReceivedAt: r.email_received_at ? new Date(String(r.email_received_at)).toISOString() : null,
     status: (r.status ?? "new") as ClaimStatus,
-    research: (r.research ?? {}) as Record<string, unknown>,
+    research: (r.research ?? {}) as { [key: string]: ClaimJson },
     form: (r.form ?? {}) as Record<string, unknown>,
     signatureStorageKey: str(r.signature_storage_key),
     signedByUserId: str(r.signed_by_user_id),
@@ -427,7 +427,7 @@ function mapClaim(r: Record<string, unknown>, driverFacing = false): ClaimRow {
     emailMessageId: null,
     emailFrom: "",
     emailSubject: "",
-    research: redactDriverClaimValue(row.research) as Record<string, unknown>,
+    research: redactDriverClaimValue(row.research) as { [key: string]: ClaimJson },
     form: redactDriverClaimValue(row.form) as Record<string, unknown>,
     sendTo: null,
     sendMethod: null,
@@ -571,7 +571,6 @@ export async function researchClaimCore(actor: ClaimActor, claimId: unknown, opt
       jobFacts = { jobId: jobId, matchedBy: "towbook_job_id (PO/reference)", jobStatus: String(j.status ?? ""), completedAt: j.completed_at ? new Date(String(j.completed_at)).toISOString() : null };
       if (!claim.driverUserId) {
         // Assign the job's driver so the urgent notification has a target.
-        const drv = await q`SELECT user_id FROM organization_memberships WHERE org_id=${actor.orgId} AND contractor_id IS NOT NULL AND contractor_id=(SELECT contractor_id FROM organization_memberships WHERE org_id=${actor.orgId} AND user_id=(SELECT user_id FROM dispatch_jobs WHERE id=${jobId})) LIMIT 1`.catch(() => []);
         // simpler: jobs carry assigned_driver_towbook_id → match users
         const byTowbook = await q`SELECT u.id FROM users u JOIN organization_memberships m ON m.user_id=u.id WHERE m.org_id=${actor.orgId} AND u.towbook_driver_id=(SELECT assigned_driver_towbook_id FROM dispatch_jobs WHERE id=${jobId}) AND u.deactivated_at IS NULL LIMIT 1`.catch(() => []);
         if (byTowbook.length) await q`UPDATE damage_claims SET driver_user_id=${String((byTowbook[0] as Record<string, unknown>).id)} WHERE id=${v.data}`;
