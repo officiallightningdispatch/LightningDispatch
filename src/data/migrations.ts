@@ -1,6 +1,39 @@
 import { sql } from "~/db";
 
 /** Append-only, idempotent database migrations. Each step is recorded once. */
+export type RegionalCtInput = { id:string; name:string; zone_type?:string; zip_codes?:unknown; active?:boolean; };
+export type RegionalCtCounty = { id:string; name:string; zip_codes?:unknown; lat?:number; lng?:number; };
+export function computeRegionalCtPlan(existing: RegionalCtInput[], counties: RegionalCtCounty[]) {
+  const zips = (v:unknown) => Array.isArray(v) ? [...new Set(v.map(String).filter(Boolean))] : [];
+  const byName = new Map(existing.map(r => [r.name, r]));
+  const countyByName = new Map(counties.map(c => [c.name, c]));
+  const corridor = (name:string) => byName.get(name);
+  const seeds: Record<string,string[]> = {
+    'Greater Stamford/Fairfield County': zips(corridor('Southwest CT')?.zip_codes),
+    'Greater Bridgeport': zips(corridor('Bridgeport–Milford')?.zip_codes),
+    'Greater New Haven': zips(corridor('New Haven–Branford')?.zip_codes),
+  };
+  const names = ['Greater Stamford/Fairfield County','Greater Bridgeport','Greater New Haven','Greater Hartford','Greater Danbury/Waterbury','Greater Middlesex/Shoreline','Greater New London','Greater Tolland/NE CT','Greater Windham/Eastern CT'];
+  const countyMap: Record<string,string> = {'Greater Hartford':'Hartford','Greater Middlesex/Shoreline':'Middlesex','Greater New London':'New London','Greater Tolland/NE CT':'Tolland','Greater Windham/Eastern CT':'Windham'};
+  const all = new Set<string>(); for (const c of counties) for (const z of zips(c.zip_codes)) all.add(z);
+  const assigned = new Map<string,string>();
+  for (const [name, zs] of Object.entries(seeds)) for (const z of zs) { if (!all.has(z)) continue; if (assigned.has(z)) throw new Error(`seed ZIP overlaps: ${z}`); assigned.set(z,name); }
+  // Non-corridor Fairfield/New Haven ZIPs belong to the combined inland region;
+  // all other counties map directly to their named regional market.
+  for (const c of counties) for (const z of zips(c.zip_codes)) if (!assigned.has(z)) assigned.set(z, c.name === 'Fairfield' || c.name === 'New Haven' ? 'Greater Danbury/Waterbury' : names.find(n => countyMap[n] === c.name)!);
+  const sortOrders = [3232,3233,3234,3235,3236,3237,3238,3239,3240];
+  const regions = names.map((name, i) => {
+    const zs = [...assigned].filter(([,n]) => n===name).map(([z])=>z).sort();
+    const counts = new Map<string,number>(); for (const z of zs) for (const c of counties) if (zips(c.zip_codes).includes(z)) counts.set(c.name,(counts.get(c.name)||0)+1);
+    const parentName = [...counts.entries()].sort((a,b)=>b[1]-a[1] || a[0].localeCompare(b[0]))[0]?.[0]; const parent=countyByName.get(parentName!); if (!parent) throw new Error(`missing parent for ${name}`);
+    const old = seeds[name] && corridor(name === 'Greater Stamford/Fairfield County' ? 'Southwest CT' : name === 'Greater Bridgeport' ? 'Bridgeport–Milford' : 'New Haven–Branford');
+    const oldRow = existing.find(r => r.name === (name === 'Greater Stamford/Fairfield County' ? 'Southwest CT' : name === 'Greater Bridgeport' ? 'Bridgeport–Milford' : name === 'Greater New Haven' ? 'New Haven–Branford' : ''));
+    return {name,zips:zs,parentId:String(parent.id),parentName,sortOrder:sortOrders[i],id:oldRow ? String(oldRow.id) : `regional-ct-${name.toLowerCase().replace(/[^a-z0-9]+/g,'-')}`};
+  });
+  const seen = new Map<string,number>(); for (const r of regions) for (const z of r.zips) seen.set(z,(seen.get(z)||0)+1);
+  return {regions, duplicates:[...seen].filter(([,n])=>n>1).map(([z])=>z), gaps:[...all].filter(z=>!seen.has(z))};
+}
+
 const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>]> = [
   [1, async (q) => {
     await q`CREATE TABLE IF NOT EXISTS dispatch_contractors (id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL, lat DOUBLE PRECISION NOT NULL, lng DOUBLE PRECISION NOT NULL, area TEXT NOT NULL, vehicle_types JSONB NOT NULL DEFAULT '[]', rating DOUBLE PRECISION NOT NULL, completed_job_count INTEGER NOT NULL DEFAULT 0, response_time_history_minutes JSONB NOT NULL DEFAULT '[]')`;
@@ -1236,41 +1269,21 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
   }],
 
   [57, async (q) => {
-    // OWNER-DIRECTED REGIONAL CT MARKETS: keep county rows as hierarchy, but make
-    // only regional market/corridor rows selectable. ZIPs are sourced exclusively
-    // from the existing county/corridor data; corridor ZIPs are removed from the
-    // county remainder so the leaf regions remain disjoint.
     const org = '89e15ce587651cc47c3bc45b1c612a220955';
-    const existing = await q`SELECT id,name,zip_codes FROM dispatch_zones WHERE org_id=${org} AND state='CT' AND zone_type IN ('market','corridor') ORDER BY sort_order`;
-    const byName = new Map(existing.map((r:any) => [String(r.name), r]));
-    const countyRows = await q`SELECT id,name,zip_codes,lat,lng FROM dispatch_zones WHERE org_id=${org} AND state='CT' AND zone_type='county' AND active=TRUE`;
-    const countyByName = new Map(countyRows.map((r:any) => [String(r.name), r]));
-    const zips = (v:any) => Array.isArray(v) ? v.map(String).filter(Boolean) : [];
-    const bridge = byName.get('Bridgeport–Milford');
-    const haven = byName.get('New Haven–Branford');
-    const southwest = byName.get('Southwest CT');
-    const used = new Set<string>([...zips(bridge?.zip_codes), ...zips(haven?.zip_codes), ...zips(southwest?.zip_codes)]);
-    // All former city-market shells are retained but made inactive. The three
-    // corridor rows below are then reactivated/renamed in place to preserve ids.
+    const existing = await q`SELECT id,name,zone_type,zip_codes,active FROM dispatch_zones WHERE org_id=${org} AND state='CT' AND zone_type IN ('market','corridor') ORDER BY sort_order,id`;
+    const counties = await q`SELECT id,name,zip_codes,lat,lng FROM dispatch_zones WHERE org_id=${org} AND state='CT' AND zone_type='county' AND active=TRUE`;
+    const plan = computeRegionalCtPlan(existing, counties);
+    if (plan.gaps.length || plan.duplicates.length) throw new Error(`CT regional partition failed closed: ${plan.gaps.length} gaps, ${plan.duplicates.length} duplicates`);
+    const byId = new Map(existing.map((r:any) => [String(r.id), r]));
     await q`UPDATE dispatch_zones SET active=FALSE WHERE org_id=${org} AND state='CT' AND zone_type IN ('market','corridor')`;
-    const upsert = async (row:any, name:string, sort:number, parentName:string, fallbackZips:string[]) => {
-      const parent = countyByName.get(parentName);
-      if (!parent) throw new Error(`Missing CT county parent: ${parentName}`);
-      const values = row ? zips(row.zip_codes) : fallbackZips;
-      if (!values.length) throw new Error(`Regional market has no source ZIPs: ${name}`);
-      const id = row ? String(row.id) : `regional-ct-${name.toLowerCase().replace(/[^a-z0-9]+/g,'-')}`;
-      await q`INSERT INTO dispatch_zones(id,org_id,name,state,market,zone_type,zip_codes,parent_zone_id,lat,lng,radius_miles,tz,active,sort_order,updated_at)
-        VALUES(${id},${org},${name.includes('Bridgeport')||name.includes('New Haven')?'CT':name},'CT',${name},'market',${values},${String(parent.id)},${Number(parent.lat)},${Number(parent.lng)},30,'America/New_York',TRUE,${sort},NOW())
-        ON CONFLICT(id) DO UPDATE SET name=${name},market=${name},zone_type='market',zip_codes=${values},parent_zone_id=${String(parent.id)},lat=${Number(parent.lat)},lng=${Number(parent.lng)},radius_miles=30,tz='America/New_York',active=TRUE,sort_order=${sort},updated_at=NOW()`;
-    };
-    await upsert(southwest, 'Greater Stamford/Fairfield County', 3232, 'Fairfield', zips(southwest?.zip_codes));
-    await upsert(bridge, 'Greater Bridgeport', 3233, 'Fairfield', zips(bridge?.zip_codes));
-    await upsert(haven, 'Greater New Haven', 3234, 'New Haven', zips(haven?.zip_codes));
-    const regions = [['Greater Hartford','Hartford',3235],['Greater Danbury/Waterbury','Litchfield',3236],['Greater Middlesex/Shoreline','Middlesex',3237],['Greater New London','New London',3238],['Greater Tolland/NE CT','Tolland',3239],['Greater Windham/Eastern CT','Windham',3240]] as const;
-    for (const [name, county, sort] of regions) {
-      const c = countyByName.get(county); if (!c) throw new Error(`Missing CT county: ${county}`);
-      const remainder = zips(c.zip_codes).filter((x:string) => !used.has(x));
-      await upsert(null, name, sort, county, remainder);
+    for (const region of plan.regions) {
+      const old = byId.get(region.id);
+      if (old) {
+        await q`UPDATE dispatch_zones SET name=${region.name}, market=${region.name}, zone_type='market', zip_codes=${region.zips}, parent_zone_id=${region.parentId}, active=TRUE, sort_order=${region.sortOrder}, updated_at=NOW() WHERE id=${region.id} AND org_id=${org}`;
+      } else {
+        const c = counties.find((x:any) => String(x.id) === region.parentId)!;
+        await q`INSERT INTO dispatch_zones(id,org_id,name,state,market,zone_type,zip_codes,parent_zone_id,lat,lng,radius_miles,tz,active,sort_order,updated_at) VALUES(${region.id},${org},${region.name},'CT',${region.name},'market',${region.zips},${region.parentId},${Number(c.lat)},${Number(c.lng)},30,'America/New_York',TRUE,${region.sortOrder},NOW())`;
+      }
     }
   }],
 ];
