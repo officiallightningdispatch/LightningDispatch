@@ -1403,6 +1403,10 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE TABLE IF NOT EXISTS dispatch_nudge_events (id TEXT PRIMARY KEY, org_id TEXT NOT NULL, job_id TEXT NOT NULL, driver_towbook_id TEXT, kind TEXT NOT NULL, reason TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(org_id, job_id, kind))`;
     await q`CREATE INDEX IF NOT EXISTS dispatch_nudge_events_org_job ON dispatch_nudge_events(org_id, job_id)`;
   }],
+  [62, async (q) => {
+    // Optional GPS signal; existing clients omit it and retain conservative NULL.
+    await q`ALTER TABLE driver_locations ADD COLUMN IF NOT EXISTS speed_mph DOUBLE PRECISION`;
+  }],
  ];
 export async function ensureSchema() {
   const q = sql();

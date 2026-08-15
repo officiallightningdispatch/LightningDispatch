@@ -185,10 +185,11 @@ export async function storePing(opts: {
   latitude: number;
   longitude: number;
   accuracy: number | null;
+  speedMph?: number | null;
 }): Promise<void> {
   const q = await db();
-  await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, job_id, latitude, longitude, accuracy)
-    VALUES(gen_random_uuid()::text, ${opts.orgId}, ${opts.userId}, ${opts.towbookDriverId}, ${opts.jobId}, ${opts.latitude}, ${opts.longitude}, ${opts.accuracy})`;
+  await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, job_id, latitude, longitude, accuracy, speed_mph)
+    VALUES(gen_random_uuid()::text, ${opts.orgId}, ${opts.userId}, ${opts.towbookDriverId}, ${opts.jobId}, ${opts.latitude}, ${opts.longitude}, ${opts.accuracy}, ${opts.speedMph ?? null})`;
   await q`DELETE FROM driver_locations WHERE org_id=${opts.orgId} AND captured_at < NOW() - INTERVAL '24 hours'`;
 }
 
@@ -421,6 +422,7 @@ export async function pingHandler(data: unknown): Promise<PingResult> {
     longitude: z.number().min(-180).max(180),
     accuracy: z.number().min(0).max(100000).nullable().optional(),
     jobTowbookId: z.string().min(1).max(64).nullable().optional(),
+    speedMph: z.number().min(0).max(250).nullable().optional(),
   }).safeParse(data);
   if (!v.success) return { ok: false, reason: "Invalid location ping." };
   if (!configured()) return { ok: false, reason: "GPS pings require database mode." };
@@ -441,7 +443,7 @@ export async function pingHandler(data: unknown): Promise<PingResult> {
       ? await q`SELECT id FROM dispatch_jobs WHERE org_id=${u.orgId} AND towbook_job_id=${d.jobTowbookId} LIMIT 1`
       : [];
     const jobId = jobRow.length ? String(jobRow[0].id) : null;
-    await storePing({ orgId: u.orgId, userId: identity.userRowId, towbookDriverId, jobId, latitude: d.latitude, longitude: d.longitude, accuracy: d.accuracy ?? null });
+    await storePing({ orgId: u.orgId, userId: identity.userRowId, towbookDriverId, jobId, latitude: d.latitude, longitude: d.longitude, accuracy: d.accuracy ?? null, speedMph: d.speedMph ?? null });
     // Best-effort Towbook checkin so Towbook has live GPS. Failure must never
     // break the ping loop.
     let towbookCheckin: PingResult extends infer _ ? "ok" | "warning" | "failed" | "skipped" | "no-session" : never = "skipped";
