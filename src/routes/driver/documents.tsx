@@ -219,6 +219,13 @@ function DocumentsView() {
                     <div className="min-w-0">
                       <p className="break-words text-sm font-bold text-ink-900">{row.docTypeName}</p>
                       <p className="mt-1"><DocStatusBadge status={row.status} /></p>
+                      {row.docTypeName.toLowerCase().includes("license") && (
+                        <p className="mt-2 text-[11px] leading-relaxed text-ink-500">
+                          {row.docTypeName.toLowerCase().includes("back")
+                            ? "Back scan: keep it flat and well lit; make the barcode and all text legible."
+                            : "Front photo: capture the entire card in focus with all text readable."}
+                        </p>
+                      )}
                     </div>
                     <div className="flex shrink-0 gap-2">
                       {row.requiresNotificationsLocation ? (

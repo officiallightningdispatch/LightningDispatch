@@ -1523,7 +1523,8 @@ export async function completeNotificationsLocationCore(
 export const MANDATED_DOC_TYPES: Array<{ name: string; requiresExpiry: boolean; requiresFacialVerification: boolean; formKind: FormKind | null; requiresNotificationsLocation?: boolean }> = [
   { name: "W-9", requiresExpiry: false, requiresFacialVerification: false, formKind: "w9" },
   { name: "I-9", requiresExpiry: false, requiresFacialVerification: false, formKind: "i9" },
-  { name: "Driver's License", requiresExpiry: true, requiresFacialVerification: true, formKind: null },
+  { name: "Driver's License — Front", requiresExpiry: true, requiresFacialVerification: true, formKind: null },
+  { name: "Driver's License — Back", requiresExpiry: true, requiresFacialVerification: false, formKind: null },
   { name: "Insurance information", requiresExpiry: true, requiresFacialVerification: false, formKind: null },
   // Owner-directed 2026-08-13: EVERY driver must enable notifications +
   // location. This is a SELF-COMPLETED item (no owner review): the driver

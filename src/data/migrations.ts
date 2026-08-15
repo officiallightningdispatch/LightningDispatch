@@ -1316,7 +1316,17 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
       }
     }
   }],
-];
+  [58, async (q) => {
+    // Driver license is two independent required captures. Preserve the existing
+    // single license row by renaming it to the front slot; the back slot starts
+    // missing and therefore blocks compliance until uploaded and reviewed.
+    await q`UPDATE contractor_doc_types SET name=${"Driver's License — Front"} WHERE LOWER(name)=${"driver's license"}`;
+    await q`INSERT INTO contractor_doc_types(id, org_id, name, requires_expiry, requires_facial_verification, form_kind, requires_notifications_location, sort_order, active)
+      SELECT gen_random_uuid()::text, org_id, ${"Driver's License — Back"}, requires_expiry, FALSE, NULL, FALSE, sort_order + 1, active
+      FROM contractor_doc_types t WHERE LOWER(t.name)=${"driver's license — front"}
+      AND NOT EXISTS (SELECT 1 FROM contractor_doc_types x WHERE x.org_id=t.org_id AND LOWER(x.name)=${"driver's license — back"})`;
+  }],
+ ];
 export async function ensureSchema() {
   const q = sql();
   await q`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
