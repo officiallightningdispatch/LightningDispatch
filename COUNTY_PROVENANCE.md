@@ -1,0 +1,2 @@
+# County crosswalk provenance
+`src/data/zip-county.json` is derived from the Census Bureau 2020 ZCTA-to-county relationship file `tab20_zcta520_county20_natl.txt` (downloaded from census.gov), using `AREALAND_PART` maximum per ZCTA. Blank ZCTAs and ZIPs outside the packaged `src/data/us-zips.json` universe are excluded. County suffixes are normalized. Validation: 06830 Fairfield CT; 06511 New Haven CT; 10001 New York NY; 90210 Los Angeles CA.

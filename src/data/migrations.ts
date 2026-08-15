@@ -1194,6 +1194,10 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE TABLE IF NOT EXISTS driver_region_preferences (org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, driver_id TEXT NOT NULL, config JSONB NOT NULL DEFAULT '{}'::jsonb, enabled BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(org_id, driver_id))`;
     await q`CREATE INDEX IF NOT EXISTS driver_region_preferences_org_idx ON driver_region_preferences(org_id, enabled)`;
   }],
+  [56, async (q) => {
+    await q`ALTER TABLE dispatch_zones DROP CONSTRAINT IF EXISTS dispatch_zones_zone_type_check`;
+    await q`ALTER TABLE dispatch_zones ADD CONSTRAINT dispatch_zones_zone_type_check CHECK (zone_type IN ('market','submarket','rural','corridor','coverage','county'))`;
+  }],
   [55, async (q) => {
     // National zone metadata. Append-only and idempotent: existing P0 zones are
     // backfilled to CT for continuity; future markets are owner-managed data.
@@ -1204,7 +1208,7 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`ALTER TABLE dispatch_zones ADD COLUMN IF NOT EXISTS parent_zone_id TEXT REFERENCES dispatch_zones(id) ON DELETE SET NULL`;
     await q`UPDATE dispatch_zones SET state='CT', market='', zone_type='market', zip_codes='{}'::text[], parent_zone_id=NULL WHERE state IS NULL OR market IS NULL OR zone_type IS NULL OR zip_codes IS NULL`;
     await q`ALTER TABLE dispatch_zones ALTER COLUMN state SET NOT NULL`;
-    await q`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='dispatch_zones_zone_type_check') THEN ALTER TABLE dispatch_zones ADD CONSTRAINT dispatch_zones_zone_type_check CHECK (zone_type IN ('market','submarket','rural','corridor','coverage')); END IF; END $$`;
+    await q`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='dispatch_zones_zone_type_check') THEN ALTER TABLE dispatch_zones ADD CONSTRAINT dispatch_zones_zone_type_check CHECK (zone_type IN ('market','submarket','rural','corridor','coverage','county')); END IF; END $$`;
     await q`CREATE INDEX IF NOT EXISTS dispatch_zones_org_state_active_idx ON dispatch_zones(org_id,state,active)`;
     await q`CREATE INDEX IF NOT EXISTS dispatch_zones_zip_codes_gin_idx ON dispatch_zones USING GIN(zip_codes)`;
     await q`CREATE INDEX IF NOT EXISTS dispatch_zones_parent_idx ON dispatch_zones(parent_zone_id)`;
