@@ -19,6 +19,6 @@ for(const z of data){
   await q`INSERT INTO dispatch_zones(id,org_id,name,state,market,zone_type,zip_codes,parent_zone_id,lat,lng,radius_miles,tz,active,sort_order) VALUES(${ids.get(z.key)},${ORG},${z.name},${z.state},${z.market},${z.zone_type},${z.zip_codes??[]},${parent},${z.lat},${z.lng},${radius},${z.tz},TRUE,${data.indexOf(z)}) ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name,state=EXCLUDED.state,market=EXCLUDED.market,zone_type=EXCLUDED.zone_type,zip_codes=EXCLUDED.zip_codes,parent_zone_id=EXCLUDED.parent_zone_id,lat=EXCLUDED.lat,lng=EXCLUDED.lng,radius_miles=EXCLUDED.radius_miles,tz=EXCLUDED.tz,active=TRUE,sort_order=EXCLUDED.sort_order,updated_at=NOW() WHERE dispatch_zones.org_id=${ORG}`;
 }
 const known=[...ids.values()];
-const deactivated=await q`UPDATE dispatch_zones SET active=FALSE,updated_at=NOW() WHERE org_id=${ORG} AND zone_type <> 'coverage' AND NOT (id = ANY(${known})) RETURNING id,name`;
+const deactivated=await q`UPDATE dispatch_zones SET active=FALSE,zip_codes=ARRAY[]::text[],updated_at=NOW() WHERE org_id=${ORG} AND zone_type <> 'coverage' AND NOT (id = ANY(${known})) RETURNING id,name`;
 const c=await q`SELECT state,zone_type,count(*)::int n FROM dispatch_zones WHERE org_id=${ORG} GROUP BY state,zone_type ORDER BY state,zone_type`;
 console.log(JSON.stringify({org:ORG,seedRows:data.length,deactivated:deactivated.map(x=>x.name),counts:c},null,2));
