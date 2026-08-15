@@ -2905,7 +2905,7 @@ async function runAutoDispatchInternal(
         { stateGuard: guardOutcome },
       );
       if (guardOutcome.blocked) {
-        await acceptFallback(guardOutcome.blockedReason === "job_state_unknown" ? "job state unknown" : "no eligible driver with a provable state; using universal fallback", { offer, stateGuard: guardOutcome.excluded });
+        await acceptFallback(guardOutcome.blockedReason === "job_state_unknown" ? "job state unknown" : "no eligible same-state driver (no eligible driver with a provable state); using universal fallback", { offer, stateGuard: guardOutcome.excluded });
         continue;
       }
       const effectiveMaxEta = Math.min(settings.maxEtaMinutes, offer.maxEta ?? settings.maxEtaMinutes);
