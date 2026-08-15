@@ -1,0 +1,9 @@
+export const ZONE_STATUSES = ['available','busy','reserved','at_capacity'] as const;
+export type ZoneStatus = typeof ZONE_STATUSES[number];
+export type DemandSource = 'set'|'computed'|'unavailable';
+export function validateZoneStatus(status: unknown): ZoneStatus { if (typeof status !== 'string' || !(ZONE_STATUSES as readonly string[]).includes(status)) throw new Error('Invalid zone status.'); return status as ZoneStatus; }
+export function clampDemandLevel(v: unknown): number|null { if (v == null || v === '') return null; const n=Number(v); if (!Number.isFinite(n)) return null; return Math.max(0,Math.min(100,Math.round(n))); }
+export function validateHexColor(s: unknown): string|null { if (s == null || s === '') return null; if (typeof s !== 'string' || !/^#[0-9A-Fa-f]{6}$/.test(s)) throw new Error('Color must be a #RRGGBB hex value.'); return s.toUpperCase(); }
+export function validateUnlockJobs(n: unknown): number { const v=Number(n); if (!Number.isInteger(v)||v<0) throw new Error('Unlock jobs required must be an integer at least 0.'); return v; }
+export function demandLevelToColor(level: number|null): {hex:string;opacity:number;label:string} { if(level==null) return {hex:'#FDB268',opacity:.14,label:'Low'}; const n=Math.max(0,Math.min(100,Math.round(level))); if(n<25)return {hex:'#FDB268',opacity:.22,label:'Low'}; if(n<50)return {hex:'#F27801',opacity:.32,label:'Medium'}; if(n<75)return {hex:'#DC2626',opacity:.42,label:'High'}; return {hex:'#991B1B',opacity:.54,label:'Very high'}; }
+export function computedDemandLevel(activeJobs:number,unassignedJobs:number,capacity:number|null,availableDrivers:number): number|null { if(!(capacity!>0)&&!(availableDrivers>0)) return null; return Math.max(0,Math.min(100,Math.round((activeJobs+unassignedJobs)/Math.max(capacity??0,Math.max(availableDrivers,1))*100))); }

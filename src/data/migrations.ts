@@ -1408,10 +1408,8 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`ALTER TABLE driver_locations ADD COLUMN IF NOT EXISTS speed_mph DOUBLE PRECISION`;
   }],
 
-  [64, async (q) => {
-    await q`ALTER TABLE dispatch_zones ADD COLUMN IF NOT EXISTS polygon_geojson JSONB`;
-    await q`ALTER TABLE dispatch_zones ADD COLUMN IF NOT EXISTS capacity INTEGER`;
-  }],  [63, async (q) => {
+
+  ,  [63, async (q) => {
     // The nudge lifecycle writes multiple decision rows per job: the
     // auto-accept (reason 'reassigned_not_headed') on reassignment, then a
     // DISTINCT escalation (reason 'reassigned_not_headed_again') when the
@@ -1424,6 +1422,19 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`DROP INDEX IF EXISTS ai_dispatcher_decisions_org_callreq_uidx`;
     await q`CREATE UNIQUE INDEX IF NOT EXISTS ai_dispatcher_decisions_org_callreq_reason_uidx ON ai_dispatcher_decisions(org_id, call_request_id, reason) WHERE call_request_id IS NOT NULL`;
   }],
+  [64, async (q) => {
+    await q`ALTER TABLE dispatch_zones ADD COLUMN IF NOT EXISTS polygon_geojson JSONB`;
+    await q`ALTER TABLE dispatch_zones ADD COLUMN IF NOT EXISTS capacity INTEGER`;
+  }],
+  [65, async (q) => {
+    await q`ALTER TABLE dispatch_zones ADD COLUMN IF NOT EXISTS market_id TEXT`;
+    await q`ALTER TABLE dispatch_zones ADD COLUMN IF NOT EXISTS demand_level INTEGER`;
+    await q`ALTER TABLE dispatch_zones ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'available'`;
+    await q`ALTER TABLE dispatch_zones ADD COLUMN IF NOT EXISTS is_reserved BOOLEAN NOT NULL DEFAULT false`;
+    await q`ALTER TABLE dispatch_zones ADD COLUMN IF NOT EXISTS unlock_jobs_required INTEGER NOT NULL DEFAULT 30`;
+    await q`ALTER TABLE dispatch_zones ADD COLUMN IF NOT EXISTS color TEXT`;
+  }],
+
  ];
 export async function ensureSchema() {
   const q = sql();
