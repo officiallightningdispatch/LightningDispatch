@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { computeRegionalCtPlan } from './src/data/migrations.ts';
-const counties = ['Fairfield','Hartford','Litchfield','Middlesex','New Haven','New London','Tolland','Windham'].map((name,i)=>({id:`c${i}`,name,zip_codes:(name==='New Haven'?['10002']:name==='Fairfield'?['10000','10001','10003']:Array.from({length:3},(_,j)=>String(10000+i*10+j)))}));
-// Fixture uses disjoint county ZIPs and exact byte names, including en-dashes.
-const existing=[{id:'sw',name:'Southwest CT',zip_codes:['10000']},{id:'bm',name:'Bridgeport–Milford',zip_codes:['10001']},{id:'nh',name:'New Haven–Branford',zip_codes:['10002']}];
-const p=computeRegionalCtPlan(existing,counties); assert.equal(p.regions.length,9); assert.equal(p.duplicates.length,0); assert.equal(p.gaps.length,0); assert.ok(p.regions.every(r=>r.name!=='CT')); assert.deepEqual(p.regions.slice(0,3).map(r=>r.id),['sw','bm','nh']); assert.equal(p.regions.find(r=>r.name==='Greater Danbury/Waterbury').parentName,'Litchfield'); console.log('PASS migration 57 partition fixture');
+const countyZips = { Fairfield:['10003'], Hartford:['10006'], Litchfield:['10005'], Middlesex:['10007'], 'New Haven':['10004'], 'New London':['10008'], Tolland:['10009'], Windham:['10010'] };
+const counties = Object.entries(countyZips).map(([name,zip_codes],i)=>({id:`c${i}`,name,zip_codes}));
+const existing=[{id:'sw',name:'Southwest CT',zip_codes:['10000']},{id:'bm',name:'Bridgeport–Milford',zip_codes:['10001']},{id:'nh',name:'New Haven–Branford',zip_codes:['10002']},{id:'ccr',name:'CT Capital Region',zip_codes:['10011']}];
+const p=computeRegionalCtPlan(existing,counties);
+assert.equal(p.regions.length,9); assert.equal(p.duplicates.length,0); assert.equal(p.gaps.length,0);
+assert.deepEqual(p.regions.slice(0,4).map(r=>r.id),['sw','bm','nh','ccr']);
+assert.deepEqual(p.regions.find(r=>r.name==='Greater Hartford').zips,['10006','10011']);
+assert.equal(p.regions.find(r=>r.name==='Greater Hartford').parentName,'Hartford');
+const danbury=p.regions.find(r=>r.name==='Greater Danbury/Waterbury');
+assert.deepEqual(danbury.zips,['10003','10004','10005']); assert.ok(['Fairfield','New Haven','Litchfield'].includes(danbury.parentName));
+assert.ok(p.regions.every(r=>r.zips.length>=1));
+console.log('PASS migration 57 partition fixture');

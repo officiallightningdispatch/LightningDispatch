@@ -7,31 +7,61 @@ export function computeRegionalCtPlan(existing: RegionalCtInput[], counties: Reg
   const zips = (v:unknown) => Array.isArray(v) ? [...new Set(v.map(String).filter(Boolean))] : [];
   const byName = new Map(existing.map(r => [r.name, r]));
   const countyByName = new Map(counties.map(c => [c.name, c]));
-  const corridor = (name:string) => byName.get(name);
-  const seeds: Record<string,string[]> = {
-    'Greater Stamford/Fairfield County': zips(corridor('Southwest CT')?.zip_codes),
-    'Greater Bridgeport': zips(corridor('Bridgeport–Milford')?.zip_codes),
-    'Greater New Haven': zips(corridor('New Haven–Branford')?.zip_codes),
-  };
+  const seedRows: Array<[string,string,string]> = [
+    ['Greater Stamford/Fairfield County', 'Southwest CT', 'Fairfield'],
+    ['Greater Bridgeport', 'Bridgeport–Milford', 'Fairfield'],
+    ['Greater New Haven', 'New Haven–Branford', 'New Haven'],
+    ['Greater Hartford', 'CT Capital Region', 'Hartford'],
+  ];
   const names = ['Greater Stamford/Fairfield County','Greater Bridgeport','Greater New Haven','Greater Hartford','Greater Danbury/Waterbury','Greater Middlesex/Shoreline','Greater New London','Greater Tolland/NE CT','Greater Windham/Eastern CT'];
-  const countyMap: Record<string,string> = {'Greater Hartford':'Hartford','Greater Danbury/Waterbury':'Litchfield','Greater Middlesex/Shoreline':'Middlesex','Greater New London':'New London','Greater Tolland/NE CT':'Tolland','Greater Windham/Eastern CT':'Windham'};
-  const all = new Set<string>(); for (const c of counties) for (const z of zips(c.zip_codes)) all.add(z);
-  const assigned = new Map<string,string>();
-  for (const [name, zs] of Object.entries(seeds)) for (const z of zs) { if (!all.has(z)) continue; if (assigned.has(z)) throw new Error(`seed ZIP overlaps: ${z}`); assigned.set(z,name); }
-  // Non-corridor Fairfield/New Haven ZIPs belong to the combined inland region;
-  // all other counties map directly to their named regional market.
-  for (const c of counties) for (const z of zips(c.zip_codes)) if (!assigned.has(z)) assigned.set(z, c.name === 'Fairfield' || c.name === 'New Haven' ? 'Greater Danbury/Waterbury' : names.find(n => countyMap[n] === c.name)!);
   const sortOrders = [3232,3233,3234,3235,3236,3237,3238,3239,3240];
+  const countyMap: Record<string,string> = {'Greater Hartford':'Hartford','Greater Danbury/Waterbury':'Litchfield','Greater Middlesex/Shoreline':'Middlesex','Greater New London':'New London','Greater Tolland/NE CT':'Tolland','Greater Windham/Eastern CT':'Windham'};
+  const countyZips = new Set<string>();
+  for (const c of counties) for (const z of zips(c.zip_codes)) countyZips.add(z);
+  const marketZips = new Set<string>();
+  for (const r of existing) for (const z of zips(r.zip_codes)) marketZips.add(z);
+  const universe = new Set([...countyZips, ...marketZips]);
+  const assigned = new Map<string,string>();
+  const seedByRegion = new Map<string, string[]>();
+  for (const [region, oldName] of seedRows) {
+    const row = byName.get(oldName);
+    if (!row) throw new Error(`missing seed row: ${oldName}`);
+    const zs = zips(row.zip_codes);
+    seedByRegion.set(region, zs);
+    for (const z of zs) {
+      if (assigned.has(z)) throw new Error(`seed ZIP overlaps: ${z}`);
+      assigned.set(z, region);
+    }
+  }
+  // County ZIPs not claimed by a seed form the five county-based remainder regions.
+  for (const c of counties) for (const z of zips(c.zip_codes)) if (!assigned.has(z)) {
+    const region = c.name === 'Fairfield' || c.name === 'New Haven' || c.name === 'Litchfield'
+      ? 'Greater Danbury/Waterbury' : names.find(n => countyMap[n] === c.name);
+    if (!region) throw new Error(`unmapped county: ${c.name}`);
+    assigned.set(z, region);
+  }
+  const fallback: Record<string,string> = {
+    'Greater Stamford/Fairfield County':'Fairfield', 'Greater Bridgeport':'Fairfield',
+    'Greater New Haven':'New Haven', 'Greater Hartford':'Hartford',
+  };
+  const oldNames: Record<string,string> = Object.fromEntries(seedRows.map(([n, old]) => [n, old]));
   const regions = names.map((name, i) => {
-    const zs = [...assigned].filter(([,n]) => n===name).map(([z])=>z).sort();
-    const counts = new Map<string,number>(); for (const z of zs) for (const c of counties) if (zips(c.zip_codes).includes(z)) counts.set(c.name,(counts.get(c.name)||0)+1);
-    const parentName = [...counts.entries()].sort((a,b)=>b[1]-a[1] || a[0].localeCompare(b[0]))[0]?.[0]; const parent=countyByName.get(parentName!); if (!parent) throw new Error(`missing parent for ${name}`);
-    const old = seeds[name] && corridor(name === 'Greater Stamford/Fairfield County' ? 'Southwest CT' : name === 'Greater Bridgeport' ? 'Bridgeport–Milford' : 'New Haven–Branford');
-    const oldRow = existing.find(r => r.name === (name === 'Greater Stamford/Fairfield County' ? 'Southwest CT' : name === 'Greater Bridgeport' ? 'Bridgeport–Milford' : name === 'Greater New Haven' ? 'New Haven–Branford' : ''));
-    return {name,zips:zs,parentId:String(parent.id),parentName,sortOrder:sortOrders[i],id:oldRow ? String(oldRow.id) : `regional-ct-${name.toLowerCase().replace(/[^a-z0-9]+/g,'-')}`};
+    const zs = [...assigned].filter(([,n]) => n === name).map(([z]) => z).sort();
+    if (!zs.length) throw new Error(`region has zero ZIPs: ${name}`);
+    const counts = new Map<string,number>();
+    for (const z of zs) for (const c of counties) if (zips(c.zip_codes).includes(z)) counts.set(c.name, (counts.get(c.name) || 0) + 1);
+    const parentName = [...counts.entries()].sort((a,b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] || fallback[name];
+    const parent = countyByName.get(parentName!);
+    if (!parent) throw new Error(`missing parent for ${name}`);
+    const oldRow = oldNames[name] ? byName.get(oldNames[name]) : undefined;
+    return {name, zips: zs, parentId: String(parent.id), parentName, sortOrder: sortOrders[i], id: oldRow ? String(oldRow.id) : `regional-ct-${name.toLowerCase().replace(/[^a-z0-9]+/g,'-')}`};
   });
-  const seen = new Map<string,number>(); for (const r of regions) for (const z of r.zips) seen.set(z,(seen.get(z)||0)+1);
-  return {regions, duplicates:[...seen].filter(([,n])=>n>1).map(([z])=>z), gaps:[...all].filter(z=>!seen.has(z))};
+  const seen = new Map<string,number>();
+  for (const r of regions) for (const z of r.zips) seen.set(z, (seen.get(z) || 0) + 1);
+  const duplicates = [...seen].filter(([,n]) => n > 1).map(([z]) => z);
+  const gaps = [...universe].filter(z => !seen.has(z));
+  if (duplicates.length || gaps.length) throw new Error(`CT regional partition failed closed: ${gaps.length} gaps, ${duplicates.length} duplicates`);
+  return {regions, duplicates, gaps};
 }
 
 const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>]> = [
