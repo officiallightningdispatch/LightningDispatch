@@ -66,6 +66,18 @@ export function startBackgroundSync(): void {
  *  syncForOrg): a slow dispatch run never overlaps itself across fires. */
 const dispatchInFlight = new Map<string, Promise<unknown>>();
 
+/**
+ * Towbook's complete calls list is the largest recurring transfer in this
+ * process. Keep the 3s dispatcher cadence (new offers still get handled every
+ * tick), but do not re-download the unchanged full calls list on every tick.
+ * Ten seconds bounds ordinary import visibility while cutting the periodic
+ * Towbook/Neon sync workload by ~70%. An accepted offer's dispatcher path can
+ * still request an immediate sync; this gate applies only to the background
+ * interval sync.
+ */
+const TOWBOOK_INTERVAL_SYNC_MIN_MS = 10_000;
+const nextIntervalSyncAt = new Map<string, number>();
+
 /** One org's tick: auto-dispatch FIRST and INDEPENDENT of the Towbook job
  *  sync (resilience fix 2026-08-12 — a slow sync must never block offer
  *  handling). Each half is hard-timeout-wrapped; either timing out can never
@@ -90,7 +102,13 @@ async function runTick(orgId: string): Promise<void> {
       dispatchInFlight.set(orgId, p);
       return p;
     })();
-    const sync = syncForOrg(orgId, "sync:interval");
+    // Dispatch remains on the 3s cadence. The complete Towbook import is
+    // periodic instead of repeating unchanged payloads on every dispatch tick.
+    const now = Date.now();
+    const dueAt = nextIntervalSyncAt.get(orgId) ?? 0;
+    const sync = now >= dueAt
+      ? (nextIntervalSyncAt.set(orgId, now + TOWBOOK_INTERVAL_SYNC_MIN_MS), syncForOrg(orgId, "sync:interval"))
+      : Promise.resolve(null);
     const nudges = processAssignmentNudges(orgId);
     await Promise.allSettled([dispatch, sync, nudges]);
   } catch { /* best-effort — one org's failure never stops the loop */ }
