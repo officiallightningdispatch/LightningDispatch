@@ -21,7 +21,7 @@ export function ZoneMap({zones,selectedZoneId,onSelectZone,onDeleteZone,mode='vi
    m.addSource('zones',{type:'geojson',data});
    m.addLayer({id:'zones-fill',type:'fill',source:'zones',paint:{
     'fill-color':['case',['==',['get','active'],false],'#6B7280',['match',['get','demandBucket'],0,'#FDB268',1,'#F27801',2,'#DC2626',3,'#991B1B','#FDB268']],
-    'fill-opacity':['case',['==',['get','active'],false],.12,['case',['get','selected'],.62,['match',['get','demandBucket'],0,.22,1,.32,2,.42,3,.54,.14]]]
+    'fill-opacity':['case',['==',['get','active'],false],.12,['case',['get','selected'],.7,['match',['get','demandBucket'],0,.55,1,.68,2,.8,3,.88,.55]]]
    }});
    m.addLayer({id:'zones-outline',type:'line',source:'zones',paint:{
     'line-color':['case',['==',['get','active'],false],'#6B7280',['case',['get','selected'],'#F27801',['case',['get','isReserved'],'#F59E0B',['match',['get','status'],'at_capacity','#6B7280','busy','#DC2626','#16A34A']]]],
