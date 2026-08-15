@@ -114,14 +114,25 @@ export type DriverTipCashoutState = {
 export async function availableTipsCore(orgId: string, driverId: string): Promise<{ totalCents: number; tipCount: number }> {
   await ensure();
   const q = await db();
-  const paid = await q`SELECT COALESCE(SUM(amount_cents),0)::int AS total, COUNT(*)::int AS cnt
+  const paid = await q`SELECT COALESCE(SUM(amount_cents),0)::int AS total
     FROM completion_tips WHERE org_id=${orgId} AND driver_id=${driverId} AND status='paid'`;
-  const plugs = await q`SELECT COALESCE(SUM(amount_cents),0)::int AS total, COUNT(*)::int AS cnt
+  const plugs = await q`SELECT COALESCE(SUM(amount_cents),0)::int AS total
     FROM tire_plug_transactions WHERE org_id=${orgId} AND contractor_user_id=${driverId} AND status='paid'`;
   const cash = await q`SELECT COALESCE(SUM(amount_cents),0)::int AS total
     FROM tip_cashouts WHERE org_id=${orgId} AND contractor_id=${driverId}`;
+  // Count only rows still available, not every historical paid row. This keeps
+  // the driver-facing count aligned with the server-computed amount after a
+  // requested cash-out reserves its covered snapshot.
+  const uncoveredTips = await q`SELECT COUNT(*)::int AS cnt FROM completion_tips ct
+    WHERE ct.org_id=${orgId} AND ct.driver_id=${driverId} AND ct.status='paid'
+      AND NOT EXISTS (SELECT 1 FROM tip_cashouts tc, jsonb_array_elements_text(tc.covered_tip_ids) tid
+        WHERE tc.org_id=ct.org_id AND tid=ct.id)`;
+  const uncoveredPlugs = await q`SELECT COUNT(*)::int AS cnt FROM tire_plug_transactions t
+    WHERE t.org_id=${orgId} AND t.contractor_user_id=${driverId} AND t.status='paid'
+      AND NOT EXISTS (SELECT 1 FROM tip_cashouts tc, jsonb_array_elements_text(tc.covered_tire_plug_ids) tid
+        WHERE tc.org_id=t.org_id AND tid=t.id)`;
   const totalCents = Number(paid[0]?.total ?? 0) + Number(plugs[0]?.total ?? 0) - Number(cash[0]?.total ?? 0);
-  return { totalCents: Math.max(0, totalCents), tipCount: Number(paid[0]?.cnt ?? 0) + Number(plugs[0]?.cnt ?? 0) };
+  return { totalCents: Math.max(0, totalCents), tipCount: Number(uncoveredTips[0]?.cnt ?? 0) + Number(uncoveredPlugs[0]?.cnt ?? 0) };
 }
 
 /** Oldest paid tips NOT already covered by a cash-out (requested or paid),
