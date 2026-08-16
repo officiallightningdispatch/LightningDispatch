@@ -5,7 +5,7 @@ import { decryptSession } from "./towbook-key";
 import { resolveTomtomKey } from "./tomtom-key";
 export { resolveTomtomKey } from "./tomtom-key";
 import type { RecoveryResult } from "./towbook-recovery";
-import { calculateInternalEta, serviceMinutesFor } from "~/lib/internal-eta";
+import { calculateInternalEta } from "~/lib/internal-eta";
 
 /* ============================ AI dispatcher engine ============================
  * Owner-directed: every pending, unexpired Towbook motor-club offer is claimed
