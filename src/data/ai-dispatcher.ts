@@ -2007,7 +2007,7 @@ export function finalEtaMinutes(
  *  when an active job lacks pickup coords. A transient TomTom failure is
  *  surfaced ("tomtom failed (HTTP 429) → osrm") and a stale GPS ping is
  *  flagged ("GPS ping age 30 min") — ETA honesty (2026-08-11). */
-export function etaDetailLabel(c: ChosenDriverEta, buffer: number, floor: number, ceiling: number, finalMinutes: number): string {
+export function etaDetailLabel(c: ChosenDriverEta, buffer: number, floor: number, _ceiling: number, finalMinutes: number): string {
   const base = c.queueInclusive
     ? `queue-aware ETA ${Math.round(c.baseMinutes)} min = ${c.queueBreakdown ?? `${Math.round(c.queueMinutes ?? 0)} min queued work + ${Math.round(c.finalLegMinutes ?? 0)} min final leg`} (${c.provider === "tomtom" ? "tomtom-traffic" : c.provider === "osrm" ? "osrm" : "factor"})${c.startedOnScene ? "; already on-scene at current job" : ""}${c.unlocatedJobs ? `; +${c.unlocatedJobs} unlocated ≈ service` : ""}`
     : c.usedFallback
