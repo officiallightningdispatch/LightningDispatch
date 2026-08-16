@@ -68,13 +68,29 @@ const SERVICE_MINUTES: Record<string, number> = {
   battery_standard: 60,
   battery_advanced: 120,
 };
+
+/** Canonical install labels used by the internal planner. Unknown labels fail
+ * safe to the short estimate and require dispatcher review. */
+export function normalizeBatteryInstallType(raw: string | null | undefined): { type: string; minutes: number; reviewRequired: boolean } {
+  const value = String(raw ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (/^(standard|standard_install|top_terminal|basic)$/.test(value)) return { type: "battery_standard", minutes: 60, reviewRequired: false };
+  if (/^(advanced|advanced_install|buried|heavy_duty)$/.test(value)) return { type: "battery_advanced", minutes: 120, reviewRequired: false };
+  if (/^(european|battery_location_remote|programming_required|dual_battery)$/.test(value)) return { type: `battery_${value}`, minutes: 15, reviewRequired: true };
+  return { type: "battery_unknown", minutes: 15, reviewRequired: true };
+}
+
+export type InternalEtaAudience = "internal" | "customer";
+export function serializeEtaForAudience(result: InternalEtaResult, audience: InternalEtaAudience): Record<string, unknown> {
+  if (audience === "customer") return result.ok ? { ok: true, etaMinutes: result.totalMinutes } : { ok: false, etaMinutes: null };
+  return result.ok ? { ok: true, totalMinutes: result.totalMinutes, orderedJobIds: result.orderedJobIds, breakdown: result.breakdown, reviewRequired: result.reviewRequired } : result;
+}
 const ACTIVE = new Set(["offered", "accepted", "en_route", "in_progress", "arrived"]);
 const COMMITTED = new Set(["en_route", "in_progress", "arrived"]);
 
 export function normalizeEtaServiceType(raw: string | null | undefined, batteryInstallType?: string | null): string {
   const value = String(raw ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
   if (value.includes("battery")) {
-    return String(batteryInstallType ?? value).toLowerCase().includes("advanced") ? "battery_advanced" : "battery_standard";
+    return normalizeBatteryInstallType(batteryInstallType ?? value).type;
   }
   if (value.includes("tire") || value.includes("tyre")) return "tire_change";
   if (value.includes("jump")) return "jump_start";

@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { calculateInternalEta, normalizeEtaServiceType, serviceMinutesFor, routeKey } from "./src/lib/internal-eta.ts";
+import { calculateInternalEta, normalizeEtaServiceType, serviceMinutesFor, routeKey, normalizeBatteryInstallType, serializeEtaForAudience } from "./src/lib/internal-eta.ts";
 const p = (lat) => ({ lat, lng: -73 });
 const job = (id, status = "accepted", type = "jump start", lat = 1) => ({ id, status, serviceType: type, location: p(lat) });
 const routes = (pairs) => Object.fromEntries(pairs.map(([a, b, seconds, distanceMeters]) => [routeKey(a, b), { durationSeconds: seconds, distanceMeters }]));
@@ -10,6 +10,10 @@ assert.deepEqual(one.orderedJobIds, ["a"]); assert.equal(one.breakdown[0].arriva
 assert.equal(serviceMinutesFor({ serviceType: "mystery" }).unknown, true);
 assert.equal(serviceMinutesFor({ serviceType: "battery installation", batteryInstallType: "advanced" }).minutes, 120);
 assert.equal(normalizeEtaServiceType("door unlock"), "lockout");
+assert.equal(normalizeBatteryInstallType("EUROPEAN").minutes, 15); assert.equal(normalizeBatteryInstallType("EUROPEAN").reviewRequired, true);
+assert.equal(normalizeBatteryInstallType("bogus").minutes, 15);
+assert.deepEqual(serializeEtaForAudience(one, "customer"), { ok: true, etaMinutes: 15 });
+assert.equal("breakdown" in serializeEtaForAudience(one, "customer"), false);
 const numeric = calculateInternalEta({ ...base, jobs: [job("numeric", 70)], routes: routes([["live", "numeric", 60]]) }); assert.deepEqual(numeric.orderedJobIds, ["numeric"]);
 const unknown = calculateInternalEta({ ...base, jobs: [job("unknown", "accepted", "unmapped")], routes: routes([["live", "unknown", 60]]) }); assert.equal(unknown.reviewRequired, true);
 assert.equal(calculateInternalEta({ ...base, liveLocation: null }).reason, "missing_live_location");

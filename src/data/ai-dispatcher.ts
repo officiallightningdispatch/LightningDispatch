@@ -1455,6 +1455,8 @@ export type ChosenDriverEta = {
   trafficDelaySeconds: number | null;
   /** Router notes (TomTom travel/delay detail; osrm static; null on fallback). */
   routerNotes: string | null;
+  /** Internal-only planner breakdown for driver/ops surfaces. Never include in customer-facing battery/tire payloads. */
+  internalEtaBreakdown?: Array<{ jobId: string; status: string; serviceType: string; serviceMinutes: number; unknownServiceType: boolean; travelMinutes: number; distanceMeters: number | null; arrivalOffsetMinutes: number; completionOffsetMinutes: number; routeFrom: string }> ;
   /** True when this choice came from the workload-aware chain model (the
    *  driver had active jobs; previously only the all-loaded queue-inclusive
    *  path, now ANY busy driver — owner-directed 2026-08-11). */
@@ -1872,6 +1874,7 @@ export async function chooseBestDriverByRoad(
           liveTraffic: chain.finalLegProvider === "tomtom",
           trafficDelaySeconds: null,
           routerNotes: `workload-aware; ${activeCount} active jobs${chain.unlocatedJobs > 0 ? ` (+${chain.unlocatedJobs} unlocated ≈ service time)` : ""}`,
+          internalEtaBreakdown: planned.ok ? planned.breakdown : undefined,
           queueInclusive: true,
           queueMinutes: chain.queueMinutes,
           queuedJobCount: activeCount,
@@ -1891,6 +1894,11 @@ export async function chooseBestDriverByRoad(
     try {
       result = roadRouter ? await roadRouter(origin.lat, origin.lng, pickupLat, pickupLng) : null;
     } catch { result = null; }
+    // Free offers use the same pure planner as busy queues. This keeps the
+    // internal breakdown contract consistent without introducing a ceiling.
+    const plannedFree = result && Number.isFinite(result.seconds) && result.seconds > 0
+      ? calculateInternalEta({ liveLocation: origin, jobs: [], offer: { id: "incoming-offer", status: "offered", location: { lat: pickupLat, lng: pickupLng }, serviceType: area?.serviceType ?? null }, routes: { ["live->incoming-offer"]: { durationSeconds: result.seconds, distanceMeters: null } } })
+      : null;
     if (result && Number.isFinite(result.seconds) && result.seconds > 0) {
       return {
         driver: d,
@@ -1905,6 +1913,7 @@ export async function chooseBestDriverByRoad(
         trafficDelaySeconds: result.provider === "tomtom" && Number.isFinite(result.trafficDelaySeconds as number)
           ? (result.trafficDelaySeconds as number) : null,
         routerNotes: result.notes ?? null,
+        internalEtaBreakdown: plannedFree?.ok ? plannedFree.breakdown : undefined,
         queueInclusive: false,
         queueMinutes: null,
         queuedJobCount: null,
@@ -1932,6 +1941,7 @@ export async function chooseBestDriverByRoad(
       liveTraffic: false,
       trafficDelaySeconds: null,
       routerNotes: null,
+      internalEtaBreakdown: undefined,
       queueInclusive: false,
       queueMinutes: null,
       queuedJobCount: null,
