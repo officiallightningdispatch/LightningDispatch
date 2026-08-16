@@ -40,6 +40,7 @@ import { z } from "zod";
 import { loadSquareConfig, createCardPayment, squareIdempotencyKey } from "./square-client";
 import { resolveJob, isAssignedDriver } from "./driver-photos-core";
 import type { PhotoUser } from "./driver-photos-core";
+import { canonicalizeNullableVehicleField } from "./battery-compatibility-canonical";
 
 const configured = () => Boolean(process.env.DATABASE_URL);
 
@@ -49,19 +50,20 @@ export type VinDecodeResult =
 
 /** NHTSA supplies identity evidence only; compatibility approval remains authoritative. */
 export async function decodeVin(vin: string, fetchImpl: typeof fetch = globalThis.fetch): Promise<VinDecodeResult> {
-  const normalized = String(vin ?? "").toUpperCase().replace(/\s+/g, "");
-  if (!/^[A-HJ-NPR-Z0-9]{17}$/.test(normalized)) return { ok: false, message: "Invalid VIN." };
+  const v = String(vin ?? "").toUpperCase().replace(/\s+/g, "");
+  if (!/^[A-HJ-NPR-Z0-9]{17}$/.test(v)) return { ok: false, message: "A VIN is 17 characters (letters and numbers, no I, O, or Q). Check it and try again." };
   try {
-    const response = await fetchImpl(`https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValues/${encodeURIComponent(normalized)}?format=json`, { signal: AbortSignal.timeout(12000) });
-    if (!response.ok) return { ok: false, message: "Vehicle lookup failed." };
-    const body = (await response.json()) as { Results?: Array<Record<string, unknown>> };
-    const row = body.Results?.[0];
-    const make = typeof row?.Make === "string" ? row.Make.trim() : "";
-    const model = typeof row?.Model === "string" ? row.Model.trim() : "";
-    const year = typeof row?.ModelYear === "string" ? row.ModelYear.trim() : "";
-    if (!make || !model || !/^\d{4}$/.test(year)) return { ok: false, message: "Vehicle lookup returned incomplete data." };
-    return { ok: true, make, model, year, trim: typeof row?.Trim === "string" ? row.Trim : null, engine: typeof row?.EngineModel === "string" ? row.EngineModel : null };
-  } catch { return { ok: false, message: "Vehicle lookup unavailable." }; }
+    const res = await fetchImpl(`https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValues/${encodeURIComponent(v)}?format=json`, { signal: AbortSignal.timeout(12000) });
+    if (!res.ok) return { ok: false, message: `The vehicle lookup returned HTTP ${res.status} — try again or enter the vehicle manually.` };
+    const body = (await res.json()) as { Results?: Array<Record<string, unknown>> };
+    const r = body.Results?.[0];
+    if (!r) return { ok: false, message: "The vehicle lookup returned no data — try again or enter the vehicle manually." };
+    const make = String(r.Make ?? "").trim(), model = String(r.Model ?? "").trim(), year = String(r.ModelYear ?? "").trim();
+    const errorCode = String(r.ErrorCode ?? "0").trim();
+    if (errorCode !== "" && errorCode !== "0") return { ok: false, message: `The vehicle lookup couldn't decode this VIN (${errorCode}) — try again or enter the vehicle manually.` };
+    if (!make || !model || !/^\d{4}$/.test(year)) return { ok: false, message: "The vehicle lookup came back incomplete — try again or enter the vehicle manually." };
+    return { ok: true, make, model, year, trim: canonicalizeNullableVehicleField(r.Trim), engine: canonicalizeNullableVehicleField(r.EngineModel) };
+  } catch { return { ok: false, message: "Couldn't reach the vehicle lookup — check the connection or enter the vehicle manually." }; }
 }
 let schemaInit: Promise<void> | undefined;
 function ensure() {
@@ -128,49 +130,6 @@ export function batteryQuoteCents(
 }
 
 /* ------------------------------- NHTSA decode ------------------------------- */
-
-export type VinDecodeResult =
-  | { ok: true; make: string; model: string; year: string }
-  | { ok: false; message: string };
-
-/** VIN decode via the public NHTSA VPIC API (no key). Strict 17-char VIN
- *  (no I/O/Q per NHTSA). Graceful failure with a retry/manual-entry message.
- *  Injectable fetchImpl for hermetic tests. */
-export async function decodeVin(
-  vin: string,
-  fetchImpl: typeof fetch = globalThis.fetch,
-): Promise<VinDecodeResult> {
-  const v = String(vin ?? "").toUpperCase().replace(/\s+/g, "");
-  if (!/^[A-HJ-NPR-Z0-9]{17}$/.test(v)) {
-    return { ok: false, message: "A VIN is 17 characters (letters and numbers, no I, O, or Q). Check it and try again." };
-  }
-  try {
-    const res = await fetchImpl(
-      `https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValues/${encodeURIComponent(v)}?format=json`,
-      { signal: AbortSignal.timeout(12000) },
-    );
-    if (!res.ok) {
-      return { ok: false, message: `The vehicle lookup returned HTTP ${res.status} — try again or enter the vehicle manually.` };
-    }
-    const body = (await res.json()) as { Results?: Array<Record<string, unknown>> };
-    const r = body.Results?.[0];
-    if (!r) return { ok: false, message: "The vehicle lookup returned no data — try again or enter the vehicle manually." };
-    const make = String(r.Make ?? "").trim();
-    const model = String(r.Model ?? "").trim();
-    const year = String(r.ModelYear ?? "").trim();
-    const errorCode = String(r.ErrorCode ?? "0").trim();
-    const isError = errorCode !== "" && errorCode !== "0";
-    if (isError) {
-      return { ok: false, message: `The vehicle lookup couldn't decode this VIN (${errorCode}) — try again or enter the vehicle manually.` };
-    }
-    if (!make || !model || !year) {
-      return { ok: false, message: "The vehicle lookup came back incomplete — try again or enter the vehicle manually." };
-    }
-    return { ok: true, make, model, year };
-  } catch {
-    return { ok: false, message: "Couldn't reach the vehicle lookup — check the connection or enter the vehicle manually." };
-  }
-}
 
 /* --------------------------------- rates --------------------------------- */
 
@@ -350,11 +309,11 @@ async function loadInstallJob(q: Awaited<ReturnType<typeof db>>, orgId: string, 
 
 /** Derive the agent step + message from the persisted facts (the state machine
  *  is deterministic — the UI just renders the step). */
-export function deriveAgentState(facts: JobFacts, sale: BatterySaleRow | null, rates: BatteryRates, installJob: { id: string; status: string } | null): BatteryAgentState {
+export function deriveAgentState(facts: JobFacts, sale: BatterySaleRow | BatterySaleRowInternal | null, rates: BatteryRates, installJob: { id: string; status: string } | null): BatteryAgentState {
   const base = {
     jobId: facts.id,
     testResult: facts.batteryTestResult,
-    sale: sale ? (({ vin: _vin, ...safeSale }) => safeSale)(sale) : null,
+    sale: sale ? (({ vin: _vin, ...safeSale }: BatterySaleRowInternal) => safeSale)(sale as BatterySaleRowInternal) : null,
     installJob,
     rates,
     agentMessage: "",
