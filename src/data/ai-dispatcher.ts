@@ -2859,7 +2859,7 @@ async function runAutoDispatchInternal(
       const manualNote = humanReassigned
         ? `manual reassignment respected — human-chosen driver ${humanReassigned.driverName ?? humanReassigned.driverTowbookId} (reassigned ${humanReassigned.reassignedAt} on job ${humanReassigned.jobId}) kept as authoritative; NOT re-dispatched to the road-best driver`
         : null;
-      const candidates = humanReassigned
+      let candidates = humanReassigned
         ? manualEligible
           ? (nd.body as unknown[]).filter((d) => {
               const id = Number((d as Record<string, unknown>).driverId);
@@ -2872,6 +2872,29 @@ async function runAutoDispatchInternal(
               return Number.isFinite(id) && eligibleIds.has(id);
             })
           : (nd.body as unknown[]);
+      // Agero placeholder coordinates can hide an in-state driver from nearestDrivers.
+      let poolExpandedFromStateEvidence = false;
+      if (!humanReassigned && zoneState.state) {
+        const resolveState = deps.stateGuardResolver;
+        const stateOf = async (d: NearestDriver) => {
+          const id = Number(d.driverId), lat = Number(d.latitude), lng = Number(d.longitude);
+          return resolveState && Number.isFinite(id) && Number.isFinite(lat) && Number.isFinite(lng) ? resolveState(id, lat, lng) : null;
+        };
+        const hasInState = resolveState
+          ? (await Promise.all(candidates.map(stateOf))).some((st) => st?.toUpperCase() === zoneState.state!.toUpperCase())
+          : false;
+        if (!hasInState) {
+          const seen = new Set(candidates.map((d) => Number((d as NearestDriver).driverId)));
+          for (const id of new Set([...driverGpsFixes.keys(), ...driverAnchors.keys()])) {
+            const numericId = Number(id), point = driverGpsFixes.get(id) ?? driverAnchors.get(id);
+            if (!Number.isFinite(numericId) || numericId <= 0 || seen.has(numericId) || (eligibleIds && !eligibleIds.has(numericId)) || !point) continue;
+            const supplemental: NearestDriver = { driverId: numericId, driverName: `Driver ${numericId}`, latitude: point.lat, longitude: point.lng, estimatedTimeSeconds: null, isCheckedIn: false };
+            if ((await stateOf(supplemental))?.toUpperCase() !== zoneState.state.toUpperCase()) continue;
+            candidates.push(supplemental); seen.add(numericId); poolExpandedFromStateEvidence = true;
+          }
+        }
+      }
+      if (poolExpandedFromStateEvidence) lookupAnchorNote += "; in-state driver pool expanded from anchors/fixes — nearestDrivers at anchor lacked in-state drivers";
       const serviceType = offer.serviceType || (typeof (rawOffer as Record<string, unknown>).serviceType === "string" ? String((rawOffer as Record<string, unknown>).serviceType) : null) || null;
       const serviceQualification: ServiceQualificationOutcome = { serviceType, assessed: Boolean(serviceType?.trim()), excluded: [] };
       // MINIMAL QUALIFICATION GATE is applied immediately after Towbook's eligible-list filter.
@@ -3122,7 +3145,15 @@ async function runAutoDispatchInternal(
           allowAssign: false,
         });
         let recalculationNote: string | null = null;
-        let recalcEscalationReason: string | null = null;
+        // If an owner/dispatcher won the race and the call already carries a
+        // different driver, respect that assignment as human-handled. Never
+        // re-dispatch it or escalate merely because it differs from our pick.
+        if (!verification.ok && verification.found && verification.driverOnCall && Number(verification.driverOnCall) !== dispatchDriverId) {
+          dispatchDriverId = Number(verification.driverOnCall);
+          dispatchDriverName = String(verification.driverOnCall);
+          verification = { ...verification, ok: true, driverOnCall: verification.driverOnCall, error: null };
+          recalculationNote = `human assignment ${dispatchDriverId} found on call before AI verification; respected existing assignment`;
+        }
         if (!verification.ok && verification.found && dispatchDriverId > 0
           && !humanReassigned) {
           const firstChoice = dispatchDriverId;
@@ -3153,16 +3184,11 @@ async function runAutoDispatchInternal(
             chosen = recalculated;
             dispatchDriverId = Number(recalculated.driver.driverId) || 0;
             dispatchDriverName = String(recalculated.driver.driverName ?? dispatchDriverId);
-            const recalcOverCeiling = recalculated.baseMinutes + settings.etaBufferMinutes > effectiveMaxEta;
-            if (recalcOverCeiling) {
-              const rawEta = Math.ceil(recalculated.baseMinutes) + settings.etaBufferMinutes;
-              recalcEscalationReason = `recalculated driver ${dispatchDriverId} rejected: ${recalculated.usedFallback ? "factor fallback " : ""}ETA ${rawEta} min exceeds the ${effectiveMaxEta}-min SLA ceiling; offer remains accepted and a human must assign on Towbook`;
-              dispatchDriverId = 0;
-              dispatchDriverName = null;
-            }
+            const rawRecalcEta = Math.ceil(recalculated.baseMinutes) + settings.etaBufferMinutes;
+            const recalcOverCeiling = rawRecalcEta > effectiveMaxEta;
             etaMinutes = finalEtaMinutes(recalculated.baseMinutes, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta);
-            recalculationNote = `first choice ${firstChoice} became unavailable (verification saw ${verification.driverOnCall == null ? "no eligible driver" : `driver ${verification.driverOnCall}`}) → recalculated to ${dispatchDriverId}`;
-            if (!recalcEscalationReason) {
+            recalculationNote = `first choice ${firstChoice} became unavailable (verification saw ${verification.driverOnCall == null ? "no eligible driver" : `driver ${verification.driverOnCall}`}) → recalculated to ${dispatchDriverId}${recalcOverCeiling ? `; dispatched with ETA ${rawRecalcEta} min — SLA-ceiling quote capped at ${effectiveMaxEta}` : ""}`;
+            {
               verification = await verifyDispatch(fetchImpl, baseUrl, cookies, offer, callIdFromAcceptResponse(accept.raw), dispatchDriverId, {
                 retryDelayMs: deps.verifyRetryDelayMs ?? 10000,
           maxAttempts: deps.verifyMaxAttempts ?? 6,
@@ -3186,25 +3212,6 @@ async function runAutoDispatchInternal(
           maxAttempts: deps.verifyMaxAttempts ?? 6,
             allowAssign: true,
           });
-        }
-        // A recalculated candidate that fails the hard SLA/state rail is an
-        // intentional escalation, not a failed verification. The candidate
-        // was never dispatched; record the accepted offer with its capped ETA.
-        if (recalcEscalationReason) {
-          await record({
-            decision: "escalated_dispatch_failed",
-            callId: callIdFromAcceptResponse(accept.raw),
-            driverId: null,
-            driverName: null,
-            etaMinutes,
-            zoneDistanceMiles: zoneDistance,
-            reason: recalcEscalationReason,
-            rawResponse: { offer, eta: etaFacts, accept: accept.raw, verification, serviceQualification },
-          });
-          result.processed++;
-          result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_dispatch_failed", escalated: true, reason: recalcEscalationReason });
-          try { await deps.syncForOrg(orgId, "sync:auto-accept", actor ?? undefined); } catch { /* engine never throws */ }
-          continue;
         }
         let verificationRecoveryNote: string | null = null;
         if (!verification.ok && hasSessionExpiredVerification(verification.attempts)) {
