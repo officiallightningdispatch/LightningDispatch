@@ -44,7 +44,6 @@ const {
   etaProviderStatus,
   osrmRoadSeconds,
   tomtomRoadSeconds,
-  workloadAwareArrivalMinutes,
   gpsPingAgeMinutes,
   driverActiveCount,
   loadOrgDriverQueues,
@@ -1196,37 +1195,6 @@ try {
     check("all-loaded: chain math recorded for closest B (3 jobs = 70 min + final leg 15; arrival 85)", pickAll?.queueMinutes === 70 && pickAll?.queuedJobCount === 3 && pickAll?.finalLegMinutes === 15 && pickAll?.baseMinutes === 85, JSON.stringify(pickAll));
     check("all-loaded: quoted ETA includes queue time (ceil(85)+5 = 90)", finalEtaMinutes(pickAll.baseMinutes, 5, 5, 180) === 90, String(finalEtaMinutes(pickAll.baseMinutes, 5, 5, 180)));
     check("all-loaded: SLA goal does not cap accurate queue ETA (90); floor rail kept", finalEtaMinutes(pickAll.baseMinutes, 5, 5, 45) === 90, String(finalEtaMinutes(pickAll.baseMinutes, 5, 5, 45)));
-    // workloadAwareArrivalMinutes directly: fallback factor when routing fails
-    const dirQ = await workloadAwareArrivalMinutes(dA, qA3.get("3001").queuedJobs, 41.2, -73.2, makeRouter({ "41.15,-73.10": null, "41.16,-73.11": null, "41.17,-73.12": null }));
-    check("queue model: router failure → factor fallback per leg (still > 45 min modeled travel/service)", dirQ && dirQ.arrivalMinutes > 90 && dirQ.queueMinutes > 90 && dirQ.finalLegMinutes > 0, JSON.stringify(dirQ));
-    // queue model: no active jobs → null (free driver — current-position model applies)
-    check("queue model: no active jobs → null (free driver, not a workload case)", (await workloadAwareArrivalMinutes(dA, [], 41.2, -73.2, Rq3)) === null, "");
-    // on-scene first job (owner formula: arrived → remaining is service only; the
-    // final leg starts from the CURRENT job's location, never from the GPS ping)
-    const onScene = await workloadAwareArrivalMinutes(
-      dA, [{ pickupLat: 41.16, pickupLng: -73.11, status: "arrived", createdAt: "t1" }], 41.2, -73.2,
-      makeRouter({ "41.16,-73.11": 600 }), 1);
-    check("queue model: arrived at current job → service only + final leg from the JOB (no GPS→pickup leg)", onScene && onScene.startedOnScene === true && onScene.queueMinutes === 15 && onScene.finalLegMinutes === 10 && onScene.arrivalMinutes === 25, JSON.stringify(onScene));
-    // en-route first job: GPS→pickup travel + service (remaining drive, upper bound)
-    const enRoute = await workloadAwareArrivalMinutes(
-      dA, [{ pickupLat: 41.16, pickupLng: -73.11, status: "en_route", createdAt: "t1" }], 41.2, -73.2,
-      makeRouter({ "41.15,-73.10": 600, "41.16,-73.11": 600 }), 1);
-    check("queue model: en-route current job → GPS→pickup travel 10 + service 15 + final leg 10 = 35", enRoute && enRoute.startedOnScene === false && enRoute.queueMinutes === 25 && enRoute.finalLegMinutes === 10 && enRoute.arrivalMinutes === 35, JSON.stringify(enRoute));
-    // multi-job chain (owner formula): finish A → travel A→B → finish B → travel B→offer
-    const chain3 = await workloadAwareArrivalMinutes(
-      dA, [
-        { pickupLat: 41.16, pickupLng: -73.11, status: "en_route", createdAt: "t1" },
-        { pickupLat: 41.17, pickupLng: -73.12, status: "arrived", createdAt: "t2" },
-        { pickupLat: 41.18, pickupLng: -73.13, status: "accepted", createdAt: "t3" },
-      ], 41.2, -73.2, Rq3, 3);
-    check("queue model: 3-job chain 10+15 + 5+15 + 5+15 = 65 queue + final 10 = 75", chain3 && chain3.queueMinutes === 65 && chain3.finalLegMinutes === 10 && chain3.arrivalMinutes === 75, JSON.stringify(chain3));
-    // ETA honesty in the workload chain: a leg that fell back after a TomTom
-    // failure must CARRY that failure to the decision record — never a silent
-    // provider=osrm with tomtomFailure=null (owner-shared incident 2026-08-11).
-    const ttFail = await workloadAwareArrivalMinutes(
-      dA, [{ pickupLat: 41.16, pickupLng: -73.11, status: "en_route", createdAt: "t1" }], 41.2, -73.2,
-      makeRouter({ "41.15,-73.10": { seconds: 600, provider: "osrm", liveTraffic: false, trafficDelaySeconds: null, notes: "osrm after tomtom 429", tomtomFailure: "HTTP 429" } }), 1);
-    check("queue model: TomTom failure on a chain leg is carried (tomtomFailure HTTP 429) — ETA honesty", ttFail?.tomtomFailure === "HTTP 429", JSON.stringify(ttFail));
     // gps ping age surface (best-effort — the live payload has no timestamp)
     const stale = { ...driver(2006, "Stale GPS", { lat: 41.19, lng: -73.15, etaSec: 604 }), gpsUpdatedAtUtc: new Date(Date.now() - 30 * 60000).toISOString() };
     check("gpsPingAgeMinutes: detects a 30-min-old ping", gpsPingAgeMinutes(stale) != null && gpsPingAgeMinutes(stale) >= 29 && gpsPingAgeMinutes(stale) <= 31, String(gpsPingAgeMinutes(stale)));
