@@ -492,7 +492,8 @@ export async function sendAssignmentPushByTowbookDriver(
     ORDER BY (m.role = 'contractor') DESC, u.created_at ASC LIMIT 1`;
   if (!rows.length) {
     const outcome: PushSendOutcome = { attempted: 0, sent: 0, failed: 0, staleRemoved: 0, skipped: true, reason: "no_ld_user_for_towbook_driver" };
-    await recordAudit(orgId, `tb:${tid}`, payload, "no_subscriptions", { attempts: [], reason: outcome.reason });
+    // There is no LD users.id to use as the audit actor when resolution fails.
+    // Never fabricate one (audit_log.actor_user_id has a real users FK).
     return outcome;
   }
   return sendAssignmentPush(orgId, String((rows[0] as Record<string, unknown>).id), payload, opts);

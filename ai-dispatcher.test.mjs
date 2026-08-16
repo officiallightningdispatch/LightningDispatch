@@ -1338,7 +1338,7 @@ try {
     // resolves from the DB and dispatches NORMALLY — no escalation, decision
     // records coords.source=db + the PO tie.
     await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, pickup, raw_json, pickup_lat, pickup_lng)
-      VALUES('qa6-db1-${FIXTURE_TAG}', ${ORG6}, 'QA DB Coords', '', 0, 0, 'Bridgeport', 'tow', 'accepted', NOW(), '', '279999001', '1441 MAIN ST, BRIDGEPORT CT 06606', ${JSON.stringify({ purchaseOrderNumber: "11256001", startingLocation: "1441 MAIN ST, BRIDGEPORT CT 06606" })}::jsonb, 41.19, -73.15)`;
+      VALUES(${'qa6-db1-' + FIXTURE_TAG}, ${ORG6}, 'QA DB Coords', '', 0, 0, 'Bridgeport', 'tow', 'accepted', NOW(), '', '279999001', '1441 MAIN ST, BRIDGEPORT CT 06606', ${JSON.stringify({ purchaseOrderNumber: "11256001", startingLocation: "1441 MAIN ST, BRIDGEPORT CT 06606" })}::jsonb, 41.19, -73.15)`;
     const m = makeFetch({
       offers: [offer(6001, { omitLat: true, omitLng: true, startingLocation: "1441 MAIN ST, BRIDGEPORT CT 06606" })],
       drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })],
@@ -1776,11 +1776,11 @@ try {
 
     // --- freshest GPS fix per driver (driver_locations) ---
     await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at)
-      VALUES('geo-gps-old-${FIXTURE_TAG}', ${ORG7}, ${USER}, '703785', ${WEST_HAVEN.lat}, ${WEST_HAVEN.lng}, ${new Date(geoNow.getTime() - 3600e3).toISOString()})`;
+      VALUES(${'geo-gps-old-' + FIXTURE_TAG}, ${ORG7}, ${USER}, '703785', ${WEST_HAVEN.lat}, ${WEST_HAVEN.lng}, ${new Date(geoNow.getTime() - 3600e3).toISOString()})`;
     await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at)
-      VALUES('geo-gps-new-${FIXTURE_TAG}', ${ORG7}, ${USER}, '703785', ${DARIEN.lat}, ${DARIEN.lng}, ${geoNow.toISOString()})`;
+      VALUES(${'geo-gps-new-' + FIXTURE_TAG}, ${ORG7}, ${USER}, '703785', ${DARIEN.lat}, ${DARIEN.lng}, ${geoNow.toISOString()})`;
     await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at)
-      VALUES('geo-gps-levi-${FIXTURE_TAG}', ${ORG7}, ${USER}, '717660', ${WEST_HAVEN.lat}, ${WEST_HAVEN.lng}, ${geoNow.toISOString()})`;
+      VALUES(${'geo-gps-levi-' + FIXTURE_TAG}, ${ORG7}, ${USER}, '717660', ${WEST_HAVEN.lat}, ${WEST_HAVEN.lng}, ${geoNow.toISOString()})`;
     const dbFixes = await loadDriverGpsFixes(ORG7);
     check("gps fixes: freshest fix per driver wins (703785 → the NEW fix, not the 1-hour-old one)",
       Math.abs(Number(dbFixes.get("703785")?.lat) - DARIEN.lat) < 1e-9 && dbFixes.get("717660") != null,
