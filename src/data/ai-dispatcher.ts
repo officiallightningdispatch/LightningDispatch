@@ -1125,7 +1125,7 @@ async function resolveJobState(
   let authoritative: AuthoritativeStateRow | null = null;
   if (po) {
     const rows = await sql()`SELECT towbook_job_id, pickup, pickup_lat, pickup_lng
-      FROM dispatch_jobs WHERE org_id=${orgId} AND raw_json->>'purchaseOrderNumber'=${po}
+      FROM dispatch_jobs WHERE org_id=${orgId} AND raw_json->>'purchaseOrderNumber'=${po}::text
       ORDER BY created_at DESC LIMIT 1`;
     const r = rows[0] as Record<string, unknown> | undefined;
     if (r) {
