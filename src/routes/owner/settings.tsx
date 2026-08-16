@@ -8,6 +8,7 @@ import { connectTowbook, disconnectTowbook, towbookStatus, towbookSyncNow, type 
 import { getGeofenceSettingsFn, updateGeofenceSettings } from "~/data/driver-gps";
 import { driverLinkStatus, linkDriverAccount, unlinkDriverAccount, type DriverLinkStatus } from "~/data/auth";
 import { tirePlugRate, setTirePlugRate } from "~/data/tire-plug";
+import { listBatteryProducts, upsertBatteryProduct } from "~/data/battery-pricebook";
 
 export const Route = createFileRoute("/owner/settings")({ component: OwnerSettings });
 function OwnerSettings() {
@@ -29,6 +30,7 @@ function OwnerSettings() {
     <div className="mt-6"><GeofenceSettingsCard /></div>
     <div className="mt-6"><TirePlugRateCard /></div>
     <div className="mt-6"><BatteryRatesCard /></div>
+    <div className="mt-6"><BatteryPriceBookCard /></div>
     {open&&<div className="fixed inset-0 z-50 grid place-items-center bg-ink-950/40 p-4" role="dialog" aria-modal="true" aria-labelledby="towbook-title"><Card className="w-full max-w-md p-6"><div className="flex items-start justify-between gap-4"><div><span className="grid size-10 place-items-center rounded-xl bg-brand-50 text-brand-600"><Plug className="size-5"/></span><h2 id="towbook-title" className="mt-4 text-xl font-bold">Connect Towbook</h2></div><button className="grid size-11 place-items-center rounded-xl text-ink-400 hover:bg-ink-50" aria-label="Close" onClick={()=>setOpen(false)}><X className="size-5"/></button></div><p className="mt-4 text-sm leading-relaxed text-ink-600">Enter your Towbook login once. Your password is used only to establish an encrypted session and is never stored.</p><form onSubmit={submit} className="mt-5 space-y-4"><label className="block text-sm font-semibold">Towbook username<input required type="text" value={username} onChange={e=>setUsername(e.target.value)} placeholder="e.g. mjohnson — often your email" className="mt-1 h-11 w-full rounded-xl border border-ink-200 px-3"/></label><label className="block text-sm font-semibold">Towbook password<input required type="password" value={password} onChange={e=>setPassword(e.target.value)} className="mt-1 h-11 w-full rounded-xl border border-ink-200 px-3"/></label>{error&&<p className="flex gap-2 rounded-xl bg-danger-50 p-3 text-sm text-danger-700"><AlertTriangle className="size-4 shrink-0"/>{error}</p>}<Button type="submit" className="w-full" loading={pending}>Connect securely</Button></form></Card></div>}
   </AppShell>;
 }
@@ -339,4 +341,11 @@ function BatteryRatesCard() {
       )}
     </Card>
   );
+}
+
+function BatteryPriceBookCard() {
+  const [products,setProducts]=useState<Awaited<ReturnType<typeof listBatteryProducts>>>([]); const [loaded,setLoaded]=useState(false); const [message,setMessage]=useState("");
+  useEffect(()=>{void listBatteryProducts().then(p=>{setProducts(p);setLoaded(true)})},[]);
+  const save=async(p:Awaited<ReturnType<typeof listBatteryProducts>>[number], retail:string)=>{const r=await upsertBatteryProduct({data:{id:p.id,groupSize:p.groupSize,retailCents:Math.round(Number(retail)*100),availability:p.availability as "in_stock"|"limited"|"unavailable"|"special_order",active:p.active,imageKey:p.imageKey,warrantyYears:p.warrantyYears,freeReplacementYears:p.freeReplacementYears}});setMessage(r.ok?`Saved GROUP ${p.groupSize}.`:r.message);};
+  return <Card className="p-6 sm:p-8"><p className="text-xs font-bold uppercase tracking-wider text-ink-500">Lightning Gold Battery</p><h2 className="mt-1 text-xl font-bold">Price book</h2><p className="mt-1 text-sm text-ink-500">Owner-editable retail pricing, availability, warranty, and active catalog status. Internal sourcing details are never displayed.</p>{!loaded?<div className="mt-5 h-12 animate-pulse rounded-xl bg-ink-100"/>:<div className="mt-5 space-y-3">{products.map(p=><div key={p.id} className="grid gap-2 rounded-xl border border-ink-100 p-3 sm:grid-cols-[1fr_8rem_auto] sm:items-end"><div><p className="font-bold">GROUP {p.groupSize}</p><p className="text-xs text-ink-500">{p.displayName} · {p.warrantyYears}-year warranty · {p.availability}</p></div><label className="text-sm font-semibold">Retail ($)<input aria-label={`Retail GROUP ${p.groupSize}`} defaultValue={(p.retailCents/100).toFixed(2)} onBlur={e=>void save(p,e.target.value)} className="mt-1 h-10 w-full rounded-lg border border-ink-200 px-2" /></label><span className="text-xs text-ink-500">{p.active?"Active":"Inactive"}</span></div>)}</div>}{message&&<p className="mt-3 rounded-xl bg-success-50 p-3 text-sm text-success-700">{message}</p>}</Card>;
 }
