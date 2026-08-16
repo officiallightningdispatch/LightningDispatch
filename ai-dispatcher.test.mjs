@@ -831,14 +831,16 @@ try {
     check("verif assign-retry: verification.assignedAfterRetry true + driverOnCall 703785", v2 && v2.raw_response?.verification?.assignedAfterRetry === true && v2.raw_response?.verification?.driverOnCall === "703785", JSON.stringify(v2?.raw_response?.verification));
   }
   {
-    // assign attempt fails → escalated_dispatch_failed with evidence, escalated=true
+    // assign attempt fails → pending retry, escalated=true
     const m = makeFetch({ offers: [offer(8013)], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })], callDriverId: 999999, assignSucceeds: false });
     const { deps } = makeDeps(m.fetchImpl);
     const r = await runAutoDispatch(ORG, deps);
-    check("verif assign-fail: escalated_dispatch_failed + escalated true", r.decisions[0]?.decision === "escalated_dispatch_failed" && r.decisions[0]?.escalated === true, JSON.stringify(r.decisions));
+    check("verif assign-fail: escalated_dispatch_pending + escalated true", r.decisions[0]?.decision === "escalated_dispatch_pending" && r.decisions[0]?.escalated === true, JSON.stringify(r.decisions));
+    const put = m.calls.find((c) => c.method === "PUT");
+    check("verif assign-fail: attempted PUT with exact dispatch payload", put && put.url.endsWith("/api/calls/279999999") && put.body?.id === 279999999 && put.body?.status?.id === 1 && put.body?.assets?.[0]?.id === 424242 && put.body?.assets?.[0]?.drivers?.[0]?.driver?.id === 703785, JSON.stringify(put));
     const rows3 = await decisions();
     const v3 = rows3.find((x) => String(x.call_request_id) === "8013");
-    check("verif assign-fail: reason names the driver + needs a human", v3 && String(v3.reason).includes("dispatch NOT verified") && String(v3.reason).includes("needs a human"), String(v3?.reason));
+    check("verif assign-fail: reason names the driver + pending retry", v3 && String(v3.reason).includes("dispatch NOT verified") && String(v3.reason).includes("pending retry will continue until the tied call appears"), String(v3?.reason));
     check("verif assign-fail: raw_response has verification evidence (assign 500 recorded)", v3 && v3.raw_response?.verification?.ok === false && v3.raw_response?.verification?.attempts?.length >= 2, JSON.stringify(v3?.raw_response?.verification));
   }
   {
@@ -903,7 +905,7 @@ try {
     const m = makeFetch({ offers: [offer(8018)], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })], acceptBody: { ok: true }, acceptedCallStatus: 0, suppressCreatedFromStatusLists: true, statusListExtra: { 0: [], 1: stale1, 2: stale2 } });
     const { deps } = makeDeps(m.fetchImpl);
     const r = await runAutoDispatch(ORG, deps);
-    check("stale-guard: escalated_dispatch_failed + call not found after accept", r.decisions[0]?.decision === "escalated_dispatch_failed" && String(r.decisions[0]?.reason).includes("call not found after accept"), JSON.stringify(r.decisions));
+    check("stale-guard: escalated_dispatch_pending + pending retry", r.decisions[0]?.decision === "escalated_dispatch_pending" && String(r.decisions[0]?.reason).includes("pending retry will continue until the tied call appears"), JSON.stringify(r.decisions));
     check("stale-guard: NO assign attempted (one POST = accept only)", m.calls.filter((c) => c.method !== "GET").length === 1, JSON.stringify(m.calls.map((c) => `${c.method} ${c.url}`)));
     const rows8 = await decisions();
     const v8 = rows8.find((x) => String(x.call_request_id) === "8018");
@@ -1595,11 +1597,11 @@ try {
   {
     const rows = await decisions();
     const byDecision = rows.reduce((acc, x) => { acc[x.decision] = (acc[x.decision] || 0) + 1; return acc; }, {});
-        check("ledger: zones-off out-of-zone dispatch shifts one fallback to with-driver; hard rails unchanged", byDecision["auto_accept_with_driver"] === 18 && byDecision["auto_accept_no_driver"] === 4 && byDecision["escalated_out_of_zone"] === undefined && byDecision["escalated_missing_coords"] === undefined && byDecision["escalated_unexpected_shape"] === undefined && byDecision["escalated_driver_lookup_failed"] === undefined && byDecision["escalated_expired"] === 1 && byDecision["escalated_accept_failed"] === 1 && byDecision["escalated_dispatch_failed"] === 2, JSON.stringify(byDecision));
+        check("ledger: zones-off out-of-zone dispatch shifts one fallback to with-driver; hard rails unchanged", byDecision["auto_accept_with_driver"] === 18 && byDecision["auto_accept_no_driver"] === 4 && byDecision["escalated_out_of_zone"] === undefined && byDecision["escalated_missing_coords"] === undefined && byDecision["escalated_unexpected_shape"] === undefined && byDecision["escalated_driver_lookup_failed"] === undefined && byDecision["escalated_expired"] === 1 && byDecision["escalated_accept_failed"] === 1 && byDecision["escalated_dispatch_pending"] === 2, JSON.stringify(byDecision));
     const a = await audits();
     check("audit: 22 ai_dispatcher:accept rows (18 with-driver + 4 no-driver universal fallback)", Number(a[0].n) === 22, String(a[0].n));
     const adAudit = await q`SELECT count(*)::int n FROM audit_log WHERE org_id=${ORG} AND action='ai_dispatcher:decision'`;
-    check("audit: 4 ai_dispatcher:decision rows (escalations: expired/accept-failed/dispatch-failed)", Number(adAudit[0].n) === 4, String(adAudit[0].n));
+    check("audit: 4 ai_dispatcher:decision rows (escalations: expired/accept-failed/dispatch-pending)", Number(adAudit[0].n) === 4, String(adAudit[0].n));
     // Scope to the OWNER session row: since migration 10 a real contractor
     // sign-in (driver-auth.ts) legitimately adds session_kind='driver' rows to
     // the same org — the check's intent is that the owner session is untouched.
