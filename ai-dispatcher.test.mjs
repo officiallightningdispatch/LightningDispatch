@@ -294,6 +294,8 @@ const decisions3 = () => q`SELECT call_request_id, call_id, decision, escalated,
 const decisions5 = () => q`SELECT call_request_id, call_id, decision, escalated, driver_id, driver_name, eta_minutes, zone_distance_miles, reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG5} ORDER BY created_at, call_request_id`;
 const audits = () => q`SELECT count(*)::int n FROM audit_log WHERE org_id=${ORG} AND action='ai_dispatcher:accept'`;
 const posts = (calls) => calls.filter((c) => c.method === "POST");
+// Keep exact free-driver ETA assertions isolated from verified accepts in prior blocks.
+const clearOrgDispatch = () => q`DELETE FROM dispatch_jobs WHERE org_id=${ORG}`;
 const fallbackAccept = (r, calls, id, eta = 45) => r.decisions[0]?.decision === "auto_accept_no_driver" && r.decisions[0]?.escalated === true && posts(calls).length === 1 && String(posts(calls)[0].url).includes(`/api/callRequests/${id}`) && Number(posts(calls)[0].body.driverId) === 0 && Number(posts(calls)[0].body.ETA) === eta && String(posts(calls)[0].body.notes).includes("awaiting driver assignment");
 
 try {
@@ -720,6 +722,7 @@ try {
 
   /* ============ 21) routing failure → fallback factor model (no fabricated road) ============ */
   {
+    await clearOrgDispatch();
     const m = makeFetch({
       offers: [offer(7015)],
       drivers: [driver(703785, "Jayden Fountain", { lat: 41.15, lng: -73.1, etaSec: 604 })],
@@ -738,6 +741,7 @@ try {
 
   /* ============ 22) floor applied (road + buffer below the configured floor) ============ */
   {
+    await clearOrgDispatch();
     await q`UPDATE org_settings SET eta_floor_minutes=15 WHERE org_id=${ORG}`;
     const m = makeFetch({
       offers: [offer(7016)],
@@ -756,6 +760,7 @@ try {
 
   /* ============ 23) org ceiling respected (road + buffer above max_eta_minutes) ============ */
   {
+    await clearOrgDispatch();
     const m = makeFetch({
       offers: [offer(7017)],
       drivers: [driver(603482, "Antone jerret", { lat: 41.1, lng: -73.0, etaSec: 3600 })], // road 3600s → 60+5 = 65 → ceiling 45
@@ -772,6 +777,7 @@ try {
 
   /* ============ 24) choice BY ROAD ETA: better road time beats better straight-line ============ */
   {
+    await clearOrgDispatch();
     const m = makeFetch({
       offers: [offer(7018)],
       drivers: [
