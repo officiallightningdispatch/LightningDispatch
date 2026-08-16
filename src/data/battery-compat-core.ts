@@ -44,7 +44,15 @@ export async function lookupBatteryCompatibilityCore(user: { orgId: string; role
   if (g && !g.ok) return review("unsupported_group", m.value, mo.value, y);
   const trim = canonicalizeNullableVehicleField(x.trim); const engine = canonicalizeNullableVehicleField(x.engine); const q = await db();
   const rows = await q`SELECT c.id,c.make,c.model,c.trim,c.engine,c.battery_group_size FROM battery_compatibility c JOIN battery_products p ON p.org_id=c.org_id AND p.group_size=c.battery_group_size AND p.active=true WHERE c.org_id=${user.orgId} AND c.status='approved' AND c.make=${m.value} AND c.model=${mo.value} AND c.year_from<=${y} AND c.year_to>=${y}`;
-  const eligible = rows.filter((r: any) => (r.trim === null && r.engine === null) || (trim !== null && r.trim === trim) || (engine !== null && r.engine === engine));
+  // A specific row is eligible only when every constrained field is explicitly
+  // supplied and equal. Generic rows remain eligible without trim/engine; an
+  // overlapping generic + specific approval is intentionally ambiguous.
+  const eligible = rows.filter((r: any) => {
+    const rowTrim = r.trim == null ? null : String(r.trim);
+    const rowEngine = r.engine == null ? null : String(r.engine);
+    return (rowTrim === null || (trim !== null && rowTrim === trim))
+      && (rowEngine === null || (engine !== null && rowEngine === engine));
+  });
   if (!eligible.length) return review(trim === null && engine === null && rows.length ? "incomplete_vehicle" : "not_found", m.value, mo.value, y);
   if (eligible.length > 1) return review(new Set(eligible.map((r: any) => r.battery_group_size)).size > 1 ? "conflict" : "ambiguous", m.value, mo.value, y);
   const r = eligible[0]; const group = String(r.battery_group_size);

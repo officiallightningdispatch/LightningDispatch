@@ -1586,6 +1586,11 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
 (gen_random_uuid()::text, '89e15ce587651cc47c3bc45b1c612a220955', '151R', '[]'::jsonb, 'LIGHTNING GOLD BATTERY', 22399, 0, 3, 3, 0, 'in_stock', true, 'owner-csv', 'Duralast', 'Gold', '151R-DLG', 22499, NULL)
       ON CONFLICT (org_id, group_size) DO UPDATE SET alternate_group_sizes=EXCLUDED.alternate_group_sizes, display_name=EXCLUDED.display_name, retail_cents=EXCLUDED.retail_cents, warranty_years=EXCLUDED.warranty_years, free_replacement_years=EXCLUDED.free_replacement_years, core_charge_cents=EXCLUDED.core_charge_cents, source_reference_internal=EXCLUDED.source_reference_internal, source_brand=EXCLUDED.source_brand, source_line=EXCLUDED.source_line, source_part_number=EXCLUDED.source_part_number, internal_cost_cents=EXCLUDED.internal_cost_cents, updated_at=NOW()`;
   }],
+  [74, async (q) => {
+    // B2.5: retain only the safe approved fitment identity on a sale.
+    await q`ALTER TABLE battery_sales ADD COLUMN IF NOT EXISTS compatibility_id TEXT`;
+    await q`ALTER TABLE battery_sales ADD COLUMN IF NOT EXISTS battery_group_size TEXT`;
+  }],
  ];
 export async function ensureSchema() {
   const q = sql();

@@ -352,6 +352,8 @@ function VinStep({ state, busy, onStep }: { state: BatteryAgentState; busy: bool
   const [make, setMake] = useState("");
   const [model, setModel] = useState("");
   const [year, setYear] = useState("");
+  const [trim, setTrim] = useState("");
+  const [engine, setEngine] = useState("");
   return (
     <div className="mt-3 space-y-2">
       {!manual ? (
@@ -380,7 +382,11 @@ function VinStep({ state, busy, onStep }: { state: BatteryAgentState; busy: bool
             <input type="text" placeholder="Model (e.g. Accord)" value={model} onChange={(e) => setModel(e.target.value)} className="h-12 w-full rounded-xl border border-ink-200 bg-surface px-3.5 text-sm text-ink-900 focus:border-brand-500 focus:outline-2 focus:outline-brand-500/40" />
           </div>
           <input type="text" inputMode="numeric" maxLength={4} placeholder="Year (e.g. 2019)" value={year} onChange={(e) => setYear(e.target.value.replace(/\D/g, "").slice(0, 4))} className="h-12 w-full rounded-xl border border-ink-200 bg-surface px-3.5 text-sm text-ink-900 focus:border-brand-500 focus:outline-2 focus:outline-brand-500/40" />
-          <Button className="w-full" loading={busy} disabled={!make.trim() || !model.trim() || year.length !== 4} onClick={() => onStep(() => batteryAgentStep({ data: { jobId: state.jobId, action: "vehicle_manual", vin: vin.trim() || "MANUAL", make: make.trim(), model: model.trim(), year } }))}>
+          <div className="grid grid-cols-2 gap-2">
+            <input type="text" placeholder="Trim (optional)" value={trim} onChange={(e) => setTrim(e.target.value)} className="h-12 w-full rounded-xl border border-ink-200 bg-surface px-3.5 text-sm text-ink-900 focus:border-brand-500 focus:outline-2 focus:outline-brand-500/40" />
+            <input type="text" placeholder="Engine (optional)" value={engine} onChange={(e) => setEngine(e.target.value)} className="h-12 w-full rounded-xl border border-ink-200 bg-surface px-3.5 text-sm text-ink-900 focus:border-brand-500 focus:outline-2 focus:outline-brand-500/40" />
+          </div>
+          <Button className="w-full" loading={busy} disabled={!make.trim() || !model.trim() || year.length !== 4} onClick={() => onStep(() => batteryAgentStep({ data: { jobId: state.jobId, action: "vehicle_manual", make: make.trim(), model: model.trim(), year, trim: trim.trim() || undefined, engine: engine.trim() || undefined } }))}>
             Save vehicle
           </Button>
           <button type="button" onClick={() => setManual(false)} className="w-full text-center text-[11px] font-semibold text-ink-500 underline decoration-ink-200 underline-offset-2 hover:text-brand-600">
