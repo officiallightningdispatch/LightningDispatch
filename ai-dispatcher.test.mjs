@@ -1,6 +1,8 @@
 // DB safety (2026-08-12): org deletes guarded by assertQaOrg — see src/data/db-guard.ts + /home/team/shared/db-safety-rules.md.
-// Hermetic AI-dispatcher test suite (decisions 2026-08-10/11): the owner-directed
-// auto-accept engine — zone math (haversine vs the 06606 centroid), ROAD-AWARE
+// Hermetic AI-dispatcher test suite (decisions 2026-08-10/11; zones-off update 2026-08-16 per owner directive):
+// ZONES-OFF UPDATE (owner directive 2026-08-16): dispatch matching is state-only; zone membership, distance, and ranking are disabled.
+// dispatch matching is state-only; zone membership, distance, and ranking are intentionally disabled.
+// Pure zone math remains covered below. The owner-directed auto-accept engine — ROAD-AWARE
 // driver selection + ETA (OSRM router is mocked; fallback factor model; buffer /
 // floor / ceiling), the ETA v3 TomTom traffic layer (provider chain: TomTom →
 // OSRM → factor; mocked TomTom + OSRM fetches — never real calls), decision
@@ -504,7 +506,7 @@ try {
     check("auto-accept: chose the min-ROAD-ETA free driver (703785, 9 min road)", p[0]?.body?.driverId === 703785, JSON.stringify(p[0]?.body));
     check("auto-accept: ETA = ceil(540/60)+buffer 5 = 14, body matches UI payload", p[0]?.body?.ETA === 14 && p[0]?.body?.id === 7001 && p[0]?.body?.comments === "" && p[0]?.body?.notes === "auto-accept by Lightning Dispatch" && p[0]?.body?.tireAvailable === false, JSON.stringify(p[0]?.body));
     const rows = await decisions();
-    check("decision row: driver 703785 + name + eta 14 + zone distance + raw accept response", rows.length === 1 && String(rows[0].driver_id) === "703785" && String(rows[0].driver_name) === "Jayden Fountain" && Number(rows[0].eta_minutes) === 14 && Number(rows[0].zone_distance_miles) > 0 && rows[0].raw_response?.accept?.callNumber === 25000, JSON.stringify(rows[0]));
+    check("decision row: driver 703785 + name + eta 14 + zones-off null distance + raw accept response", rows.length === 1 && String(rows[0].driver_id) === "703785" && String(rows[0].driver_name) === "Jayden Fountain" && Number(rows[0].eta_minutes) === 14 && rows[0].zone_distance_miles === null && rows[0].raw_response?.accept?.callNumber === 25000, JSON.stringify(rows[0]));
     check("decision row: call_id reconciled from accept response", String(rows[0].call_id) === "279999999", String(rows[0].call_id));
     check("decision row: reason carries the road breakdown note (provider-qualified)", String(rows[0].reason).includes("ETA 14 min (osrm road 9 + buffer 5") && String(rows[0].reason).includes("straight-line 11") && String(rows[0].reason).includes("GPS 41.18,-73.15"), String(rows[0].reason));
     check("decision row: raw_response.eta has road seconds + buffer/floor/ceiling facts", rows[0].raw_response?.eta?.roadSeconds === 540 && rows[0].raw_response?.eta?.usedFallback === false && rows[0].raw_response?.eta?.straightLineMinutes === 11 && rows[0].raw_response?.eta?.bufferMinutes === 5 && rows[0].raw_response?.eta?.floorMinutes === 5 && rows[0].raw_response?.eta?.ceilingMinutes === 45 && rows[0].raw_response?.eta?.finalMinutes === 14, JSON.stringify(rows[0].raw_response?.eta));
@@ -551,7 +553,7 @@ try {
     check("boundary inside: accepted (29.5 mi ≤ 30)", r.decisions[0]?.decision === "auto_accept_with_driver" && posts(m.calls).length === 1, JSON.stringify(r.decisions));
   }
 
-  /* ============ 11) out-of-zone universal fallback ============ */
+  /* ============ 11) out-of-zone with zones off: in-state driver dispatch ============ */
   {
     const m = makeFetch({
       offers: [offer(7005, { lat: northOf(30.5), lng: ZONE.lng, startingLocation: "123 MAIN ST, BRIDGEPORT CT 06607" })],
@@ -559,10 +561,10 @@ try {
     });
     const { deps } = makeDeps(m.fetchImpl);
     const r = await runAutoDispatch(ORG, deps);
-    check("out-of-zone: auto_accept_no_driver, driverId 0, SLA accept", r.decisions[0]?.decision === "auto_accept_no_driver" && r.decisions[0]?.escalated === true && posts(m.calls).length === 1 && String(posts(m.calls)[0].body.driverId) === "0" && Number(posts(m.calls)[0].body.ETA) === 45 && String(posts(m.calls)[0].body.notes).includes("awaiting driver assignment"), JSON.stringify({ decision: r.decisions[0], post: posts(m.calls)[0] }));
+    check("zones off: nearest in-state driver accepted (not escalated)", r.decisions[0]?.decision === "auto_accept_with_driver" && r.decisions[0]?.escalated === false && posts(m.calls).length === 1 && String(posts(m.calls)[0].body.driverId) === "703785", JSON.stringify({ decision: r.decisions[0], post: posts(m.calls)[0] }));
     const rows = await decisions();
     const oz = rows.find((x) => String(x.call_request_id) === "7005");
-    check("out-of-zone: zone_distance_miles recorded > 30", oz && Number(oz.zone_distance_miles) > 30, String(oz?.zone_distance_miles));
+    check("zones off: zone_distance_miles is null", oz && oz.zone_distance_miles === null, String(oz?.zone_distance_miles));
   }
 
   /* ============ 12) missing coords escalation ============ */
@@ -1445,11 +1447,9 @@ try {
   {
     const tx = "2500 SE Inner Loop, Georgetown, TX 78626";
     const ct = "123 MAIN ST, BRIDGEPORT CT 06606";
-    // Zone-guard interplay: ORG6's org_settings carries the default 06606-centroid
-    // zone (30-mi radius), so a TX-coordinate pickup is escalated_out_of_zone
-    // BEFORE the state guard runs. The suite is sequential — switch the org zone
-    // per scenario (CT for CT-coordinate scenarios, Georgetown TX for TX) and
-    // restore the original values at the end so later ORG6 tests are unaffected.
+    // Zones are disabled for dispatch matching (owner directive 2026-08-16).
+    // State resolution remains fail-closed; zone settings are changed only to
+    // preserve fixture isolation for this sequential state-guard regression.
     const origZone = (await q`SELECT zone_lat, zone_lng, zone_radius_miles FROM org_settings WHERE org_id=${ORG6}`)[0]
       ?? { zone_lat: 41.208862, zone_lng: -73.207253, zone_radius_miles: 30 };
     const setZone = (lat, lng, radius) => q`UPDATE org_settings SET zone_lat=${lat}, zone_lng=${lng}, zone_radius_miles=${radius} WHERE org_id=${ORG6}`;
@@ -1486,7 +1486,7 @@ try {
       ? jsonResponse(200, { addresses: [{ address: { countryCode: "US", adminDistrict: "TX" } }] }) : rf5.fetchImpl(url, init);
     const { deps: d5 } = makeDeps(withRouter(m5.fetchImpl, geoTomtomFetch), null, { noRouterOverride: true, env: { TOMTOM_API_KEY: "test-key-not-real" } });
     const r5 = await runAutoDispatch(ORG6, d5);
-    check("state resolution genuine discrepancy: escalates state unknown, no accept (fail closed, never cross-state)", r5.decisions[0]?.decision === "escalated_state_unknown" && r5.decisions[0]?.escalated === true && posts(m5.calls).length === 0 && String(r5.decisions[0]?.reason).includes("genuine location discrepancy") && String(r5.decisions[0]?.reason).includes("cannot verify zone"), JSON.stringify(r5.decisions));
+    check("state resolution genuine discrepancy: escalates state unknown, no accept (fail closed, never cross-state)", r5.decisions[0]?.decision === "escalated_state_unknown" && r5.decisions[0]?.escalated === true && posts(m5.calls).length === 0 && String(r5.decisions[0]?.reason).includes("genuine location discrepancy") && !String(r5.decisions[0]?.reason).includes("cannot verify zone"), JSON.stringify(r5.decisions));
     const s6 = await runStateCase(6206, { address: tx, lat: 30.61948, lng: -97.648242 });
     // Driver 703785 resolves to CT (default resolver) and is physically at CT
     // coords; a CT driver cannot make the 45-min ceiling to Georgetown TX, so
@@ -1595,9 +1595,9 @@ try {
   {
     const rows = await decisions();
     const byDecision = rows.reduce((acc, x) => { acc[x.decision] = (acc[x.decision] || 0) + 1; return acc; }, {});
-        check("ledger: universal fallback merged 4 escalations into auto_accept_no_driver (5), hard rails unchanged", byDecision["auto_accept_with_driver"] === 17 && byDecision["auto_accept_no_driver"] === 5 && byDecision["escalated_out_of_zone"] === undefined && byDecision["escalated_missing_coords"] === undefined && byDecision["escalated_unexpected_shape"] === undefined && byDecision["escalated_driver_lookup_failed"] === undefined && byDecision["escalated_expired"] === 1 && byDecision["escalated_accept_failed"] === 1 && byDecision["escalated_dispatch_failed"] === 2, JSON.stringify(byDecision));
+        check("ledger: zones-off out-of-zone dispatch shifts one fallback to with-driver; hard rails unchanged", byDecision["auto_accept_with_driver"] === 18 && byDecision["auto_accept_no_driver"] === 4 && byDecision["escalated_out_of_zone"] === undefined && byDecision["escalated_missing_coords"] === undefined && byDecision["escalated_unexpected_shape"] === undefined && byDecision["escalated_driver_lookup_failed"] === undefined && byDecision["escalated_expired"] === 1 && byDecision["escalated_accept_failed"] === 1 && byDecision["escalated_dispatch_failed"] === 2, JSON.stringify(byDecision));
     const a = await audits();
-    check("audit: 22 ai_dispatcher:accept rows (17 with-driver + 5 no-driver universal fallback)", Number(a[0].n) === 22, String(a[0].n));
+    check("audit: 22 ai_dispatcher:accept rows (18 with-driver + 4 no-driver universal fallback)", Number(a[0].n) === 22, String(a[0].n));
     const adAudit = await q`SELECT count(*)::int n FROM audit_log WHERE org_id=${ORG} AND action='ai_dispatcher:decision'`;
     check("audit: 4 ai_dispatcher:decision rows (escalations: expired/accept-failed/dispatch-failed)", Number(adAudit[0].n) === 4, String(adAudit[0].n));
     // Scope to the OWNER session row: since migration 10 a real contractor
