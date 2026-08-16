@@ -273,7 +273,7 @@ check("gate: after paid, battery gate passes (next gate is the signature gate)",
   const manual = await batteryAgentStepCore(driver3, { jobId: JOB4, action: "vehicle_manual", vin: "MANUAL", make: "Ford", model: "F-150", year: "2018" });
   check("manual: entry → step install (confirmed immediately)", manual.ok && manual.state.step === "install" && manual.state.sale?.vehicleManual === true && manual.state.sale?.vehicleConfirmed === true, JSON.stringify(manual));
   const manualInstall = await batteryAgentStepCore(driver3, { jobId: JOB4, action: "install", installType: "standard" });
-  check("manual: quote math on the manual vehicle (battery 18000 + 4500 + tax 1143 + admin 1575 = 25218)", manualInstall.ok && manualInstall.state.sale?.totalCents === 25218, String(manualInstall.state.sale?.totalCents));
+  check("manual: quote math on the manual vehicle (server-authoritative group-47 product 14999 + 4500 + tax 952 + admin 1312 = 21763)", manualInstall.ok && manualInstall.state.sale?.totalCents === 21763 && manualInstall.state.sale?.batteryPriceCents === 14999, String(manualInstall.state.sale?.totalCents));
   await q`DELETE FROM battery_sales WHERE org_id=${ORG} AND job_id=${JOB4}`;
   await q`DELETE FROM dispatch_jobs WHERE org_id=${ORG} AND id=${JOB4}`;
   await q`DELETE FROM status_events WHERE org_id=${ORG} AND job_id=${JOB4}`;
