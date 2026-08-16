@@ -41,6 +41,27 @@ import { resolveJob, isAssignedDriver } from "./driver-photos-core";
 import type { PhotoUser } from "./driver-photos-core";
 
 const configured = () => Boolean(process.env.DATABASE_URL);
+
+export type VinDecodeResult =
+  | { ok: true; make: string; model: string; year: string; trim: string | null; engine: string | null }
+  | { ok: false; message: string };
+
+/** NHTSA supplies identity evidence only; compatibility approval remains authoritative. */
+export async function decodeVin(vin: string, fetchImpl: typeof fetch = globalThis.fetch): Promise<VinDecodeResult> {
+  const normalized = String(vin ?? "").toUpperCase().replace(/\s+/g, "");
+  if (!/^[A-HJ-NPR-Z0-9]{17}$/.test(normalized)) return { ok: false, message: "Invalid VIN." };
+  try {
+    const response = await fetchImpl(`https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValues/${encodeURIComponent(normalized)}?format=json`, { signal: AbortSignal.timeout(12000) });
+    if (!response.ok) return { ok: false, message: "Vehicle lookup failed." };
+    const body = (await response.json()) as { Results?: Array<Record<string, unknown>> };
+    const row = body.Results?.[0];
+    const make = typeof row?.Make === "string" ? row.Make.trim() : "";
+    const model = typeof row?.Model === "string" ? row.Model.trim() : "";
+    const year = typeof row?.ModelYear === "string" ? row.ModelYear.trim() : "";
+    if (!make || !model || !/^\d{4}$/.test(year)) return { ok: false, message: "Vehicle lookup returned incomplete data." };
+    return { ok: true, make, model, year, trim: typeof row?.Trim === "string" ? row.Trim : null, engine: typeof row?.EngineModel === "string" ? row.EngineModel : null };
+  } catch { return { ok: false, message: "Vehicle lookup unavailable." }; }
+}
 let schemaInit: Promise<void> | undefined;
 function ensure() {
   if (!configured()) return Promise.resolve();

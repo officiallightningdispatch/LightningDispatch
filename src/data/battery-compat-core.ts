@@ -1,5 +1,7 @@
 import { canonicalizeBatteryGroup, canonicalizeMake, canonicalizeModel, canonicalizeNullableVehicleField } from "./battery-compatibility-canonical";
 import { validateCompatibilityRows, type CompatibilityPayload } from "./compat-validation";
+import { decodeVin } from "./battery-sales-core";
+
 import { isAssignedDriver, resolveJob } from "./driver-photos-core";
 const db = () => import("~/db").then((m) => m.sql());
 const roles = new Set(["owner", "admin", "dispatcher", "contractor"]);
@@ -7,7 +9,23 @@ export type CompatibilityLookupResult =
   | { ok: true; outcome: "matched"; match: { compatibilityId: string; make: string; model: string; year: number; batteryGroupSize: string; displayBatteryGroup: string } }
   | { ok: true; outcome: "review"; reason: "not_found" | "ambiguous" | "conflict" | "incomplete_vehicle" | "unsupported_group" | "decode_failed"; message: string; vehicle: { make: string | null; model: string | null; year: number | null } }
   | { ok: false; reason: "unauthorized" | "invalid_input" };
-const review = (reason: Exclude<Extract<CompatibilityLookupResult, { outcome: "review" }>["reason"], "decode_failed">, make: string | null, model: string | null, year: number | null): CompatibilityLookupResult => ({ ok: true, outcome: "review", reason, message: "Battery fitment requires dispatcher or owner review.", vehicle: { make, model, year } });
+const review = (reason: Exclude<Extract<CompatibilityLookupResult, { outcome: "review" }>['reason'], 'decode_failed'>, make: string | null, model: string | null, year: number | null): CompatibilityLookupResult => ({ ok: true, outcome: 'review', reason, message: 'Battery fitment requires dispatcher or owner review.', vehicle: { make, model, year } });
+
+/** Decode VIN identity, then use exactly the manual canonical lookup path. The VIN
+ * itself is deliberately never forwarded to the lookup, DTO, log, or error. */
+export async function lookupBatteryCompatibilityFromVinCore(
+  user: { orgId: string; role: string; id?: string; towbookDriverId?: string } | null,
+  input: unknown,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<CompatibilityLookupResult> {
+  if (!user || !roles.has(user.role)) return { ok: false, reason: 'unauthorized' };
+  if (!input || typeof input !== 'object' || typeof (input as Record<string, unknown>).vin !== 'string') return { ok: false, reason: 'invalid_input' };
+  const decoded = await decodeVin((input as Record<string, unknown>).vin as string, fetchImpl);
+  if (!decoded.ok) return { ok: true, outcome: 'review', reason: 'decode_failed', message: 'We could not safely decode this vehicle. Dispatcher review is required.', vehicle: { make: null, model: null, year: null } };
+  const result = await lookupBatteryCompatibilityCore(user, { ...decoded, jobId: (input as Record<string, unknown>).jobId ?? null });
+  if (result.ok && result.outcome === 'review' && result.reason === 'incomplete_vehicle') return { ...result, reason: 'incomplete_vehicle' };
+  return result;
+}
 export async function lookupBatteryCompatibilityCore(user: { orgId: string; role: string; id?: string; towbookDriverId?: string } | null, input: unknown): Promise<CompatibilityLookupResult> {
   if (!user || !roles.has(user.role)) return { ok: false, reason: "unauthorized" };
   if (!input || typeof input !== "object") return { ok: false, reason: "invalid_input" };
