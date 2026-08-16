@@ -5,6 +5,7 @@ import { decryptSession } from "./towbook-key";
 import { resolveTomtomKey } from "./tomtom-key";
 export { resolveTomtomKey } from "./tomtom-key";
 import type { RecoveryResult } from "./towbook-recovery";
+import { calculateInternalEta, serviceMinutesFor } from "~/lib/internal-eta";
 
 /* ============================ AI dispatcher engine ============================
  * Owner-directed: every pending, unexpired Towbook motor-club offer is claimed
@@ -507,9 +508,12 @@ const STALE_GPS_MINUTES = 5;
  *  travel model needs. Jobs are ordered the driver will do them (oldest
  *  created/assigned first — FIFO, the natural dispatch assumption). */
 export type QueuedJob = {
+  id?: string;
   pickupLat: number;
   pickupLng: number;
   status: string;
+  serviceType?: string | null;
+  batteryInstallType?: string | null;
   createdAt: string;
 };
 
@@ -528,7 +532,7 @@ export type DriverQueue = {
  *  statuses are excluded by the WHERE clause; rows are ordered oldest-first
  *  (the queue order the driver will work). */
 export async function loadOrgDriverQueues(orgId: string): Promise<Map<string, DriverQueue>> {
-  const rows = await sql()`SELECT assigned_driver_towbook_id AS did, status, pickup_lat, pickup_lng, created_at
+  const rows = await sql()`SELECT id, assigned_driver_towbook_id AS did, status, service_type, pickup_lat, pickup_lng, created_at
     FROM dispatch_jobs
     WHERE org_id=${orgId}
       AND assigned_driver_towbook_id IS NOT NULL
@@ -548,7 +552,7 @@ export async function loadOrgDriverQueues(orgId: string): Promise<Map<string, Dr
     const lat = Number(r.pickup_lat);
     const lng = Number(r.pickup_lng);
     if (Number.isFinite(lat) && lat !== 0 && Number.isFinite(lng) && lng !== 0) {
-      entry.queuedJobs.push({ pickupLat: lat, pickupLng: lng, status: String(r.status ?? ""), createdAt: String(r.created_at ?? "") });
+      entry.queuedJobs.push({ id: String(r.id ?? `${did}-${entry.queuedJobs.length}`), pickupLat: lat, pickupLng: lng, status: String(r.status ?? ""), serviceType: r.service_type == null ? null : String(r.service_type), createdAt: String(r.created_at ?? "") });
     }
     map.set(did, entry);
   }
@@ -1701,6 +1705,23 @@ export async function workloadAwareArrivalMinutes(
  *  `roadRouter` may be null (routing disabled — every leg uses the factor
  *  model). Returns null when no driver qualifies (→ accept with driverId 0 +
  *  escalate; no ETA quoted). */
+async function internalEtaForDriver(driver: NearestDriver, queue: QueuedJob[], pickupLat: number, pickupLng: number, router: RoadRouter | null): Promise<ReturnType<typeof calculateInternalEta> | null> {
+  const live = { lat: Number(driver.latitude), lng: Number(driver.longitude) };
+  if (!Number.isFinite(live.lat) || !Number.isFinite(live.lng) || live.lat === 0 || live.lng === 0) return null;
+  const jobs = queue.map((q, i) => ({ id: q.id ?? `queued-${i}`, status: q.status, location: { lat: q.pickupLat, lng: q.pickupLng }, serviceType: q.serviceType, batteryInstallType: q.batteryInstallType }));
+  const offer = { id: "incoming-offer", status: "offered", location: { lat: pickupLat, lng: pickupLng }, serviceType: null };
+  const points = [{ id: "live", location: live }, ...jobs, offer];
+  const routes: Record<string, { durationSeconds: number; distanceMeters?: number }> = {};
+  for (const from of points) for (const to of points) {
+    if (from.id === to.id) continue;
+    if (!router) return null;
+    let result: RoadResult | null = null; try { result = await router(from.location.lat, from.location.lng, to.location.lat, to.location.lng); } catch { result = null; }
+    if (!result || !Number.isFinite(result.seconds) || result.seconds <= 0) return null;
+    routes[`${from.id}->${to.id}`] = { durationSeconds: result.seconds };
+  }
+  return calculateInternalEta({ liveLocation: live, jobs, offer, routes });
+}
+
 export async function chooseBestDriverByRoad(
   drivers: unknown[],
   pickupLat: number,
@@ -1836,7 +1857,8 @@ export async function chooseBestDriverByRoad(
       // chain never fails here. The chain's STARTING position is the same
       // origin the free path uses (freshest fix / anchor center / payload).
       const geometry = queueGeometryFor(d, queues);
-      const chain = await workloadAwareArrivalMinutes(d, geometry, pickupLat, pickupLng, roadRouter, activeCount, origin);
+      const planned = await internalEtaForDriver(d, geometry, pickupLat, pickupLng, roadRouter);
+      const chain = planned?.ok ? { arrivalMinutes: planned.breakdown.at(-1)?.arrivalOffsetMinutes ?? planned.totalMinutes, queueMinutes: planned.breakdown.slice(0, -1).reduce((n, x) => n + x.travelMinutes + x.serviceMinutes, 0), finalLegMinutes: planned.breakdown.at(-1)?.travelMinutes ?? 0, finalLegProvider: "tomtom" as EtaProvider, queueBreakdown: planned.breakdown.map(x => `${x.travelMinutes} min travel + ${x.serviceMinutes} min service`).join(" + "), startedOnScene: false, unlocatedJobs: 0, tomtomFailure: null } : null;
       if (chain) {
         return {
           driver: d,
