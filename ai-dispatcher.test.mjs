@@ -1228,7 +1228,7 @@ try {
       "41.11,-73.01": 900, // 3003 J2 → offer (final leg from the LAST job)
     });
     // (d) accept still posts the chosen driverId + quoted ETA — all-loaded case:
-    // both candidates at the 3-job cap → distance-first winner 3002, ETA 90.
+    // both candidates at the 3-job cap → distance-first winner 3002; jump=5 service, ETA 60.
     {
       const m = makeFetch({
         offers: [{ ...offer(8031), drivers: [3001, 3002] }],
@@ -1238,11 +1238,11 @@ try {
       const r = await runAutoDispatch(ORG4, deps);
       check("engine all-loaded: auto_accept_with_driver + winner 3002", r.decisions[0]?.decision === "auto_accept_with_driver" && r.decisions[0]?.escalated === false && r.decisions[0]?.reason.includes("VERIFIED"), JSON.stringify(r.decisions[0]));
       const p = posts(m.calls);
-      check("engine all-loaded: accept posts driverId 3002 + workload ETA 90", p.length === 1 && p[0]?.body?.driverId === 3002 && p[0]?.body?.ETA === 90, JSON.stringify(p[0]?.body));
+      check("engine all-loaded: accept posts driverId 3002 + workload ETA 60", p.length === 1 && p[0]?.body?.driverId === 3002 && p[0]?.body?.ETA === 60, JSON.stringify(p[0]?.body));
       const rows = await q`SELECT call_request_id, decision, driver_id, eta_minutes, reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG4} AND call_request_id='8031'`;
       const row = rows[0];
-      check("engine all-loaded: reason names winner + chain math (3 active jobs = 70 min; ETA 90 min)", row && String(row.driver_id) === "3002" && Number(row.eta_minutes) === 90 && String(row.reason).includes("queue-aware ETA") && String(row.reason).includes("15 min final leg") && String(row.reason).includes("ETA 90 min"), String(row?.reason));
-      check("engine all-loaded: raw_response.eta chain facts recorded", row && row.raw_response?.eta?.queueInclusive === true && row.raw_response?.eta?.queueMinutes === 70 && row.raw_response?.eta?.queuedJobCount === 3 && row.raw_response?.eta?.finalLegMinutes === 15 && row.raw_response?.eta?.startedOnScene === false && row.raw_response?.eta?.unlocatedJobs === 0 && row.raw_response?.eta?.finalMinutes === 90, JSON.stringify(row?.raw_response?.eta));
+      check("engine all-loaded: reason names winner + chain math (3 active jobs = 40 min queued work; ETA 60 min)", row && String(row.driver_id) === "3002" && Number(row.eta_minutes) === 60 && String(row.reason).includes("queue-aware ETA") && String(row.reason).includes("40 min queued work") && String(row.reason).includes("15 min final leg") && String(row.reason).includes("ETA 55 min"), String(row?.reason));
+      check("engine all-loaded: raw_response.eta chain facts recorded", row && row.raw_response?.eta?.queueInclusive === true && row.raw_response?.eta?.queueMinutes === 40 && row.raw_response?.eta?.queuedJobCount === 3 && row.raw_response?.eta?.finalLegMinutes === 15 && row.raw_response?.eta?.startedOnScene === false && row.raw_response?.eta?.unlocatedJobs === 0 && row.raw_response?.eta?.finalMinutes === 60, JSON.stringify(row?.raw_response?.eta));
     }
     // (a/b) engine: under-cap driver beats an over-cap driver, even when
     // road-farther (3003 has 2 jobs → eligible; 3001 has 3 → excluded) — and the
