@@ -241,9 +241,10 @@ try {
     const m = makeEngineFetch({ offers: [offer(5002)], drivers: [driver(999703785, "Jayden Fountain")] });
     const login = makeLoginFetch({ succeed: false }); // bad credentials → login page re-rendered
     const r = await runAutoDispatch(ORG_BAD, makeDeps(m.fetchImpl, realRecoveryWith(login, goodCreds)));
-    check("bad-creds: escalation preserved (escalated_dispatch_failed, escalated=true)", r.decisions[0]?.decision === "escalated_dispatch_failed" && r.decisions[0]?.escalated === true, JSON.stringify(r.decisions));
+    check("bad-creds: accepted offer remains pending for human review (escalated=true)", r.decisions[0]?.decision === "escalated_dispatch_pending" && r.decisions[0]?.escalated === true, JSON.stringify(r.decisions));
     const rows = await q`SELECT decision, escalated, reason FROM ai_dispatcher_decisions WHERE org_id=${ORG_BAD} AND call_request_id='5002'`;
-    check("bad-creds: reason records the classified recovery failure", rows.length === 1 && rows[0].escalated === true && String(rows[0].reason).includes("session recovery failed (login_failed:invalid_credentials)"), String(rows[0]?.reason));
+    check("bad-creds: ledger classifies recovery failure and keeps it fail-visible", rows.length === 1 && String(rows[0].decision) === "escalated_dispatch_pending" && rows[0].escalated === true && String(rows[0].reason).includes("session recovery failed (login_failed:invalid_credentials)"), String(rows[0]?.reason));
+    check("bad-creds: accepted offer is never dispatched without a valid session", m.calls.some((c) => c.method === "POST" && /\/api\/callRequests\/\d+\/accept$/.test(c.url)) && !m.calls.some((c) => c.method === "PUT" && c.url.includes("/api/calls/279999999") && c.fresh), JSON.stringify(m.calls));
     check("bad-creds: exactly ONE login attempt (no hammering)", login.posts() === 1, `posts=${login.posts()}`);
     const second = await recoverTowbookSession(ORG_BAD, { fetchImpl: login.fetchImpl, readCreds: goodCreds });
     check("bad-creds: throttle — second attempt within 60s is SKIPPED", second.recovered === false && second.reason === "throttled" && second.throttled === true, JSON.stringify(second));
@@ -258,7 +259,7 @@ try {
     const m = makeEngineFetch({ offers: [offer(5003)], drivers: [driver(999703785, "Jayden Fountain")] });
     const login = makeLoginFetch({ succeed: true });
     const r = await runAutoDispatch(ORG_NOCREDS, makeDeps(m.fetchImpl, realRecoveryWith(login, noCreds)));
-    check("no-creds: today's behavior unchanged — escalation + alert preserved", r.decisions[0]?.decision === "escalated_dispatch_failed" && r.decisions[0]?.escalated === true, JSON.stringify(r.decisions));
+    check("no-creds: accepted offer remains pending for human review — escalation + alert preserved", r.decisions[0]?.decision === "escalated_dispatch_pending" && r.decisions[0]?.escalated === true, JSON.stringify(r.decisions));
     const rows = await q`SELECT reason FROM ai_dispatcher_decisions WHERE org_id=${ORG_NOCREDS} AND call_request_id='5003'`;
     check("no-creds: reason names the missing creds (no silent drop)", rows.length === 1 && String(rows[0].reason).includes("session recovery failed (no_stored_owner_creds)"), String(rows[0]?.reason));
     check("no-creds: zero login attempts", login.posts() === 0, `posts=${login.posts()}`);
