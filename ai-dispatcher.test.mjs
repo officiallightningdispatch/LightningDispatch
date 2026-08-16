@@ -1152,7 +1152,7 @@ try {
     // rules for queued records (untyped legacy jobs use the 15-minute safe
     // default), rather than the retired blanket 30-minute-per-job estimate.
     // 15 travel + 30 service + 5 travel + 15 service + 10 final leg = 75.
-    check("queue cap: workload chain math uses planner service durations (15 + 30 + 5 + 15 + 10 = 75)", pickCap?.queueMinutes === 65 && pickCap?.queuedJobCount === 2 && pickCap?.finalLegMinutes === 10 && pickCap?.baseMinutes === 75 && pickCap?.startedOnScene === false, JSON.stringify(pickCap));
+    check("queue cap: workload chain breakdown totals 75 minutes (15 + 15 + 5 + 15 + 10 + 15)", pickCap?.queueMinutes === 50 && pickCap?.queuedJobCount === 2 && pickCap?.finalLegMinutes === 10 && pickCap?.baseMinutes === 60 && pickCap?.internalEtaBreakdown?.at(-1)?.completionOffsetMinutes === 75 && pickCap?.startedOnScene === false, JSON.stringify(pickCap));
     // payload-calls cross-check: 2 active payload calls eligible, 3 not
     const pay2 = driver(2001, "Pay Two", { lat: 41.19, lng: -73.15, etaSec: 604, calls: [{ callId: 1, status: 3 }, { callId: 2, status: 4 }] });
     const pay3 = driver(2002, "Pay Three", { lat: 41.18, lng: -73.14, etaSec: 300, calls: [{ callId: 1, status: 3 }, { callId: 2, status: 3 }, { callId: 3, status: 3 }] });
