@@ -28,6 +28,7 @@ import { Route as OwnerHistoryRouteImport } from './routes/owner/history'
 import { Route as OwnerDriversRouteImport } from './routes/owner/drivers'
 import { Route as OwnerContractorsRouteImport } from './routes/owner/contractors'
 import { Route as OwnerClaimsRouteImport } from './routes/owner/claims'
+import { Route as OwnerBatteriesRouteImport } from './routes/owner/batteries'
 import { Route as OwnerAiDispatcherRouteImport } from './routes/owner/ai-dispatcher'
 import { Route as OwnerActiveRouteImport } from './routes/owner/active'
 import { Route as OpsHistoryRouteImport } from './routes/ops/history'
@@ -143,6 +144,11 @@ const OwnerContractorsRoute = OwnerContractorsRouteImport.update({
 const OwnerClaimsRoute = OwnerClaimsRouteImport.update({
   id: '/claims',
   path: '/claims',
+  getParentRoute: () => OwnerRoute,
+} as any)
+const OwnerBatteriesRoute = OwnerBatteriesRouteImport.update({
+  id: '/batteries',
+  path: '/batteries',
   getParentRoute: () => OwnerRoute,
 } as any)
 const OwnerAiDispatcherRoute = OwnerAiDispatcherRouteImport.update({
@@ -273,6 +279,7 @@ export interface FileRoutesByFullPath {
   '/ops/history': typeof OpsHistoryRoute
   '/owner/active': typeof OwnerActiveRoute
   '/owner/ai-dispatcher': typeof OwnerAiDispatcherRoute
+  '/owner/batteries': typeof OwnerBatteriesRoute
   '/owner/claims': typeof OwnerClaimsRoute
   '/owner/contractors': typeof OwnerContractorsRouteWithChildren
   '/owner/drivers': typeof OwnerDriversRoute
@@ -312,6 +319,7 @@ export interface FileRoutesByTo {
   '/ops/history': typeof OpsHistoryRoute
   '/owner/active': typeof OwnerActiveRoute
   '/owner/ai-dispatcher': typeof OwnerAiDispatcherRoute
+  '/owner/batteries': typeof OwnerBatteriesRoute
   '/owner/claims': typeof OwnerClaimsRoute
   '/owner/drivers': typeof OwnerDriversRoute
   '/owner/history': typeof OwnerHistoryRoute
@@ -353,6 +361,7 @@ export interface FileRoutesById {
   '/ops/history': typeof OpsHistoryRoute
   '/owner/active': typeof OwnerActiveRoute
   '/owner/ai-dispatcher': typeof OwnerAiDispatcherRoute
+  '/owner/batteries': typeof OwnerBatteriesRoute
   '/owner/claims': typeof OwnerClaimsRoute
   '/owner/contractors': typeof OwnerContractorsRouteWithChildren
   '/owner/drivers': typeof OwnerDriversRoute
@@ -397,6 +406,7 @@ export interface FileRouteTypes {
     | '/ops/history'
     | '/owner/active'
     | '/owner/ai-dispatcher'
+    | '/owner/batteries'
     | '/owner/claims'
     | '/owner/contractors'
     | '/owner/drivers'
@@ -436,6 +446,7 @@ export interface FileRouteTypes {
     | '/ops/history'
     | '/owner/active'
     | '/owner/ai-dispatcher'
+    | '/owner/batteries'
     | '/owner/claims'
     | '/owner/drivers'
     | '/owner/history'
@@ -476,6 +487,7 @@ export interface FileRouteTypes {
     | '/ops/history'
     | '/owner/active'
     | '/owner/ai-dispatcher'
+    | '/owner/batteries'
     | '/owner/claims'
     | '/owner/contractors'
     | '/owner/drivers'
@@ -640,6 +652,13 @@ declare module '@tanstack/react-router' {
       path: '/claims'
       fullPath: '/owner/claims'
       preLoaderRoute: typeof OwnerClaimsRouteImport
+      parentRoute: typeof OwnerRoute
+    }
+    '/owner/batteries': {
+      id: '/owner/batteries'
+      path: '/batteries'
+      fullPath: '/owner/batteries'
+      preLoaderRoute: typeof OwnerBatteriesRouteImport
       parentRoute: typeof OwnerRoute
     }
     '/owner/ai-dispatcher': {
@@ -871,6 +890,7 @@ const OwnerMetricsRouteWithChildren = OwnerMetricsRoute._addFileChildren(
 interface OwnerRouteChildren {
   OwnerActiveRoute: typeof OwnerActiveRoute
   OwnerAiDispatcherRoute: typeof OwnerAiDispatcherRoute
+  OwnerBatteriesRoute: typeof OwnerBatteriesRoute
   OwnerClaimsRoute: typeof OwnerClaimsRoute
   OwnerContractorsRoute: typeof OwnerContractorsRouteWithChildren
   OwnerDriversRoute: typeof OwnerDriversRoute
@@ -887,6 +907,7 @@ interface OwnerRouteChildren {
 const OwnerRouteChildren: OwnerRouteChildren = {
   OwnerActiveRoute: OwnerActiveRoute,
   OwnerAiDispatcherRoute: OwnerAiDispatcherRoute,
+  OwnerBatteriesRoute: OwnerBatteriesRoute,
   OwnerClaimsRoute: OwnerClaimsRoute,
   OwnerContractorsRoute: OwnerContractorsRouteWithChildren,
   OwnerDriversRoute: OwnerDriversRoute,
