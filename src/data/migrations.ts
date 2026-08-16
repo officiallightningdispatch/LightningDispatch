@@ -1684,6 +1684,36 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE INDEX IF NOT EXISTS battery_warranties_org_install_job_idx ON battery_warranties(org_id, install_job_id)`;
     await q`CREATE INDEX IF NOT EXISTS battery_warranties_org_product_idx ON battery_warranties(org_id, product_id)`;
   }],
+
+  [73, async (q) => {
+    // Owner CSV price book seed; free replacement defaults to three years per owner input mapping.
+    await q`INSERT INTO battery_products (id, org_id, group_size, alternate_group_sizes, display_name, retail_cents, installation_cents, warranty_years, free_replacement_years, core_charge_cents, availability, active, source_reference_internal, source_brand, source_line, source_part_number, internal_cost_cents, internal_margin_cents) VALUES
+(gen_random_uuid()::text, '89e15ce587651cc47c3bc45b1c612a220955', '24', '[]'::jsonb, 'LIGHTNING GOLD BATTERY', 23399, 0, 3, 3, 0, 'in_stock', true, 'owner-csv', 'Duralast', 'Gold', '24-DLG', 23499, NULL),
+(gen_random_uuid()::text, '89e15ce587651cc47c3bc45b1c612a220955', '24F', '[]'::jsonb, 'LIGHTNING GOLD BATTERY', 20899, 0, 3, 3, 0, 'in_stock', true, 'owner-csv', 'Duralast', 'Gold', '24F-DLG', 20999, NULL),
+(gen_random_uuid()::text, '89e15ce587651cc47c3bc45b1c612a220955', '27', '[]'::jsonb, 'LIGHTNING GOLD BATTERY', 22399, 0, 3, 3, 0, 'in_stock', true, 'owner-csv', 'Duralast', 'Gold', '27-DLG', 22499, NULL),
+(gen_random_uuid()::text, '89e15ce587651cc47c3bc45b1c612a220955', '34', '[]'::jsonb, 'LIGHTNING GOLD BATTERY', 20899, 0, 3, 3, 0, 'in_stock', true, 'owner-csv', 'Duralast', 'Gold', '34-DLG', 20999, NULL),
+(gen_random_uuid()::text, '89e15ce587651cc47c3bc45b1c612a220955', '35', '[]'::jsonb, 'LIGHTNING GOLD BATTERY', 21399, 0, 3, 3, 0, 'in_stock', true, 'owner-csv', 'Duralast', 'Gold', '35-DLG', 21499, NULL),
+(gen_random_uuid()::text, '89e15ce587651cc47c3bc45b1c612a220955', '47', '["H5"]'::jsonb, 'LIGHTNING GOLD BATTERY', 21399, 0, 3, 3, 0, 'in_stock', true, 'owner-csv', 'Duralast', 'Gold', 'H5-DLG', 21499, NULL),
+(gen_random_uuid()::text, '89e15ce587651cc47c3bc45b1c612a220955', '48', '["H6"]'::jsonb, 'LIGHTNING GOLD BATTERY', 20899, 0, 3, 3, 0, 'in_stock', true, 'owner-csv', 'Duralast', 'Gold', 'H6-DLG', 20999, NULL),
+(gen_random_uuid()::text, '89e15ce587651cc47c3bc45b1c612a220955', '49', '["H8"]'::jsonb, 'LIGHTNING GOLD BATTERY', 23899, 0, 3, 3, 0, 'in_stock', true, 'owner-csv', 'Duralast', 'Gold', 'H8-DLG', 23999, NULL),
+(gen_random_uuid()::text, '89e15ce587651cc47c3bc45b1c612a220955', '51R', '[]'::jsonb, 'LIGHTNING GOLD BATTERY', 21399, 0, 3, 3, 0, 'in_stock', true, 'owner-csv', 'Duralast', 'Gold', '51R-DLG', 21499, NULL),
+(gen_random_uuid()::text, '89e15ce587651cc47c3bc45b1c612a220955', '59', '[]'::jsonb, 'LIGHTNING GOLD BATTERY', 22399, 0, 3, 3, 0, 'in_stock', true, 'owner-csv', 'Duralast', 'Gold', '59-DLG', 22499, NULL),
+(gen_random_uuid()::text, '89e15ce587651cc47c3bc45b1c612a220955', '65', '[]'::jsonb, 'LIGHTNING GOLD BATTERY', 21399, 0, 3, 3, 0, 'in_stock', true, 'owner-csv', 'Duralast', 'Gold', '65-DLG', 21499, NULL),
+(gen_random_uuid()::text, '89e15ce587651cc47c3bc45b1c612a220955', '75', '[]'::jsonb, 'LIGHTNING GOLD BATTERY', 21399, 0, 3, 3, 0, 'in_stock', true, 'owner-csv', 'Duralast', 'Gold', '75-DLG', 21499, NULL),
+(gen_random_uuid()::text, '89e15ce587651cc47c3bc45b1c612a220955', '78', '[]'::jsonb, 'LIGHTNING GOLD BATTERY', 20899, 0, 3, 3, 0, 'in_stock', true, 'owner-csv', 'Duralast', 'Gold', '78-DLG', 20999, NULL),
+(gen_random_uuid()::text, '89e15ce587651cc47c3bc45b1c612a220955', '86', '[]'::jsonb, 'LIGHTNING GOLD BATTERY', 23399, 0, 3, 3, 0, 'in_stock', true, 'owner-csv', 'Duralast', 'Gold', '86FT-DLG', 23499, NULL),
+(gen_random_uuid()::text, '89e15ce587651cc47c3bc45b1c612a220955', '90', '["T5"]'::jsonb, 'LIGHTNING GOLD BATTERY', 23899, 0, 3, 3, 0, 'in_stock', true, 'owner-csv', 'Duralast', 'Gold', 'T5-DLG', 23999, NULL),
+(gen_random_uuid()::text, '89e15ce587651cc47c3bc45b1c612a220955', '94R', '["H7"]'::jsonb, 'LIGHTNING GOLD BATTERY', 21399, 0, 3, 3, 0, 'in_stock', true, 'owner-csv', 'Duralast', 'Gold', 'H7-DLG', 21499, NULL),
+(gen_random_uuid()::text, '89e15ce587651cc47c3bc45b1c612a220955', '95R', '["H9"]'::jsonb, 'LIGHTNING GOLD BATTERY', 23899, 0, 3, 3, 0, 'in_stock', true, 'owner-csv', 'Duralast', 'Gold', 'H9-DLG', 23999, NULL),
+(gen_random_uuid()::text, '89e15ce587651cc47c3bc45b1c612a220955', '96R', '[]'::jsonb, 'LIGHTNING GOLD BATTERY', 22899, 0, 3, 3, 0, 'in_stock', true, 'owner-csv', 'Duralast', 'Gold', '96R-DLG', 22999, NULL),
+(gen_random_uuid()::text, '89e15ce587651cc47c3bc45b1c612a220955', '101', '["Type S"]'::jsonb, 'LIGHTNING GOLD BATTERY', 22399, 0, 3, 3, 0, 'in_stock', true, 'owner-csv', 'Duralast', 'Gold', '101-DLG', 22499, NULL),
+(gen_random_uuid()::text, '89e15ce587651cc47c3bc45b1c612a220955', '102R', '["V4"]'::jsonb, 'LIGHTNING GOLD BATTERY', 23399, 0, 3, 3, 0, 'in_stock', true, 'owner-csv', 'Duralast', 'Gold', 'V4-DLG', 23499, NULL),
+(gen_random_uuid()::text, '89e15ce587651cc47c3bc45b1c612a220955', '121R', '[]'::jsonb, 'LIGHTNING GOLD BATTERY', 22399, 0, 3, 3, 0, 'in_stock', true, 'owner-csv', 'Duralast', 'Gold', '121R-DLG', 22499, NULL),
+(gen_random_uuid()::text, '89e15ce587651cc47c3bc45b1c612a220955', '124R', '[]'::jsonb, 'LIGHTNING GOLD BATTERY', 21399, 0, 3, 3, 0, 'in_stock', true, 'owner-csv', 'Duralast', 'Gold', '124R-DLG', 21499, NULL),
+(gen_random_uuid()::text, '89e15ce587651cc47c3bc45b1c612a220955', '140R', '["H4"]'::jsonb, 'LIGHTNING GOLD BATTERY', 22899, 0, 3, 3, 0, 'in_stock', true, 'owner-csv', 'Duralast', 'Gold', 'H4-DLG', 22999, NULL),
+(gen_random_uuid()::text, '89e15ce587651cc47c3bc45b1c612a220955', '151R', '[]'::jsonb, 'LIGHTNING GOLD BATTERY', 22399, 0, 3, 3, 0, 'in_stock', true, 'owner-csv', 'Duralast', 'Gold', '151R-DLG', 22499, NULL)
+      ON CONFLICT (org_id, group_size) DO UPDATE SET alternate_group_sizes=EXCLUDED.alternate_group_sizes, display_name=EXCLUDED.display_name, retail_cents=EXCLUDED.retail_cents, warranty_years=EXCLUDED.warranty_years, free_replacement_years=EXCLUDED.free_replacement_years, core_charge_cents=EXCLUDED.core_charge_cents, source_reference_internal=EXCLUDED.source_reference_internal, source_brand=EXCLUDED.source_brand, source_line=EXCLUDED.source_line, source_part_number=EXCLUDED.source_part_number, internal_cost_cents=EXCLUDED.internal_cost_cents, updated_at=NOW()`;
+  }],
  ];
 export async function ensureSchema() {
   const q = sql();
