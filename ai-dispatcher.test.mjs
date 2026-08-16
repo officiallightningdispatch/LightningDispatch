@@ -84,6 +84,11 @@ const QUAL_USERS = [1,2,3,4,5,6,7].map(() => `qa-ad-qual-${randomUUID()}`);
 // crashed run's leftovers must never collide with the next run (23505). Real
 // Towbook driver IDs are 6-digit or 279xxxxxx - 9xxxxxx is collision-safe.
 const QUAL_TB_BASE = 9_000_000 + Math.floor(Math.random() * 999_999);
+// Per-run tag for fixture INSERT ids (dispatch_jobs/driver_locations): a
+// hard-killed run leaves rows behind that collide with the next run (23505)
+// — same convention as QUAL_TB above. Orgs are random per run but these ids
+// were fixed; tag them so a crashed run's leftovers can never block a rerun.
+const FIXTURE_TAG = randomUUID().slice(0, 8);
 const QUAL_TB = [0,1,2,3,4,5,6].map((i) => QUAL_TB_BASE + i);
 let created = false;
 
@@ -840,7 +845,7 @@ try {
     check("verif assign-fail: attempted PUT with exact dispatch payload", put && put.url.endsWith("/api/calls/279999999") && put.body?.id === 279999999 && put.body?.status?.id === 1 && put.body?.assets?.[0]?.id === 424242 && put.body?.assets?.[0]?.drivers?.[0]?.driver?.id === 703785, JSON.stringify(put));
     const rows3 = await decisions();
     const v3 = rows3.find((x) => String(x.call_request_id) === "8013");
-    check("verif assign-fail: reason names the driver + pending retry", v3 && String(v3.reason).includes("dispatch NOT verified") && String(v3.reason).includes("pending retry will continue until the tied call appears"), String(v3?.reason));
+    check("verif assign-fail: reason names the driver + pending retry", v3 && String(v3.reason).includes("dispatch is UNVERIFIED") && String(v3.reason).includes("pending retry will continue until the tied call appears"), String(v3?.reason));
     check("verif assign-fail: raw_response has verification evidence (assign 500 recorded)", v3 && v3.raw_response?.verification?.ok === false && v3.raw_response?.verification?.attempts?.length >= 2, JSON.stringify(v3?.raw_response?.verification));
   }
   {
@@ -913,9 +918,11 @@ try {
     // The engine searches the status lists twice (initial + the "accept is
     // async" race retry — 6 list GETs live); the ledger records the FINAL
     // round's fetches (the race-retry observability contract, same as 26d).
-    // Assert the recorded round: status 0 first, then 2, then 1 — every list
-    // searched, never matched, never claimed.
-    check("stale-guard: recorded round searched status 0,2,1 in order and NEVER matched", v8 && v8.raw_response?.verification?.attempts?.length === 3 && v8.raw_response?.verification?.attempts?.every((t) => t.matched === false) && v8.raw_response?.verification?.attempts?.[0]?.url?.includes("status=0") && v8.raw_response?.verification?.attempts?.[1]?.url?.includes("status=2") && v8.raw_response?.verification?.attempts?.[2]?.url?.includes("status=1"), JSON.stringify(v8?.raw_response?.verification?.attempts));
+    // Assert the recorded round: the full sequential 0..9 status scan (the
+    // 2026-08-12 "call not found after accept" fix — the old [2,1]-only search
+    // could never see a freshly created Received(0) call) — every list
+    // searched in order, never matched, never claimed.
+    check("stale-guard: recorded round searched statuses 0..9 in order and NEVER matched", v8 && v8.raw_response?.verification?.attempts?.length === 10 && v8.raw_response?.verification?.attempts?.every((t) => t.matched === false) && [0,1,2,3,4,5,6,7,8,9].every((st, i) => v8.raw_response?.verification?.attempts?.[i]?.url?.includes(`status=${st}`)), JSON.stringify(v8?.raw_response?.verification?.attempts));
   }
   {
     // eligibility rail: offer.drivers[] EXCLUDES the only free driver → engine must
@@ -1331,7 +1338,7 @@ try {
     // resolves from the DB and dispatches NORMALLY — no escalation, decision
     // records coords.source=db + the PO tie.
     await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, pickup, raw_json, pickup_lat, pickup_lng)
-      VALUES('qa6-db1', ${ORG6}, 'QA DB Coords', '', 0, 0, 'Bridgeport', 'tow', 'accepted', NOW(), '', '279999001', '1441 MAIN ST, BRIDGEPORT CT 06606', ${JSON.stringify({ purchaseOrderNumber: "11256001", startingLocation: "1441 MAIN ST, BRIDGEPORT CT 06606" })}::jsonb, 41.19, -73.15)`;
+      VALUES('qa6-db1-${FIXTURE_TAG}', ${ORG6}, 'QA DB Coords', '', 0, 0, 'Bridgeport', 'tow', 'accepted', NOW(), '', '279999001', '1441 MAIN ST, BRIDGEPORT CT 06606', ${JSON.stringify({ purchaseOrderNumber: "11256001", startingLocation: "1441 MAIN ST, BRIDGEPORT CT 06606" })}::jsonb, 41.19, -73.15)`;
     const m = makeFetch({
       offers: [offer(6001, { omitLat: true, omitLng: true, startingLocation: "1441 MAIN ST, BRIDGEPORT CT 06606" })],
       drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })],
@@ -1748,32 +1755,32 @@ try {
     const yestIso = zless(new Date(geoNow.getTime() - 86400e3));
     const geoInsert = (id, driverId, c, createdIso, rawJson) => q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, raw_json, pickup_lat, pickup_lng, assigned_driver_towbook_id)
       VALUES(${id}, ${ORG7}, 'Geo Job', '', 0, 0, 'CT', 'tow', 'accepted', ${createdIso}, '', ${JSON.stringify(rawJson)}::jsonb, ${c.lat}, ${c.lng}, ${driverId})`;
-    await geoInsert("geo-a1", "703785", DARIEN, geoNow.toISOString(), { dispatchTime: todayIso });
-    await geoInsert("geo-a2", "703785", WEST_HAVEN, geoNow.toISOString(), { dispatchTime: laterIso });
-    await geoInsert("geo-a3", "717660", WEST_HAVEN, new Date(geoNow.getTime() - 86400e3).toISOString(), { dispatchTime: todayIso });
-    await geoInsert("geo-a4", "603482", STAMFORD, new Date(geoNow.getTime() - 86400e3).toISOString(), {});
-    await geoInsert("geo-a5", "668209", NEW_HAVEN, geoNow.toISOString(), { dispatchTime: "not-a-timestamp" });
+    await geoInsert("geo-a1-${FIXTURE_TAG}", "703785", DARIEN, geoNow.toISOString(), { dispatchTime: todayIso });
+    await geoInsert("geo-a2-${FIXTURE_TAG}", "703785", WEST_HAVEN, geoNow.toISOString(), { dispatchTime: laterIso });
+    await geoInsert("geo-a3-${FIXTURE_TAG}", "717660", WEST_HAVEN, new Date(geoNow.getTime() - 86400e3).toISOString(), { dispatchTime: todayIso });
+    await geoInsert("geo-a4-${FIXTURE_TAG}", "603482", STAMFORD, new Date(geoNow.getTime() - 86400e3).toISOString(), {});
+    await geoInsert("geo-a5-${FIXTURE_TAG}", "668209", NEW_HAVEN, geoNow.toISOString(), { dispatchTime: "not-a-timestamp" });
     const dbAnchors = await loadDriverAnchors(ORG7);
     check("anchor derivation: first ASSIGNED job of the day sets the anchor (703785 → geo-a1 Darien; later job does not override)",
-      dbAnchors.get("703785")?.jobId === "geo-a1" && Math.abs(Number(dbAnchors.get("703785")?.lat) - DARIEN.lat) < 1e-9 &&
+      dbAnchors.get("703785")?.jobId === `geo-a1-${FIXTURE_TAG}` && Math.abs(Number(dbAnchors.get("703785")?.lat) - DARIEN.lat) < 1e-9 &&
       Math.abs(Number(dbAnchors.get("703785")?.lng) - DARIEN.lng) < 1e-9, JSON.stringify(dbAnchors.get("703785")));
     check("anchor derivation: dispatchTime (ground truth) anchors a row created YESTERDAY (717660 → geo-a3 West Haven)",
-      dbAnchors.get("717660")?.jobId === "geo-a3" && Math.abs(Number(dbAnchors.get("717660")?.lat) - WEST_HAVEN.lat) < 1e-9,
+      dbAnchors.get("717660")?.jobId === `geo-a3-${FIXTURE_TAG}` && Math.abs(Number(dbAnchors.get("717660")?.lat) - WEST_HAVEN.lat) < 1e-9,
       JSON.stringify(dbAnchors.get("717660")));
     check("anchor derivation: no today-assignment → no anchor (603482 flexible)",
       dbAnchors.get("603482") === undefined, JSON.stringify(dbAnchors.get("603482")));
     check("anchor derivation: malformed dispatchTime falls back to created_at without throwing (668209 anchored today)",
-      dbAnchors.get("668209")?.jobId === "geo-a5", JSON.stringify(dbAnchors.get("668209")));
+      dbAnchors.get("668209")?.jobId === `geo-a5-${FIXTURE_TAG}`, JSON.stringify(dbAnchors.get("668209")));
     check("anchor derivation: exactly the three today-assigned drivers carry anchors",
       dbAnchors.size === 3, `size=${dbAnchors.size} [${[...dbAnchors.keys()].join(",")}]`);
 
     // --- freshest GPS fix per driver (driver_locations) ---
     await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at)
-      VALUES('geo-gps-old', ${ORG7}, ${USER}, '703785', ${WEST_HAVEN.lat}, ${WEST_HAVEN.lng}, ${new Date(geoNow.getTime() - 3600e3).toISOString()})`;
+      VALUES('geo-gps-old-${FIXTURE_TAG}', ${ORG7}, ${USER}, '703785', ${WEST_HAVEN.lat}, ${WEST_HAVEN.lng}, ${new Date(geoNow.getTime() - 3600e3).toISOString()})`;
     await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at)
-      VALUES('geo-gps-new', ${ORG7}, ${USER}, '703785', ${DARIEN.lat}, ${DARIEN.lng}, ${geoNow.toISOString()})`;
+      VALUES('geo-gps-new-${FIXTURE_TAG}', ${ORG7}, ${USER}, '703785', ${DARIEN.lat}, ${DARIEN.lng}, ${geoNow.toISOString()})`;
     await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at)
-      VALUES('geo-gps-levi', ${ORG7}, ${USER}, '717660', ${WEST_HAVEN.lat}, ${WEST_HAVEN.lng}, ${geoNow.toISOString()})`;
+      VALUES('geo-gps-levi-${FIXTURE_TAG}', ${ORG7}, ${USER}, '717660', ${WEST_HAVEN.lat}, ${WEST_HAVEN.lng}, ${geoNow.toISOString()})`;
     const dbFixes = await loadDriverGpsFixes(ORG7);
     check("gps fixes: freshest fix per driver wins (703785 → the NEW fix, not the 1-hour-old one)",
       Math.abs(Number(dbFixes.get("703785")?.lat) - DARIEN.lat) < 1e-9 && dbFixes.get("717660") != null,
