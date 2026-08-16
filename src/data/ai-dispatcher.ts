@@ -1519,8 +1519,8 @@ export type StateGuardOutcome = {
   blocked: boolean;
   /** "job_state_unknown" | "no_in_state_driver" | null. */
   blockedReason: string | null;
-  /** Selection tier: online in-state, offline in-state, or cross-state ETA candidate. */
-  assignmentTier?: "online_in_state" | "offline_in_state" | "cross_state";
+  /** Selection tier: online in-state or offline in-state; no cross-state tier exists. */
+  assignmentTier?: "online_in_state" | "offline_in_state";
   checked: number;
   inState: number;
   excluded: Array<{ driverId: number; state: string | null; reason: string }>;
@@ -1806,12 +1806,12 @@ export async function chooseBestDriverByRoad(
     } else if (inState.length) {
       statePool = inState; guardOut.assignmentTier = "offline_in_state";
     } else {
-      // No driver in the job state: cross-state is the last dispatch tier.
-      // Only provable out-of-state drivers qualify; unknown-state drivers fail closed.
-      // The caller applies the SLA ceiling before accepting this choice.
-      statePool = statePool.filter((d) => excluded.some((e) => e.driverId === Number(d.driverId) && e.state != null));
-      guardOut.assignmentTier = "cross_state";
-      if (!statePool.length) { guardOut.blocked = true; guardOut.blockedReason = "no_in_state_driver"; return null; }
+      // Never dispatch across state lines. With no in-state candidate, the
+      // caller performs the universal driverId=0 accept-and-escalate hold;
+      // the retry sweep can safely re-run this same selection later.
+      guardOut.blocked = true;
+      guardOut.blockedReason = "no_in_state_driver";
+      return null;
     }
   }
   const underCap = statePool.filter((d) => driverActiveCount(d, queues) < MAX_DRIVER_QUEUE);
@@ -2917,17 +2917,6 @@ async function runAutoDispatchInternal(
         continue;
       }
       const effectiveMaxEta = Math.min(settings.maxEtaMinutes, offer.maxEta ?? settings.maxEtaMinutes);
-      // Cross-state is permitted only as the final tier, only with ACTUAL ROAD
-      // TIME (never a factor estimate), and only when that road ETA plus buffer
-      // fits the 45-minute SLA ceiling. Offline cross-state drivers are eligible.
-      if (guardOutcome.assignmentTier === "cross_state" && chosen && chosen.usedFallback) {
-        await acceptFallback("cross-state assignment: actual road time unavailable (routing failed); cannot verify SLA ceiling", { offer, stateGuard: guardOutcome.excluded, chosenBaseMinutes: chosen.baseMinutes, etaBufferMinutes: settings.etaBufferMinutes, ceilingMinutes: effectiveMaxEta });
-        continue;
-      }
-      if (guardOutcome.assignmentTier === "cross_state" && chosen && chosen.baseMinutes + settings.etaBufferMinutes > effectiveMaxEta) {
-        await acceptFallback("cross-state sole-eligible assignment cannot make the SLA ceiling", { offer, stateGuard: guardOutcome.excluded, chosenBaseMinutes: chosen.baseMinutes, etaBufferMinutes: settings.etaBufferMinutes, ceilingMinutes: effectiveMaxEta });
-        continue;
-      }
       const driver = chosen?.driver ?? null;
       // The driver the accept POST carries: the human-chosen driver when a
       // manual reassignment was respected (even offline — their driverId IS the
@@ -3106,10 +3095,9 @@ async function runAutoDispatchInternal(
             dispatchDriverId = Number(recalculated.driver.driverId) || 0;
             dispatchDriverName = String(recalculated.driver.driverName ?? dispatchDriverId);
             const recalcOverCeiling = recalculated.baseMinutes + settings.etaBufferMinutes > effectiveMaxEta;
-            const recalcCrossState = recalcGuard.assignmentTier === "cross_state";
-            if (recalcOverCeiling || (recalcCrossState && recalculated.usedFallback)) {
+            if (recalcOverCeiling) {
               const rawEta = Math.ceil(recalculated.baseMinutes) + settings.etaBufferMinutes;
-              recalcEscalationReason = `recalculated driver ${dispatchDriverId} rejected: ${recalcCrossState ? "cross-state " : ""}${recalculated.usedFallback ? "factor fallback " : ""}ETA ${rawEta} min exceeds the ${effectiveMaxEta}-min SLA ceiling; offer remains accepted and a human must assign on Towbook`;
+              recalcEscalationReason = `recalculated driver ${dispatchDriverId} rejected: ${recalculated.usedFallback ? "factor fallback " : ""}ETA ${rawEta} min exceeds the ${effectiveMaxEta}-min SLA ceiling; offer remains accepted and a human must assign on Towbook`;
               dispatchDriverId = 0;
               dispatchDriverName = null;
             }
@@ -3183,7 +3171,7 @@ async function runAutoDispatchInternal(
           const qualificationNote = serviceQualification.excluded.length
             ? `; service-type '${serviceQualification.serviceType}' excluded ${serviceQualification.excluded.map((e) => `driver ${e.driverId}: ${e.reason}`).join("; ")}`
             : `; service-type ${serviceQualification.assessed ? `'${serviceQualification.serviceType}' assessed; no explicit exclusions` : "could not be assessed (missing/unknown); no driver removed"}`;
-          const reason = `accepted and dispatched to ${dispatchDriverName ?? dispatchDriverId} (driver ${dispatchDriverId}, VERIFIED on call ${verification.callId})${verificationRecoveryNote ? `; ${verificationRecoveryNote}` : ""}${recalculationNote ? `; ${recalculationNote}` : ""}${manualNote ? `; ${manualNote}` : ""}${guardOutcome.assignmentTier === "offline_in_state" ? "; no online driver in state; in-state offline assignment" : guardOutcome.assignmentTier === "cross_state" ? "; cross-state sole-eligible assignment (ETA fits ceiling)" : ""}${jobStateResolution.note ? `; ${jobStateResolution.note}` : ""}${qualificationNote}${etaLabel}${areaNote ?? ""}`;
+          const reason = `accepted and dispatched to ${dispatchDriverName ?? dispatchDriverId} (driver ${dispatchDriverId}, VERIFIED on call ${verification.callId})${verificationRecoveryNote ? `; ${verificationRecoveryNote}` : ""}${recalculationNote ? `; ${recalculationNote}` : ""}${manualNote ? `; ${manualNote}` : ""}${guardOutcome.assignmentTier === "offline_in_state" ? "; no online driver in state; in-state offline assignment" : ""}${jobStateResolution.note ? `; ${jobStateResolution.note}` : ""}${qualificationNote}${etaLabel}${areaNote ?? ""}`;
           await record({
             decision: "auto_accept_with_driver",
             callId: verification.callId,
@@ -3203,7 +3191,7 @@ async function runAutoDispatchInternal(
           } catch { /* ledger never blocks dispatch */ }
           result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "auto_accept_with_driver", escalated: false, reason });
         } else {
-          const reason = `accepted (call ${verification.callId ?? "unknown"}) but dispatch NOT verified for ${dispatchDriverName ?? dispatchDriverId} (driver ${dispatchDriverId}) — ${verification.error}${verificationRecoveryNote ? `; ${verificationRecoveryNote}` : ""}${recalculationNote ? `; ${recalculationNote}` : ""}${manualNote ? `; ${manualNote}` : ""}${guardOutcome.assignmentTier === "offline_in_state" ? "; no online driver in state; in-state offline assignment" : guardOutcome.assignmentTier === "cross_state" ? "; cross-state sole-eligible assignment (ETA fits ceiling)" : ""}${jobStateResolution.note ? `; ${jobStateResolution.note}` : ""}; needs a human to assign on Towbook (ETA ${etaMinutes ?? effectiveMaxEta} min quoted)`;
+          const reason = `accepted (call ${verification.callId ?? "unknown"}) but dispatch NOT verified for ${dispatchDriverName ?? dispatchDriverId} (driver ${dispatchDriverId}) — ${verification.error}${verificationRecoveryNote ? `; ${verificationRecoveryNote}` : ""}${recalculationNote ? `; ${recalculationNote}` : ""}${manualNote ? `; ${manualNote}` : ""}${guardOutcome.assignmentTier === "offline_in_state" ? "; no online driver in state; in-state offline assignment" : ""}${jobStateResolution.note ? `; ${jobStateResolution.note}` : ""}; needs a human to assign on Towbook (ETA ${etaMinutes ?? effectiveMaxEta} min quoted)`;
           await record({
             decision: "escalated_dispatch_failed",
             callId: verification.callId,
