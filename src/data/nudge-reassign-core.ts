@@ -3,6 +3,7 @@ import { sql } from "~/db";
 import { haversineMiles, chooseBestDriverByRoad, loadOrgDriverQueues, loadDriverGpsFixes, loadDriverAnchors, loadZoneMatches, loadRegionalPreferenceMatches, resolveRouter, type StateGuardOutcome } from "./ai-dispatcher";
 import { decryptSession } from "./towbook-key";
 import { resolveStateFromAddress, reverseGeocodeState } from "./state-guard-core";
+import { resolveTomtomKey } from "./tomtom-key";
 
 export type GpsFix = { latitude:number; longitude:number; capturedAt:Date|string; speedMph?:number|null };
 export type HeadedCheck = { headed:boolean; arrived:boolean; reason:"arrived"|"movement"|"speed"|"no_fix"|"no_meaningful_movement" };
@@ -41,7 +42,7 @@ async function reassignNotHeaded(orgId:string, job:Record<string,unknown>, oldId
   const resolution=resolveStateFromAddress(String(job.pickup ?? ""));
   const state=resolution.state;
   const router=resolveRouter(process.env).router;
-  const stateGuard={jobState:state,resolveDriverState:async(_id:number,la:number,lo:number)=>reverseGeocodeState(la,lo,process.env.TOMTOM_API_KEY||"",fetch)};
+  const stateGuard={jobState:state,resolveDriverState:async(_id:number,la:number,lo:number)=>reverseGeocodeState(la,lo,resolveTomtomKey(process.env) || "",fetch)};
   const areaBase={anchors,gpsFixes:gps,serviceType:serviceQualification.serviceType,serviceQualification,stateGuard};
   const zoneMatches=await loadZoneMatches(orgId,drivers,lat,lng,state ?? undefined);
   const regionalPreference=await loadRegionalPreferenceMatches(orgId,drivers,lat,lng,queues);
