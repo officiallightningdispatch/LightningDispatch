@@ -1607,6 +1607,12 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
         WHERE NOT EXISTS (SELECT 1 FROM battery_install_types WHERE org_id = '89e15ce587651cc47c3bc45b1c612a220955' AND code = ${code})`;
     }
   }],
+  [76, async (q) => {
+    // The legacy Phase-1 constraint only allowed standard/advanced and conflicts
+    // with the authoritative battery_install_types catalog (including new types).
+    await q`ALTER TABLE battery_sales DROP CONSTRAINT IF EXISTS battery_sales_install_type_check`;
+    await q`UPDATE battery_sales SET install_type = lower(install_type) WHERE install_type IS NOT NULL`;
+  }],
  ];
 export async function ensureSchema() {
   const q = sql();
