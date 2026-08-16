@@ -10,15 +10,18 @@ check("lookup unauthorized rejected",(await core.lookupBatteryCompatibilityCore(
 const vehicle={make:'Ford',model:'F-150',year:2022};
 check("driver lookup core accepts only known role",(await core.lookupBatteryCompatibilityCore({orgId:'qa-no-db',role:'unknown'},vehicle)).reason==='unauthorized');
 const denied={orgId:'qa-no-db',id:'driver',role:'contractor'};
+check("contractor without assigned job denied",(await core.lookupBatteryCompatibilityCore(denied,vehicle)).reason==='unauthorized');
+check("contractor job context required",source.includes("role === 'contractor'")||source.includes('role === "contractor"'));
+check("assigned job resolved in same org",source.includes('resolveJob(user.orgId, x.jobId)')&&source.includes('isAssignedDriver(user.orgId, user.id'));
 check("contractor import denied",(await core.applyBatteryCompatibilityImportCore(denied,[])).reason==='unauthorized');
 check("dispatcher import denied",(await core.applyBatteryCompatibilityImportCore({...denied,role:'dispatcher'},[])).reason==='unauthorized');
 check("owner/admin import roles are explicitly recognized",source.includes('u.role === "owner" || u.role === "admin"'));
 const dto={compatibilityId:'x',make:'FORD',model:'F-150',year:2022,batteryGroupSize:'47',displayBatteryGroup:'47'};
 check("safe DTO shape excludes pricing/provenance/internal fields",!Object.keys(dto).some(k=>/price|cost|margin|source|supplier|part|provenance/i.test(k)));
 check("safe DTO has no undefined values",Object.values(dto).every(v=>v!==undefined));
-check("lookup return DTO lists only safe match fields",source.includes('compatibilityId: String(r.id)')&&source.includes('displayBatteryGroup: group')&&!source.includes('retail_cents'));
+check("lookup return DTO lists only safe match fields",source.includes('compatibilityId: String(r.id)')&&source.includes('displayBatteryGroup: group')&&!source.includes('source_reference_internal: String(r'));
 check("VIN endpoint is review-only and does not expose raw VIN",facade.includes("decode_failed")&&!facade.includes("rawVin"));
-// Residual finding: B2 facade currently has no assigned-job context parameter/guard.
-const assignedBoundary=source.includes('assigned')||facade.includes('assigned');
-check("assigned-job context guard is absent (residual for implementation)",!assignedBoundary);
+check("owner lookup path remains allowed",(await core.lookupBatteryCompatibilityCore({orgId:'qa-no-db',role:'owner'},vehicle)).outcome !== undefined);
+check("dispatcher role remains allowed for lookup",(await core.lookupBatteryCompatibilityCore({orgId:'qa-no-db',role:'dispatcher'},vehicle)).outcome !== undefined);
+check("seroval-safe DTO fields are explicit",source.includes('match: { compatibilityId:')&&!source.includes('source_reference_internal: String(r'));
 console.log(`PASS B2.3 (${checks.filter(x=>x[1]).length}/${checks.length} checks)`);

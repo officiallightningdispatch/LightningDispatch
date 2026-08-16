@@ -1,5 +1,6 @@
 import { canonicalizeBatteryGroup, canonicalizeMake, canonicalizeModel, canonicalizeNullableVehicleField } from "./battery-compatibility-canonical";
 import { validateCompatibilityRows, type CompatibilityPayload } from "./compat-validation";
+import { isAssignedDriver, resolveJob } from "./driver-photos-core";
 const db = () => import("~/db").then((m) => m.sql());
 const roles = new Set(["owner", "admin", "dispatcher", "contractor"]);
 export type CompatibilityLookupResult =
@@ -7,10 +8,19 @@ export type CompatibilityLookupResult =
   | { ok: true; outcome: "review"; reason: "not_found" | "ambiguous" | "conflict" | "incomplete_vehicle" | "unsupported_group" | "decode_failed"; message: string; vehicle: { make: string | null; model: string | null; year: number | null } }
   | { ok: false; reason: "unauthorized" | "invalid_input" };
 const review = (reason: Exclude<Extract<CompatibilityLookupResult, { outcome: "review" }>["reason"], "decode_failed">, make: string | null, model: string | null, year: number | null): CompatibilityLookupResult => ({ ok: true, outcome: "review", reason, message: "Battery fitment requires dispatcher or owner review.", vehicle: { make, model, year } });
-export async function lookupBatteryCompatibilityCore(user: { orgId: string; role: string } | null, input: unknown): Promise<CompatibilityLookupResult> {
+export async function lookupBatteryCompatibilityCore(user: { orgId: string; role: string; id?: string; towbookDriverId?: string } | null, input: unknown): Promise<CompatibilityLookupResult> {
   if (!user || !roles.has(user.role)) return { ok: false, reason: "unauthorized" };
   if (!input || typeof input !== "object") return { ok: false, reason: "invalid_input" };
-  const x = input as Record<string, unknown>; const m = canonicalizeMake(x.make); const mo = canonicalizeModel(x.model); const y = Number(x.year);
+  const x = input as Record<string, unknown>;
+  // Contractor fitment lookups are only meaningful inside an assigned job.
+  // Reuse the same assignment rails as photos/job detail: contractor link,
+  // authoritative Towbook driver id, then raw Towbook assets fallback.
+  if (user.role === "contractor") {
+    if (!user.id || typeof x.jobId !== "string" || !x.jobId.trim()) return { ok: false, reason: "unauthorized" };
+    const job = await resolveJob(user.orgId, x.jobId);
+    if (!job || !(await isAssignedDriver(user.orgId, user.id, user.towbookDriverId ?? "", job))) return { ok: false, reason: "unauthorized" };
+  }
+  const m = canonicalizeMake(x.make); const mo = canonicalizeModel(x.model); const y = Number(x.year);
   if (!m.ok || !mo.ok || !Number.isInteger(y) || y < 1886 || y > 9999) return { ok: false, reason: "invalid_input" };
   const g = x.batteryGroupSize == null || x.batteryGroupSize === "" ? null : canonicalizeBatteryGroup(x.batteryGroupSize);
   if (g && !g.ok) return review("unsupported_group", m.value, mo.value, y);

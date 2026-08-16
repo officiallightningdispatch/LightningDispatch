@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 const pass = (x: unknown) => x;
 const auth = async () => { const { currentUser } = await import("./auth-server"); return currentUser(); };
-export const lookupBatteryCompatibility = createServerFn({ method: "POST" }).validator(pass).handler(async ({ data }) => { const u = await auth(); return (await import("./battery-compat-core")).lookupBatteryCompatibilityCore(u && { orgId: u.orgId, role: u.role }, data); });
+export const lookupBatteryCompatibility = createServerFn({ method: "POST" }).validator(pass).handler(async ({ data }) => { const u = await auth(); return (await import("./battery-compat-core")).lookupBatteryCompatibilityCore(u && { orgId: u.orgId, role: u.role, id: u.id, towbookDriverId: u.towbookDriverId }, data); });
 export const lookupBatteryCompatibilityManual = lookupBatteryCompatibility;
 export const lookupBatteryCompatibilityFromVin = createServerFn({ method: "POST" }).validator(pass).handler(async () => ({ ok: true as const, outcome: "review" as const, reason: "decode_failed" as const, message: "VIN decoding is not available yet; dispatcher review required.", vehicle: { make: null, model: null, year: null } }));
 export const previewBatteryCompatibilityImport = createServerFn({ method: "POST" }).validator(pass).handler(async ({ data }) => { const u = await auth(); if (!u) return { ok: false as const, reason: "unauthorized" as const }; return (await import("./battery-compat-core")).previewBatteryCompatibilityImportCore(data); });
