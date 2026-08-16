@@ -204,25 +204,6 @@ check("flow: install job raw links the sale", String(rawInstall.batterySaleId ??
 const replay = await chargeBatterySaleCore(DRIVER, { saleId: installStep.state.sale.id, token: "cnon:qa_battery_nonce", attempt: 2 }, { fetchImpl: squareOk() });
 check("flow: replay of a paid sale is idempotent", replay.ok && replay.state.step === "paid", JSON.stringify(replay));
 
-// B4 QA-only price book import, idempotency, audit, and alias resolution.
-const priceBook = await readFile("/home/team/shared/lightning-battery-price-book.csv", "utf8");
-const imported = await importBatteryPriceBookCore(ACTOR, priceBook);
-check("B4: owner imports authoritative 24-row CSV", imported.ok && imported.imported === 24, JSON.stringify(imported));
-const bookRows = await q`SELECT group_size, alternate_group_sizes, retail_cents, internal_cost_cents, source_brand FROM battery_products WHERE org_id=${ORG}`;
-check("B4: import produces 24 products", bookRows.length === 24);
-const book47 = bookRows.find(r=>r.group_size === "47");
-check("B4: 47 has authoritative cents and H5 alias", book47?.retail_cents === 21399 && book47?.internal_cost_cents === 21499 && JSON.stringify(book47?.alternate_group_sizes) === '["H5"]');
-const changedCsv = priceBook.replace("213.99,3,USD", "199.99,3,USD");
-const replayImport = await importBatteryPriceBookCore(ACTOR, changedCsv);
-const changed = await q`SELECT retail_cents FROM battery_products WHERE org_id=${ORG} AND group_size='47'`;
-check("B4: re-import is idempotent and updates retail", replayImport.ok && changed[0]?.retail_cents === 19999);
-const alias = await resolveBatteryProductCore(ORG, "H5");
-check("B4: alias H5 resolves canonical 47", alias?.groupSize === "47");
-const edit = await upsertBatteryProductCore(ACTOR, {groupSize:"47", retailCents:20000, availability:"in_stock", active:true, imageKey:null, warrantyYears:3, freeReplacementYears:3});
-check("B4: owner price edit persists", edit.ok && edit.product.retailCents === 20000);
-const audits = await q`SELECT action, detail FROM audit_log WHERE org_id=${ORG} AND actor_user_id=${OWNER} AND action IN ('battery_price_book_import','battery_price_update') ORDER BY occurred_at`;
-check("B4: import and price edit audits written", audits.some(r=>r.action==='battery_price_book_import') && audits.some(r=>r.action==='battery_price_update' && JSON.stringify(r.detail).includes('old') && JSON.stringify(r.detail).includes('new')));
-
 // Completion now passes the battery gate (fails later at the signature gate instead).
 const gate3 = await completeJobCore(DRIVER, { jobId: JOB });
 check("gate: after paid, battery gate passes (next gate is the signature gate)", !gate3.ok && gate3.code === "completion_capture_required", JSON.stringify(gate3));
@@ -312,6 +293,27 @@ check("gate: after paid, battery gate passes (next gate is the signature gate)",
   const denied = await batteryAgentStateCore(DRIVER, { jobId: "nope-12345" });
   check("read: unknown job → not_found", !denied.ok && denied.code === "not_found", JSON.stringify(denied));
 }
+
+// B4 QA-only price book import, idempotency, audit, and alias resolution.
+// Kept at the END of the suite so the price-book import/edit mutations (e.g.
+// group-47 retail changed to $200) cannot contaminate earlier flow assertions.
+const priceBook = await readFile("/home/team/shared/lightning-battery-price-book.csv", "utf8");
+const imported = await importBatteryPriceBookCore(ACTOR, priceBook);
+check("B4: owner imports authoritative 24-row CSV", imported.ok && imported.imported === 24, JSON.stringify(imported));
+const bookRows = await q`SELECT group_size, alternate_group_sizes, retail_cents, internal_cost_cents, source_brand FROM battery_products WHERE org_id=${ORG}`;
+check("B4: import produces 24 products", bookRows.length === 24);
+const book47 = bookRows.find(r=>r.group_size === "47");
+check("B4: 47 has authoritative cents and H5 alias", book47?.retail_cents === 21399 && book47?.internal_cost_cents === 21499 && JSON.stringify(book47?.alternate_group_sizes) === '["H5"]');
+const changedCsv = priceBook.replace("47,H5,Duralast,Gold,H5-DLG,214.99,213.99,3,USD,true", "47,H5,Duralast,Gold,H5-DLG,214.99,199.99,3,USD,true");
+const replayImport = await importBatteryPriceBookCore(ACTOR, changedCsv);
+const changed = await q`SELECT retail_cents FROM battery_products WHERE org_id=${ORG} AND group_size='47'`;
+check("B4: re-import is idempotent and updates retail", replayImport.ok && changed[0]?.retail_cents === 19999);
+const alias = await resolveBatteryProductCore(ORG, "H5");
+check("B4: alias H5 resolves canonical 47", alias?.groupSize === "47");
+const edit = await upsertBatteryProductCore(ACTOR, {groupSize:"47", retailCents:20000, availability:"in_stock", active:true, imageKey:null, warrantyYears:3, freeReplacementYears:3});
+check("B4: owner price edit persists", edit.ok && edit.product.retailCents === 20000);
+const audits = await q`SELECT action, detail FROM audit_log WHERE org_id=${ORG} AND actor_user_id=${OWNER} AND action IN ('battery_price_book_import','battery_product_upsert') ORDER BY occurred_at`;
+check("B4: import and price edit audits written", audits.some(r=>r.action==='battery_price_book_import') && audits.some(r=>r.action==='battery_product_upsert' && JSON.stringify(r.detail).includes('old') && JSON.stringify(r.detail).includes('new')));
 
 console.log(`battery-sales: ${checks.length} checks passed`);
 } catch (err) {

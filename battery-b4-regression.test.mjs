@@ -19,5 +19,5 @@ const core=await readFile(new URL("./src/data/battery-pricebook-core.ts",import.
 const safeSource=core.match(/const safe=.*?\n/)[0];
 check("customer DTO excludes internal fields", INTERNAL_FIELDS.every(k=>!safeSource.includes(k)) && safeSource.includes("displayName:\"LIGHTNING GOLD BATTERY\""));
 check("alias resolution keeps active and availability guard", /alternate_group_sizes @>/.test(core) && /active=true/.test(core));
-check("import and edit audit actions exist", core.includes("battery_price_book_import")&&core.includes("battery_price_update"));
+check("import and edit audit actions exist", core.includes("battery_price_book_import")&&core.includes("battery_product_upsert"));
 console.log(`battery-b4-regression: ${checks.length} checks passed`);
