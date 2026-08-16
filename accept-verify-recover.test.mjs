@@ -63,7 +63,7 @@ check("4: pending owner banner is wired with grounded offer context", () => {
 
 check("5: verified calls are upserted before best-effort follow-up", () => {
   assert.match(dispatcher, /async function upsertVerifiedDispatchJob/);
-  assert.match(dispatcher, /ON CONFLICT \(org_id, towbook_job_id\) DO UPDATE/);
+  assert.match(dispatcher, /ON CONFLICT \(org_id, towbook_job_id\) WHERE towbook_job_id IS NOT NULL DO UPDATE/);
   const verified = dispatcher.indexOf("if (verification.call) {\n            try { await upsertVerifiedDispatchJob");
   const pending = dispatcher.indexOf("if (verification.call) { try { await upsertVerifiedDispatchJob");
   assert.ok(verified >= 0, "initial verified-dispatch path must upsert");

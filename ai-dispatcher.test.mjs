@@ -1493,7 +1493,7 @@ try {
     const s4row = (await q`SELECT reason FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='6204'`)[0];
     check("state resolution authoritative record beats stale offer address", s4.r.decisions[0]?.decision === "auto_accept_with_driver" && String(s4row?.reason).includes("authoritative"), String(s4row?.reason));
     const s7 = await runStateCase(6207, { address: ct, lat: 41.31, lng: -73.06, stateResolver: async () => "TX" });
-    check("state resolution no in-state driver: cross-state auto-assign when ETA fits ceiling", s7.r.decisions[0]?.decision === "auto_accept_with_driver" && Number(s7.row?.driver_id) === 703785 && posts(s7.m.calls)[0]?.body?.driverId === 703785 && String(s7.row?.reason).includes("cross-state sole-eligible assignment"), JSON.stringify(s7.row));
+    check("state resolution no in-state driver: universal fallback, never cross-state auto-assigns", s7.r.decisions[0]?.decision === "auto_accept_no_driver" && s7.r.decisions[0]?.escalated === true && Number(s7.row?.driver_id ?? 0) === 0 && posts(s7.m.calls)[0]?.body?.driverId === 0 && (String(s7.row?.reason).includes("no eligible same-state driver") || String(s7.row?.reason).includes("using universal fallback")), JSON.stringify(s7.row));
     // --- TX-coordinate scenarios: switch the org zone to Georgetown TX ---
     await setZone(TX_ZONE.lat, TX_ZONE.lng, TX_ZONE.radius);
     const s2 = await runStateCase(6202, { address: tx, lat: 30.61948, lng: -97.648242, stateResolver: async () => "TX" });
@@ -1509,7 +1509,7 @@ try {
     // Driver 703785 resolves to CT (default resolver) and is physically at CT
     // coords; a CT driver cannot make the 45-min ceiling to Georgetown TX, so
     // the ETA-cap correctly holds the offer: universal fallback, driverId 0.
-    check("state resolution cross-state over ceiling: universal fallback", s6.r.decisions[0]?.decision === "auto_accept_no_driver" && s6.r.decisions[0]?.escalated === true && Number(s6.row?.driver_id ?? 0) === 0 && posts(s6.m.calls)[0]?.body?.driverId === 0 && String(s6.row?.reason).includes("cross-state sole-eligible assignment cannot make the SLA ceiling"), JSON.stringify(s6.row));
+    check("state resolution cross-state over ceiling: universal fallback", s6.r.decisions[0]?.decision === "auto_accept_no_driver" && s6.r.decisions[0]?.escalated === true && Number(s6.row?.driver_id ?? 0) === 0 && posts(s6.m.calls)[0]?.body?.driverId === 0 && (String(s6.row?.reason).includes("no eligible same-state driver") || String(s6.row?.reason).includes("using universal fallback")), JSON.stringify(s6.row));
     // restore ORG6 zone for later tests
     await setZone(origZone.zone_lat, origZone.zone_lng, origZone.zone_radius_miles);
   }
@@ -1810,12 +1810,9 @@ try {
     };
     const online = driver(93001, "Tier online CT", { checkedIn: true, etaSec: 900 });
     const offline = driver(93002, "Tier offline CT", { checkedIn: false, etaSec: 600 });
-    // Cross-state driver physically NEAR the Bridgeport pickup (mock router:
-    // seconds = miles*(3600/30)*1.35 — 40.7,-74.0 is ~55 mi => ~147 min, over
-    // the 45-min ceiling). State comes from the injected resolver ("NY"), so
-    // the driver can sit ~8 mi away and still be provably out-of-state while
-    // its road ETA (~22 min + 5 buffer) fits the ceiling — the ETA-capped
-    // ASSIGN path, not the fallback path.
+    // Cross-state driver physically near the Bridgeport pickup. State comes from
+    // the injected resolver ("NY"), but cross-state-only candidates are never
+    // auto-assigned under the current owner rule, even when ETA fits.
     const cross = driver(93003, "Tier cross-state NY", { checkedIn: true, etaSec: 600, lat: 41.15, lng: -73.10 });
     const farCross = driver(93004, "Tier far-state NY", { checkedIn: true, etaSec: 4000, lat: 40.7, lng: -74.0 });
 
@@ -1826,21 +1823,21 @@ try {
     check("tier 2 offline in-state: assigned with waiver reason", b.r.decisions[0]?.decision === "auto_accept_with_driver" && Number(b.row?.driver_id) === 93002 && posts(b.m.calls)[0]?.body?.driverId === 93002 && String(b.row?.reason).includes("no online driver in state; in-state offline assignment"), JSON.stringify(b.row));
 
     const c = await runTier(93003, [cross], { states: { 93003: "NY" }, maxEta: 45 });
-    check("tier 3 cross-state ETA-capped: assigned", c.r.decisions[0]?.decision === "auto_accept_with_driver" && Number(c.row?.driver_id) === 93003 && posts(c.m.calls)[0]?.body?.driverId === 93003 && String(c.row?.reason).includes("cross-state sole-eligible assignment"), JSON.stringify(c.row));
+    check("tier 3 cross-state-only: universal fallback, never assigned", c.r.decisions[0]?.decision === "auto_accept_no_driver" && c.r.decisions[0]?.escalated === true && Number(c.row?.driver_id ?? 0) === 0 && posts(c.m.calls)[0]?.body?.driverId === 0 && (String(c.row?.reason).includes("no eligible same-state driver") || String(c.row?.reason).includes("using universal fallback")), JSON.stringify(c.row));
 
     const offlineCross = driver(93006, "Tier offline cross-state NY", { checkedIn: false, etaSec: 600, lat: 41.15, lng: -73.10 });
     const c3b = await runTier(93006, [offlineCross], { states: { 93006: "NY" }, maxEta: 45 });
-    check("tier 3b offline cross-state within ceiling: assigned", c3b.r.decisions[0]?.decision === "auto_accept_with_driver" && Number(c3b.row?.driver_id) === 93006 && String(c3b.row?.reason).includes("cross-state sole-eligible assignment"), JSON.stringify(c3b.row));
+    check("tier 3b offline cross-state-only: universal fallback, never assigned", c3b.r.decisions[0]?.decision === "auto_accept_no_driver" && c3b.r.decisions[0]?.escalated === true && Number(c3b.row?.driver_id ?? 0) === 0 && posts(c3b.m.calls)[0]?.body?.driverId === 0 && (String(c3b.row?.reason).includes("no eligible same-state driver") || String(c3b.row?.reason).includes("using universal fallback")), JSON.stringify(c3b.row));
 
     const d = await runTier(93004, [farCross], { states: { 93004: "NY" }, maxEta: 30 });
-    check("tier 4 cross-state over ceiling: universal fallback", d.r.decisions[0]?.decision === "auto_accept_no_driver" && d.r.decisions[0]?.escalated === true && Number(d.row?.driver_id ?? 0) === 0 && posts(d.m.calls)[0]?.body?.driverId === 0 && String(d.row?.reason).includes("cross-state sole-eligible assignment cannot make the SLA ceiling"), JSON.stringify(d.row));
+    check("tier 4 cross-state over ceiling: universal fallback", d.r.decisions[0]?.decision === "auto_accept_no_driver" && d.r.decisions[0]?.escalated === true && Number(d.row?.driver_id ?? 0) === 0 && posts(d.m.calls)[0]?.body?.driverId === 0 && (String(d.row?.reason).includes("no eligible same-state driver") || String(d.row?.reason).includes("using universal fallback")), JSON.stringify(d.row));
 
     const failedCross = driver(93007, "Tier routing-failure NY", { checkedIn: true, etaSec: 60, lat: 41.15, lng: -73.10 });
     const mf = makeFetch({ offers: [offer(93007, { maxEta: 45, drivers: [93007] })], drivers: [failedCross] });
     const { deps: fd } = makeDeps(mf.fetchImpl, null, { noRouterOverride: true, env: { ETA_ROUTER: "off" }, stateResolver: async () => "NY" });
     const fr = await runAutoDispatch(ORG6, fd);
     const frow = (await q`SELECT decision, driver_id, reason FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='93007'`)[0];
-    check("tier 4b cross-state routing failure: universal fallback", fr.decisions[0]?.decision === "auto_accept_no_driver" && fr.decisions[0]?.escalated === true && Number(frow?.driver_id ?? 0) === 0 && String(frow?.reason).includes("actual road time unavailable"), JSON.stringify(frow));
+    check("tier 4b cross-state routing failure: universal fallback, never assigned", fr.decisions[0]?.decision === "auto_accept_no_driver" && fr.decisions[0]?.escalated === true && Number(frow?.driver_id ?? 0) === 0 && posts(mf.calls)[0]?.body?.driverId === 0 && (String(frow?.reason).includes("no eligible same-state driver") || String(frow?.reason).includes("using universal fallback")), JSON.stringify(frow));
 
     const e = await runTier(93005, [cross, offline, online], { states: { 93001: "CT", 93002: "CT", 93003: "NY" } });
     check("tier regression online same-state beats offline/cross-state", e.r.decisions[0]?.decision === "auto_accept_with_driver" && Number(e.row?.driver_id) === 93001 && posts(e.m.calls)[0]?.body?.driverId === 93001, JSON.stringify(e.row));
