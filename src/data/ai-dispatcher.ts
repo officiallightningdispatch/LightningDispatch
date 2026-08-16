@@ -6,6 +6,7 @@ import { resolveTomtomKey } from "./tomtom-key";
 export { resolveTomtomKey } from "./tomtom-key";
 import type { RecoveryResult } from "./towbook-recovery";
 import { calculateInternalEta } from "~/lib/internal-eta";
+import type { EtaRoute } from "~/lib/internal-eta";
 import { recalculateInternalEta } from "~/lib/internal-eta-orchestration";
 
 /* ============================ AI dispatcher engine ============================
@@ -1597,7 +1598,7 @@ async function internalEtaForDriver(driver: NearestDriver, queue: QueuedJob[], p
   const jobs = queue.map((q, i) => ({ id: q.id ?? `queued-${i}`, status: q.status, location: { lat: q.pickupLat, lng: q.pickupLng }, serviceType: q.serviceType, batteryInstallType: q.batteryInstallType }));
   const offer = { id: "incoming-offer", status: "offered", location: { lat: pickupLat, lng: pickupLng }, serviceType: serviceType ?? null };
   const points = [{ id: "live", location: live }, ...jobs, offer];
-  const routes: Record<string, { durationSeconds: number; distanceMeters?: number }> = {};
+  const routes: EtaRoute = {};
   for (const from of points) for (const to of points) {
     if (from.id === to.id) continue;
     if (!router) return null;
