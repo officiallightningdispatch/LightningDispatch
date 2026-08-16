@@ -446,6 +446,8 @@ export async function pingHandler(data: unknown): Promise<PingResult> {
       : [];
     const jobId = jobRow.length ? String(jobRow[0].id) : null;
     await storePing({ orgId: u.orgId, userId: identity.userRowId, towbookDriverId, jobId, latitude: d.latitude, longitude: d.longitude, accuracy: d.accuracy ?? null, speedMph: d.speedMph ?? null });
+    // Fresh GPS invalidates the shared internal ETA plan; never expose this value to customers.
+    try { const { recalculateInternalEta } = await import("~/lib/internal-eta-orchestration"); await recalculateInternalEta({ trigger: "fresh_gps", key: towbookDriverId, calculate: async () => ({ latitude: d.latitude, longitude: d.longitude, jobId }) }); } catch { /* GPS persistence remains authoritative */ }
     // Best-effort Towbook checkin so Towbook has live GPS. Failure must never
     // break the ping loop.
     let towbookCheckin: PingResult extends infer _ ? "ok" | "warning" | "failed" | "skipped" | "no-session" : never = "skipped";

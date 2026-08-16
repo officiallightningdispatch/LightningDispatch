@@ -996,12 +996,15 @@ export const driverJobAction = createServerFn({ method: "POST" }).validator(pass
   if (!ctx) return { ok: false as const, code: "unauthorized", message: "Sign in as a driver first." };
   try {
     await ensure();
-    return await applyDriverTransition(
+    const transition = await applyDriverTransition(
       { orgId: ctx.u.orgId, userId: ctx.identity.userRowId, towbookDriverId: ctx.identity.towbookDriverId },
       { userId: ctx.u.id, role: ctx.u.role, ownerInDriverView: ctx.u.role !== "contractor" },
       v.data.jobId,
       v.data.action,
     );
+    // Status changes are a real ETA invalidation point; orchestration stays server-only.
+    try { const { recalculateInternalEta } = await import("~/lib/internal-eta-orchestration"); await recalculateInternalEta({ trigger: "status_change", key: v.data.jobId, calculate: async () => transition }); } catch { /* ETA refresh never blocks a driver action */ }
+    return transition;
   } catch {
     return { ok: false as const, code: "towbook_failed", message: "Unable to update the job. Try again." };
   }

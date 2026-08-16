@@ -25,3 +25,14 @@ const committed = calculateInternalEta({ ...base, jobs: [job("started", "in_prog
 const changed = calculateInternalEta({ ...base, jobs: [job("a")], routes: routes([["live", "a", 60]]) }); assert.equal(changed.breakdown[0].travelMinutes, 1);
 const preview = calculateInternalEta({ ...base, jobs: [job("a")], offer: job("offer", "offered", "fuel", 2), routes: routes([["live", "a", 60], ["a", "offer", 120]]) }); assert.deepEqual(preview.orderedJobIds, ["a"]); assert.equal(preview.preview, true); assert.equal(preview.breakdown.at(-1).jobId, "offer");
 console.log("internal ETA hermetic tests: PASS");
+import { createEtaRecalculationHooks, trafficRefreshNeeded, recalculateInternalEta } from "./src/lib/internal-eta-orchestration.ts";
+const triggerLog = [];
+const hooks = createEtaRecalculationHooks(async (trigger, key) => { triggerLog.push([key, trigger]); return { key, trigger }; }, () => 123);
+assert.deepEqual(await hooks.onOfferAssignment("offer-1"), { trigger: "offer_assignment", key: "offer-1", value: { key: "offer-1", trigger: "offer_assignment" }, recalculatedAt: 123 });
+assert.deepEqual(await hooks.onStatusChange("job-1").then(x => x.trigger), "status_change");
+assert.deepEqual(await hooks.onFreshGps("driver-1").then(x => x.trigger), "fresh_gps");
+assert.deepEqual(await hooks.onTrafficRefresh("org-1").then(x => x.trigger), "traffic_refresh");
+assert.equal(triggerLog.length, 4);
+assert.equal(trafficRefreshNeeded(null, 100, 60), true); assert.equal(trafficRefreshNeeded(50, 100, 60), false); assert.equal(trafficRefreshNeeded(40, 100, 60), true);
+assert.deepEqual(await recalculateInternalEta({ trigger: "traffic_refresh", key: "org-1", calculate: async () => ({ secret: true }), now: () => 456 }), { trigger: "traffic_refresh", key: "org-1", value: { secret: true }, recalculatedAt: 456 });
+console.log("internal ETA orchestration hooks: PASS");

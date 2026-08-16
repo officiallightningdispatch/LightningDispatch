@@ -6,6 +6,7 @@ import { resolveTomtomKey } from "./tomtom-key";
 export { resolveTomtomKey } from "./tomtom-key";
 import type { RecoveryResult } from "./towbook-recovery";
 import { calculateInternalEta } from "~/lib/internal-eta";
+import { recalculateInternalEta } from "~/lib/internal-eta-orchestration";
 
 /* ============================ AI dispatcher engine ============================
  * Owner-directed: every pending, unexpired Towbook motor-club offer is claimed
@@ -768,12 +769,12 @@ export function resolveRouter(
       tomtomKeyConfigured: true,
       router: async (fromLat, fromLng, toLat, toLng) => {
         const attempt = await tomtomAttempt(key, fromLat, fromLng, toLat, toLng, fetchImpl);
-        if (attempt.result) return attempt.result;
+        if (attempt.result) return (await recalculateInternalEta({ trigger: "traffic_refresh", key: `${fromLat},${fromLng}->${toLat},${toLng}`, calculate: async () => attempt.result })).value;
         // TomTom failed (transient 429/5xx/timeout/network/bad shape) — fall
         // through to OSRM and CARRY the failure so the decision reason is
         // honest about why live traffic was not used (ETA honesty 2026-08-11).
         const osrm = await osrmRoadSeconds(fromLat, fromLng, toLat, toLng, fetchImpl);
-        if (osrm) return { ...osrm, tomtomFailure: attempt.failure ?? "unavailable" };
+        if (osrm) return (await recalculateInternalEta({ trigger: "traffic_refresh", key: `${fromLat},${fromLng}->${toLat},${toLng}`, calculate: async () => ({ ...osrm, tomtomFailure: attempt.failure ?? "unavailable" }) })).value;
         return null;
       },
     };
@@ -1721,7 +1722,9 @@ async function internalEtaForDriver(driver: NearestDriver, queue: QueuedJob[], p
     if (!result || !Number.isFinite(result.seconds) || result.seconds <= 0) return null;
     routes[`${from.id}->${to.id}`] = { durationSeconds: result.seconds };
   }
-  return calculateInternalEta({ liveLocation: live, jobs, offer, routes });
+  const result = calculateInternalEta({ liveLocation: live, jobs, offer, routes });
+  // Single internal orchestration entry point: offer/assignment ETA is never recomputed by a UI.
+  return (await recalculateInternalEta({ trigger: "offer_assignment", key: String(offer?.id ?? driver.driverId), calculate: async () => result })).value;
 }
 
 export async function chooseBestDriverByRoad(
