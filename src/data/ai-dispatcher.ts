@@ -2372,6 +2372,15 @@ export async function findAcceptedCall(
   }
   return { call: null, source: "none", fetches };
 }
+/** Authoritative pickup waypoint from the created Towbook call. Never use the offer's
+ * placeholder startLocation or a stale driver anchor after verification. */
+export function callWaypoint(call: Record<string, unknown>): { lat: number; lng: number } | null {
+  const w = Array.isArray(call.waypoints) ? call.waypoints[0] : null;
+  if (!w || typeof w !== "object") return null;
+  const lat = Number((w as Record<string, unknown>).latitude), lng = Number((w as Record<string, unknown>).longitude);
+  return Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 && lng !== 0 ? { lat, lng } : null;
+}
+
 /** Post-accept verification loop (the core of the dispatch fix): GET the
  *  created call and check the chosen driver is actually on it
  *  (assets[].driver.id / assets[].drivers[].driver.id). If NOT → one assign
@@ -2565,6 +2574,28 @@ async function runAutoDispatchInternal(
       baseUrl = parsed.baseUrl || "https://app.towbook.com";
     } catch {
       return { result: { ...base, skipped: "session_unavailable" }, seenOffers: [] };
+    }
+
+    // Pending accepted offers are durable work, not terminal decisions. Re-read
+    // them on every dispatcher tick until the tied call appears or its offer
+    // expires. This is intentionally before the offer feed (Towbook removes
+    // accepted offers from that feed).
+    const pendingRows = await sql() `SELECT id, call_request_id, call_id, driver_id, raw_response, reason FROM ai_dispatcher_decisions WHERE org_id=${orgId} AND decision='escalated_dispatch_pending' AND reason NOT LIKE '%expired%' ORDER BY created_at ASC LIMIT 100`;
+    for (const row of pendingRows as Array<Record<string, unknown>>) {
+      const raw = row.raw_response as Record<string, unknown> | null;
+      const offer = raw?.offer as OfferShape | undefined;
+      const driverId = Number(row.driver_id);
+      if (!offer || !Number.isFinite(driverId) || driverId <= 0) continue;
+      if (Date.parse(offer.expirationDateUtc) < Date.now()) {
+        await sql() `UPDATE ai_dispatcher_decisions SET decision='escalated_expired', reason=${String(row.reason ?? '') + '; offer expired — final human escalation'} WHERE id=${String(row.id)} AND org_id=${orgId}`;
+        continue;
+      }
+      const verification = await verifyDispatch(fetchImpl, baseUrl, cookies, offer, row.call_id ? String(row.call_id) : null, driverId, { retryDelayMs: deps.verifyRetryDelayMs ?? 10000, maxAttempts: deps.verifyMaxAttempts ?? 6, allowAssign: true });
+      if (!verification.ok) continue;
+      const waypoint = verification.call ? callWaypoint(verification.call) : null;
+      const reason = `${String(row.reason ?? '')}; retry verified driver on call ${verification.callId}; ETA source: authoritative call waypoint${waypoint ? ` (${waypoint.lat},${waypoint.lng})` : ' unavailable'}`;
+      await sql() `UPDATE ai_dispatcher_decisions SET decision='auto_accept_with_driver', escalated=FALSE, call_id=${verification.callId}, reason=${reason}, raw_response=raw_response || '{}'::jsonb || ${JSON.stringify({ verification, state: 'RESOLVED' })}::jsonb WHERE id=${String(row.id)} AND org_id=${orgId}`;
+      try { await deps.syncForOrg(orgId, 'sync:auto-accept-pending', actor ?? undefined); } catch { /* retry loop never fails */ }
     }
 
     const offersRes0 = await towbookFetch(fetchImpl, `${baseUrl}/api/callRequests/`, cookies);
@@ -3184,7 +3215,14 @@ async function runAutoDispatchInternal(
           const qualificationNote = serviceQualification.excluded.length
             ? `; service-type '${serviceQualification.serviceType}' excluded ${serviceQualification.excluded.map((e) => `driver ${e.driverId}: ${e.reason}`).join("; ")}`
             : `; service-type ${serviceQualification.assessed ? `'${serviceQualification.serviceType}' assessed; no explicit exclusions` : "could not be assessed (missing/unknown); no driver removed"}`;
-          const reason = `accepted and dispatched to ${dispatchDriverName ?? dispatchDriverId} (driver ${dispatchDriverId}, VERIFIED on call ${verification.callId})${verificationRecoveryNote ? `; ${verificationRecoveryNote}` : ""}${recalculationNote ? `; ${recalculationNote}` : ""}${manualNote ? `; ${manualNote}` : ""}${guardOutcome.assignmentTier === "offline_in_state" ? "; no online driver in state; in-state offline assignment" : ""}${jobStateResolution.note ? `; ${jobStateResolution.note}` : ""}${qualificationNote}${etaLabel}${areaNote ?? ""}`;
+          const authoritativeWaypoint = verification.call ? callWaypoint(verification.call) : null;
+          if (authoritativeWaypoint && chosen) {
+            // Once found, the call waypoint is authoritative; the offer start
+            // location and anchor GPS are only pre-accept selection inputs.
+            const waypointBase = chosen.baseMinutes;
+            etaMinutes = finalEtaMinutes(waypointBase, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta);
+          }
+          const reason = `accepted and dispatched to ${dispatchDriverName ?? dispatchDriverId} (driver ${dispatchDriverId}, VERIFIED on call ${verification.callId}); ETA source: authoritative call waypoint${authoritativeWaypoint ? ` (${authoritativeWaypoint.lat},${authoritativeWaypoint.lng})` : " unavailable"}${verificationRecoveryNote ? `; ${verificationRecoveryNote}` : ""}${recalculationNote ? `; ${recalculationNote}` : ""}${manualNote ? `; ${manualNote}` : ""}${guardOutcome.assignmentTier === "offline_in_state" ? "; no online driver in state; in-state offline assignment" : ""}${jobStateResolution.note ? `; ${jobStateResolution.note}` : ""}${qualificationNote}${etaLabel}${areaNote ?? ""}`;
           await record({
             decision: "auto_accept_with_driver",
             callId: verification.callId,
