@@ -13,7 +13,13 @@ export function normalizeEtaStatus(raw: EtaJobStatus): string {
   return String(raw ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
 }
 export type EtaPoint = { lat: number; lng: number };
-export type RouteLeg = { durationSeconds: number; distanceMeters?: number };
+export type RouteLeg = {
+  durationSeconds: number;
+  distanceMeters?: number;
+  /** Provider metadata from the routing adapter; kept with the leg for ledger honesty. */
+  provider?: "tomtom" | "osrm" | "factor";
+  tomtomFailure?: string | null;
+};
 export type EtaJob = {
   id: string;
   status: EtaJobStatus;
@@ -42,6 +48,9 @@ export type EtaBreakdown = {
   arrivalOffsetMinutes: number;
   completionOffsetMinutes: number;
   routeFrom: string;
+  /** Provider metadata for the route leg represented by this breakdown row. */
+  provider?: RouteLeg["provider"];
+  tomtomFailure?: string | null;
 };
 export type InternalEtaResult = {
   ok: true;
@@ -159,7 +168,7 @@ export function calculateInternalEta(input: InternalEtaInput): InternalEtaResult
     const arrivalOffsetMinutes = elapsed;
     elapsed += service.minutes;
     if (service.unknown) reviewRequired = true;
-    const result: EtaBreakdown = { jobId: job.id, status: normalizeEtaStatus(job.status), serviceType: service.serviceType, serviceMinutes: service.minutes, unknownServiceType: service.unknown, travelMinutes, distanceMeters: leg.distanceMeters ?? null, arrivalOffsetMinutes, completionOffsetMinutes: elapsed, routeFrom: from };
+    const result: EtaBreakdown = { jobId: job.id, status: normalizeEtaStatus(job.status), serviceType: service.serviceType, serviceMinutes: service.minutes, unknownServiceType: service.unknown, travelMinutes, distanceMeters: leg.distanceMeters ?? null, arrivalOffsetMinutes, completionOffsetMinutes: elapsed, routeFrom: from, provider: leg.provider, tomtomFailure: leg.tomtomFailure ?? null };
     from = job.id;
     return result;
   });

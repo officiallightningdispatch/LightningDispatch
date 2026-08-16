@@ -1602,7 +1602,7 @@ async function internalEtaForDriver(driver: NearestDriver, queue: QueuedJob[], p
     if (!router) return null;
     let result: RoadResult | null = null; try { result = await router(from.location.lat, from.location.lng, to.location.lat, to.location.lng); } catch { result = null; }
     if (!result || !Number.isFinite(result.seconds) || result.seconds <= 0) return null;
-    routes[`${from.id}->${to.id}`] = { durationSeconds: result.seconds };
+    routes[`${from.id}->${to.id}`] = { durationSeconds: result.seconds, provider: result.provider, tomtomFailure: result.tomtomFailure ?? null };
   }
   const result = calculateInternalEta({ liveLocation: live, jobs, offer, routes });
   // Single internal orchestration entry point: offer/assignment ETA is never recomputed by a UI.
@@ -1745,7 +1745,8 @@ export async function chooseBestDriverByRoad(
       // origin the free path uses (freshest fix / anchor center / payload).
       const geometry = queueGeometryFor(d, queues);
       const planned = await internalEtaForDriver(d, geometry, pickupLat, pickupLng, roadRouter, area?.serviceType);
-      const chain = planned?.ok ? { arrivalMinutes: planned.breakdown.at(-1)?.arrivalOffsetMinutes ?? planned.totalMinutes, queueMinutes: planned.breakdown.slice(0, -1).reduce((n, x) => n + x.travelMinutes + x.serviceMinutes, 0), finalLegMinutes: planned.breakdown.at(-1)?.travelMinutes ?? 0, finalLegProvider: "tomtom" as EtaProvider, queueBreakdown: planned.breakdown.map(x => `${x.travelMinutes} min travel + ${x.serviceMinutes} min service`).join(" + "), startedOnScene: false, unlocatedJobs: 0, tomtomFailure: null } : null;
+      const finalLeg = planned?.ok ? planned.breakdown.at(-1) : undefined;
+      const chain = planned?.ok ? { arrivalMinutes: finalLeg?.arrivalOffsetMinutes ?? planned.totalMinutes, queueMinutes: planned.breakdown.slice(0, -1).reduce((n, x) => n + x.travelMinutes + x.serviceMinutes, 0), finalLegMinutes: finalLeg?.travelMinutes ?? 0, finalLegProvider: finalLeg?.provider ?? "tomtom" as EtaProvider, queueBreakdown: planned.breakdown.map(x => `${x.travelMinutes} min travel + ${x.serviceMinutes} min service`).join(" + "), startedOnScene: false, unlocatedJobs: 0, tomtomFailure: finalLeg?.tomtomFailure ?? null } : null;
       if (chain) {
         return {
           driver: d,
@@ -1875,7 +1876,7 @@ export async function chooseBestDriverByRoad(
     const finalLegMinutes = offerBreakdown.travelMinutes;
     const queueBreakdown = `${planned.breakdown.slice(0, -1).map(x => `${Math.round(x.travelMinutes)} min travel + ${x.serviceMinutes} min service`).join(" + ")}${planned.breakdown.length > 1 ? " + " : ""}${unknownJobs ? `${unknownJobs * 15} min service for ${unknownJobs} unlocated job(s) + ` : ""}${Math.round(finalLegMinutes)} min final leg`;
     const straightLineMinutes = Math.max(1, Math.ceil(Number(d.estimatedTimeSeconds) / 60));
-    const arrival = { arrivalMinutes, queueMinutes, finalLegMinutes, finalLegProvider: "tomtom" as EtaProvider, queueBreakdown, startedOnScene: false, unlocatedJobs: unknownJobs, tomtomFailure: null };
+    const arrival = { arrivalMinutes, queueMinutes, finalLegMinutes, finalLegProvider: offerBreakdown.provider ?? "tomtom" as EtaProvider, queueBreakdown, startedOnScene: false, unlocatedJobs: unknownJobs, tomtomFailure: offerBreakdown.tomtomFailure ?? null };
     const anchor = area?.anchors?.get(String(d.driverId)) ?? null;
     return {
       driver: d,
