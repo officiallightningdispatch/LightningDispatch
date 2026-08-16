@@ -39,7 +39,7 @@ import { recalculateInternalEta } from "~/lib/internal-eta-orchestration";
  * routed and the minimum road ETA wins — a driver with a better real
  * drive time beats one with a better straight-line time. When EVERY candidate
  * is at the 3-job cap, the engine dispatches to whoever would ARRIVE fastest
- * after their queue (queue travel + SERVICE_MINUTES_PER_JOB per queued job +
+ * after their queue (queue travel + owner-rule service durations per queued job +
  * the final road leg to the offer) and quotes THAT queue-inclusive ETA
  * (clamped to [floor, ceiling]). Drivers with no GPS (0,0) are NEVER
  * auto-dispatched and NO ETA is quoted for them: the offer is accepted with
@@ -476,7 +476,7 @@ export function fallbackRoadMinutes(distanceMiles: number): number {
  * to the NEAREST driver with < MAX_DRIVER_QUEUE jobs (by road-aware ETA, as
  * before); when EVERY candidate is at the cap, the engine dispatches to
  * whoever would ARRIVE fastest after finishing their queue: queue travel
- * between consecutive job pickups + SERVICE_MINUTES_PER_JOB of on-scene time
+ * between consecutive job pickups + owner-rule service durations of on-scene time
  * per queued job + the road leg to the incoming offer — and quotes THAT
  * queue-inclusive ETA (still clamped to [floor, ceiling]). */
 
@@ -487,7 +487,6 @@ export const MAX_DRIVER_QUEUE = 3;
 /** Tunable on-scene service-time estimate per queued job (minutes) used by the
  *  all-loaded queue-inclusive arrival model. Tune with the owner when real
  *  service-time data accumulates. */
-export const SERVICE_MINUTES_PER_JOB = 30;
 
 /** dispatch_jobs lifecycle statuses that count toward a driver's queue
  *  (terminal states never count). */
@@ -1562,123 +1561,6 @@ export type AreaContext = {
   regionalPreference?: Map<string, number>;
 };
 
-/** Workload-aware arrival model (owner-directed 2026-08-11): a driver with
- *  active jobs can't start the offer until those jobs are done, so their REAL
- *  earliest arrival is
- *    (remaining time on the current/in-progress job)
- *    + Σ over subsequent queued jobs of (road travel from the PREVIOUS job's
- *      pickup to THIS job's pickup + SERVICE_MINUTES_PER_JOB on-scene time)
- *    + the road leg from the LAST job's pickup to the incoming offer.
- *  A driver already ARRIVED at the current job contributes only on-scene
- *  service time for it — no GPS→pickup leg (owner formula: "remaining time on
- *  any current/in-progress job" + "travel from the CURRENT job's location to
- *  the NEXT pickup, not from the driver's last GPS ping"). A driver EN ROUTE
- *  to the current job contributes GPS→pickup travel + service (no progress
- *  data exists, so the remaining drive is at most that — errs toward a longer,
- *  safer ETA). Active jobs that carry no pickup coords (unlocated) contribute
- *  their service time at the tail — never dropped from the workload, never
- *  routed blind. Every travel leg uses the road router (TomTom → OSRM chain)
- *  with the straight-line factor model as per-leg fallback — never fabricated.
- *  Returns null only when the driver has NO active jobs at all (free — the
- *  caller uses current-position travel instead). `activeCount` is the driver's
- *  TOTAL active-job count (may exceed queue.length when some jobs lack coords);
- *  it defaults to queue.length so callers that only have geometry stay correct. */
-export async function workloadAwareArrivalMinutes(
-  driver: NearestDriver,
-  queue: QueuedJob[],
-  pickupLat: number,
-  pickupLng: number,
-  roadRouter: RoadRouter | null,
-  activeCount?: number,
-  /** Overrides the chain's STARTING position (the GPS→first-job leg): the
-   *  area-geography path passes the driver's freshest app GPS fix or anchor
-   *  center (owner 2026-08-13); when omitted the driver's payload
-   *  latitude/longitude is used (pre-geography default). */
-  origin?: { lat: number; lng: number },
-): Promise<{
-  arrivalMinutes: number;
-  queueMinutes: number;
-  finalLegMinutes: number;
-  finalLegProvider: EtaProvider;
-  queueBreakdown: string;
-  startedOnScene: boolean;
-  unlocatedJobs: number;
-  /** First TomTom failure seen on ANY chain leg (a leg that fell back to
-   *  OSRM/factor after TomTom failed). Lets the decision record be honest
-   *  about live traffic NOT being used for part of the chain (ETA honesty). */
-  tomtomFailure: string | null;
-} | null> {
-  const total = activeCount != null && Number.isFinite(activeCount) && activeCount >= 0
-    ? Math.round(activeCount)
-    : queue.length;
-  if (total === 0) return null; // free driver — current-position travel is the caller's model
-  let chainTomtomFailure: string | null = null;
-  const legMinutes = async (fromLat: number, fromLng: number, toLat: number, toLng: number): Promise<{ minutes: number; provider: EtaProvider }> => {
-    let result: RoadResult | null = null;
-    try {
-      result = roadRouter ? await roadRouter(fromLat, fromLng, toLat, toLng) : null;
-    } catch { result = null; }
-    if (result && Number.isFinite(result.seconds) && result.seconds > 0) {
-      if (result.tomtomFailure && !chainTomtomFailure) chainTomtomFailure = result.tomtomFailure;
-      return { minutes: result.seconds / 60, provider: result.provider };
-    }
-    return { minutes: fallbackRoadMinutes(haversineMiles(fromLat, fromLng, toLat, toLng)), provider: "factor" };
-  };
-  const originLat = origin != null && Number.isFinite(origin.lat) ? origin.lat : Number(driver.latitude);
-  const originLng = origin != null && Number.isFinite(origin.lng) ? origin.lng : Number(driver.longitude);
-  const unlocatedJobs = Math.max(0, total - queue.length);
-  let queueMinutes = 0;
-  const breakdown: string[] = [];
-  let prevLat = originLat;
-  let prevLng = originLng;
-  let startedOnScene = false;
-  if (queue.length) {
-    const first = queue[0];
-    if (first.status === "arrived") {
-      // Already ON the current job — remaining = on-scene service only; the
-      // chain to the NEXT job starts from THIS job's location (owner formula —
-      // never from the driver's last GPS ping).
-      startedOnScene = true;
-      queueMinutes += SERVICE_MINUTES_PER_JOB;
-      breakdown.push(`${SERVICE_MINUTES_PER_JOB} min service`);
-      prevLat = first.pickupLat;
-      prevLng = first.pickupLng;
-      for (let i = 1; i < queue.length; i++) {
-        const leg = await legMinutes(prevLat, prevLng, queue[i].pickupLat, queue[i].pickupLng);
-        queueMinutes += leg.minutes + SERVICE_MINUTES_PER_JOB;
-        breakdown.push(`${Math.round(leg.minutes)} min to queued job ${i + 1}`, `${SERVICE_MINUTES_PER_JOB} min service`);
-        prevLat = queue[i].pickupLat;
-        prevLng = queue[i].pickupLng;
-      }
-    } else {
-      for (const job of queue) {
-        const leg = await legMinutes(prevLat, prevLng, job.pickupLat, job.pickupLng);
-        queueMinutes += leg.minutes + SERVICE_MINUTES_PER_JOB;
-        breakdown.push(`${Math.round(leg.minutes)} min to queued job ${breakdown.filter((x) => x.includes("queued job")).length + 1}`, `${SERVICE_MINUTES_PER_JOB} min service`);
-        prevLat = job.pickupLat;
-        prevLng = job.pickupLng;
-      }
-    }
-  }
-  // Unlocated active jobs (no pickup coords): their on-scene service time is
-  // still real workload — estimate it at the tail (never dropped, never routed
-  // blind).
-  if (unlocatedJobs > 0) { queueMinutes += SERVICE_MINUTES_PER_JOB * unlocatedJobs; breakdown.push(`${SERVICE_MINUTES_PER_JOB * unlocatedJobs} min service for ${unlocatedJobs} unlocated job(s)`); }
-  // Final leg: from the LAST job's location to the offer — NOT from the
-  // driver's GPS (they are at the last job when this leg begins).
-  const finalLeg = await legMinutes(prevLat, prevLng, pickupLat, pickupLng);
-  return {
-    arrivalMinutes: queueMinutes + finalLeg.minutes,
-    queueMinutes,
-    finalLegMinutes: finalLeg.minutes,
-    finalLegProvider: finalLeg.provider,
-    queueBreakdown: `${breakdown.join(" + ")}${breakdown.length ? " + " : ""}${Math.round(finalLeg.minutes)} min final leg`,
-    startedOnScene,
-    unlocatedJobs,
-    tomtomFailure: chainTomtomFailure,
-  };
-}
-
 /** Road-aware driver choice (owner-directed 2026-08-11, queue-aware; area +
  *  fresh-GPS ETA origin owner-directed 2026-08-13):
  *  rails = checked in && real GPS (lat/lng nonzero AND finite) && finite
@@ -1702,7 +1584,7 @@ export async function workloadAwareArrivalMinutes(
  *  the pool).
  *  ALL-LOADED path: when EVERY candidate is at the cap, dispatch to whoever
  *  would ARRIVE fastest after their queue — queue travel between consecutive
- *  job pickups + SERVICE_MINUTES_PER_JOB per queued job + the road leg to the
+ *  job pickups + owner-rule service durations per queued job + the road leg to the
  *  offer (queueInclusiveArrivalMinutes) — and baseMinutes carries that
  *  queue-inclusive arrival so the quoted ETA tracks reality.
  *  `roadRouter` may be null (routing disabled — every leg uses the factor
@@ -1977,13 +1859,23 @@ export async function chooseBestDriverByRoad(
   }
 
   // --- all-loaded: EVERY candidate is at the cap → chain-aware arrival ---
+  // Use the same owner-rule planner as the under-cap path. Geometry contains
+  // only routable jobs; active jobs without coordinates are added as 15-minute
+  // unknown service at the tail, without inventing a route leg.
   const modeled = await Promise.all(pool.map(async (d): Promise<ChosenDriverEta | null> => {
     const geometry = queueGeometryFor(d, queues);
     const origin = originFor(d);
-    const arrival = await workloadAwareArrivalMinutes(d, geometry, pickupLat, pickupLng, roadRouter, driverActiveCount(d, queues), origin);
-    if (!arrival) return null; // free driver — cannot be in the all-loaded path
-    const straightLineMinutes = Math.max(1, Math.ceil(Number(d.estimatedTimeSeconds) / 60));
     const activeCount = driverActiveCount(d, queues);
+    const unknownJobs = Math.max(0, activeCount - geometry.length);
+    const planned = await internalEtaForDriver(d, geometry, pickupLat, pickupLng, roadRouter, area?.serviceType);
+    if (!planned?.ok || !planned.breakdown.length) return null; // free driver — cannot be in the all-loaded path
+    const offerBreakdown = planned.breakdown.at(-1)!;
+    const queueMinutes = offerBreakdown.arrivalOffsetMinutes - offerBreakdown.travelMinutes + unknownJobs * 15;
+    const arrivalMinutes = offerBreakdown.arrivalOffsetMinutes + unknownJobs * 15;
+    const finalLegMinutes = offerBreakdown.travelMinutes;
+    const queueBreakdown = `${planned.breakdown.slice(0, -1).map(x => `${Math.round(x.travelMinutes)} min travel + ${x.serviceMinutes} min service`).join(" + ")}${planned.breakdown.length > 1 ? " + " : ""}${unknownJobs ? `${unknownJobs * 15} min service for ${unknownJobs} unlocated job(s) + ` : ""}${Math.round(finalLegMinutes)} min final leg`;
+    const straightLineMinutes = Math.max(1, Math.ceil(Number(d.estimatedTimeSeconds) / 60));
+    const arrival = { arrivalMinutes, queueMinutes, finalLegMinutes, finalLegProvider: "tomtom" as EtaProvider, queueBreakdown, startedOnScene: false, unlocatedJobs: unknownJobs, tomtomFailure: null };
     const anchor = area?.anchors?.get(String(d.driverId)) ?? null;
     return {
       driver: d,
@@ -1996,7 +1888,8 @@ export async function chooseBestDriverByRoad(
       provider: arrival.finalLegProvider,
       liveTraffic: arrival.finalLegProvider === "tomtom",
       trafficDelaySeconds: null,
-      routerNotes: `workload-aware; ${geometry.length} queued jobs`,
+      routerNotes: `workload-aware; ${geometry.length} queued jobs${unknownJobs ? ` (+${unknownJobs} unlocated ≈ service time)` : ""}`,
+      internalEtaBreakdown: planned.breakdown,
       queueInclusive: true,
       queueMinutes: arrival.queueMinutes,
       queuedJobCount: activeCount,
