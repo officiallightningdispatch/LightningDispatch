@@ -295,7 +295,8 @@ const decisions5 = () => q`SELECT call_request_id, call_id, decision, escalated,
 const audits = () => q`SELECT count(*)::int n FROM audit_log WHERE org_id=${ORG} AND action='ai_dispatcher:accept'`;
 const posts = (calls) => calls.filter((c) => c.method === "POST");
 // Keep exact free-driver ETA assertions isolated from verified accepts in prior blocks.
-const clearOrgDispatch = () => q`DELETE FROM dispatch_jobs WHERE org_id=${ORG}`;
+const clearDispatch = (orgId) => q`DELETE FROM dispatch_jobs WHERE org_id=${orgId}`;
+const clearOrgDispatch = () => clearDispatch(ORG);
 const fallbackAccept = (r, calls, id, eta = 45) => r.decisions[0]?.decision === "auto_accept_no_driver" && r.decisions[0]?.escalated === true && posts(calls).length === 1 && String(posts(calls)[0].url).includes(`/api/callRequests/${id}`) && Number(posts(calls)[0].body.driverId) === 0 && Number(posts(calls)[0].body.ETA) === eta && String(posts(calls)[0].body.notes).includes("awaiting driver assignment");
 
 try {
@@ -1012,7 +1013,7 @@ try {
     check("engine+key: ETA 14 min + raw_response.eta provider tomtom/liveTraffic/delay/routerNotes", v && Number(v.eta_minutes) === 14 && v.raw_response?.eta?.provider === "tomtom" && v.raw_response?.eta?.liveTraffic === true && v.raw_response?.eta?.trafficDelaySeconds === 120 && String(v.raw_response?.eta?.routerNotes).includes("delay 120"), JSON.stringify(v?.raw_response?.eta));
   }
   {
-    await clearOrgDispatch();
+    await clearDispatch(ORG3);
     // 27g) engine end-to-end WITHOUT a key anywhere, through the REAL
     // resolveRouter path (no routerOverride): TOMTOM_KEY_FILE points nowhere so
     // the real stable key file never leaks into the test → OSRM URL hit (600s →
@@ -1028,6 +1029,7 @@ try {
     check("engine no-key: raw_response.eta provider osrm + liveTraffic false", v && v.raw_response?.eta?.provider === "osrm" && v.raw_response?.eta?.liveTraffic === false && v.raw_response?.eta?.trafficDelaySeconds === null, JSON.stringify(v?.raw_response?.eta));
   }
   {
+    await clearDispatch(ORG3);
     // 27h) engine with a routerOverride tomtom provider (hermetic seam): the
     // decision reason records the provider without any real routing call.
     const m = makeFetch({ offers: [offer(8023)], drivers: [driver(603482, "Antone jerret", { lat: 41.15, lng: -73.1, etaSec: 1255 })] });
