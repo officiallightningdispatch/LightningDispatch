@@ -1173,7 +1173,7 @@ function BatterySalesSection() {
                   <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${meta.badge}`}>{meta.label}</span>
                 </div>
                 <p className="text-[11px] text-ink-500">
-                  {s.contractorName} · job {s.jobLabel}
+                  {s.contractorName} · job {s.jobLabel} · VIN •••••••••••{(s as BatterySaleOwnerRow & { vin?: string }).vin?.slice(-4) ?? "—"}
                   {s.installJobId ? ` · install job ${s.installJobId}` : ""}
                   {s.paidAt ? ` · paid ${new Date(s.paidAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : ""}
                   {s.squareChargeId ? ` · Square ${s.squareChargeId.slice(0, 12)}` : ""}

@@ -34,6 +34,7 @@ import { getSquareWebPaymentsConfig } from "~/data/completion";
 import {
   batteryAgentStep,
   chargeBatterySale,
+  listBatteryInstallTypes,
   getBatteryAgentState,
   recordBatteryTest,
   type BatteryAgentState,
@@ -206,28 +207,7 @@ function StepControls({
     );
   }
 
-  if (step === "install") {
-    return (
-      <div className="mt-3 grid grid-cols-2 gap-2">
-        <InstallCard
-          title="Standard"
-          fee={state.rates.installStandardCents}
-          desc="Top-terminal job"
-          selected={false}
-          busy={busy}
-          onClick={() => onStep(() => batteryAgentStep({ data: { jobId: state.jobId, action: "install", installType: "STANDARD" } }))}
-        />
-        <InstallCard
-          title="Advanced"
-          fee={state.rates.installAdvancedCents}
-          desc="Buried battery / heavy-duty"
-          selected={false}
-          busy={busy}
-          onClick={() => onStep(() => batteryAgentStep({ data: { jobId: state.jobId, action: "install", installType: "ADVANCED" } }))}
-        />
-      </div>
-    );
-  }
+  if (step === "install") return <InstallTypePicker state={state} busy={busy} onStep={onStep} />;
 
   if (step === "quote") {
     return (
@@ -300,6 +280,12 @@ function VoidedStep({ state, busy, onStep }: { state: BatteryAgentState; busy: b
   );
 }
 
+function InstallTypePicker({ state, busy, onStep }: { state: BatteryAgentState; busy: boolean; onStep: (fn: () => Promise<{ok:boolean} & Record<string,unknown>>) => Promise<void> }) {
+  const [types, setTypes] = useState<Awaited<ReturnType<typeof listBatteryInstallTypes>>>([]);
+  useEffect(() => { void listBatteryInstallTypes().then(setTypes).catch(() => setTypes([])); }, []);
+  const shown = types.length ? types : [{code:"STANDARD",label:"Standard",description:"Top-terminal job",customerPriceCents:state.rates.installStandardCents},{code:"ADVANCED",label:"Advanced",description:"Buried battery / heavy-duty",customerPriceCents:state.rates.installAdvancedCents}] as typeof types;
+  return <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">{shown.map(t => <InstallCard key={t.code} title={t.label} fee={t.customerPriceCents} desc={[t.description, ...(t.requirements ?? [])].filter(Boolean).join(" ")} selected={false} busy={busy} onClick={() => onStep(() => batteryAgentStep({data:{jobId:state.jobId,action:"install",installType:t.code}}))} />)}</div>;
+}
 function InstallCard({ title, fee, desc, selected, busy, onClick }: { title: string; fee: number; desc: string; selected: boolean; busy: boolean; onClick: () => void }) {
   return (
     <button

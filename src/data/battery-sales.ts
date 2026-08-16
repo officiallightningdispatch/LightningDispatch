@@ -11,7 +11,7 @@
  */
 import { createServerFn } from "@tanstack/react-start";
 import type { BatteryAgentState, BatteryRates, BatterySaleOwnerRow, BatteryStepResult, BatteryChargeResult } from "./battery-sales-core";
-export type { BatteryAgentState, BatteryRates, BatterySaleOwnerRow, BatterySaleRow, BatteryQuote } from "./battery-sales-core";
+export type { BatteryAgentState, BatteryRates, BatterySaleOwnerRow, BatterySaleRow, BatteryQuote, BatteryInstallTypeRow } from "./battery-sales-core";
 
 const passthrough = (x: unknown) => x;
 
@@ -61,3 +61,5 @@ export const updateBatteryRates = createServerFn({ method: "POST" }).validator(p
   const core = await import("./battery-sales-core");
   return core.updateBatteryRatesHandler(data);
 });
+
+export const listBatteryInstallTypes = createServerFn({ method: "GET" }).handler(async () => { const core = await import("./battery-sales-core"); return core.listBatteryInstallTypesHandler(); });
