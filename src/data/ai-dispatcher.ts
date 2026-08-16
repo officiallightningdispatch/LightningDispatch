@@ -2984,7 +2984,11 @@ async function runAutoDispatchInternal(
       // NO road-ETA candidate → no ETA is computed (the accept body still needs
       // the field — quote the club's SLA ceiling, an honest "not yet assigned"
       // worst case, never a fabricated 1-minute promise).
-      let etaMinutes = driver && chosen
+      // A chosen candidate already carries the authoritative fallback/base ETA.
+      // Do not require the separately derived dispatch `driver` object here:
+      // router-failure fallback choices must still quote their factor estimate
+      // (the ceiling is a hard maximum, not a substitute for a valid estimate).
+      let etaMinutes = chosen
         ? finalEtaMinutes(chosen.baseMinutes, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta)
         : null;
       const postEta = etaMinutes ?? effectiveMaxEta;
