@@ -1,0 +1,13 @@
+export const SUPPORTED_BATTERY_GROUPS = ["24","24F","27","34","35","47","48","49","51R","59","65","75","78","86","90","94R","95R","96R","101","102R","121R","124R","140R","151R"] as const;
+export type SupportedBatteryGroup = typeof SUPPORTED_BATTERY_GROUPS[number];
+export type CanonicalVehicle = { make:string; model:string; year:number; trim:string|null; engine:string|null };
+export type CanonicalizationResult<T> = { ok:true; value:T } | { ok:false; value:null; reason:"invalid" };
+const makeAliases:Record<string,string>={CHEV:"CHEVROLET",CHEVY:"CHEVROLET",VW:"VOLKSWAGEN"};
+const groupAliases:Record<string,SupportedBatteryGroup>={H5:"47",H6:"48",H8:"49",H7:"94R",H9:"95R",T5:"90",V4:"102R",H4:"140R","TYPE S":"101"};
+function normalize(value:unknown, nullable=true):string|null { if(typeof value!=="string")return null; let s=value.normalize("NFKC").trim().replace(/\s+/g," ").toLocaleUpperCase("en-US"); s=s.replace(/[‐‑‒–—―]/g,"-").replace(/[’‘ʼ]/g,"'").replace(/^[\p{P}\p{S}]+|[\p{P}\p{S}]+$/gu,"").trim(); return s|| (nullable?null:null); }
+export function canonicalizeMake(value:unknown):CanonicalizationResult<string>{const s=normalize(value);return s?{ok:true,value:makeAliases[s]??s}:{ok:false,value:null,reason:"invalid"}}
+export function canonicalizeModel(value:unknown):CanonicalizationResult<string>{const s=normalize(value);return s?{ok:true,value:s}:{ok:false,value:null,reason:"invalid"}}
+export function canonicalizeNullableVehicleField(value:unknown):string|null{return normalize(value)}
+export function canonicalizeBatteryGroup(value:unknown):CanonicalizationResult<SupportedBatteryGroup>{const s=normalize(value);const v=s?(groupAliases[s]??s):null;return v&& (SUPPORTED_BATTERY_GROUPS as readonly string[]).includes(v)?{ok:true,value:v as SupportedBatteryGroup}:{ok:false,value:null,reason:"invalid"}}
+export function isSupportedBatteryGroup(value:unknown):value is SupportedBatteryGroup{return canonicalizeBatteryGroup(value).ok}
+export function canonicalizeVehicle(input:unknown):CanonicalizationResult<CanonicalVehicle>{if(!input||typeof input!=="object")return {ok:false,value:null,reason:"invalid"};const x=input as Record<string,unknown>;const m=canonicalizeMake(x.make), model=canonicalizeModel(x.model);const year=typeof x.year==="number"&&Number.isInteger(x.year)?x.year:typeof x.year==="string"&&/^\d{4}$/.test(x.year)?Number(x.year):NaN;if(!m.ok||!model.ok||!Number.isInteger(year))return {ok:false,value:null,reason:"invalid"};return {ok:true,value:{make:m.value,model:model.value,year,trim:canonicalizeNullableVehicleField(x.trim),engine:canonicalizeNullableVehicleField(x.engine)}}}
