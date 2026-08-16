@@ -38,7 +38,11 @@ const JOB_C = `qa-jd-job-c-${randomUUID()}`;   // assigned_driver_towbook_id set
 const CALL_A = "7001001";
 const CALL_B = "7001002";
 const CALL_C = "7001003";
-const DRIVER_B_ID = 502;
+// Towbook driver IDs are globally unique in users. Randomize fixture IDs so a
+// timeout/kill cannot make the next QA run collide with an orphaned fixture.
+const DRIVER_A_ID = 5_000_000 + Math.floor(Math.random() * 999_999);
+const DRIVER_B_ID = DRIVER_A_ID + 1;
+const DRIVER_C_ID = DRIVER_A_ID + 2;
 const LEGACY_CON = `qa-jd-legacy-con-${randomUUID()}`;
 
 /** Mock fetch for the B2 surface: authorize + S3 GET (photos). Records calls. */
@@ -70,9 +74,9 @@ function makeB2Fetch(objects = new Map()) {
 
 const OWNER_USER = { orgId: ORG, id: OWNER, role: "owner", towbookDriverId: "" };
 const DISPATCHER_USER = { orgId: ORG, id: DISPATCHER, role: "dispatcher", towbookDriverId: "" };
-const DRIVER_A_USER = { orgId: ORG, id: DRIVER_A, role: "contractor", towbookDriverId: "501" };
+const DRIVER_A_USER = { orgId: ORG, id: DRIVER_A, role: "contractor", towbookDriverId: String(DRIVER_A_ID) };
 const DRIVER_B_USER = { orgId: ORG, id: DRIVER_B, role: "contractor", towbookDriverId: String(DRIVER_B_ID) };
-const DRIVER_C_USER = { orgId: ORG, id: DRIVER_C, role: "contractor", contractorId: LEGACY_CON, towbookDriverId: "503" };
+const DRIVER_C_USER = { orgId: ORG, id: DRIVER_C, role: "contractor", contractorId: LEGACY_CON, towbookDriverId: String(DRIVER_C_ID) };
 
 async function setup() {
   await ensureSchema();
@@ -80,9 +84,9 @@ async function setup() {
   for (const [id, name, email, tbDriver] of [
     [OWNER, "QA JD Owner", `qa-jd-owner-${randomUUID()}@lightning.test`, null],
     [DISPATCHER, "QA JD Dispatcher", `qa-jd-dispatch-${randomUUID()}@lightning.test`, null],
-    [DRIVER_A, "QA Driver A", `qa-jd-driver-a-${randomUUID()}@lightning.test`, "501"],
+    [DRIVER_A, "QA Driver A", `qa-jd-driver-a-${randomUUID()}@lightning.test`, String(DRIVER_A_ID)],
     [DRIVER_B, "QA Driver B", `qa-jd-driver-b-${randomUUID()}@lightning.test`, String(DRIVER_B_ID)],
-    [DRIVER_C, "QA Driver C", `qa-jd-driver-c-${randomUUID()}@lightning.test`, "503"],
+    [DRIVER_C, "QA Driver C", `qa-jd-driver-c-${randomUUID()}@lightning.test`, String(DRIVER_C_ID)],
   ]) {
     await q`INSERT INTO users(id, name, email, password_hash${tbDriver ? q`, towbook_driver_id` : q``})
       VALUES(${id}, ${name}, ${email}, 'x'${tbDriver ? q`, ${tbDriver}` : q``})`;
