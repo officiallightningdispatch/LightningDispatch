@@ -171,7 +171,7 @@ const offer = (id) => ({
   startingLocation: "123 MAIN ST, BRIDGEPORT CT 06606",
   startLocationLatitude: 41.2,
   startLocationLongitude: -73.2,
-  drivers: [703785],
+  drivers: [999703785],
   availableActions: ["NearestDrivers", "REQUEST_CALL", "ACKNOWLEDGE"],
 });
 const driver = (id, name) => ({
@@ -197,9 +197,13 @@ const ownerSessionRow = (cookie) => encryptSession(JSON.stringify({ cookies: coo
 try {
   await ensureSchema();
   await q`INSERT INTO organizations(id, name) VALUES(${ORG_PUSH}, 'qa rx push'), (${ORG_BAD}, 'qa rx bad'), (${ORG_NOCREDS}, 'qa rx nocreds'), (${ORG_INFLIGHT}, 'qa rx inflight'), (${ORG_SYNC}, 'qa rx sync')`;
-  await q`INSERT INTO users(id, name, email, password_hash) VALUES(${USER}, 'QA Recovery Owner', ${`rx-${randomUUID()}@qa.local`}, 'x')`;
+  await q`INSERT INTO users(id, name, email, password_hash, towbook_driver_id) VALUES(${USER}, 'QA Recovery Owner', ${`rx-${randomUUID()}@qa.local`}, 'x', '999703785')`;
   for (const org of [ORG_PUSH, ORG_BAD, ORG_NOCREDS, ORG_INFLIGHT, ORG_SYNC]) {
     await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${org}, ${USER}, 'owner')`;
+    // Qualification requires an active contractor profile linked to the
+    // Towbook driver identity; the recovery scenario must exercise an eligible
+    // driver rather than bypassing the production gate.
+    await q`INSERT INTO contractor_profiles(org_id, user_id, vehicle_type) VALUES(${org}, ${USER}, 'car')`;
   }
   // Connected owner session rows (status='error' until the moment each test
   // needs them, so the running server's 3s background loop can never pick a
@@ -217,7 +221,7 @@ try {
   /* ============ 1) expired-session PUSH → recovery → retry succeeds ============ */
   {
     await q`UPDATE towbook_sessions SET status='connected' WHERE org_id=${ORG_PUSH} AND session_kind='owner'`;
-    const m = makeEngineFetch({ offers: [offer(5001)], drivers: [driver(703785, "Jayden Fountain")] });
+    const m = makeEngineFetch({ offers: [offer(5001)], drivers: [driver(999703785, "Jayden Fountain")] });
     const login = makeLoginFetch({ succeed: true, authCookie: "fresh-cookie" });
     const r = await runAutoDispatch(ORG_PUSH, makeDeps(m.fetchImpl, realRecoveryWith(login, goodCreds)));
     check("push-heal: offer processed, NOT escalated (auto_accept_with_driver)", r.processed === 1 && r.decisions[0]?.decision === "auto_accept_with_driver" && r.decisions[0]?.escalated === false, JSON.stringify(r.decisions));
@@ -234,7 +238,7 @@ try {
   /* ============ 2) recovery fails (bad creds) → escalation preserved + throttle ============ */
   {
     await q`UPDATE towbook_sessions SET status='connected' WHERE org_id=${ORG_BAD} AND session_kind='owner'`;
-    const m = makeEngineFetch({ offers: [offer(5002)], drivers: [driver(703785, "Jayden Fountain")] });
+    const m = makeEngineFetch({ offers: [offer(5002)], drivers: [driver(999703785, "Jayden Fountain")] });
     const login = makeLoginFetch({ succeed: false }); // bad credentials → login page re-rendered
     const r = await runAutoDispatch(ORG_BAD, makeDeps(m.fetchImpl, realRecoveryWith(login, goodCreds)));
     check("bad-creds: escalation preserved (escalated_dispatch_failed, escalated=true)", r.decisions[0]?.decision === "escalated_dispatch_failed" && r.decisions[0]?.escalated === true, JSON.stringify(r.decisions));
@@ -251,7 +255,7 @@ try {
   {
     await q`UPDATE towbook_sessions SET status='connected' WHERE org_id=${ORG_NOCREDS} AND session_kind='owner'`;
     const before = await q`SELECT encrypted_session, status FROM towbook_sessions WHERE org_id=${ORG_NOCREDS} AND session_kind='owner'`;
-    const m = makeEngineFetch({ offers: [offer(5003)], drivers: [driver(703785, "Jayden Fountain")] });
+    const m = makeEngineFetch({ offers: [offer(5003)], drivers: [driver(999703785, "Jayden Fountain")] });
     const login = makeLoginFetch({ succeed: true });
     const r = await runAutoDispatch(ORG_NOCREDS, makeDeps(m.fetchImpl, realRecoveryWith(login, noCreds)));
     check("no-creds: today's behavior unchanged — escalation + alert preserved", r.decisions[0]?.decision === "escalated_dispatch_failed" && r.decisions[0]?.escalated === true, JSON.stringify(r.decisions));
