@@ -1873,6 +1873,10 @@ try {
     await q`UPDATE org_settings SET qualification_gate_enabled=TRUE WHERE org_id=${ORG7}`;
     const {r: good,m: gm,rows: gr}=await runQ(92012,[driver(QUAL_TB[4],'qualified',{etaSec:600})]);
     check('qualification qualified: assigned with ordering rails and no exclusions',good.decisions[0]?.decision==='auto_accept_with_driver'&&posts(gm.calls)[0]?.body?.driverId===QUAL_TB[4]&&gr[0]?.raw_response?.serviceQualification?.excluded?.length===0);
+    // The 92012 auto-accept above left QUAL_TB[4] with an ACTIVE job — the tow rule
+    // also requires not-busy (active_count=0). Complete it so the companion case
+    // exercises capability+availability, not an 'unavailable' rejection.
+    await q`UPDATE dispatch_jobs SET status='completed' WHERE org_id=${ORG7} AND assigned_driver_towbook_id=${String(QUAL_TB[4])} AND status NOT IN ('completed','cancelled')`;
     const {r: towCapable,m: towCapableM,rows: towCapableRows}=await runQ(92014,[driver(QUAL_TB[4],'tow-capable online',{etaSec:600})],{offer:{serviceType:'heavy tow'}});
     check('tow capability companion: online tow-capable driver assigned',towCapable.decisions[0]?.decision==='auto_accept_with_driver'&&posts(towCapableM.calls)[0]?.body?.driverId===QUAL_TB[4]&&!String(towCapableRows[0]?.reason||'').includes('capability-mismatch'),JSON.stringify({r:towCapable,rows:towCapableRows}));
     const {r: sole,m: sm}=await runQ(92013,[driver(QUAL_TB[1],'sole unqualified')]);
