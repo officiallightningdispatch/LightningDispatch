@@ -3118,15 +3118,10 @@ async function runAutoDispatchInternal(
           allowAssign: false,
         });
         let recalculationNote: string | null = null;
-        // If an owner/dispatcher won the race and the call already carries a
-        // different driver, respect that assignment as human-handled. Never
-        // re-dispatch it or escalate merely because it differs from our pick.
-        if (!verification.ok && verification.found && verification.driverOnCall && Number(verification.driverOnCall) !== dispatchDriverId) {
-          dispatchDriverId = Number(verification.driverOnCall);
-          dispatchDriverName = String(verification.driverOnCall);
-          verification = { ...verification, ok: true, driverOnCall: verification.driverOnCall, error: null };
-          recalculationNote = `human assignment ${dispatchDriverId} found on call before AI verification; respected existing assignment`;
-        }
+        // A different driver on the fetched call is not, by itself, evidence of
+        // a human reassignment: it may be a stale/racing Towbook assignment.
+        // Only the proven manually_reassigned_at marker (looked up above as
+        // humanReassigned) suppresses the normal recalc/repair flow.
         if (!verification.ok && verification.found && dispatchDriverId > 0
           && !humanReassigned) {
           const firstChoice = dispatchDriverId;
