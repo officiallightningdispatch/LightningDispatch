@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
+import { ClipboardCheck } from "lucide-react";
 import { AppShell } from "~/components/app-shell";
 import { Button, Card, EmptyState } from "~/components/ui";
 import {
@@ -76,6 +77,7 @@ function BatteryCompatibilityReviews() {
       {error && <p className="mb-4 rounded-xl bg-danger-50 p-3 text-sm text-danger-700">{error}</p>}
       {!rows.length ? (
         <EmptyState
+          icon={ClipboardCheck}
           title="No pending reviews"
           body="Approved compatibility mappings are used only when their vehicle identity is an exact safe match."
         />
