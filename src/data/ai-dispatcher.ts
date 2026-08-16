@@ -527,6 +527,14 @@ export type DriverQueue = {
  *  selection path (owner-directed: use what's already stored). Terminal
  *  statuses are excluded by the WHERE clause; rows are ordered oldest-first
  *  (the queue order the driver will work). */
+/** Towbook check-in and Lightning GO are a UNION: either source makes a driver available. */
+export async function loadLightningAvailableDrivers(orgId: string): Promise<Set<string>> {
+  try {
+    const rows = await sql() `SELECT u.towbook_driver_id FROM driver_availability_log l JOIN users u ON u.id=l.user_id WHERE l.org_id=${orgId} AND l.session_started_at IS NOT NULL AND l.heartbeat_at > NOW() - INTERVAL '90 seconds'` as Array<Record<string, unknown>>;
+    return new Set(rows.map((r) => String(r.towbook_driver_id ?? "")).filter(Boolean));
+  } catch { return new Set(); }
+}
+
 export async function loadOrgDriverQueues(orgId: string): Promise<Map<string, DriverQueue>> {
   const rows = await sql()`SELECT assigned_driver_towbook_id AS did, status, pickup_lat, pickup_lng, created_at
     FROM dispatch_jobs
@@ -1553,6 +1561,7 @@ export type AreaContext = {
   serviceQualification?: ServiceQualificationOutcome;
   zoneMatches?: Map<string, boolean>;
   regionalPreference?: Map<string, number>;
+  lightningAvailable?: Set<string>;
 };
 
 /** Workload-aware arrival model (owner-directed 2026-08-11): a driver with
@@ -1717,7 +1726,7 @@ export async function chooseBestDriverByRoad(
     // Offline candidates are admitted only when the state-tiered guard is
     // active; the unguarded pure selector retains its historical online-only
     // contract while dispatch can explicitly waive it for in-state fallback.
-    if (!area?.stateGuard && o.isCheckedIn !== true) return false;
+    if (!area?.stateGuard && o.isCheckedIn !== true && !area?.lightningAvailable?.has(String(o.driverId))) return false;
     return (
       typeof o.latitude === "number" && Number.isFinite(o.latitude) && o.latitude !== 0 &&
       typeof o.longitude === "number" && Number.isFinite(o.longitude) && o.longitude !== 0 &&
@@ -1798,7 +1807,7 @@ export async function chooseBestDriverByRoad(
       const st = await area.stateGuard.resolveDriverState(did, origin.lat, origin.lng);
       if (st && st.toUpperCase() === area.stateGuard.jobState.toUpperCase()) {
         inState.push(d);
-        if (d.isCheckedIn === true) onlineInState.push(d);
+        if (d.isCheckedIn === true || area.lightningAvailable?.has(String(d.driverId))) onlineInState.push(d);
         guardOut.inState++;
       } else {
         excluded.push({ driverId: did, state: st ? st.toUpperCase() : null,
@@ -2669,10 +2678,11 @@ async function runAutoDispatchInternal(
     // (dispatch_jobs assignment history + driver_locations — no migration),
     // then let chooseBestDriverByRoad apply the in-area rule + fresh-fix ETA
     // origin per offer. Never throws (each loader degrades to empty).
-    const [driverQueues, driverAnchors, driverGpsFixes] = await Promise.all([
+    const [driverQueues, driverAnchors, driverGpsFixes, lightningAvailable] = await Promise.all([
       loadOrgDriverQueues(orgId),
       loadDriverAnchors(orgId),
       loadDriverGpsFixes(orgId),
+      loadLightningAvailableDrivers(orgId),
     ]);
 
     for (const rawOffer of offers) {
@@ -2965,8 +2975,8 @@ async function runAutoDispatchInternal(
       const zoneMatches = new Map<string, boolean>();
       const regionalPreference = await loadRegionalPreferenceMatches(orgId, candidates, lookupAnchor.lat, lookupAnchor.lng, driverQueues);
       const areaCtx: AreaContext = humanReassigned
-        ? { gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches, regionalPreference }
-        : { anchors: driverAnchors, gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches, regionalPreference };
+        ? { gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches, regionalPreference, lightningAvailable }
+        : { anchors: driverAnchors, gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches, regionalPreference, lightningAvailable };
       let chosen = await chooseBestDriverByRoad(
         candidates,
         lookupAnchor.lat,
@@ -3159,7 +3169,7 @@ async function runAutoDispatchInternal(
             lookupAnchor.lng,
             resolved.router,
             driverQueues,
-            { anchors: driverAnchors, gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches, regionalPreference },
+            { anchors: driverAnchors, gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches, regionalPreference, lightningAvailable },
             { stateGuard: recalcGuard },
           );
           if (recalculated) {

@@ -1,8 +1,9 @@
 /** Server-only assignment nudges and conservative headed detection (Feature 1/2). */
 import { sql } from "~/db";
-import { haversineMiles, chooseBestDriverByRoad, loadOrgDriverQueues, loadDriverGpsFixes, loadDriverAnchors, loadZoneMatches, loadRegionalPreferenceMatches, resolveRouter, type StateGuardOutcome } from "./ai-dispatcher";
+import { haversineMiles, chooseBestDriverByRoad, loadOrgDriverQueues, loadDriverGpsFixes, loadDriverAnchors, loadZoneMatches, loadRegionalPreferenceMatches, resolveRouter, loadLightningAvailableDrivers, type StateGuardOutcome } from "./ai-dispatcher";
 import { decryptSession } from "./towbook-key";
 import { resolveStateFromAddress, reverseGeocodeState } from "./state-guard-core";
+import { resolveTomtomKey } from "./tomtom-key";
 
 export type GpsFix = { latitude:number; longitude:number; capturedAt:Date|string; speedMph?:number|null };
 export type HeadedCheck = { headed:boolean; arrived:boolean; reason:"arrived"|"movement"|"speed"|"no_fix"|"no_meaningful_movement" };
@@ -36,12 +37,12 @@ async function reassignNotHeaded(orgId:string, job:Record<string,unknown>, oldId
   let drivers:unknown[]=[];
   try { const r=await fetch(`${session.baseUrl}/api/nearestDrivers?latitude=${lat}&longitude=${lng}&checkInForAllDrivers=true`,{headers:{cookie:session.cookies,accept:"application/json"}}); const b=await r.json(); drivers=Array.isArray(b)?b:[]; } catch { return escalate(orgId,jobId,oldId,"reassigned_no_candidate","Towbook driver list unavailable"); }
   drivers=drivers.filter(d=>Number((d as Record<string,unknown>)?.driverId)!==Number(oldId));
-  const queues=await loadOrgDriverQueues(orgId), gps=await loadDriverGpsFixes(orgId), anchors=await loadDriverAnchors(orgId);
+  const queues=await loadOrgDriverQueues(orgId), gps=await loadDriverGpsFixes(orgId), anchors=await loadDriverAnchors(orgId), lightningAvailable=await loadLightningAvailableDrivers(orgId);
   const serviceQualification={serviceType:job.service_type?String(job.service_type):null,assessed:Boolean(job.service_type),excluded:[] as Array<{driverId:number;reason:string}>};
   const resolution=resolveStateFromAddress(String(job.pickup ?? ""));
   const state=resolution.state;
   const router=resolveRouter(process.env).router;
-  const stateGuard={jobState:state,resolveDriverState:async(_id:number,la:number,lo:number)=>reverseGeocodeState(la,lo,process.env.TOMTOM_API_KEY||"",fetch)};
+  const stateGuard={jobState:state,resolveDriverState:async(_id:number,la:number,lo:number)=>reverseGeocodeState(la,lo,resolveTomtomKey(process.env) || "",fetch)};
   const areaBase={anchors,gpsFixes:gps,serviceType:serviceQualification.serviceType,serviceQualification,stateGuard};
   const zoneMatches=await loadZoneMatches(orgId,drivers,lat,lng,state ?? undefined);
   const regionalPreference=await loadRegionalPreferenceMatches(orgId,drivers,lat,lng,queues);
