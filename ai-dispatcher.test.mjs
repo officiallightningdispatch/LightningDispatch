@@ -1764,11 +1764,11 @@ try {
     const yestIso = zless(new Date(geoNow.getTime() - 86400e3));
     const geoInsert = (id, driverId, c, createdIso, rawJson) => q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, raw_json, pickup_lat, pickup_lng, assigned_driver_towbook_id)
       VALUES(${id}, ${ORG7}, 'Geo Job', '', 0, 0, 'CT', 'tow', 'accepted', ${createdIso}, '', ${JSON.stringify(rawJson)}::jsonb, ${c.lat}, ${c.lng}, ${driverId})`;
-    await geoInsert("geo-a1-${FIXTURE_TAG}", "703785", DARIEN, geoNow.toISOString(), { dispatchTime: todayIso });
-    await geoInsert("geo-a2-${FIXTURE_TAG}", "703785", WEST_HAVEN, geoNow.toISOString(), { dispatchTime: laterIso });
-    await geoInsert("geo-a3-${FIXTURE_TAG}", "717660", WEST_HAVEN, new Date(geoNow.getTime() - 86400e3).toISOString(), { dispatchTime: todayIso });
-    await geoInsert("geo-a4-${FIXTURE_TAG}", "603482", STAMFORD, new Date(geoNow.getTime() - 86400e3).toISOString(), {});
-    await geoInsert("geo-a5-${FIXTURE_TAG}", "668209", NEW_HAVEN, geoNow.toISOString(), { dispatchTime: "not-a-timestamp" });
+    await geoInsert(`${'geo-a1-' + FIXTURE_TAG}`, "703785", DARIEN, geoNow.toISOString(), { dispatchTime: todayIso });
+    await geoInsert(`${'geo-a2-' + FIXTURE_TAG}`, "703785", WEST_HAVEN, geoNow.toISOString(), { dispatchTime: laterIso });
+    await geoInsert(`${'geo-a3-' + FIXTURE_TAG}`, "717660", WEST_HAVEN, new Date(geoNow.getTime() - 86400e3).toISOString(), { dispatchTime: todayIso });
+    await geoInsert(`${'geo-a4-' + FIXTURE_TAG}`, "603482", STAMFORD, new Date(geoNow.getTime() - 86400e3).toISOString(), {});
+    await geoInsert(`${'geo-a5-' + FIXTURE_TAG}`, "668209", NEW_HAVEN, geoNow.toISOString(), { dispatchTime: "not-a-timestamp" });
     const dbAnchors = await loadDriverAnchors(ORG7);
     check("anchor derivation: first ASSIGNED job of the day sets the anchor (703785 → geo-a1 Darien; later job does not override)",
       dbAnchors.get("703785")?.jobId === `geo-a1-${FIXTURE_TAG}` && Math.abs(Number(dbAnchors.get("703785")?.lat) - DARIEN.lat) < 1e-9 &&
