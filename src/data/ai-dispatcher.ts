@@ -159,7 +159,7 @@ export type AiDispatcherDeps = {
   /** Maximum post-accept verification attempts (default 6). */
   verifyMaxAttempts?: number;
   /** Injectable immediate owner alert for an accepted offer awaiting verification. */
-  notifyDispatchPending?: (orgId: string, payload: { callRequestId: string; driverId: number; reason: string }) => Promise<unknown>;
+  notifyDispatchPending?: (orgId: string, payload: { callRequestId: string; purchaseOrderNumber: string | null; driverId: number; reason: string; offerDetails: unknown }) => Promise<unknown>;
   /** Injectable session recovery for hermetic tests; defaults to the real
    *  recoverTowbookSession (self-healing re-login with the stored owner
    *  credentials — the owner-directed "set up Towbook and forget" behavior). */
@@ -2381,6 +2381,22 @@ export function callWaypoint(call: Record<string, unknown>): { lat: number; lng:
   return Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 && lng !== 0 ? { lat, lng } : null;
 }
 
+/** Upsert the verified Towbook call before any best-effort sync. This closes the
+ * race where verification succeeds but the periodic importer misses the call. */
+async function upsertVerifiedDispatchJob(orgId: string, offer: OfferShape, call: Record<string, unknown>, callId: string, driverId: number, driverName: string | null): Promise<void> {
+  const waypoint = callWaypoint(call);
+  const w = Array.isArray(call.waypoints) && call.waypoints[0] && typeof call.waypoints[0] === "object" ? call.waypoints[0] as Record<string, unknown> : {};
+  const customer = (call.customerName ?? call.customer ?? call.name ?? "Customer") as unknown;
+  const pickup = String(w.address ?? w.location ?? call.pickupAddress ?? call.startingLocation ?? offer.callRequestId);
+  const service = String((call.reason && typeof call.reason === "object" ? (call.reason as Record<string, unknown>).name : call.reason) ?? call.serviceType ?? offer.serviceType ?? "Roadside assistance");
+  const statusValue = call.status && typeof call.status === "object" ? (call.status as Record<string, unknown>).id : call.status;
+  const status = Number(statusValue) === 252 ? "completed" : Number(statusValue) === 255 ? "cancelled" : "accepted";
+  const lat = waypoint?.lat ?? offer.startLocationLatitude; const lng = waypoint?.lng ?? offer.startLocationLongitude;
+  const phone = String(call.phone ?? call.customerPhone ?? "");
+  await sql() `INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, phone, customer_phone, lat, lng, pickup_lat, pickup_lng, pickup, area, service_type, status, assigned_driver_towbook_id, assigned_driver_name, towbook_status, raw_json, created_at, assigned_at)
+    VALUES(gen_random_uuid()::text, ${orgId}, ${callId || offer.callRequestId}, ${String(customer)}, ${phone}, ${phone}, ${lat}, ${lng}, ${lat}, ${lng}, ${pickup}, ${pickup}, ${service}, ${status}, ${String(driverId)}, ${driverName}, ${String(statusValue ?? "")}, ${JSON.stringify(call)}::jsonb, NOW(), NOW())
+    ON CONFLICT (org_id, towbook_job_id) DO UPDATE SET customer_name=EXCLUDED.customer_name, phone=EXCLUDED.phone, customer_phone=EXCLUDED.customer_phone, lat=EXCLUDED.lat, lng=EXCLUDED.lng, pickup_lat=EXCLUDED.pickup_lat, pickup_lng=EXCLUDED.pickup_lng, pickup=EXCLUDED.pickup, area=EXCLUDED.area, service_type=EXCLUDED.service_type, status=EXCLUDED.status, assigned_driver_towbook_id=EXCLUDED.assigned_driver_towbook_id, assigned_driver_name=EXCLUDED.assigned_driver_name, towbook_status=EXCLUDED.towbook_status, raw_json=EXCLUDED.raw_json, assigned_at=COALESCE(dispatch_jobs.assigned_at, EXCLUDED.assigned_at)`;
+}
 /** Post-accept verification loop (the core of the dispatch fix): GET the
  *  created call and check the chosen driver is actually on it
  *  (assets[].driver.id / assets[].drivers[].driver.id). If NOT → one assign
@@ -2593,6 +2609,7 @@ async function runAutoDispatchInternal(
       const verification = await verifyDispatch(fetchImpl, baseUrl, cookies, offer, row.call_id ? String(row.call_id) : null, driverId, { retryDelayMs: deps.verifyRetryDelayMs ?? 10000, maxAttempts: deps.verifyMaxAttempts ?? 6, allowAssign: true });
       if (!verification.ok) continue;
       const waypoint = verification.call ? callWaypoint(verification.call) : null;
+      if (verification.call) { try { await upsertVerifiedDispatchJob(orgId, offer, verification.call, verification.callId ?? offer.callRequestId, driverId, null); } catch { /* sync fallback */ } }
       const reason = `${String(row.reason ?? '')}; retry verified driver on call ${verification.callId}; ETA source: authoritative call waypoint${waypoint ? ` (${waypoint.lat},${waypoint.lng})` : ' unavailable'}`;
       await sql() `UPDATE ai_dispatcher_decisions SET decision='auto_accept_with_driver', escalated=FALSE, call_id=${verification.callId}, reason=${reason}, raw_response=raw_response || '{}'::jsonb || ${JSON.stringify({ verification, state: 'RESOLVED' })}::jsonb WHERE id=${String(row.id)} AND org_id=${orgId}`;
       try { await deps.syncForOrg(orgId, 'sync:auto-accept-pending', actor ?? undefined); } catch { /* retry loop never fails */ }
@@ -3223,6 +3240,9 @@ async function runAutoDispatchInternal(
             etaMinutes = finalEtaMinutes(waypointBase, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta);
           }
           const reason = `accepted and dispatched to ${dispatchDriverName ?? dispatchDriverId} (driver ${dispatchDriverId}, VERIFIED on call ${verification.callId}); ETA source: authoritative call waypoint${authoritativeWaypoint ? ` (${authoritativeWaypoint.lat},${authoritativeWaypoint.lng})` : " unavailable"}${verificationRecoveryNote ? `; ${verificationRecoveryNote}` : ""}${recalculationNote ? `; ${recalculationNote}` : ""}${manualNote ? `; ${manualNote}` : ""}${guardOutcome.assignmentTier === "offline_in_state" ? "; no online driver in state; in-state offline assignment" : ""}${jobStateResolution.note ? `; ${jobStateResolution.note}` : ""}${qualificationNote}${etaLabel}${areaNote ?? ""}`;
+          if (verification.call) {
+            try { await upsertVerifiedDispatchJob(orgId, offer, verification.call, verification.callId ?? offer.callRequestId, dispatchDriverId, dispatchDriverName); } catch { /* sync remains fallback; decision is still recorded */ }
+          }
           await record({
             decision: "auto_accept_with_driver",
             callId: verification.callId,
@@ -3251,7 +3271,7 @@ async function runAutoDispatchInternal(
             rawResponse: { offer, eta: etaFacts, accept: accept.raw, verification, serviceQualification, state: "PENDING/UNVERIFIED" },
           });
           if (pending && deps.notifyDispatchPending) {
-            try { await deps.notifyDispatchPending(orgId, { callRequestId: offer.callRequestId, driverId: dispatchDriverId, reason }); } catch { /* alert never masks ledger */ }
+            try { await deps.notifyDispatchPending(orgId, { callRequestId: offer.callRequestId, purchaseOrderNumber: offer.purchaseOrderNumber, driverId: dispatchDriverId, reason, offerDetails: offer }); } catch { /* alert never masks ledger */ }
           }
           result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_dispatch_pending", escalated: true, reason });
         }

@@ -84,7 +84,7 @@ export const ESCALATION_PREFIX = "escalated_";
 export const ACTIONABLE_ESCALATION_REASONS = new Set([
   "escalated_unexpected_shape", "escalated_missing_coords", "escalated_accept_failed",
   "escalated_dispatch_failed", "escalated_driver_lookup_failed", "escalated_state_unknown",
-  "escalated_cross_state",
+  "escalated_cross_state", "escalated_dispatch_pending",
 ]);
 export function isActionableEscalation(reason: unknown): boolean {
   return typeof reason === "string" && ACTIONABLE_ESCALATION_REASONS.has(reason);

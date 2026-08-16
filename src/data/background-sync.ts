@@ -95,6 +95,10 @@ async function runTick(orgId: string): Promise<void> {
           syncForOrg: (oid: string, trigger: string, actor?: { id: string; role: string }) =>
             syncForOrg(oid, trigger, actor as { id: string; role: AuthUser["role"] } | undefined),
           resolveOrgActor,
+          notifyDispatchPending: async (oid, payload) => {
+            const { recordDispatchPendingAlert } = await import("./push-core");
+            return recordDispatchPendingAlert(oid, payload);
+          },
         }),
         SYNC_TICK_TIMEOUT_MS,
         `auto-dispatch ${orgId}`,

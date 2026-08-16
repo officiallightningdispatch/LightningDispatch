@@ -325,6 +325,7 @@ export function OwnerNotificationLayer() {
           escalated_driver_lookup_failed: "Driver lookup failed; review and claim it in Towbook.",
           escalated_state_unknown: "Driver/job state could not be verified; review in Towbook.",
           escalated_cross_state: "Cross-state assignment was blocked; review in Towbook.",
+          escalated_dispatch_pending: "Accepted but unverified — verify the call and driver assignment.",
         };
         for (const d of newDecs) {
           const authoritative = d.offerExpiresAt ? Date.parse(d.offerExpiresAt) : NaN;
@@ -332,7 +333,7 @@ export function OwnerNotificationLayer() {
           const expiry = Number.isFinite(authoritative) ? authoritative : Number.isFinite(created) ? created + 180_000 : NaN;
           const rejectedTow = d.decision === "rejected_tow_no_eligible_driver";
           items.push({
-            id: `esc:${d.id}`, kind: "escalation", title: rejectedTow ? "REJECTED TOW JOB" : "Offer needs your attention",
+            id: `esc:${d.id}`, kind: "escalation", title: rejectedTow ? "REJECTED TOW JOB" : d.reason === "escalated_dispatch_pending" ? "ACCEPTED — DISPATCH UNVERIFIED" : "Offer needs your attention",
             body: rejectedTow
               ? `Call ${d.callId ?? d.callRequestId}${d.customerName ? ` · ${d.customerName}` : ""}${d.location ? ` · ${d.location}` : ""} · ${d.reason}`
               : `${reasonCopy[d.reason ?? ""] ?? "Offer needs a human review."}${d.callRequestId ? ` Offer ${d.callRequestId}` : ""}${Number.isFinite(expiry) ? "" : " Expiry time unavailable — open Towbook now"}`,

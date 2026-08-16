@@ -382,6 +382,15 @@ type SendDeps = { fetchImpl?: typeof fetch; now?: Date };
  * forget by contract: NEVER throws (each failure is audited; a total failure
  * also escalates to the ops banner). 404/410 endpoints are removed.
  */
+/** Persist an accepted-but-unverified offer in the same decision stream consumed by the owner realtime banner poll. */
+export async function recordDispatchPendingAlert(orgId: string, payload: { callRequestId: string; purchaseOrderNumber: string | null; driverId: number; reason: string; offerDetails: unknown }): Promise<unknown> {
+  try {
+    const q = await db();
+    return await q`INSERT INTO ai_dispatcher_decisions(id, org_id, call_request_id, decision, escalated, driver_id, reason, raw_response)
+      VALUES(gen_random_uuid()::text, ${orgId}, ${payload.callRequestId}, 'escalated_dispatch_pending', TRUE, ${String(payload.driverId)}, ${payload.reason}, ${JSON.stringify({ purchaseOrderNumber: payload.purchaseOrderNumber, offer: payload.offerDetails, banner: 'accepted-but-unverified' })}::jsonb)
+      ON CONFLICT DO NOTHING RETURNING id`;
+  } catch { return null; }
+}
 export async function sendAssignmentPush(
   orgId: string,
   userId: string,
