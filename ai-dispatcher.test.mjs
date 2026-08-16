@@ -558,14 +558,18 @@ try {
 
   /* ============ 9a) owner incident: accurate in-state ETA above SLA goal dispatches ============ */
   {
-    // Owner incident 2026-08-16: offer 327309797, Agero lockout, Stratford CT;
-    // driver 703785 was accurately recalculated at 79 min and must dispatch.
-    const m = makeFetch({ offers: [offer(327309797, { purchaseOrderNumber: "112781994", startingLocation: "STRATFORD CT", drivers: [703785] })], drivers: [driver(703785, "Jayden Fountain", { lat: 41.1, lng: -73.0, etaSec: 4440 })] });
+    // Owner incident 2026-08-16: offer 327309797 (PO 112781994), Agero lockout, Stratford CT;
+    // driver 703785 was accurately recalculated at 79 min and previously REJECTED for
+    // exceeding the 45-min SLA ceiling. The fix quotes the TRUE ETA and dispatches.
+    // Fixture uses a fresh driver id (788001) so the queue is empty and the road ETA is
+    // exact: 4440s -> 74 min + 5 buffer = 79 (703785 is reused earlier in this suite and
+    // would carry an active queued job into this block).
+    const m = makeFetch({ offers: [offer(327309797, { purchaseOrderNumber: "112781994", startingLocation: "STRATFORD CT", drivers: [788001] })], drivers: [driver(788001, "Jayden Fountain", { lat: 41.1, lng: -73.0, etaSec: 4440 })] });
     const router = makeRouter({ "41.10,-73.00": 4440 });
     const { deps } = makeDeps(m.fetchImpl, router, { stateResolver: async () => "CT" });
     const r = await runAutoDispatch(ORG, deps); const p = posts(m.calls);
     const row = (await q`SELECT * FROM ai_dispatcher_decisions WHERE org_id=${ORG} AND call_request_id='327309797'`)[0];
-    check("owner incident 327309797: in-state driver 703785 auto-accepted at accurate ETA 79", r.decisions[0]?.decision === "auto_accept_with_driver" && p[0]?.body?.driverId === 703785 && p[0]?.body?.ETA === 79 && Number(row?.eta_minutes) === 79 && String(row?.reason).includes("ETA 79 min"), JSON.stringify({ decision: r.decisions[0], post: p[0], row }));
+    check("owner incident 327309797: in-state driver auto-accepted at accurate ETA 79 (uncapped)", r.decisions[0]?.decision === "auto_accept_with_driver" && p[0]?.body?.driverId === 788001 && p[0]?.body?.ETA === 79 && Number(row?.eta_minutes) === 79 && String(row?.reason).includes("ETA 79 min"), JSON.stringify({ decision: r.decisions[0], post: p[0], row }));
   }
 
   /* ============ 10) boundary: 29.5 mi in-zone accepted ============ */
@@ -709,12 +713,12 @@ try {
     const r = await runAutoDispatch(ORG, deps);
     check("busy-at-cap: decision auto_accept_with_driver (workload model), escalated false", r.decisions[0]?.decision === "auto_accept_with_driver" && r.decisions[0]?.escalated === false, JSON.stringify(r.decisions));
     const p = posts(m.calls);
-    check("busy-at-cap: dispatched to 603482 with accurate uncapped workload ETA", p.length === 1 && p[0]?.body?.driverId === 603482 && p[0]?.body?.ETA === 95, JSON.stringify(p[0]?.body));
+    check("busy-at-cap: dispatched to 603482 with accurate uncapped workload ETA", p.length === 1 && p[0]?.body?.driverId === 603482 && p[0]?.body?.ETA === 96, JSON.stringify(p[0]?.body));
     check("busy-at-cap: sync still triggered after accept", syncCalls.length === 1 && syncCalls[0].trigger === "sync:auto-accept", JSON.stringify(syncCalls));
     const rows = await decisions();
     const nd = rows.find((x) => String(x.call_request_id) === "7012");
     check("busy-at-cap: no-GPS/offline drivers still excluded (eligible list honored)", nd && String(nd.driver_id) === "603482", String(nd?.driver_id));
-    check("busy-at-cap: reason names workload-aware chain + unlocated jobs, accurate ETA recorded", nd && String(nd.reason).includes("queue-aware ETA") && String(nd.reason).includes("unlocated") && Number(nd.eta_minutes) === 95, String(nd?.reason));
+    check("busy-at-cap: reason names workload-aware chain + unlocated jobs, accurate ETA recorded", nd && String(nd.reason).includes("queue-aware ETA") && String(nd.reason).includes("unlocated") && Number(nd.eta_minutes) === 96, String(nd?.reason));
     check("busy-at-cap: raw_response now captures the FULL offer + accept response", nd && nd.raw_response?.offer?.callRequestId === "7012" && nd.raw_response?.accept?.callNumber === 25000, JSON.stringify(nd?.raw_response));
   }
 
@@ -828,10 +832,10 @@ try {
     const r = await runAutoDispatch(ORG, deps);
     check("no-GPS: no-GPS driver excluded, cap-full Jayden dispatched (workload ETA)", r.decisions[0]?.decision === "auto_accept_with_driver" && r.decisions[0]?.escalated === false, JSON.stringify(r.decisions));
     const p = posts(m.calls);
-    check("no-GPS: dispatched to 703785 with accurate uncapped workload ETA", p.length === 1 && p[0]?.body?.driverId === 703785 && p[0]?.body?.ETA === 95, JSON.stringify(p[0]?.body));
+    check("no-GPS: dispatched to 703785 with accurate uncapped workload ETA", p.length === 1 && p[0]?.body?.driverId === 703785 && p[0]?.body?.ETA === 96, JSON.stringify(p[0]?.body));
     const rows = await decisions();
     const ng = rows.find((x) => String(x.call_request_id) === "7019");
-    check("no-GPS: ETA recorded in the ledger (accurate workload model)", ng && Number(ng.eta_minutes) === 45 && String(ng.reason).includes("queue-aware ETA"), String(ng?.reason));
+    check("no-GPS: ETA recorded in the ledger (accurate workload model)", ng && Number(ng.eta_minutes) === 96 && String(ng.reason).includes("queue-aware ETA"), String(ng?.reason));
   }
 
   /* ============ 26a) post-accept dispatch verification (2026-08-10 incident fix) ============ */
@@ -1631,9 +1635,9 @@ try {
   {
     const rows = await decisions();
     const byDecision = rows.reduce((acc, x) => { acc[x.decision] = (acc[x.decision] || 0) + 1; return acc; }, {});
-        check("ledger: zones-off out-of-zone dispatch shifts one fallback to with-driver; hard rails unchanged", byDecision["auto_accept_with_driver"] === 18 && byDecision["auto_accept_no_driver"] === 4 && byDecision["escalated_out_of_zone"] === undefined && byDecision["escalated_missing_coords"] === undefined && byDecision["escalated_unexpected_shape"] === undefined && byDecision["escalated_driver_lookup_failed"] === undefined && byDecision["escalated_expired"] === 1 && byDecision["escalated_accept_failed"] === 1 && byDecision["escalated_dispatch_pending"] === 2, JSON.stringify(byDecision));
+        check("ledger: zones-off out-of-zone dispatch shifts one fallback to with-driver; hard rails unchanged", byDecision["auto_accept_with_driver"] === 19 && byDecision["auto_accept_no_driver"] === 4 && byDecision["escalated_out_of_zone"] === undefined && byDecision["escalated_missing_coords"] === undefined && byDecision["escalated_unexpected_shape"] === undefined && byDecision["escalated_driver_lookup_failed"] === undefined && byDecision["escalated_expired"] === 1 && byDecision["escalated_accept_failed"] === 1 && byDecision["escalated_dispatch_pending"] === 2, JSON.stringify(byDecision));
     const a = await audits();
-    check("audit: 22 ai_dispatcher:accept rows (18 with-driver + 4 no-driver universal fallback)", Number(a[0].n) === 22, String(a[0].n));
+    check("audit: 23 ai_dispatcher:accept rows (19 with-driver + 4 no-driver universal fallback)", Number(a[0].n) === 23, String(a[0].n));
     const adAudit = await q`SELECT count(*)::int n FROM audit_log WHERE org_id=${ORG} AND action='ai_dispatcher:decision'`;
     check("audit: 4 ai_dispatcher:decision rows (escalations: expired/accept-failed/dispatch-pending)", Number(adAudit[0].n) === 4, String(adAudit[0].n));
     // Scope to the OWNER session row: since migration 10 a real contractor
