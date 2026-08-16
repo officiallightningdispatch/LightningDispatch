@@ -1877,7 +1877,7 @@ export async function chooseBestDriverByRoad(
           liveTraffic: chain.finalLegProvider === "tomtom",
           trafficDelaySeconds: null,
           routerNotes: `workload-aware; ${activeCount} active jobs${chain.unlocatedJobs > 0 ? ` (+${chain.unlocatedJobs} unlocated ≈ service time)` : ""}`,
-          internalEtaBreakdown: planned.ok ? planned.breakdown : undefined,
+          internalEtaBreakdown: planned?.ok ? planned.breakdown : undefined,
           queueInclusive: true,
           queueMinutes: chain.queueMinutes,
           queuedJobCount: activeCount,
@@ -1900,7 +1900,7 @@ export async function chooseBestDriverByRoad(
     // Free offers use the same pure planner as busy queues. This keeps the
     // internal breakdown contract consistent without introducing a ceiling.
     const plannedFree = result && Number.isFinite(result.seconds) && result.seconds > 0
-      ? calculateInternalEta({ liveLocation: origin, jobs: [], offer: { id: "incoming-offer", status: "offered", location: { lat: pickupLat, lng: pickupLng }, serviceType: area?.serviceType ?? null }, routes: { ["live->incoming-offer"]: { durationSeconds: result.seconds, distanceMeters: null } } })
+      ? calculateInternalEta({ liveLocation: origin, jobs: [], offer: { id: "incoming-offer", status: "offered", location: { lat: pickupLat, lng: pickupLng }, serviceType: area?.serviceType ?? null }, routes: { ["live->incoming-offer"]: { durationSeconds: result.seconds, distanceMeters: undefined } } })
       : null;
     if (result && Number.isFinite(result.seconds) && result.seconds > 0) {
       return {

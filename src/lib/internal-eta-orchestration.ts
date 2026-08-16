@@ -9,7 +9,7 @@ export type EtaRecalculationHooks<T> = {
   onFreshGps: (key: string) => Promise<EtaRecalculationEntry<T>>;
   onTrafficRefresh: (key: string) => Promise<EtaRecalculationEntry<T>>;
 };
-export function createEtaRecalculationEntryPoint<T>(recalculate: (trigger: EtaRecalculationTrigger, key: string) => Promise<T | null>, now: () => number = Date.now): EtaRecalculationEntryPoint<T> {
+export function createEtaRecalculationEntryPoint<T>(recalculate: (trigger: EtaRecalculationTrigger, key: string) => Promise<T | null>): EtaRecalculationEntryPoint<T> {
   return async (trigger, key) => recalculate(trigger, key);
 }
 export function createEtaRecalculationHooks<T>(entryPoint: EtaRecalculationEntryPoint<T>, now: () => number = Date.now): EtaRecalculationHooks<T> {
