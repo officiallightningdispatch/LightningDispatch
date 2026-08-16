@@ -2522,7 +2522,20 @@ async function runAutoDispatchInternal(
       cookies = parsed.cookies || "";
       baseUrl = parsed.baseUrl || "https://app.towbook.com";
     } catch {
-      return { result: { ...base, skipped: "session_unavailable" }, seenOffers: [] };
+      // A decrypt failure used to be a silent run-level skip for hours. Treat it
+      // exactly like an expired Towbook response: self-heal immediately, then
+      // reload the session and continue this tick. If recovery cannot run, keep
+      // the explicit skip reason so the run ledger remains fail-visible.
+      const recovery = await recoverSession(orgId);
+      if (!recovery.recovered) {
+        return { result: { ...base, skipped: `session_unavailable (session recovery failed: ${recovery.reason})` }, seenOffers: [] };
+      }
+      const fresh = await loadOwnerSession(orgId);
+      if (!fresh) {
+        return { result: { ...base, skipped: "session_unavailable (session recovered but reload failed)" }, seenOffers: [] };
+      }
+      cookies = fresh.cookie;
+      baseUrl = fresh.baseUrl;
     }
 
     // Pending accepted offers are durable work, not terminal decisions. Re-read
