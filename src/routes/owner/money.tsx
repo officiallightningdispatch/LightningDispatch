@@ -1168,7 +1168,7 @@ function BatterySalesSection() {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <p className="min-w-0 text-sm font-bold text-ink-800">
                     {s.vehicleYear} {s.vehicleMake} {s.vehicleModel}
-                    <span className="ml-2 font-normal text-ink-400">VIN {s.vin}</span>
+                    <span className="ml-2 font-normal text-ink-400">Vehicle details available in the assigned job</span>
                   </p>
                   <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${meta.badge}`}>{meta.label}</span>
                 </div>

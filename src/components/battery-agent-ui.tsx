@@ -191,16 +191,16 @@ function StepControls({
         <div className="rounded-xl border border-ink-200 bg-ink-50 px-3 py-2.5">
           <p className="text-sm font-bold text-ink-800">{vehicle}</p>
           <p className="text-[11px] text-ink-500">
-            VIN {sale?.vin}{sale?.vehicleManual ? " · entered manually" : " · decoded from the VIN"}
+            {sale?.vehicleManual ? "Vehicle entered manually" : "Vehicle decoded from VIN"}
           </p>
         </div>
         <div className="flex gap-2">
           <Button className="flex-1" loading={busy} onClick={() => onStep(() => batteryAgentStep({ data: { jobId: state.jobId, action: "confirm_vehicle" } }))}>
             Confirm — that&apos;s the vehicle
           </Button>
-          <Button className="flex-1" variant="secondary" loading={busy} onClick={() => onStep(() => batteryAgentStep({ data: { jobId: state.jobId, action: "vin", vin: sale?.vin } }))}>
-            Re-check the VIN
-          </Button>
+          <p className="flex-1 text-center text-xs text-ink-500">
+            Need a correction? Start a new vehicle lookup.
+          </p>
         </div>
       </div>
     );

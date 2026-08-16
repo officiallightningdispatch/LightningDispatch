@@ -35,6 +35,7 @@
  * yet have. Imported ONLY by the client-safe facade (src/data/battery-sales.ts)
  * and hermetic tests — never by client-reachable modules.
  */
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { loadSquareConfig, createCardPayment, squareIdempotencyKey } from "./square-client";
 import { resolveJob, isAssignedDriver } from "./driver-photos-core";
@@ -237,10 +238,11 @@ export async function updateBatteryRatesCore(
 
 /* --------------------------------- agent state --------------------------------- */
 
-export type BatterySaleRow = {
+type BatterySaleRowInternal = {
   id: string;
   jobId: string;
   contractorUserId: string;
+  /** Raw VIN is internal-only and stripped at every public serializer boundary. */
   vin: string;
   vehicleMake: string;
   vehicleModel: string;
@@ -288,7 +290,7 @@ const SALES_COLUMNS = `id, job_id, contractor_user_id, vin, vehicle_make, vehicl
   battery_price_cents, install_type, install_fee_cents, sales_tax_cents, admin_fee_cents, total_cents, currency,
   status, square_charge_id, declined_reason, install_job_id, paid_at`;
 
-function mapSaleRow(r: Record<string, unknown>): BatterySaleRow {
+function mapSaleRow(r: Record<string, unknown>): BatterySaleRowInternal {
   const cents = (v: unknown): number | null => (v == null ? null : Number(v));
   return {
     id: String(r.id),
@@ -307,7 +309,7 @@ function mapSaleRow(r: Record<string, unknown>): BatterySaleRow {
     adminFeeCents: cents(r.admin_fee_cents),
     totalCents: cents(r.total_cents),
     currency: String(r.currency ?? "USD"),
-    status: String(r.status) as BatterySaleRow["status"],
+    status: String(r.status) as BatterySaleRowInternal["status"],
     squareChargeId: r.square_charge_id != null ? String(r.square_charge_id) : null,
     declinedReason: r.declined_reason != null ? String(r.declined_reason) : null,
     installJobId: r.install_job_id != null ? String(r.install_job_id) : null,
@@ -352,7 +354,7 @@ export function deriveAgentState(facts: JobFacts, sale: BatterySaleRow | null, r
   const base = {
     jobId: facts.id,
     testResult: facts.batteryTestResult,
-    sale,
+    sale: sale ? (({ vin: _vin, ...safeSale }) => safeSale)(sale) : null,
     installJob,
     rates,
     agentMessage: "",
@@ -553,7 +555,7 @@ export async function batteryAgentStepCore(user: PhotoUser, data: unknown, opts:
         manual: false,
         confirmed: false, // the driver must CONFIRM the decoded vehicle next
       });
-      await audit(q, user, job, "battery_vin_decoded", { vin: String(p.vin).toUpperCase(), make: decoded.make, model: decoded.model, year: decoded.year });
+      await audit(q, user, job, "battery_vin_decoded", { vin_sha256: createHash("sha256").update(String(p.vin).toUpperCase()).digest("hex"), make: decoded.make, model: decoded.model, year: decoded.year });
       return { ok: true, state: deriveAgentState(facts, sale, rates, null) };
     }
 
@@ -565,7 +567,7 @@ export async function batteryAgentStepCore(user: PhotoUser, data: unknown, opts:
         return { ok: false, code: "invalid_state", message: "Enter the make, model, and 4-digit year." };
       }
       sale = await upsertQuote(q, user, job.id, { vin: String(p.vin ?? "").toUpperCase(), make, model, year, manual: true, confirmed: true });
-      await audit(q, user, job, "battery_vehicle_manual", { vin: String(p.vin ?? "").toUpperCase(), make, model, year });
+      await audit(q, user, job, "battery_vehicle_manual", { vin_sha256: createHash("sha256").update(String(p.vin ?? "").toUpperCase()).digest("hex"), make, model, year });
       return { ok: true, state: deriveAgentState(facts, sale, rates, null) };
     }
 
@@ -576,7 +578,7 @@ export async function batteryAgentStepCore(user: PhotoUser, data: unknown, opts:
         return { ok: false, code: "invalid_state", message: "No vehicle on file yet — enter the VIN first." };
       }
       await q`UPDATE battery_sales SET vehicle_confirmed=TRUE WHERE id=${sale.id} AND org_id=${user.orgId}`;
-      await audit(q, user, job, "battery_vehicle_confirmed", { saleId: sale.id, vin: sale.vin, vehicle: `${sale.vehicleYear} ${sale.vehicleMake} ${sale.vehicleModel}` });
+      await audit(q, user, job, "battery_vehicle_confirmed", { saleId: sale.id, vehicle: `${sale.vehicleYear} ${sale.vehicleMake} ${sale.vehicleModel}` });
       const afterConfirm = await loadSale(q, user.orgId, job.id);
       sale = afterConfirm ?? sale;
       return { ok: true, state: deriveAgentState(facts, sale, rates, null) };
@@ -645,7 +647,7 @@ async function upsertQuote(
   user: PhotoUser,
   jobId: string,
   vehicle: { vin: string; make: string; model: string; year: string; manual: boolean; confirmed: boolean },
-): Promise<BatterySaleRow> {
+): Promise<BatterySaleRowInternal> {
   const rows = await q`INSERT INTO battery_sales(id, org_id, job_id, contractor_user_id, vin, vehicle_make, vehicle_model, vehicle_year, vehicle_manual, vehicle_confirmed, battery_price_cents, install_type, install_fee_cents, sales_tax_cents, admin_fee_cents, total_cents, currency, status)
     VALUES(gen_random_uuid()::text, ${user.orgId}, ${jobId}, ${user.id}, ${vehicle.vin}, ${vehicle.make}, ${vehicle.model}, ${vehicle.year}, ${vehicle.manual}, ${vehicle.confirmed}, NULL, NULL, NULL, NULL, NULL, NULL, 'USD', 'quote')
     ON CONFLICT (org_id, job_id) WHERE status IN ('quote','approved')
@@ -728,7 +730,7 @@ export async function chargeBatterySaleCore(
     // carries the SAME key (Square returns the same payment — no double
     // charge), a bumped attempt gets a fresh key, and the key always fits.
     const idempotencyKey = squareIdempotencyKey("battery-", sale.id, v.data.attempt);
-    const note = `Battery sale — ${sale.vehicleYear} ${sale.vehicleMake} ${sale.vehicleModel} (VIN ${sale.vin}) — ${driverName}`;
+    const note = `Battery sale — ${sale.vehicleYear} ${sale.vehicleMake} ${sale.vehicleModel} — ${driverName}`;
 
     await q`UPDATE battery_sales SET charge_attempt=${v.data.attempt} WHERE id=${sale.id}`;
     let payment;
@@ -775,7 +777,7 @@ async function createInstallJob(
   q: Awaited<ReturnType<typeof db>>,
   user: PhotoUser,
   sourceJob: { id: string; towbookJobId: string | null },
-  sale: BatterySaleRow,
+  sale: BatterySaleRowInternal,
   driverName: string,
 ): Promise<string> {
   const src = await q`SELECT customer_name, phone, lat, lng, area, pickup, pickup_lat, pickup_lng, assigned_driver_towbook_id, assigned_driver_name, note
@@ -784,14 +786,14 @@ async function createInstallJob(
   const jobId = `install-${sale.id.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12)}`;
   const assignedTowbookId = s.assigned_driver_towbook_id != null ? String(s.assigned_driver_towbook_id) : user.towbookDriverId || null;
   const vehicle = `${sale.vehicleYear} ${sale.vehicleMake} ${sale.vehicleModel}`;
-  const note = `Battery installation — ${vehicle} (VIN ${sale.vin}) · battery $${(sale.batteryPriceCents ?? 0) / 100} · install fee $${(sale.installFeeCents ?? 0) / 100} · paid`;
+  const note = `Battery installation — ${vehicle} · battery $${(sale.batteryPriceCents ?? 0) / 100} · install fee $${(sale.installFeeCents ?? 0) / 100} · paid`;
   const area = String(s.area ?? s.pickup ?? "Unknown");
   await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note,
       towbook_job_id, customer_phone, vehicle_desc, pickup, dropoff, towbook_status, raw_json, pickup_lat, pickup_lng,
       assigned_driver_towbook_id, assigned_driver_name, battery_test_result, battery_tested_at)
     VALUES(${jobId}, ${user.orgId}, ${String(s.customer_name ?? "Battery installation")}, ${String(s.phone ?? "")}, ${Number(s.lat ?? 0)}, ${Number(s.lng ?? 0)},
       ${area}, 'battery_install', 'offered', NOW(), ${note}, NULL, ${String(s.phone ?? "")}, ${vehicle}, ${String(s.pickup ?? area)},
-      ${String(s.dropoff ?? "")}, '1', ${JSON.stringify({ batterySaleId: sale.id, vin: sale.vin, vehicle, batteryPriceCents: sale.batteryPriceCents, installFeeCents: sale.installFeeCents, sourceJobId: sourceJob.id })}::jsonb,
+      ${String(s.dropoff ?? "")}, '1', ${JSON.stringify({ batterySaleId: sale.id, vehicle, batteryPriceCents: sale.batteryPriceCents, installFeeCents: sale.installFeeCents, sourceJobId: sourceJob.id })}::jsonb,
       ${s.pickup_lat != null ? Number(s.pickup_lat) : null}, ${s.pickup_lng != null ? Number(s.pickup_lng) : null},
       ${assignedTowbookId}, ${String(s.assigned_driver_name ?? driverName)}, NULL, NULL)
     ON CONFLICT (id) DO NOTHING`;
@@ -804,6 +806,8 @@ async function createInstallJob(
 }
 
 /* ------------------------------- owner views ------------------------------- */
+
+export type BatterySaleRow = Omit<BatterySaleRowInternal, "vin">;
 
 export type BatterySaleOwnerRow = BatterySaleRow & {
   contractorName: string;
@@ -826,11 +830,13 @@ export async function listBatterySalesCore(orgId: string): Promise<BatterySaleOw
       LEFT JOIN dispatch_jobs dj ON dj.id = bs.job_id
       WHERE bs.org_id=${orgId}
       ORDER BY bs.created_at DESC LIMIT 500`;
-    return (rows as Record<string, unknown>[]).map((r) => ({
-      ...mapSaleRow(r),
-      contractorName: r.contractor_name != null ? String(r.contractor_name) : "Contractor",
-      jobLabel: r.job_label != null ? String(r.job_label) : String(r.job_id),
-    }));
+    return (rows as Record<string, unknown>[]).map((r) => {
+      const { vin: _vin, ...safeSale } = mapSaleRow(r);
+      return { ...safeSale,
+        contractorName: r.contractor_name != null ? String(r.contractor_name) : "Contractor",
+        jobLabel: r.job_label != null ? String(r.job_label) : String(r.job_id),
+      };
+    });
   } catch {
     return [];
   }
