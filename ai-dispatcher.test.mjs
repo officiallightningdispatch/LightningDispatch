@@ -1241,7 +1241,7 @@ try {
       check("engine all-loaded: accept posts driverId 3002 + workload ETA 60", p.length === 1 && p[0]?.body?.driverId === 3002 && p[0]?.body?.ETA === 60, JSON.stringify(p[0]?.body));
       const rows = await q`SELECT call_request_id, decision, driver_id, eta_minutes, reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG4} AND call_request_id='8031'`;
       const row = rows[0];
-      check("engine all-loaded: reason names winner + chain math (3 active jobs = 40 min queued work; ETA 60 min)", row && String(row.driver_id) === "3002" && Number(row.eta_minutes) === 60 && String(row.reason).includes("queue-aware ETA") && String(row.reason).includes("40 min queued work") && String(row.reason).includes("15 min final leg") && String(row.reason).includes("ETA 55 min"), String(row?.reason));
+      check("engine all-loaded: reason names winner + chain math (3 active jobs; 55 min chain + 5 buffer = ETA 60)", row && String(row.driver_id) === "3002" && Number(row.eta_minutes) === 60 && String(row.reason).includes("queue-aware ETA 55 min") && String(row.reason).includes("15 min final leg") && String(row.reason).includes("ETA 60 min") && String(row.reason).includes("tomtom-traffic"), String(row?.reason));
       check("engine all-loaded: raw_response.eta chain facts recorded", row && row.raw_response?.eta?.queueInclusive === true && row.raw_response?.eta?.queueMinutes === 40 && row.raw_response?.eta?.queuedJobCount === 3 && row.raw_response?.eta?.finalLegMinutes === 15 && row.raw_response?.eta?.startedOnScene === false && row.raw_response?.eta?.unlocatedJobs === 0 && row.raw_response?.eta?.finalMinutes === 60, JSON.stringify(row?.raw_response?.eta));
     }
     // (a/b) engine: under-cap driver beats an over-cap driver, even when
@@ -1256,9 +1256,9 @@ try {
       const { deps } = makeDeps(m.fetchImpl, router);
       const r = await runAutoDispatch(ORG4, deps);
       const p = posts(m.calls);
-      check("engine under-cap: 2-job driver 3003 dispatched over 3-job 3001, workload ETA 65", r.decisions[0]?.decision === "auto_accept_with_driver" && p[0]?.body?.driverId === 3003 && p[0]?.body?.ETA === 65, JSON.stringify({ d: r.decisions[0], p: p[0]?.body }));
+      check("engine under-cap: 2-job driver 3003 dispatched over 3-job 3001, workload ETA 50", r.decisions[0]?.decision === "auto_accept_with_driver" && p[0]?.body?.driverId === 3003 && p[0]?.body?.ETA === 50, JSON.stringify({ d: r.decisions[0], p: p[0]?.body }));
       const rows = await q`SELECT reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG4} AND call_request_id='8032'`;
-      check("engine under-cap: reason names workload-aware chain (2 active jobs = 50 min + final leg 15)", rows[0] && String(rows[0].reason).includes("queue-aware ETA") && String(rows[0].reason).includes("15 min final leg") && rows[0].raw_response?.eta?.queueInclusive === true && rows[0].raw_response?.eta?.queueMinutes === 50 && rows[0].raw_response?.eta?.finalLegMinutes === 15, String(rows[0]?.reason));
+      check("engine under-cap: reason names workload-aware chain (2 active jobs = 30 min queue + final leg 15)", rows[0] && String(rows[0].reason).includes("queue-aware ETA") && String(rows[0].reason).includes("15 min final leg") && rows[0].raw_response?.eta?.queueInclusive === true && rows[0].raw_response?.eta?.queueMinutes === 20 && rows[0].raw_response?.eta?.finalLegMinutes === 15, String(rows[0]?.reason));
     }
     // (e) regression: single-driver happy path with dispatch_jobs EMPTY still
     // dispatches (no queue rows → 0 active → eligible, ETA normal).
@@ -1303,7 +1303,7 @@ try {
       const p = posts(m.calls);
       const rows = await q`SELECT reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG4} AND call_request_id='8035'`;
       check("engine workload tomtom-429: busy-driver chain records tomtomFailure HTTP 429 (no silent fallback)", rows[0] && rows[0].raw_response?.eta?.tomtomFailure === "HTTP 429" && rows[0].raw_response?.eta?.provider === "osrm" && String(rows[0].reason).includes("tomtom failed (HTTP 429) → osrm") && String(rows[0].reason).includes("queue-aware ETA"), String(rows[0]?.reason));
-      check("engine workload tomtom-429: still dispatches 3003 with the workload ETA 65", r.decisions[0]?.decision === "auto_accept_with_driver" && p[0]?.body?.driverId === 3003 && p[0]?.body?.ETA === 65, JSON.stringify({ d: r.decisions[0], p: p[0]?.body }));
+      check("engine workload tomtom-429: still dispatches 3003 with the workload ETA 50", r.decisions[0]?.decision === "auto_accept_with_driver" && p[0]?.body?.driverId === 3003 && p[0]?.body?.ETA === 50, JSON.stringify({ d: r.decisions[0], p: p[0]?.body }));
     }
   }
 
