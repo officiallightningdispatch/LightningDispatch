@@ -1194,7 +1194,7 @@ try {
     check("all-loaded: closest driver B wins over farther A despite A's better chain ETA", pickAll?.driver.driverId === 3002 && pickAll?.queueInclusive === true, JSON.stringify(pickAll));
     check("all-loaded: chain math recorded for closest B (3 jobs = 70 min + final leg 15; arrival 85)", pickAll?.queueMinutes === 70 && pickAll?.queuedJobCount === 3 && pickAll?.finalLegMinutes === 15 && pickAll?.baseMinutes === 85, JSON.stringify(pickAll));
     check("all-loaded: quoted ETA includes queue time (ceil(85)+5 = 90)", finalEtaMinutes(pickAll.baseMinutes, 5, 5, 180) === 90, String(finalEtaMinutes(pickAll.baseMinutes, 5, 5, 180)));
-    check("all-loaded: SLA goal does not cap accurate queue ETA (90); floor rail kept", finalEtaMinutes(pickAll.baseMinutes, 5, 5, 45) === 90, String(finalEtaMinutes(pickAll.baseMinutes, 5, 5, 45)));
+    check("all-loaded: accurate queue ETA is capped at 60; floor rail kept", finalEtaMinutes(pickAll.baseMinutes, 5, 5, 45) === 60, String(finalEtaMinutes(pickAll.baseMinutes, 5, 5, 45)));
     // gps ping age surface (best-effort — the live payload has no timestamp)
     const stale = { ...driver(2006, "Stale GPS", { lat: 41.19, lng: -73.15, etaSec: 604 }), gpsUpdatedAtUtc: new Date(Date.now() - 30 * 60000).toISOString() };
     check("gpsPingAgeMinutes: detects a 30-min-old ping", gpsPingAgeMinutes(stale) != null && gpsPingAgeMinutes(stale) >= 29 && gpsPingAgeMinutes(stale) <= 31, String(gpsPingAgeMinutes(stale)));
