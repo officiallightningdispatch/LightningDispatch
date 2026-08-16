@@ -208,6 +208,8 @@ type BatterySaleRowInternal = {
   vehicleYear: string;
   vehicleManual: boolean;
   vehicleConfirmed: boolean;
+  compatibilityId: string | null;
+  batteryGroupSize: string | null;
   batteryPriceCents: number | null;
   installType: "standard" | "advanced" | null;
   installFeeCents: number | null;
@@ -245,7 +247,7 @@ export type BatteryAgentState = {
   agentMessage: string;
 };
 
-const SALES_COLUMNS = `id, job_id, contractor_user_id, vin, vehicle_make, vehicle_model, vehicle_year, vehicle_manual, vehicle_confirmed,
+const SALES_COLUMNS = `id, job_id, contractor_user_id, vin, vehicle_make, vehicle_model, vehicle_year, vehicle_manual, vehicle_confirmed, compatibility_id, battery_group_size,
   battery_price_cents, install_type, install_fee_cents, sales_tax_cents, admin_fee_cents, total_cents, currency,
   status, square_charge_id, declined_reason, install_job_id, paid_at`;
 
@@ -261,6 +263,8 @@ function mapSaleRow(r: Record<string, unknown>): BatterySaleRowInternal {
     vehicleYear: String(r.vehicle_year ?? ""),
     vehicleManual: r.vehicle_manual === true,
     vehicleConfirmed: r.vehicle_confirmed === true,
+    compatibilityId: r.compatibility_id == null ? null : String(r.compatibility_id),
+    batteryGroupSize: r.battery_group_size == null ? null : String(r.battery_group_size),
     batteryPriceCents: cents(r.battery_price_cents),
     installType: r.install_type === "advanced" ? "advanced" : r.install_type === "standard" ? "standard" : null,
     installFeeCents: cents(r.install_fee_cents),
@@ -461,6 +465,8 @@ type StepPayload = {
   make?: string;
   model?: string;
   year?: string;
+  trim?: string;
+  engine?: string;
   priceDollars?: number;
   installType?: "standard" | "advanced";
 };
@@ -476,6 +482,8 @@ export async function batteryAgentStepCore(user: PhotoUser, data: unknown, opts:
     make: z.string().max(80).optional(),
     model: z.string().max(80).optional(),
     year: z.string().max(10).optional(),
+    trim: z.string().max(120).optional(),
+    engine: z.string().max(120).optional(),
     priceDollars: z.number().finite().optional(),
     installType: z.enum(["standard", "advanced"]).optional(),
   }).safeParse(data);
@@ -525,8 +533,19 @@ export async function batteryAgentStepCore(user: PhotoUser, data: unknown, opts:
       if (!make || !model || !/^\d{4}$/.test(year)) {
         return { ok: false, code: "invalid_state", message: "Enter the make, model, and 4-digit year." };
       }
-      sale = await upsertQuote(q, user, job.id, { vin: String(p.vin ?? "").toUpperCase(), make, model, year, manual: true, confirmed: true });
-      await audit(q, user, job, "battery_vehicle_manual", { vin_sha256: createHash("sha256").update(String(p.vin ?? "").toUpperCase()).digest("hex"), make, model, year });
+      // Manual entry must use the exact same canonical, approved-only lookup as
+      // the VIN/NHTSA path. Never create a sale from an unconfirmed fitment.
+      const { lookupBatteryCompatibilityCore } = await import("./battery-compat-core");
+      const compatibility = await lookupBatteryCompatibilityCore(
+        { orgId: user.orgId, role: user.role, id: user.id, towbookDriverId: user.towbookDriverId },
+        { jobId: job.id, make, model, year, trim: p.trim ?? null, engine: p.engine ?? null },
+      );
+      if (!compatibility.ok) return { ok: false, code: compatibility.reason === "unauthorized" ? "unauthorized" : "invalid_state", message: "Vehicle compatibility requires dispatcher or owner review." };
+      if (compatibility.outcome !== "matched") {
+        return { ok: false, code: "invalid_state", message: "We could not safely confirm the battery fitment for this vehicle. No battery sale can be started. Please have the dispatcher or owner review the vehicle." };
+      }
+      sale = await upsertQuote(q, user, job.id, { vin: "", make, model, year, manual: true, confirmed: true, compatibilityId: compatibility.match.compatibilityId, batteryGroupSize: compatibility.match.batteryGroupSize });
+      await audit(q, user, job, "battery_vehicle_manual", { make, model, year, trim: p.trim ?? null, engine: p.engine ?? null, compatibilityId: compatibility.match.compatibilityId, batteryGroupSize: compatibility.match.batteryGroupSize });
       return { ok: true, state: deriveAgentState(facts, sale, rates, null) };
     }
 
@@ -605,13 +624,13 @@ async function upsertQuote(
   q: Awaited<ReturnType<typeof db>>,
   user: PhotoUser,
   jobId: string,
-  vehicle: { vin: string; make: string; model: string; year: string; manual: boolean; confirmed: boolean },
+  vehicle: { vin: string; make: string; model: string; year: string; manual: boolean; confirmed: boolean; compatibilityId?: string | null; batteryGroupSize?: string | null; },
 ): Promise<BatterySaleRowInternal> {
   const rows = await q`INSERT INTO battery_sales(id, org_id, job_id, contractor_user_id, vin, vehicle_make, vehicle_model, vehicle_year, vehicle_manual, vehicle_confirmed, battery_price_cents, install_type, install_fee_cents, sales_tax_cents, admin_fee_cents, total_cents, currency, status)
     VALUES(gen_random_uuid()::text, ${user.orgId}, ${jobId}, ${user.id}, ${vehicle.vin}, ${vehicle.make}, ${vehicle.model}, ${vehicle.year}, ${vehicle.manual}, ${vehicle.confirmed}, NULL, NULL, NULL, NULL, NULL, NULL, 'USD', 'quote')
     ON CONFLICT (org_id, job_id) WHERE status IN ('quote','approved')
     DO UPDATE SET vin=EXCLUDED.vin, vehicle_make=EXCLUDED.vehicle_make, vehicle_model=EXCLUDED.vehicle_model,
-      vehicle_year=EXCLUDED.vehicle_year, vehicle_manual=EXCLUDED.vehicle_manual, vehicle_confirmed=EXCLUDED.vehicle_confirmed,
+    vehicle_year=EXCLUDED.vehicle_year, vehicle_manual=EXCLUDED.vehicle_manual, vehicle_confirmed=EXCLUDED.vehicle_confirmed, compatibility_id=${vehicle.compatibilityId ?? null}, battery_group_size=${vehicle.batteryGroupSize ?? null},
       battery_price_cents=NULL, install_type=NULL, install_fee_cents=NULL, sales_tax_cents=NULL, admin_fee_cents=NULL, total_cents=NULL
     RETURNING ${q.unsafe(SALES_COLUMNS)}`;
   return mapSaleRow(rows[0] as Record<string, unknown>);
