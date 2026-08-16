@@ -2280,6 +2280,8 @@ function callCarriesRequestId(call: Record<string, unknown>, want: string): bool
 export type DispatchVerification = {
   /** True only when the chosen driver is actually on the fetched call. */
   ok: boolean;
+  /** The raw Towbook call object tied to the offer (null when none was found). */
+  call: Record<string, unknown> | null;
   callId: string | null;
   statusId: number | null;
   driverOnCall: string | null;
@@ -2420,7 +2422,7 @@ export async function verifyDispatch(
       ok: false, callId: call ? String((call as Record<string, unknown>).id ?? "") : null,
       statusId: call && (call as Record<string, unknown>).status && typeof (call as Record<string, unknown>).status === "object"
         ? Number((((call as Record<string, unknown>).status) as Record<string, unknown>).id) ?? null : null,
-      driverOnCall: null, source, assetId: call ? firstAssetIdOnCall(call) : null, assignedAfterRetry: false, found: !!call, attempts: fetches, error: null,
+      driverOnCall: null, source, call, assetId: call ? firstAssetIdOnCall(call) : null, assignedAfterRetry: false, found: !!call, attempts: fetches, error: null,
     };
     if (!call) return { ...base, error: "call not found after accept" };
     if (callHasDriver(call, driverId)) {
@@ -2596,6 +2598,7 @@ async function runAutoDispatchInternal(
     // them on every dispatcher tick until the tied call appears or its offer
     // expires. This is intentionally before the offer feed (Towbook removes
     // accepted offers from that feed).
+    const actor = await deps.resolveOrgActor(orgId);
     const pendingRows = await sql() `SELECT id, call_request_id, call_id, driver_id, raw_response, reason FROM ai_dispatcher_decisions WHERE org_id=${orgId} AND decision='escalated_dispatch_pending' AND reason NOT LIKE '%expired%' ORDER BY created_at ASC LIMIT 100`;
     for (const row of pendingRows as Array<Record<string, unknown>>) {
       const raw = row.raw_response as Record<string, unknown> | null;
@@ -2650,7 +2653,6 @@ async function runAutoDispatchInternal(
     });
     if (!offers.length) return { result: { ...base, offersSeen: 0 }, seenOffers: [] };
 
-    const actor = await deps.resolveOrgActor(orgId);
     const result: AutoDispatchRunResult = { ...base, offersSeen: offers.length };
     // Geography + ETA accuracy (owner-directed 2026-08-13): derive every
     // driver's area anchor (first assigned job of the day, ET), freshest app
