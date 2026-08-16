@@ -38,6 +38,8 @@ const VEHICLE = { Make: "HONDA", Model: "Accord", ModelYear: "2019", ErrorCode: 
 /* ---- cleanup (guarded, ALWAYS runs) ---- */
 const cleanup = async () => {
   await q`DELETE FROM battery_sales WHERE org_id = ${ORG}`;
+  await q`DELETE FROM battery_compatibility WHERE org_id = ${ORG}`;
+  await q`DELETE FROM battery_products WHERE org_id = ${ORG}`;
   await q`DELETE FROM audit_log WHERE org_id = ${ORG} OR actor_user_id IN (${OWNER}, ${D1})`;
   await q`DELETE FROM status_events WHERE org_id = ${ORG}`;
   await q`DELETE FROM job_completions WHERE org_id = ${ORG}`;
@@ -76,6 +78,10 @@ await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${ORG
 await q`UPDATE users SET towbook_driver_id=${TB1} WHERE id=${D1}`;
 await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, customer_phone, vehicle_desc, pickup, assigned_driver_towbook_id, assigned_driver_name)
   VALUES(${JOB}, ${ORG}, 'Test Customer', '(860) 555-0111', 41.76, -72.67, 'Hartford', 'jump_start', 'arrived', NOW(), '2019 Honda Accord; dead battery.', 'call-123456', '(860) 555-0111', '2019 HONDA ACCORD', '1 Main St, Hartford', ${TB1}, 'QA Driver')`;
+// B3 fixtures: approved fitment plus active, org-scoped product. Price is server-authoritative.
+await q`INSERT INTO battery_products(id, org_id, group_size, display_name, retail_cents, installation_cents, warranty_years, free_replacement_years, core_charge_cents, availability, active) VALUES(gen_random_uuid()::text, ${ORG}, '47', 'LIGHTNING GOLD BATTERY', 14999, 4500, 3, 3, 0, 'in_stock', true)`;
+await q`INSERT INTO battery_compatibility(id, org_id, make, model, year_from, year_to, trim, engine, battery_group_size, status, source_reference_internal) VALUES(gen_random_uuid()::text, ${ORG}, 'HONDA', 'ACCORD', 2018, 2020, null, null, '47', 'approved', 'qa-battery-sales-fitment')`;
+await q`INSERT INTO battery_compatibility(id, org_id, make, model, year_from, year_to, trim, engine, battery_group_size, status, source_reference_internal) VALUES(gen_random_uuid()::text, ${ORG}, 'FORD', 'F-150', 2017, 2019, null, null, '47', 'approved', 'qa-battery-sales-fitment')`;
 
 /* ===================== 1) PURE PRICING — the owner-corrected formula ===================== */
 {
@@ -143,24 +149,16 @@ check("flow: vin decoded → step vehicle", vinStep.ok && vinStep.state.step ===
 check("flow: decoded from NHTSA (not manual)", vinStep.ok && vinStep.state.sale?.vehicleManual === false, "manual flag set");
 check("flow: decoded vehicle needs the driver's confirm", vinStep.ok && vinStep.state.sale?.vehicleConfirmed === false, "confirmed too early");
 
-// Price BEFORE the vehicle confirm is refused (server-validated step order).
-const earlyPrice = await batteryAgentStepCore(DRIVER, { jobId: JOB, action: "price", priceDollars: 149.99 });
-check("gate: price refused before vehicle confirm", !earlyPrice.ok && earlyPrice.code === "invalid_state", JSON.stringify(earlyPrice));
+// B3 removed driver-entered pricing; install is gated until confirmation.
+const earlyInstall = await batteryAgentStepCore(DRIVER, { jobId: JOB, action: "install", installType: "standard" });
+check("gate: install refused before vehicle confirm", !earlyInstall.ok && earlyInstall.code === "invalid_state", JSON.stringify(earlyInstall));
 
 const confirmStep = await batteryAgentStepCore(DRIVER, { jobId: JOB, action: "confirm_vehicle" });
-check("flow: vehicle confirmed → step price", confirmStep.ok && confirmStep.state.step === "price" && confirmStep.state.sale?.vehicleConfirmed === true, JSON.stringify(confirmStep));
-
-const priceStep = await batteryAgentStepCore(DRIVER, { jobId: JOB, action: "price", priceDollars: 149.99 });
-check("flow: price 149.99 accepted → step install", priceStep.ok && priceStep.state.step === "install", JSON.stringify(priceStep));
-
-const badPrice = await batteryAgentStepCore(DRIVER, { jobId: JOB, action: "price", priceDollars: 49.99 });
-check("flow: price below $50 refused", !badPrice.ok, JSON.stringify(badPrice));
-const highPrice = await batteryAgentStepCore(DRIVER, { jobId: JOB, action: "price", priceDollars: 600.01 });
-check("flow: price above $600 refused", !highPrice.ok, JSON.stringify(highPrice));
+check("flow: vehicle confirmed → step install", confirmStep.ok && confirmStep.state.step === "install" && confirmStep.state.sale?.vehicleConfirmed === true, JSON.stringify(confirmStep));
 
 const installStep = await batteryAgentStepCore(DRIVER, { jobId: JOB, action: "install", installType: "standard" });
 check("flow: standard install → quote step", installStep.ok && installStep.state.step === "quote", JSON.stringify(installStep));
-check("flow: quote math matches owner formula (battery 14999 + 4500 + 952 + 1312 = 21763)", installStep.ok && installStep.state.sale?.totalCents === 21763, String(installStep.state.sale?.totalCents));
+check("flow: server-authoritative product price + owner formula", installStep.ok && installStep.state.sale?.batteryPriceCents === 14999 && installStep.state.sale?.totalCents === 21763, String(installStep.state.sale?.totalCents));
 
 // HAND-OFF HARD GATE: charge before approval is refused. (Square env must be
 // set BEFORE the gate check — otherwise loadSquareConfig throws and the test
@@ -223,14 +221,12 @@ check("gate: after paid, battery gate passes (next gate is the signature gate)",
   const v = await batteryAgentStepCore(driver2, { jobId: JOB2, action: "vin", vin: VIN }, { fetchImpl: nhtsaOk() });
   check("decline: vin → vehicle step (awaiting confirm)", v.ok && v.state.step === "vehicle", JSON.stringify(v));
   await batteryAgentStepCore(driver2, { jobId: JOB2, action: "confirm_vehicle" });
-  await batteryAgentStepCore(driver2, { jobId: JOB2, action: "price", priceDollars: 200 });
   await batteryAgentStepCore(driver2, { jobId: JOB2, action: "install", installType: "advanced" });
   const declined = await batteryAgentStepCore(driver2, { jobId: JOB2, action: "decline" });
   check("decline: at quote → voided", declined.ok && declined.state.step === "voided" && declined.state.sale?.status === "voided", JSON.stringify(declined));
   // Decline at the hand-off (approved) works too — the customer can back out at payment.
   const v3 = await batteryAgentStepCore(driver2, { jobId: JOB2, action: "vin", vin: VIN }, { fetchImpl: nhtsaOk() }); // voided sale freed the slot
   await batteryAgentStepCore(driver2, { jobId: JOB2, action: "confirm_vehicle" });
-  await batteryAgentStepCore(driver2, { jobId: JOB2, action: "price", priceDollars: 200 });
   await batteryAgentStepCore(driver2, { jobId: JOB2, action: "install", installType: "advanced" });
   await batteryAgentStepCore(driver2, { jobId: JOB2, action: "approve" });
   const declinedAtHandoff = await batteryAgentStepCore(driver2, { jobId: JOB2, action: "decline" });
@@ -275,8 +271,7 @@ check("gate: after paid, battery gate passes (next gate is the signature gate)",
     VALUES(${JOB4}, ${ORG}, 'Manual Customer', '', 41.76, -72.67, 'Hartford', 'jump_start', 'arrived', NOW(), '', ${TB3}, 'QA Driver 3')`;
   await recordBatteryTestCore(driver3, { jobId: JOB4, result: "faulty" });
   const manual = await batteryAgentStepCore(driver3, { jobId: JOB4, action: "vehicle_manual", vin: "MANUAL", make: "Ford", model: "F-150", year: "2018" });
-  check("manual: entry → step price (confirmed immediately)", manual.ok && manual.state.step === "price" && manual.state.sale?.vehicleManual === true && manual.state.sale?.vehicleConfirmed === true, JSON.stringify(manual));
-  await batteryAgentStepCore(driver3, { jobId: JOB4, action: "price", priceDollars: 180 });
+  check("manual: entry → step install (confirmed immediately)", manual.ok && manual.state.step === "install" && manual.state.sale?.vehicleManual === true && manual.state.sale?.vehicleConfirmed === true, JSON.stringify(manual));
   const manualInstall = await batteryAgentStepCore(driver3, { jobId: JOB4, action: "install", installType: "standard" });
   check("manual: quote math on the manual vehicle (battery 18000 + 4500 + tax 1143 + admin 1575 = 25218)", manualInstall.ok && manualInstall.state.sale?.totalCents === 25218, String(manualInstall.state.sale?.totalCents));
   await q`DELETE FROM battery_sales WHERE org_id=${ORG} AND job_id=${JOB4}`;
