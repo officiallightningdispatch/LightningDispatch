@@ -5,8 +5,8 @@
  * agent prompts, contractor answers, deterministic server-validated steps.
  *
  * Flow: REQUIRED battery test (ok/faulty) → VIN → NHTSA decode (manual
- * fallback) → confirm vehicle → Autozone price ($50–$600) → install type
- * ($45 standard / $65 advanced) → LIVE QUOTE → customer approval →
+ * fallback) → approved fitment → Lightning product/install type
+ * → LIVE QUOTE → customer approval →
  * PAYMENT HAND-OFF (HARD GATE): full-screen "Hand your phone to your customer"
  * state with Square Web Payments' card form in CUSTOMER-PRESENT mode — the
  * agent NEVER sees or controls the card form (Square's iframe + nonce); the
@@ -206,10 +206,6 @@ function StepControls({
     );
   }
 
-  if (step === "price") {
-    return <PriceStep state={state} busy={busy} onStep={onStep} />;
-  }
-
   if (step === "install") {
     return (
       <div className="mt-3 grid grid-cols-2 gap-2">
@@ -219,7 +215,7 @@ function StepControls({
           desc="Top-terminal job"
           selected={false}
           busy={busy}
-          onClick={() => onStep(() => batteryAgentStep({ data: { jobId: state.jobId, action: "install", installType: "standard" } }))}
+          onClick={() => onStep(() => batteryAgentStep({ data: { jobId: state.jobId, action: "install", installType: "STANDARD" } }))}
         />
         <InstallCard
           title="Advanced"
@@ -227,7 +223,7 @@ function StepControls({
           desc="Buried battery / heavy-duty"
           selected={false}
           busy={busy}
-          onClick={() => onStep(() => batteryAgentStep({ data: { jobId: state.jobId, action: "install", installType: "advanced" } }))}
+          onClick={() => onStep(() => batteryAgentStep({ data: { jobId: state.jobId, action: "install", installType: "ADVANCED" } }))}
         />
       </div>
     );
@@ -394,37 +390,6 @@ function VinStep({ state, busy, onStep }: { state: BatteryAgentState; busy: bool
           </button>
         </>
       )}
-    </div>
-  );
-}
-
-function PriceStep({ state, busy, onStep }: { state: BatteryAgentState; busy: boolean; onStep: (fn: () => Promise<{ ok: boolean } & Record<string, unknown>>) => Promise<void> }) {
-  const [price, setPrice] = useState("");
-  const dollars = Number(price);
-  const valid = Number.isFinite(dollars) && dollars >= 50 && dollars <= 600;
-  return (
-    <div className="mt-3 space-y-2">
-      <label className="block text-xs font-semibold text-ink-600">
-        Autozone battery price
-        <span className="mt-1 flex h-12 items-center gap-1 rounded-xl border border-ink-200 bg-surface px-3.5">
-          <span className="text-sm font-black text-ink-400">$</span>
-          <input
-            type="number"
-            inputMode="decimal"
-            min={50}
-            max={600}
-            step="0.01"
-            placeholder="0.00"
-            value={price}
-            onChange={(e) => setPrice(e.target.value)}
-            className="w-full bg-transparent text-sm font-bold text-ink-900 outline-none placeholder:font-medium placeholder:text-ink-300"
-          />
-        </span>
-      </label>
-      <p className="text-[11px] text-ink-500">The best comparable battery at Autozone — between $50 and $600.</p>
-      <Button className="w-full" loading={busy} disabled={!valid} onClick={() => onStep(() => batteryAgentStep({ data: { jobId: state.jobId, action: "price", priceDollars: dollars } }))}>
-        Continue
-      </Button>
     </div>
   );
 }
