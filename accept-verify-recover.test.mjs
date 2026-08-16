@@ -3,11 +3,12 @@
 import { readFile } from "node:fs/promises";
 import assert from "node:assert/strict";
 
-const [dispatcher, pushCore, backgroundSync, banners] = await Promise.all([
+const [dispatcher, pushCore, backgroundSync, banners, reassign] = await Promise.all([
   readFile(new URL("./src/data/ai-dispatcher.ts", import.meta.url), "utf8"),
   readFile(new URL("./src/data/push-core.ts", import.meta.url), "utf8"),
   readFile(new URL("./src/data/background-sync.ts", import.meta.url), "utf8"),
   readFile(new URL("./src/components/notify-banners.tsx", import.meta.url), "utf8"),
+  readFile(new URL("./src/data/reassign-core.ts", import.meta.url), "utf8"),
 ]);
 const checks = [];
 const check = (name, fn) => { fn(); checks.push(name); };
@@ -69,6 +70,28 @@ check("5: verified calls are upserted before best-effort follow-up", () => {
   assert.ok(pending >= 0, "pending-recovery path must upsert");
   assert.ok(dispatcher.indexOf("fireDispatchAssignmentPush", verified) > verified, "verified upsert precedes push follow-up");
   assert.ok(dispatcher.indexOf("syncForOrg(orgId, 'sync:auto-accept-pending'", pending) > pending, "recovery upsert precedes best-effort sync");
+});
+
+check("6: TX placeholder expansion includes GPS/anchor drivers and never parks driver zero", () => {
+  assert.match(dispatcher, /Agero placeholder coordinates can hide an in-state driver/);
+  assert.match(dispatcher, /driverGpsFixes\.keys\(\), \.\.\.driverAnchors\.keys\(\)/);
+  assert.match(dispatcher, /poolExpandedFromStateEvidence/);
+  assert.match(dispatcher, /dispatchDriverId = Number\(recalculated\.driver\.driverId\) \|\| 0/);
+  assert.match(dispatcher, /in-state driver pool expanded from anchors\/fixes/);
+});
+
+check("7: over-ceiling recalc dispatches with uncapped ledger detail and capped quote", () => {
+  assert.match(dispatcher, /const rawRecalcEta = Math\.ceil\(recalculated\.baseMinutes\) \+ settings\.etaBufferMinutes/);
+  assert.match(dispatcher, /recalcOverCeiling/);
+  assert.match(dispatcher, /dispatched with ETA \$\{rawRecalcEta\} min — SLA-ceiling quote capped at \$\{effectiveMaxEta\}/);
+  assert.match(dispatcher, /etaMinutes = finalEtaMinutes\(recalculated\.baseMinutes, settings\.etaBufferMinutes, settings\.etaFloorMinutes, effectiveMaxEta\)/);
+});
+
+check("8: owner-role towbook driver is effective for reassign and state guarded", () => {
+  assert.match(reassign, /towbook_driver_id IS NOT NULL/);
+  assert.match(reassign, /jobStateOfJob/);
+  assert.match(reassign, /CROSS_STATE|cross-state|cross state/i);
+  assert.doesNotMatch(reassign, /role='contractor'.*not a contractor/i);
 });
 
 console.log(`ACCEPT-VERIFY-RECOVER HERMETIC CHECKS PASSED (${checks.length})`);
