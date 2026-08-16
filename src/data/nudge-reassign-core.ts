@@ -1,6 +1,6 @@
 /** Server-only assignment nudges and conservative headed detection (Feature 1/2). */
 import { sql } from "~/db";
-import { haversineMiles, chooseBestDriverByRoad, loadOrgDriverQueues, loadDriverGpsFixes, loadDriverAnchors, loadZoneMatches, loadRegionalPreferenceMatches, resolveRouter, loadLightningAvailableDrivers, type StateGuardOutcome } from "./ai-dispatcher";
+import { haversineMiles, chooseBestDriverByRoad, loadOrgDriverQueues, loadDriverGpsFixes, loadDriverAnchors, loadZoneMatches, loadRegionalPreferenceMatches, resolveRouter, type StateGuardOutcome } from "./ai-dispatcher";
 import { decryptSession } from "./towbook-key";
 import { resolveStateFromAddress, reverseGeocodeState } from "./state-guard-core";
 import { resolveTomtomKey } from "./tomtom-key";
