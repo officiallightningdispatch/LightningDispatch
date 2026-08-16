@@ -1613,6 +1613,11 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`ALTER TABLE battery_sales DROP CONSTRAINT IF EXISTS battery_sales_install_type_check`;
     await q`UPDATE battery_sales SET install_type = lower(install_type) WHERE install_type IS NOT NULL`;
   }],
+  [77, async (q) => {
+    // B4 price-book lookup support; product/provenance columns are B1-owned.
+    await q`CREATE INDEX IF NOT EXISTS battery_products_aliases_gin_idx ON battery_products USING GIN (alternate_group_sizes)`;
+    await q`UPDATE battery_products SET display_name='LIGHTNING GOLD BATTERY', core_charge_cents=0 WHERE display_name IS NULL OR display_name <> 'LIGHTNING GOLD BATTERY' OR core_charge_cents IS NULL`;
+  }],
  ];
 export async function ensureSchema() {
   const q = sql();
