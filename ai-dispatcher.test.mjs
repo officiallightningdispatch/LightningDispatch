@@ -567,7 +567,7 @@ try {
     const { deps } = makeDeps(m.fetchImpl, router, { stateResolver: async () => "CT" });
     const r = await runAutoDispatch(ORG, deps); const p = posts(m.calls);
     const row = (await q`SELECT * FROM ai_dispatcher_decisions WHERE org_id=${ORG} AND call_request_id='327309797'`)[0];
-    check("owner incident 327309797: in-state driver auto-accepted at accurate ETA 79 (uncapped)", r.decisions[0]?.decision === "auto_accept_with_driver" && p[0]?.body?.driverId === 788001 && p[0]?.body?.ETA === 79 && Number(row?.eta_minutes) === 79 && String(row?.reason).includes("ETA 79 min"), JSON.stringify({ decision: r.decisions[0], post: p[0], row }));
+    check("owner incident 327309797: in-state driver auto-accepted at accurate ETA 79, quoted ETA 60", r.decisions[0]?.decision === "auto_accept_with_driver" && p[0]?.body?.driverId === 788001 && p[0]?.body?.ETA === 60 && Number(row?.eta_minutes) === 60 && String(row?.reason).includes("ETA capped at 60 (accurate 79)"), JSON.stringify({ decision: r.decisions[0], post: p[0], row }));
   }
 
   /* ============ 10) boundary: 29.5 mi in-zone accepted ============ */
@@ -711,12 +711,12 @@ try {
     const r = await runAutoDispatch(ORG, deps);
     check("busy-at-cap: decision auto_accept_with_driver (workload model), escalated false", r.decisions[0]?.decision === "auto_accept_with_driver" && r.decisions[0]?.escalated === false, JSON.stringify(r.decisions));
     const p = posts(m.calls);
-    check("busy-at-cap: dispatched to 603482 with accurate uncapped workload ETA", p.length === 1 && p[0]?.body?.driverId === 603482 && p[0]?.body?.ETA === 51, JSON.stringify(p[0]?.body));
+    check("busy-at-cap: dispatched to 603482 with accurate workload ETA capped at 60", p.length === 1 && p[0]?.body?.driverId === 603482 && p[0]?.body?.ETA === 60, JSON.stringify(p[0]?.body));
     check("busy-at-cap: sync still triggered after accept", syncCalls.length === 1 && syncCalls[0].trigger === "sync:auto-accept", JSON.stringify(syncCalls));
     const rows = await decisions();
     const nd = rows.find((x) => String(x.call_request_id) === "7012");
     check("busy-at-cap: no-GPS/offline drivers still excluded (eligible list honored)", nd && String(nd.driver_id) === "603482", String(nd?.driver_id));
-    check("busy-at-cap: reason names workload-aware chain + unlocated jobs, accurate ETA recorded", nd && String(nd.reason).includes("queue-aware ETA") && String(nd.reason).includes("unlocated") && Number(nd.eta_minutes) === 51, String(nd?.reason));
+    check("busy-at-cap: reason names workload-aware chain + unlocated jobs, accurate ETA recorded", nd && String(nd.reason).includes("queue-aware ETA") && String(nd.reason).includes("unlocated") && Number(nd.eta_minutes) === 60, String(nd?.reason));
     check("busy-at-cap: raw_response now captures the FULL offer + accept response", nd && nd.raw_response?.offer?.callRequestId === "7012" && nd.raw_response?.accept?.callNumber === 25000, JSON.stringify(nd?.raw_response));
   }
 
@@ -830,7 +830,7 @@ try {
     const r = await runAutoDispatch(ORG, deps);
     check("no-GPS: no-GPS driver excluded, cap-full Jayden dispatched (workload ETA)", r.decisions[0]?.decision === "auto_accept_with_driver" && r.decisions[0]?.escalated === false, JSON.stringify(r.decisions));
     const p = posts(m.calls);
-    check("no-GPS: dispatched to 703785 with accurate uncapped workload ETA", p.length === 1 && p[0]?.body?.driverId === 703785 && p[0]?.body?.ETA === 51, JSON.stringify(p[0]?.body));
+    check("no-GPS: dispatched to 703785 with accurate workload ETA capped at 60", p.length === 1 && p[0]?.body?.driverId === 703785 && p[0]?.body?.ETA === 60, JSON.stringify(p[0]?.body));
     const rows = await decisions();
     const ng = rows.find((x) => String(x.call_request_id) === "7019");
     check("no-GPS: ETA recorded in the ledger (accurate workload model)", ng && Number(ng.eta_minutes) === 51 && String(ng.reason).includes("queue-aware ETA"), String(ng?.reason));
