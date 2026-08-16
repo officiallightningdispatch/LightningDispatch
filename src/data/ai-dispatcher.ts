@@ -2834,17 +2834,17 @@ async function runAutoDispatchInternal(
         : null;
       let candidates = humanReassigned
         ? manualEligible
-          ? (nd.body as unknown[]).filter((d) => {
+          ? (nd.body as NearestDriver[]).filter((d) => {
               const id = Number((d as Record<string, unknown>).driverId);
               return Number.isFinite(id) && id === manualDriverId;
             })
           : []
         : eligibleIds
-          ? (nd.body as unknown[]).filter((d) => {
+          ? (nd.body as NearestDriver[]).filter((d) => {
               const id = Number((d as Record<string, unknown>).driverId);
               return Number.isFinite(id) && eligibleIds.has(id);
             })
-          : (nd.body as unknown[]);
+          : (nd.body as NearestDriver[]);
       // Agero placeholder coordinates can hide an in-state driver from nearestDrivers.
       let poolExpandedFromStateEvidence = false;
       if (!humanReassigned && zoneState.state) {
