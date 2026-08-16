@@ -2595,12 +2595,54 @@ async function runAutoDispatchInternal(
     // expires. This is intentionally before the offer feed (Towbook removes
     // accepted offers from that feed).
     const actor = await deps.resolveOrgActor(orgId);
-    const pendingRows = await sql() `SELECT id, call_request_id, call_id, driver_id, raw_response, reason FROM ai_dispatcher_decisions WHERE org_id=${orgId} AND decision='escalated_dispatch_pending' AND reason NOT LIKE '%expired%' ORDER BY created_at ASC LIMIT 100`;
+    const pendingRows = await sql() `SELECT id, call_request_id, call_id, driver_id, raw_response, reason FROM ai_dispatcher_decisions WHERE org_id=${orgId} AND decision IN ('escalated_dispatch_pending','auto_accept_no_driver') AND reason NOT LIKE '%expired%' ORDER BY created_at ASC LIMIT 100`;
     for (const row of pendingRows as Array<Record<string, unknown>>) {
       const raw = row.raw_response as Record<string, unknown> | null;
       const offer = raw?.offer as OfferShape | undefined;
       const driverId = Number(row.driver_id);
-      if (!offer || !Number.isFinite(driverId) || driverId <= 0) continue;
+      if (!offer) continue;
+      // Accepted driverId=0 offers are durable claims. They are intentionally
+      // absent from Towbook's pending feed, so each sweep re-runs the safe
+      // candidate/qualification/state checks and may only add an assignment;
+      // it never posts accept again or reverses the accepted claim.
+      if (row.decision === "auto_accept_no_driver") {
+        if (Date.parse(offer.expirationDateUtc) < Date.now()) continue;
+        try {
+          const lookup = await towbookFetch(fetchImpl, `${baseUrl}/api/nearestDrivers?latitude=${offer.startLocationLatitude}&longitude=${offer.startLocationLongitude}&checkInForAllDrivers=true`, cookies);
+          const state = await resolveJobState(orgId, offer as unknown as Record<string, unknown>, startingLocationOf(offer as unknown as Record<string, unknown>), resolveTomtomKey(deps.env ?? process.env) ?? "", fetchImpl);
+          if (!lookup.ok || !Array.isArray(lookup.body) || !state.state) continue;
+          const candidates = lookup.body as NearestDriver[];
+          const ids = candidates.map((d) => Number(d.driverId)).filter((id) => Number.isFinite(id) && id > 0);
+          if (!ids.length) continue;
+          const rows = await sql()`SELECT u.towbook_driver_id, u.deactivated_at, m.user_id AS member_id,
+            (SELECT COUNT(DISTINCT t.id)::int FROM contractor_doc_types t WHERE t.org_id=${orgId} AND t.active) AS required_docs,
+            (SELECT COUNT(DISTINCT d.doc_type_id)::int FROM contractor_documents d JOIN contractor_doc_types t ON t.id=d.doc_type_id AND t.active WHERE d.org_id=${orgId} AND d.contractor_id=u.id AND d.status='verified' AND (d.expires_on IS NULL OR d.expires_on >= CURRENT_DATE)) AS approved_docs,
+            cp.vehicle_type FROM users u LEFT JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${orgId} LEFT JOIN contractor_profiles cp ON cp.user_id=u.id AND cp.org_id=${orgId} WHERE u.towbook_driver_id = ANY(${ids})`;
+          const byId = new Map(rows.map((r) => [String(r.towbook_driver_id), r as Record<string, unknown>]));
+          const tow = /(?:tow|heavy|flatbed|wheel[- ]?lift)/i.test(String(offer.serviceType ?? ""));
+          const online = tow ? await sql()`SELECT u.towbook_driver_id, (l.heartbeat_at > NOW() - INTERVAL '90 seconds') AS online FROM users u LEFT JOIN driver_availability_log l ON l.user_id=u.id AND l.org_id=${orgId} AND l.session_started_at IS NOT NULL WHERE u.towbook_driver_id = ANY(${ids})` : [];
+          const onlineById = new Map(online.map((r) => [String(r.towbook_driver_id), r as Record<string, unknown>]));
+          const eligible = candidates.filter((d) => {
+            const r = byId.get(String(d.driverId));
+            const vehicle = String(r?.vehicle_type ?? "");
+            return !!r && r.deactivated_at == null && r.member_id != null && Number(r.required_docs) <= Number(r.approved_docs) && (!tow || /(?:tow truck|tow|heavy|flatbed|wheel[- ]?lift)/i.test(vehicle)) && (!tow || onlineById.get(String(d.driverId))?.online === true);
+          });
+          const inState: NearestDriver[] = [];
+          for (const d of eligible) {
+            const st = deps.stateGuardResolver ? await deps.stateGuardResolver(Number(d.driverId), Number(d.latitude), Number(d.longitude)) : null;
+            if (st?.toUpperCase() === state.state.toUpperCase()) inState.push(d);
+          }
+          const chosen = inState.sort((a,b) => Number(a.estimatedTimeSeconds ?? Infinity) - Number(b.estimatedTimeSeconds ?? Infinity))[0];
+          if (!chosen) continue;
+          const v = await verifyDispatch(fetchImpl, baseUrl, cookies, offer, row.call_id ? String(row.call_id) : null, Number(chosen.driverId), { retryDelayMs: deps.verifyRetryDelayMs ?? 10000, maxAttempts: deps.verifyMaxAttempts ?? 6, allowAssign: true });
+          if (!v.ok) continue;
+          const reason = `${String(row.reason ?? "")}; parked-offer retry dispatched to eligible in-state driver ${chosen.driverId}`;
+          await sql()`UPDATE ai_dispatcher_decisions SET decision='auto_accept_with_driver', escalated=FALSE, driver_id=${String(chosen.driverId)}, driver_name=${String(chosen.driverName ?? '')}, call_id=${v.callId}::text, reason=${reason}, raw_response=raw_response || ${JSON.stringify({ retry: v, state: 'RESOLVED' })}::jsonb WHERE id=${String(row.id)}::text AND org_id=${orgId}::text`;
+          try { await deps.syncForOrg(orgId, 'sync:parked-offer-retry', actor ?? undefined); } catch { /* retry must not fail the sweep */ }
+        } catch { /* durable claim remains for the next five-minute sweep */ }
+        continue;
+      }
+      if (!Number.isFinite(driverId) || driverId <= 0) continue;
       if (Date.parse(offer.expirationDateUtc) < Date.now()) {
         await sql() `UPDATE ai_dispatcher_decisions SET decision='escalated_expired', reason=${String(row.reason ?? '') + '; offer expired — final human escalation'} WHERE id=${String(row.id)}::text AND org_id=${orgId}::text`;
         continue;
