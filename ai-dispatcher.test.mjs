@@ -1258,7 +1258,7 @@ try {
       const p = posts(m.calls);
       check("engine under-cap: 2-job driver 3003 dispatched over 3-job 3001, workload ETA 50", r.decisions[0]?.decision === "auto_accept_with_driver" && p[0]?.body?.driverId === 3003 && p[0]?.body?.ETA === 50, JSON.stringify({ d: r.decisions[0], p: p[0]?.body }));
       const rows = await q`SELECT reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG4} AND call_request_id='8032'`;
-      check("engine under-cap: reason names workload-aware chain (2 active jobs = 30 min queue + final leg 15)", rows[0] && String(rows[0].reason).includes("queue-aware ETA") && String(rows[0].reason).includes("15 min final leg") && rows[0].raw_response?.eta?.queueInclusive === true && rows[0].raw_response?.eta?.queueMinutes === 20 && rows[0].raw_response?.eta?.finalLegMinutes === 15, String(rows[0]?.reason));
+      check("engine under-cap: reason names workload-aware chain (2 active jobs; 45 min chain + 5 buffer = ETA 50)", rows[0] && String(rows[0].reason).includes("queue-aware ETA 45 min") && String(rows[0].reason).includes("15 min travel + 15 min service") && String(rows[0].reason).includes("ETA 50 min") && String(rows[0].reason).includes("tomtom-traffic") && rows[0].raw_response?.eta?.queueInclusive === true && rows[0].raw_response?.eta?.queueMinutes === 30 && rows[0].raw_response?.eta?.finalLegMinutes === 15, String(rows[0]?.reason));
     }
     // (e) regression: single-driver happy path with dispatch_jobs EMPTY still
     // dispatches (no queue rows → 0 active → eligible, ETA normal).
