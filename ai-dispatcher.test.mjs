@@ -1570,10 +1570,14 @@ try {
     //    temporary garbage session for the skipped-state tests; cascade delete
     //    at cleanup removes it (leftover check verifies).
     await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES(${ORG2}, 'v1.garbage', 'connected')`;
-    const rsu = await runAutoDispatch(ORG2, makeDeps(makeFetch({ offers: [], drivers: [] }).fetchImpl).deps);
-    check("run-row session_unavailable: engine skipped session_unavailable", rsu.skipped === "session_unavailable", JSON.stringify(rsu));
-    const suRow = (await runRows(ORG2, q`AND skipped='session_unavailable'`))[0];
-    check("run-row session_unavailable: row persisted with skipped='session_unavailable'", suRow && String(suRow.skipped) === "session_unavailable" && Number(suRow.offers_seen) === 0, JSON.stringify(suRow));
+    const m = makeFetch({ offers: [], drivers: [] });
+    const { deps } = makeDeps(m.fetchImpl, undefined, {
+      recoverSession: async () => ({ recovered: false, reason: "test: creds unavailable" }),
+    });
+    const rsu = await runAutoDispatch(ORG2, deps);
+    check("run-row session_unavailable: recovery failure classified, no decisions", String(rsu.skipped).includes("session recovery failed") && rsu.decisions.length === 0, JSON.stringify(rsu));
+    const suRow = (await runRows(ORG2, q`AND skipped LIKE 'session_unavailable%'`))[0];
+    check("run-row session_unavailable: row persisted with classified skip + offers_seen=0", suRow && String(suRow.skipped).startsWith("session_unavailable") && Number(suRow.offers_seen) === 0, JSON.stringify(suRow));
     // For the fetch-level skip tests, ORG2 needs a DECRYPTABLE session (the
     // garbage one above only exercises the decrypt failure path).
     await q`UPDATE towbook_sessions SET encrypted_session=${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))} WHERE org_id=${ORG2}`;
