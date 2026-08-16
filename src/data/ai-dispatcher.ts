@@ -156,6 +156,10 @@ export type AiDispatcherDeps = {
   /** Post-accept verification retry delay for the call-fetch race (default 5s;
    *  tests inject 0). */
   verifyRetryDelayMs?: number;
+  /** Maximum post-accept verification attempts (default 6). */
+  verifyMaxAttempts?: number;
+  /** Injectable immediate owner alert for an accepted offer awaiting verification. */
+  notifyDispatchPending?: (orgId: string, payload: { callRequestId: string; driverId: number; reason: string }) => Promise<unknown>;
   /** Injectable session recovery for hermetic tests; defaults to the real
    *  recoverTowbookSession (self-healing re-login with the stored owner
    *  credentials — the owner-directed "set up Towbook and forget" behavior). */
@@ -220,6 +224,7 @@ export type AiDispatcherDecision =
   | "escalated_accept_failed"
   | "escalated_unexpected_shape"
   | "escalated_dispatch_failed"
+  | "escalated_dispatch_pending"
   | "escalated_state_unknown"
   | "escalated_cross_state"
   | "escalated_qualification_failed"
@@ -2336,7 +2341,7 @@ export async function findAcceptedCall(
   // owner) and 1 (Dispatched) for calls that move fast.
   const po = purchaseOrderNumber != null ? String(purchaseOrderNumber) : null;
   const wantRequestId = callRequestId != null ? String(callRequestId) : null;
-  for (const statusId of [0, 2, 1]) {
+  for (const statusId of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]) {
     const url = `${baseUrl}/api/calls?status=${statusId}`;
     const res = await towbookFetch(fetchImpl, url, cookie);
     fetches.push({ url, status: res.status, error: res.error, matched: false });
@@ -2380,9 +2385,10 @@ export async function verifyDispatch(
   offer: OfferShape,
   acceptResponseId: string | null,
   driverId: number,
-  opts: { retryDelayMs?: number; allowAssign?: boolean } = {},
+  opts: { retryDelayMs?: number; maxAttempts?: number; allowAssign?: boolean } = {},
 ): Promise<DispatchVerification> {
-  const delay = opts.retryDelayMs ?? 5000;
+  const delay = opts.retryDelayMs ?? 10000;
+  const maxAttempts = Math.max(1, opts.maxAttempts ?? 6);
   const attempt = async (): Promise<DispatchVerification> => {
     const { call, source, fetches } = await findAcceptedCall(fetchImpl, baseUrl, cookie, acceptResponseId, offer.purchaseOrderNumber, offer.callRequestId);
     const base: DispatchVerification = {
@@ -2399,9 +2405,11 @@ export async function verifyDispatch(
     return { ...base, driverOnCall: onCall, error: `chosen driver ${driverId} not on the call (found ${onCall ?? "none"})` };
   };
   let v = await attempt();
-  if (!v.found && v.error === "call not found after accept") {
-    // Race — the accept is async ("Your request ... has been received"); retry once.
-    await new Promise((r) => setTimeout(r, delay));
+  // Towbook creates accepted calls asynchronously. Keep polling the tied call
+  // for a bounded window; a missing call is pending evidence, never a final
+  // dispatch failure. The caller persists the pending state for later sweeps.
+  for (let n = 1; n < maxAttempts && !v.found && v.error === "call not found after accept"; n++) {
+    if (delay > 0) await new Promise((r) => setTimeout(r, delay));
     v = await attempt();
     if (v.ok) return { ...v, assignedAfterRetry: v.assignedAfterRetry };
   }
@@ -3059,7 +3067,8 @@ async function runAutoDispatchInternal(
         // verification for the next-best driver.  Only the normal no-alternative
         // path reaches the existing assign/repair flow, preserving its wiring.
         let verification = await verifyDispatch(fetchImpl, baseUrl, cookies, offer, callIdFromAcceptResponse(accept.raw), dispatchDriverId, {
-          retryDelayMs: deps.verifyRetryDelayMs ?? 5000,
+          retryDelayMs: deps.verifyRetryDelayMs ?? 10000,
+          maxAttempts: deps.verifyMaxAttempts ?? 6,
           allowAssign: false,
         });
         let recalculationNote: string | null = null;
@@ -3105,7 +3114,8 @@ async function runAutoDispatchInternal(
             recalculationNote = `first choice ${firstChoice} became unavailable (verification saw ${verification.driverOnCall == null ? "no eligible driver" : `driver ${verification.driverOnCall}`}) → recalculated to ${dispatchDriverId}`;
             if (!recalcEscalationReason) {
               verification = await verifyDispatch(fetchImpl, baseUrl, cookies, offer, callIdFromAcceptResponse(accept.raw), dispatchDriverId, {
-                retryDelayMs: deps.verifyRetryDelayMs ?? 5000,
+                retryDelayMs: deps.verifyRetryDelayMs ?? 10000,
+          maxAttempts: deps.verifyMaxAttempts ?? 6,
                 allowAssign: true,
               });
             }
@@ -3113,7 +3123,8 @@ async function runAutoDispatchInternal(
             // No remaining eligible driver: run the established repair path for
             // the original choice, which will escalate honestly if it is gone.
             verification = await verifyDispatch(fetchImpl, baseUrl, cookies, offer, callIdFromAcceptResponse(accept.raw), firstChoice, {
-              retryDelayMs: deps.verifyRetryDelayMs ?? 5000,
+              retryDelayMs: deps.verifyRetryDelayMs ?? 10000,
+          maxAttempts: deps.verifyMaxAttempts ?? 6,
               allowAssign: true,
             });
           }
@@ -3121,7 +3132,8 @@ async function runAutoDispatchInternal(
           // Existing verification/assign repair path, unchanged for races where
           // no replacement can be selected (including missing call evidence).
           verification = await verifyDispatch(fetchImpl, baseUrl, cookies, offer, callIdFromAcceptResponse(accept.raw), dispatchDriverId, {
-            retryDelayMs: deps.verifyRetryDelayMs ?? 5000,
+            retryDelayMs: deps.verifyRetryDelayMs ?? 10000,
+          maxAttempts: deps.verifyMaxAttempts ?? 6,
             allowAssign: true,
           });
         }
@@ -3151,7 +3163,8 @@ async function runAutoDispatchInternal(
             const fresh = await loadOwnerSession(orgId);
             if (fresh) {
               const retried = await verifyDispatch(fetchImpl, fresh.baseUrl, fresh.cookie, offer, callIdFromAcceptResponse(accept.raw), dispatchDriverId, {
-                retryDelayMs: deps.verifyRetryDelayMs ?? 5000,
+                retryDelayMs: deps.verifyRetryDelayMs ?? 10000,
+          maxAttempts: deps.verifyMaxAttempts ?? 6,
                 allowAssign: true,
               });
               verification = { ...retried, attempts: [...verification.attempts, ...retried.attempts] };
@@ -3191,15 +3204,18 @@ async function runAutoDispatchInternal(
           } catch { /* ledger never blocks dispatch */ }
           result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "auto_accept_with_driver", escalated: false, reason });
         } else {
-          const reason = `accepted (call ${verification.callId ?? "unknown"}) but dispatch NOT verified for ${dispatchDriverName ?? dispatchDriverId} (driver ${dispatchDriverId}) — ${verification.error}${verificationRecoveryNote ? `; ${verificationRecoveryNote}` : ""}${recalculationNote ? `; ${recalculationNote}` : ""}${manualNote ? `; ${manualNote}` : ""}${guardOutcome.assignmentTier === "offline_in_state" ? "; no online driver in state; in-state offline assignment" : ""}${jobStateResolution.note ? `; ${jobStateResolution.note}` : ""}; needs a human to assign on Towbook (ETA ${etaMinutes ?? effectiveMaxEta} min quoted)`;
-          await record({
-            decision: "escalated_dispatch_failed",
+          const reason = `accepted (call ${verification.callId ?? "unknown"}) but dispatch is UNVERIFIED for ${dispatchDriverName ?? dispatchDriverId} (driver ${dispatchDriverId}) — ${verification.error}; pending retry will continue until the tied call appears${verificationRecoveryNote ? `; ${verificationRecoveryNote}` : ""}`;
+          const pending = await record({
+            decision: "escalated_dispatch_pending",
             callId: verification.callId,
             driverId: String(dispatchDriverId), driverName: dispatchDriverName ?? null,
             etaMinutes, zoneDistanceMiles: zoneDistance, reason,
-            rawResponse: { offer, eta: etaFacts, accept: accept.raw, verification, serviceQualification },
+            rawResponse: { offer, eta: etaFacts, accept: accept.raw, verification, serviceQualification, state: "PENDING/UNVERIFIED" },
           });
-          result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_dispatch_failed", escalated: true, reason });
+          if (pending && deps.notifyDispatchPending) {
+            try { await deps.notifyDispatchPending(orgId, { callRequestId: offer.callRequestId, driverId: dispatchDriverId, reason }); } catch { /* alert never masks ledger */ }
+          }
+          result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_dispatch_pending", escalated: true, reason });
         }
       } else {
         // No dispatcheable driver (no checked-in free eligible driver with GPS
