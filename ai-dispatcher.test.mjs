@@ -429,6 +429,22 @@ try {
   const t6 = await chooseBestDriverByRoad([t6driver], 41.2, -73.2, makeRouter({ "41.20,-73.19": 300, "41.10,-73.00": 3600 }), undefined, { gpsFixes: new Map([["8601", t6fix]]) });
   check("T6 selected driver's GPS origin supplies distance/base/straight-line fields", t6?.driver.driverId === 8601 && t6.originBasis === "gps" && Math.abs(t6.originLat - t6fix.lat) < 1e-9 && t6.baseMinutes === 5 && t6.roadSeconds === 300 && t6.distanceMiles < 1, JSON.stringify(t6));
   check("T6 no eligible driver preserves null choice (driverId 0/SLA no-driver path)", (await chooseBestDriverByRoad([driver(8602, "T6 offline", { checkedIn: false })], 41.2, -73.2, makeRouter())) === null, "");
+  // Availability UNION regression: Towbook check-in and Lightning GO are independent proofs.
+  const unionStateGuard = { jobState: "CT", resolveDriverState: async () => "CT" };
+  const antoneTowbookOnly = driver(603482, "Antone jerret", { checkedIn: true, etaSec: 600 });
+  const antoneArea = { stateGuard: unionStateGuard };
+  const antoneInitial = await chooseBestDriverByRoad([antoneTowbookOnly], 41.2, -73.2, makeRouter(), undefined, antoneArea);
+  const antoneVerification = await chooseBestDriverByRoad([antoneTowbookOnly], 41.2, -73.2, makeRouter(), undefined, antoneArea);
+  check("availability union Antoine Towbook-only: eligible and selected", antoneInitial?.driver.driverId === 603482, JSON.stringify(antoneInitial));
+  check("availability union Antoine survives verification recalc", antoneVerification?.driver.driverId === 603482 && antoneVerification?.driver.driverId !== 0, JSON.stringify(antoneVerification));
+  const noProof = driver(96301, "No availability proof", { checkedIn: false, etaSec: 600 });
+  check("availability union fail-closed: no Towbook check-in and no Lightning lease", (await chooseBestDriverByRoad([noProof], 41.2, -73.2, makeRouter())) === null);
+  const lightningOnly = driver(96302, "Lightning-only driver", { checkedIn: false, etaSec: 600 });
+  const lightningPick = await chooseBestDriverByRoad([lightningOnly], 41.2, -73.2, makeRouter(), undefined, { lightningAvailable: new Set(["96302"]) });
+  check("availability union Lightning-only: active GO lease qualifies", lightningPick?.driver.driverId === 96302, JSON.stringify(lightningPick));
+  // Nudge uses Towbook nearestDrivers check-in through this chooser; no separate
+  // Lightning state filter can exclude a checked-in driver.
+  check("nudge path union: Towbook-only driver remains selectable", antoneVerification?.driver.driverId === 603482);
   const serviceQualification = { serviceType: "tire", assessed: false, excluded: [] };
   const incompatible = { ...driver(8701, "T7 incompatible", { lat: 41.195, lng: -73.195 }), serviceExclusions: ["tire"] };
   const noCapability = driver(8703, "T7 no capability data", { lat: 41.19, lng: -73.19 });
