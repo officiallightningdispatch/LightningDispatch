@@ -67,7 +67,10 @@ export type DriverCall = {
   arrivedAtIso: string | null;
   goalSeconds: number | null;
   serviceKey: string | null;
+  /** Internal-only planner contract for the driver queue; never customer-facing. */
+  internalEtaBreakdown?: InternalEtaBreakdown[];
 };
+export type InternalEtaBreakdown = { jobId: string; status: string; serviceType: string; serviceMinutes: number; unknownServiceType: boolean; travelMinutes: number; distanceMeters: number | null; arrivalOffsetMinutes: number; completionOffsetMinutes: number; routeFrom: string };
 export type DriverJobAction = "accept" | "en_route";
 /* LD action → Towbook status id. CORRECTED 2026-08-12 (owner-reported bug):
  * Towbook's real statuses are 0 Received, 1 Dispatched, 2 En Route, 3 On
@@ -577,7 +580,19 @@ async function fetchDriverQueue(user: { orgId: string; towbookDriverId: string }
   const platformCards = await platformOnlyCalls(user); // battery-install etc.
   const seen = new Set(towbookCards.map((c) => c.id));
   const merged = [...towbookCards, ...platformCards.filter((c) => !seen.has(c.id))];
-  return { ok: true, calls: await attachServiceTime(user, merged) };
+  const enriched = await attachServiceTime(user, merged);
+  // Internal planner data is explicitly scoped to the driver/ops queue. It is
+  // read from the authoritative decision row and never copied into customer serializers.
+  try {
+    const q = (await import("~/db")).sql();
+    for (const call of enriched) {
+      const rows = await q`SELECT raw_response FROM ai_dispatcher_decisions WHERE org_id=${user.orgId} AND call_id=${call.id} ORDER BY created_at DESC LIMIT 1`;
+      const raw = rows[0]?.raw_response as Record<string, unknown> | null;
+      const breakdown = raw?.eta && typeof raw.eta === "object" ? (raw.eta as Record<string, unknown>).internalEtaBreakdown : undefined;
+      if (Array.isArray(breakdown)) call.internalEtaBreakdown = breakdown as InternalEtaBreakdown[];
+    }
+  } catch { /* planner detail is optional; ETA itself remains authoritative */ }
+  return { ok: true, calls: enriched };
 }
 /** Service-time live counter enrichment (completion-goals-spec.md §1, §5):
  *  for every ARRIVED-state call (statusId 3 on scene / 4 towing) attach the

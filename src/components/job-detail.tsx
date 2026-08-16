@@ -267,6 +267,14 @@ function JobDetailBody({ detail }: { detail: JobDetail }) {
           {detail.purchaseOrderNumber && <DetailRow label="PO #" value={<span className="font-mono">{detail.purchaseOrderNumber}</span>} />}
           {detail.arrivalETA && <DetailRow label="ETA" value={fmtEtaClock(detail.arrivalETA)} />}
           {detail.quotedEtaMinutes != null && <DetailRow label="Quoted ETA" value={`${detail.quotedEtaMinutes} min`} />}
+          {detail.internalEtaBreakdown && detail.internalEtaBreakdown.length > 0 && (
+            <div className="mt-2 rounded-lg bg-ink-50 px-2.5 py-2 text-xs text-ink-600">
+              <p className="font-semibold text-ink-700">Internal plan</p>
+              {detail.internalEtaBreakdown.map((part, index) => (
+                <p key={`${part.jobId}-${index}`}>#{index + 1}: {part.travelMinutes} min travel + {part.serviceMinutes} min service{part.unknownServiceType ? " · review required" : ""}</p>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

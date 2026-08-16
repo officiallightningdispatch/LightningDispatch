@@ -369,6 +369,11 @@ export function DriverJobCard({ call, acting, onAct, onQueueChanged }: { call: D
         )}
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-500">
           <span>ETA: <strong className="font-semibold text-ink-700">{etaLabel(call.arrivalETA)}</strong></span>
+          {call.internalEtaBreakdown && call.internalEtaBreakdown.length > 0 && (() => {
+            const last = call.internalEtaBreakdown[call.internalEtaBreakdown.length - 1];
+            const review = call.internalEtaBreakdown.some((part) => part.unknownServiceType);
+            return <span className="basis-full text-ink-500">Plan: {last.travelMinutes} min travel + {last.serviceMinutes} min service · {call.internalEtaBreakdown.length} stop{call.internalEtaBreakdown.length === 1 ? "" : "s"}{review ? " · review" : ""}</span>;
+          })()}
           {call.purchaseOrderNumber && <span>PO: <strong className="font-semibold text-ink-700">{call.purchaseOrderNumber}</strong></span>}
         </div>
       </dl>

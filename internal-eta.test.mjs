@@ -36,3 +36,6 @@ assert.equal(triggerLog.length, 4);
 assert.equal(trafficRefreshNeeded(null, 100, 60), true); assert.equal(trafficRefreshNeeded(50, 100, 60), false); assert.equal(trafficRefreshNeeded(40, 100, 60), true);
 assert.deepEqual(await recalculateInternalEta({ trigger: "traffic_refresh", key: "org-1", calculate: async () => ({ secret: true }), now: () => 456 }), { trigger: "traffic_refresh", key: "org-1", value: { secret: true }, recalculatedAt: 456 });
 console.log("internal ETA orchestration hooks: PASS");
+const customerSafe = serializeEtaForAudience(one, "customer");
+assert.equal(Object.prototype.hasOwnProperty.call(customerSafe, "breakdown"), false);
+assert.equal(Object.keys(customerSafe).some((key) => /travel|service|sequence|review/i.test(key)), false);

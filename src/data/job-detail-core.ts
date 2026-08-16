@@ -70,6 +70,8 @@ export type JobDetail = {
   /** The ETA (minutes) the AI dispatcher quoted for this call in its latest
    *  decision row, when one exists. */
   quotedEtaMinutes?: number;
+  /** Internal-only planner breakdown for owner/ops review; omitted from customer payloads. */
+  internalEtaBreakdown?: Array<{ jobId: string; status: string; serviceType: string; serviceMinutes: number; unknownServiceType: boolean; travelMinutes: number; distanceMeters: number | null; arrivalOffsetMinutes: number; completionOffsetMinutes: number; routeFrom: string }>;
   /** 12-photo set grouped in upload order; empty for older records with no
    *  photos (the client renders a "No photos" note — never a crash). */
   photos: JobDetailPhoto[];
@@ -181,12 +183,17 @@ export async function getJobDetailCore(user: JobDetailUser, data: unknown): Prom
 
     // Latest AI-dispatcher ETA quoted for this call (if any).
     let quotedEtaMinutes: number | null = null;
+    let internalEtaBreakdown: JobDetail["internalEtaBreakdown"];
     if (job.towbookJobId) {
       const q = await db();
-      const dec = await q`SELECT eta_minutes FROM ai_dispatcher_decisions
-        WHERE org_id=${user.orgId} AND call_id=${job.towbookJobId} AND eta_minutes IS NOT NULL
-        ORDER BY created_at DESC LIMIT 1`;
-      if (dec.length && dec[0].eta_minutes != null) quotedEtaMinutes = Number(dec[0].eta_minutes);
+      const dec = await q`SELECT eta_minutes, raw_response FROM ai_dispatcher_decisions
+        WHERE org_id=${user.orgId} AND call_id=${job.towbookJobId} ORDER BY created_at DESC LIMIT 1`;
+      if (dec.length) {
+        if (dec[0].eta_minutes != null) quotedEtaMinutes = Number(dec[0].eta_minutes);
+        const raw = dec[0].raw_response as Record<string, unknown> | null;
+        const eta = raw?.eta as Record<string, unknown> | null;
+        if (Array.isArray(eta?.internalEtaBreakdown)) internalEtaBreakdown = eta.internalEtaBreakdown as JobDetail["internalEtaBreakdown"];
+      }
     }
 
     const photoRows = await jobPhotoRows(user.orgId, job.id);
@@ -231,6 +238,7 @@ export async function getJobDetailCore(user: JobDetailUser, data: unknown): Prom
     if (row.purchase_order_number != null && String(row.purchase_order_number) !== "") detail.purchaseOrderNumber = String(row.purchase_order_number);
     if (row.arrival_eta != null && String(row.arrival_eta) !== "") detail.arrivalETA = String(row.arrival_eta);
     if (quotedEtaMinutes != null) detail.quotedEtaMinutes = quotedEtaMinutes;
+    if (internalEtaBreakdown) detail.internalEtaBreakdown = internalEtaBreakdown;
     return { ok: true, detail };
   } catch {
     return { ok: false, code: "database_unavailable", message: "Unable to load job details." };
