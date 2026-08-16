@@ -50,7 +50,14 @@ check("4: pending owner banner is wired with grounded offer context", () => {
   assert.match(pushCore, /payload\.driverId/);
   assert.match(pushCore, /payload\.reason/);
   assert.match(banners, /ACCEPTED — DISPATCH UNVERIFIED/);
-  assert.match(banners, /escalated_dispatch_pending/);
+  // The banner must key off the DECISION kind — the API returns reason as
+  // human text ("accept POST failed after retry..."), so a d.reason === kind
+  // check could never fire. d.decision === kind matches the rejected-tow pattern.
+  assert.match(banners, /d\.decision === "escalated_dispatch_pending"/);
+  assert.doesNotMatch(banners, /d\.reason === "escalated_dispatch_pending"/);
+  // reasonCopy is keyed by decision kind; the body lookup must use d.decision.
+  assert.match(banners, /reasonCopy\[d\.decision \?\? ""\]/);
+  assert.doesNotMatch(banners, /reasonCopy\[d\.reason \?\? ""\]/);
 });
 
 check("5: verified calls are upserted before best-effort follow-up", () => {
