@@ -272,6 +272,7 @@ const makeDeps = (fetchImpl, router, opts = {}) => {
     fetchImpl,
     verifyRetryDelayMs: 0,
     ...(opts.env ? { env: opts.env } : {}),
+    ...(opts.recoverSession ? { recoverSession: opts.recoverSession } : {}),
     ...(opts.geocodeOverride ? { geocodeOverride: opts.geocodeOverride } : {}),
     // SAME-STATE GUARD (owner rule 2026-08-13): hermetic driver-state resolver —
     // fixture drivers sit at CT coords, so default "CT"; the guard's job-state
@@ -493,7 +494,9 @@ try {
   {
     await q`UPDATE towbook_sessions SET encrypted_session='v1.garbage' WHERE org_id=${ORG}`;
     const m = makeFetch({ offers: [], drivers: [] });
-    const { deps } = makeDeps(m.fetchImpl);
+    const { deps } = makeDeps(m.fetchImpl, undefined, {
+      recoverSession: async () => ({ recovered: false, reason: "test: creds unavailable" }),
+    });
     const r = await runAutoDispatch(ORG, deps);
     check("undecryptable session → recovery failure is classified, no decisions, no dispatch", String(r.skipped).includes("session recovery failed") && r.decisions.length === 0 && posts(m.calls).length === 0, JSON.stringify(r));
     await q`UPDATE towbook_sessions SET encrypted_session=${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))} WHERE org_id=${ORG}`;
