@@ -2595,7 +2595,19 @@ async function runAutoDispatchInternal(
     // expires. This is intentionally before the offer feed (Towbook removes
     // accepted offers from that feed).
     const actor = await deps.resolveOrgActor(orgId);
-    const pendingRows = await sql() `SELECT id, call_request_id, call_id, driver_id, raw_response, reason FROM ai_dispatcher_decisions WHERE org_id=${orgId} AND decision IN ('escalated_dispatch_pending','auto_accept_no_driver') AND reason NOT LIKE '%expired%' ORDER BY created_at ASC LIMIT 100`;
+    // Parked claims are retried on a durable five-minute cadence, not every
+    // three-second sync tick. The timestamp lives in raw_response so this is
+    // append-only and survives process restarts without a schema migration.
+    const pendingRows = await sql() `SELECT id, call_request_id, call_id, driver_id, raw_response, reason FROM ai_dispatcher_decisions WHERE org_id=${orgId} AND decision IN ('escalated_dispatch_pending','auto_accept_no_driver') AND reason NOT LIKE '%expired%' AND (raw_response->'retry'->>'lastAttemptAt' IS NULL OR (raw_response->'retry'->>'lastAttemptAt')::timestamptz <= NOW() - INTERVAL '5 minutes') ORDER BY created_at ASC LIMIT 100`;
+    const retryTomtomKey = resolveTomtomKey(deps.env ?? process.env);
+    const retryReverseStateCache = new Map<string, string | null>();
+    const resolveRetryDriverState = deps.stateGuardResolver ?? (async (driverId: number, lat: number, lng: number) => {
+      const key = driverStateCacheKey(driverId, lat, lng);
+      if (retryReverseStateCache.has(key)) return retryReverseStateCache.get(key) ?? null;
+      const st = retryTomtomKey ? await reverseGeocodeState(lat, lng, retryTomtomKey, fetchImpl) : null;
+      retryReverseStateCache.set(key, st);
+      return st;
+    });
     for (const row of pendingRows as Array<Record<string, unknown>>) {
       const raw = row.raw_response as Record<string, unknown> | null;
       const offer = raw?.offer as OfferShape | undefined;
@@ -2605,11 +2617,14 @@ async function runAutoDispatchInternal(
       // absent from Towbook's pending feed, so each sweep re-runs the safe
       // candidate/qualification/state checks and may only add an assignment;
       // it never posts accept again or reverses the accepted claim.
+      if (Date.parse(offer.expirationDateUtc) < Date.now()) continue;
+      // Claim this retry window before external calls; the durable marker
+      // prevents a hot sync loop from hammering Towbook/TomTom for any pending row.
+      await sql()`UPDATE ai_dispatcher_decisions SET raw_response=raw_response || ${JSON.stringify({ retry: { lastAttemptAt: new Date().toISOString() } })}::jsonb WHERE id=${String(row.id)}::text AND org_id=${orgId}::text`;
       if (row.decision === "auto_accept_no_driver") {
-        if (Date.parse(offer.expirationDateUtc) < Date.now()) continue;
         try {
           const lookup = await towbookFetch(fetchImpl, `${baseUrl}/api/nearestDrivers?latitude=${offer.startLocationLatitude}&longitude=${offer.startLocationLongitude}&checkInForAllDrivers=true`, cookies);
-          const state = await resolveJobState(orgId, offer as unknown as Record<string, unknown>, startingLocationOf(offer as unknown as Record<string, unknown>), resolveTomtomKey(deps.env ?? process.env) ?? "", fetchImpl);
+          const state = await resolveJobState(orgId, offer as unknown as Record<string, unknown>, startingLocationOf(offer as unknown as Record<string, unknown>), retryTomtomKey ?? "", fetchImpl);
           if (!lookup.ok || !Array.isArray(lookup.body) || !state.state) continue;
           const candidates = lookup.body as NearestDriver[];
           const ids = candidates.map((d) => Number(d.driverId)).filter((id) => Number.isFinite(id) && id > 0);
@@ -2629,7 +2644,7 @@ async function runAutoDispatchInternal(
           });
           const inState: NearestDriver[] = [];
           for (const d of eligible) {
-            const st = deps.stateGuardResolver ? await deps.stateGuardResolver(Number(d.driverId), Number(d.latitude), Number(d.longitude)) : null;
+            const st = await resolveRetryDriverState(Number(d.driverId), Number(d.latitude), Number(d.longitude));
             if (st?.toUpperCase() === state.state.toUpperCase()) inState.push(d);
           }
           const chosen = inState.sort((a,b) => Number(a.estimatedTimeSeconds ?? Infinity) - Number(b.estimatedTimeSeconds ?? Infinity))[0];

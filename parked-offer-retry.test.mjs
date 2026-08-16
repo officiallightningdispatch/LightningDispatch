@@ -6,3 +6,6 @@ check('retry never accepts again', src.includes('never posts accept again or rev
 check('retry requires fresh online tow capability', src.includes("heartbeat_at > NOW() - INTERVAL '90 seconds'") && src.includes('vehicle_type'));
 check('retry preserves state guard', src.includes('stateGuardResolver') && src.includes('state.state.toUpperCase()'));
 check('retry records resolved ledger reason', src.includes('parked-offer retry dispatched to eligible in-state driver'));
+
+check('retry uses production-shaped state fallback with TomTom key and cache', src.includes('deps.stateGuardResolver ?? (async (driverId: number, lat: number, lng: number)') && src.includes('retryTomtomKey ? await reverseGeocodeState') && src.includes('retryReverseStateCache'));
+check('retry is durably throttled to five minutes per pending row', src.includes("raw_response->'retry'->>'lastAttemptAt'") && src.includes("NOW() - INTERVAL '5 minutes'") && src.includes('lastAttemptAt'));
