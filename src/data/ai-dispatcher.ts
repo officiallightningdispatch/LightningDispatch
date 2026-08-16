@@ -2605,7 +2605,7 @@ async function runAutoDispatchInternal(
       const driverId = Number(row.driver_id);
       if (!offer || !Number.isFinite(driverId) || driverId <= 0) continue;
       if (Date.parse(offer.expirationDateUtc) < Date.now()) {
-        await sql() `UPDATE ai_dispatcher_decisions SET decision='escalated_expired', reason=${String(row.reason ?? '') + '; offer expired — final human escalation'} WHERE id=${String(row.id)} AND org_id=${orgId}`;
+        await sql() `UPDATE ai_dispatcher_decisions SET decision='escalated_expired', reason=${String(row.reason ?? '') + '; offer expired — final human escalation'} WHERE id=${String(row.id)}::text AND org_id=${orgId}::text`;
         continue;
       }
       const verification = await verifyDispatch(fetchImpl, baseUrl, cookies, offer, row.call_id ? String(row.call_id) : null, driverId, { retryDelayMs: deps.verifyRetryDelayMs ?? 10000, maxAttempts: deps.verifyMaxAttempts ?? 6, allowAssign: true });
@@ -2613,7 +2613,7 @@ async function runAutoDispatchInternal(
       const waypoint = verification.call ? callWaypoint(verification.call) : null;
       if (verification.call) { try { await upsertVerifiedDispatchJob(orgId, offer, verification.call, verification.callId ?? offer.callRequestId, driverId, null); } catch { /* sync fallback */ } }
       const reason = `${String(row.reason ?? '')}; retry verified driver on call ${verification.callId}; ETA source: authoritative call waypoint${waypoint ? ` (${waypoint.lat},${waypoint.lng})` : ' unavailable'}`;
-      await sql() `UPDATE ai_dispatcher_decisions SET decision='auto_accept_with_driver', escalated=FALSE, call_id=${verification.callId}::text, reason=${reason}::text, raw_response=raw_response || '{}'::jsonb || ${JSON.stringify({ verification, state: 'RESOLVED' })}::jsonb WHERE id=${String(row.id)} AND org_id=${orgId}`;
+      await sql() `UPDATE ai_dispatcher_decisions SET decision='auto_accept_with_driver', escalated=FALSE, call_id=${verification.callId}::text, reason=${reason}::text, raw_response=raw_response || '{}'::jsonb || ${JSON.stringify({ verification, state: 'RESOLVED' })}::jsonb WHERE id=${String(row.id)}::text AND org_id=${orgId}::text`;
       try { await deps.syncForOrg(orgId, 'sync:auto-accept-pending', actor ?? undefined); } catch { /* retry loop never fails */ }
     }
 
