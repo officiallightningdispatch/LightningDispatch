@@ -744,14 +744,14 @@ async function createInstallJob(
   const jobId = `install-${sale.id.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12)}`;
   const assignedTowbookId = s.assigned_driver_towbook_id != null ? String(s.assigned_driver_towbook_id) : user.towbookDriverId || null;
   const vehicle = `${sale.vehicleYear} ${sale.vehicleMake} ${sale.vehicleModel}`;
-  const note = `Battery installation — ${vehicle} · battery $${(sale.batteryPriceCents ?? 0) / 100} · install fee $${(sale.installFeeCents ?? 0) / 100} · paid`;
+  const note = `Battery installation — ${vehicle} · VIN ${sale.vin} · battery ${(sale.batteryPriceCents ?? 0) / 100} · install fee ${(sale.installFeeCents ?? 0) / 100} · paid`;
   const area = String(s.area ?? s.pickup ?? "Unknown");
   await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note,
       towbook_job_id, customer_phone, vehicle_desc, pickup, dropoff, towbook_status, raw_json, pickup_lat, pickup_lng,
       assigned_driver_towbook_id, assigned_driver_name, battery_test_result, battery_tested_at)
     VALUES(${jobId}, ${user.orgId}, ${String(s.customer_name ?? "Battery installation")}, ${String(s.phone ?? "")}, ${Number(s.lat ?? 0)}, ${Number(s.lng ?? 0)},
       ${area}, 'battery_install', 'offered', NOW(), ${note}, NULL, ${String(s.phone ?? "")}, ${vehicle}, ${String(s.pickup ?? area)},
-      ${String(s.dropoff ?? "")}, '1', ${JSON.stringify({ batterySaleId: sale.id, vehicle, batteryPriceCents: sale.batteryPriceCents, installFeeCents: sale.installFeeCents, sourceJobId: sourceJob.id })}::jsonb,
+      ${String(s.dropoff ?? "")}, '1', ${JSON.stringify({ batterySaleId: sale.id, vehicle, vin: sale.vin, batteryPriceCents: sale.batteryPriceCents, installFeeCents: sale.installFeeCents, sourceJobId: sourceJob.id })}::jsonb,
       ${s.pickup_lat != null ? Number(s.pickup_lat) : null}, ${s.pickup_lng != null ? Number(s.pickup_lng) : null},
       ${assignedTowbookId}, ${String(s.assigned_driver_name ?? driverName)}, NULL, NULL)
     ON CONFLICT (id) DO NOTHING`;
