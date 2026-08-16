@@ -10,6 +10,8 @@ assert.deepEqual(one.orderedJobIds, ["a"]); assert.equal(one.breakdown[0].arriva
 assert.equal(serviceMinutesFor({ serviceType: "mystery" }).unknown, true);
 assert.equal(serviceMinutesFor({ serviceType: "battery installation", batteryInstallType: "advanced" }).minutes, 120);
 assert.equal(normalizeEtaServiceType("door unlock"), "lockout");
+const numeric = calculateInternalEta({ ...base, jobs: [job("numeric", 70)], routes: routes([["live", "numeric", 60]]) }); assert.deepEqual(numeric.orderedJobIds, ["numeric"]);
+const unknown = calculateInternalEta({ ...base, jobs: [job("unknown", "accepted", "unmapped")], routes: routes([["live", "unknown", 60]]) }); assert.equal(unknown.reviewRequired, true);
 assert.equal(calculateInternalEta({ ...base, liveLocation: null }).reason, "missing_live_location");
 const inactive = calculateInternalEta({ ...base, jobs: [job("x", "completed")], routes: {} }); assert.deepEqual(inactive.orderedJobIds, []);
 const three = [job("bridgeport", "accepted", "jump", 1), job("fairfield", "accepted", "tire", 2), job("trumbull", "accepted", "fuel", 3)];

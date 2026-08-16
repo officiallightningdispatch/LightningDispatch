@@ -4,7 +4,14 @@
  * first and pass the measured legs here; tests can provide a deterministic matrix.
  */
 
-export type EtaJobStatus = "accepted" | "en_route" | "in_progress" | "arrived" | string;
+export type EtaJobStatus = "accepted" | "en_route" | "in_progress" | "arrived" | string | number;
+
+/** Towbook numeric lifecycle IDs are normalized before planning. */
+export function normalizeEtaStatus(raw: EtaJobStatus): string {
+  const n = typeof raw === "number" ? raw : Number(String(raw).trim());
+  if (Number.isFinite(n)) return ({ 0: "new", 1: "offered", 2: "accepted", 3: "en_route", 4: "arrived", 5: "in_progress", 70: "accepted", 252: "completed", 255: "cancelled" } as Record<number, string>)[n] ?? "unknown";
+  return String(raw ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+}
 export type EtaPoint = { lat: number; lng: number };
 export type RouteLeg = { durationSeconds: number; distanceMeters?: number };
 export type EtaJob = {
@@ -61,7 +68,7 @@ const SERVICE_MINUTES: Record<string, number> = {
   battery_standard: 60,
   battery_advanced: 120,
 };
-const ACTIVE = new Set(["accepted", "en_route", "in_progress", "arrived"]);
+const ACTIVE = new Set(["offered", "accepted", "en_route", "in_progress", "arrived"]);
 const COMMITTED = new Set(["en_route", "in_progress", "arrived"]);
 
 export function normalizeEtaServiceType(raw: string | null | undefined, batteryInstallType?: string | null): string {
@@ -96,9 +103,12 @@ function lex(ids: string[]): string { return ids.join("\u0000"); }
 export function calculateInternalEta(input: InternalEtaInput): InternalEtaResult {
   const preview = Boolean(input.offer);
   if (!validPoint(input.liveLocation)) return { ok: false, reason: input.liveLocation ? "invalid_live_location" : "missing_live_location", orderedJobIds: [], breakdown: [], totalMinutes: null, reviewRequired: true, preview };
-  const active = input.jobs.filter((j) => ACTIVE.has(String(j.status).toLowerCase()));
-  const committed = active.filter((j) => COMMITTED.has(String(j.status).toLowerCase()));
-  const accepted = active.filter((j) => String(j.status).toLowerCase() === "accepted");
+  if (input.jobs.some((j) => !j.id || !validPoint(j.location)) || (input.offer && (!input.offer.id || !validPoint(input.offer.location)))) {
+    return { ok: false, reason: "invalid_live_location", orderedJobIds: [], breakdown: [], totalMinutes: null, reviewRequired: true, preview };
+  }
+  const active = input.jobs.filter((j) => ACTIVE.has(normalizeEtaStatus(j.status)));
+  const committed = active.filter((j) => COMMITTED.has(normalizeEtaStatus(j.status)));
+  const accepted = active.filter((j) => normalizeEtaStatus(j.status) === "accepted");
   // Started commitments retain their existing order. Only unstarted accepted work is resequenced.
   const candidateOrders = permutations(accepted).map((p) => [...committed, ...p]);
   let best: { order: EtaJob[]; travel: number } | null = null;
@@ -133,7 +143,7 @@ export function calculateInternalEta(input: InternalEtaInput): InternalEtaResult
     const arrivalOffsetMinutes = elapsed;
     elapsed += service.minutes;
     if (service.unknown) reviewRequired = true;
-    const result: EtaBreakdown = { jobId: job.id, status: String(job.status).toLowerCase(), serviceType: service.serviceType, serviceMinutes: service.minutes, unknownServiceType: service.unknown, travelMinutes, distanceMeters: leg.distanceMeters ?? null, arrivalOffsetMinutes, completionOffsetMinutes: elapsed, routeFrom: from };
+    const result: EtaBreakdown = { jobId: job.id, status: normalizeEtaStatus(job.status), serviceType: service.serviceType, serviceMinutes: service.minutes, unknownServiceType: service.unknown, travelMinutes, distanceMeters: leg.distanceMeters ?? null, arrivalOffsetMinutes, completionOffsetMinutes: elapsed, routeFrom: from };
     from = job.id;
     return result;
   });

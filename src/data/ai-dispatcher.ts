@@ -1705,11 +1705,11 @@ export async function workloadAwareArrivalMinutes(
  *  `roadRouter` may be null (routing disabled — every leg uses the factor
  *  model). Returns null when no driver qualifies (→ accept with driverId 0 +
  *  escalate; no ETA quoted). */
-async function internalEtaForDriver(driver: NearestDriver, queue: QueuedJob[], pickupLat: number, pickupLng: number, router: RoadRouter | null): Promise<ReturnType<typeof calculateInternalEta> | null> {
+async function internalEtaForDriver(driver: NearestDriver, queue: QueuedJob[], pickupLat: number, pickupLng: number, router: RoadRouter | null, serviceType?: string | null): Promise<ReturnType<typeof calculateInternalEta> | null> {
   const live = { lat: Number(driver.latitude), lng: Number(driver.longitude) };
   if (!Number.isFinite(live.lat) || !Number.isFinite(live.lng) || live.lat === 0 || live.lng === 0) return null;
   const jobs = queue.map((q, i) => ({ id: q.id ?? `queued-${i}`, status: q.status, location: { lat: q.pickupLat, lng: q.pickupLng }, serviceType: q.serviceType, batteryInstallType: q.batteryInstallType }));
-  const offer = { id: "incoming-offer", status: "offered", location: { lat: pickupLat, lng: pickupLng }, serviceType: null };
+  const offer = { id: "incoming-offer", status: "offered", location: { lat: pickupLat, lng: pickupLng }, serviceType: serviceType ?? null };
   const points = [{ id: "live", location: live }, ...jobs, offer];
   const routes: Record<string, { durationSeconds: number; distanceMeters?: number }> = {};
   for (const from of points) for (const to of points) {
@@ -1857,7 +1857,7 @@ export async function chooseBestDriverByRoad(
       // chain never fails here. The chain's STARTING position is the same
       // origin the free path uses (freshest fix / anchor center / payload).
       const geometry = queueGeometryFor(d, queues);
-      const planned = await internalEtaForDriver(d, geometry, pickupLat, pickupLng, roadRouter);
+      const planned = await internalEtaForDriver(d, geometry, pickupLat, pickupLng, roadRouter, area?.serviceType);
       const chain = planned?.ok ? { arrivalMinutes: planned.breakdown.at(-1)?.arrivalOffsetMinutes ?? planned.totalMinutes, queueMinutes: planned.breakdown.slice(0, -1).reduce((n, x) => n + x.travelMinutes + x.serviceMinutes, 0), finalLegMinutes: planned.breakdown.at(-1)?.travelMinutes ?? 0, finalLegProvider: "tomtom" as EtaProvider, queueBreakdown: planned.breakdown.map(x => `${x.travelMinutes} min travel + ${x.serviceMinutes} min service`).join(" + "), startedOnScene: false, unlocatedJobs: 0, tomtomFailure: null } : null;
       if (chain) {
         return {
