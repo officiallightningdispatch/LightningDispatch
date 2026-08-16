@@ -244,6 +244,7 @@ export type AutoDispatchRunResult = {
 
 /* ------------------------------- zone geometry ------------------------------- */
 
+const MAX_QUOTED_ETA_MINUTES = 60;
 const EARTH_RADIUS_MILES = 3958.8;
 const toRad = (d: number) => (d * Math.PI) / 180;
 
@@ -973,7 +974,7 @@ export async function getOrgSettings(orgId: string): Promise<OrgAiSettings> {
     zoneLat: Number(r.zone_lat),
     zoneLng: Number(r.zone_lng),
     zoneRadiusMiles: Number(r.zone_radius_miles),
-    maxEtaMinutes: Number(r.max_eta_minutes) || 45,
+    maxEtaMinutes: MAX_QUOTED_ETA_MINUTES,
     etaBufferMinutes: Number(r.eta_buffer_minutes) || 5,
     etaFloorMinutes: Number(r.eta_floor_minutes) || 5,
     qualificationGateEnabled: r.qualification_gate_enabled !== false,
@@ -1920,8 +1921,8 @@ export function finalEtaMinutes(
 ): number {
   const raw = Math.ceil(Number.isFinite(baseMinutes) ? baseMinutes : 0) + (Number.isFinite(bufferMinutes) ? bufferMinutes : 0);
   const floor = Math.round(floorMinutes) || 5;
-  // maxEtaMinutes is an SLA goal, not a cap: preserve the computed ETA.
-  return Math.max(floor, raw);
+  // Towbook must never receive an ETA over the owner-mandated hard cap.
+  return Math.min(MAX_QUOTED_ETA_MINUTES, Math.max(floor, raw));
 }
 
 /** Human-readable ETA breakdown for decision reasons. The label NAMES the
@@ -1937,6 +1938,10 @@ export function finalEtaMinutes(
  *  surfaced ("tomtom failed (HTTP 429) → osrm") and a stale GPS ping is
  *  flagged ("GPS ping age 30 min") — ETA honesty (2026-08-11). */
 export function etaDetailLabel(c: ChosenDriverEta, buffer: number, floor: number, _ceiling: number, finalMinutes: number): string {
+  const accurate = Math.max(floor, Math.ceil(Number(c.baseMinutes) || 0) + (Number.isFinite(buffer) ? buffer : 0));
+  const capNote = accurate > MAX_QUOTED_ETA_MINUTES && finalMinutes === MAX_QUOTED_ETA_MINUTES
+    ? `; ETA capped at 60 (accurate ${accurate})`
+    : "";
   const base = c.queueInclusive
     ? `queue-aware ETA ${Math.round(c.baseMinutes)} min = ${c.queueBreakdown ?? `${Math.round(c.queueMinutes ?? 0)} min queued work + ${Math.round(c.finalLegMinutes ?? 0)} min final leg`} (${c.provider === "tomtom" ? "tomtom-traffic" : c.provider === "osrm" ? "osrm" : "factor"})${c.startedOnScene ? "; already on-scene at current job" : ""}${c.unlocatedJobs ? `; +${c.unlocatedJobs} unlocated ≈ service` : ""}`
     : c.usedFallback
@@ -1959,7 +1964,7 @@ export function etaDetailLabel(c: ChosenDriverEta, buffer: number, floor: number
     : c.originBasis === "gps"
       ? `; origin: app GPS fix${c.gpsFixAgeMinutes != null ? ` (${Math.round(c.gpsFixAgeMinutes)} min old)` : ""}`
       : "";
-  return `ETA ${finalMinutes} min (${base} + buffer ${buffer}${delay}${tomtomNote}${pingNote}; floor ${floor}; straight-line ${c.straightLineMinutes}; GPS ${Number(c.originLat) || Number(c.driver.latitude)},${Number(c.originLng) || Number(c.driver.longitude)}${originNote})`;
+  return `ETA ${finalMinutes} min (${base} + buffer ${buffer}${delay}${tomtomNote}${pingNote}; floor ${floor}${capNote}; straight-line ${c.straightLineMinutes}; GPS ${Number(c.originLat) || Number(c.driver.latitude)},${Number(c.originLng) || Number(c.driver.longitude)}${originNote})`;
 }
 
 /** Human-readable area/origin note for the decision reason (owner-directed
@@ -2634,7 +2639,7 @@ async function runAutoDispatchInternal(
               const reason = `offer expired (expirationDateUtc=${expiration}) — not auto-accepted`;
               await recordDecision(orgId, actor, { callRequestId: String(id), callId: null, decision: "escalated_expired", driverId: null, driverName: null, etaMinutes: null, zoneDistanceMiles: null, reason, rawResponse: { offer: raw } }); result.processed++; result.decisions.push({ callRequestId: String(id), decision: "escalated_expired", escalated: true, reason }); continue;
             }
-            const recordFallback = async (reason: string) => { const eta = Number(numeric(raw.maxEta) ?? settings.maxEtaMinutes); const a = await postAccept(fetchImpl, baseUrl, cookies, String(id), eta, 0, "auto-accept by Lightning Dispatch; awaiting driver assignment"); const decision = a.ok ? "auto_accept_no_driver" : "escalated_accept_failed"; const msg = a.ok ? `${reason} — accepted with driverId 0 at the ${eta}-minute SLA ceiling` : `accept POST failed after retry (${a.attempts.map((x) => x.error ?? `HTTP ${x.status}`).join("; ")})`; await recordDecision(orgId, actor, { callRequestId: String(id), callId: null, decision, driverId: a.ok ? "0" : null, driverName: null, etaMinutes: a.ok ? eta : null, zoneDistanceMiles: null, reason: msg, rawResponse: { offer: raw, accept: a.raw, attempts: a.attempts } }); result.processed++; result.decisions.push({ callRequestId: String(id), decision, escalated: decision !== "auto_accept_no_driver", reason: msg }); };
+            const recordFallback = async (reason: string) => { const eta = MAX_QUOTED_ETA_MINUTES; const a = await postAccept(fetchImpl, baseUrl, cookies, String(id), eta, 0, "auto-accept by Lightning Dispatch; awaiting driver assignment"); const decision = a.ok ? "auto_accept_no_driver" : "escalated_accept_failed"; const msg = a.ok ? `${reason} — accepted with driverId 0 at ${eta} minutes (ETA capped at 60)` : `accept POST failed after retry (${a.attempts.map((x) => x.error ?? `HTTP ${x.status}`).join("; ")})`; await recordDecision(orgId, actor, { callRequestId: String(id), callId: null, decision, driverId: a.ok ? "0" : null, driverName: null, etaMinutes: a.ok ? eta : null, zoneDistanceMiles: null, reason: msg, rawResponse: { offer: raw, accept: a.raw, attempts: a.attempts } }); result.processed++; result.decisions.push({ callRequestId: String(id), decision, escalated: decision !== "auto_accept_no_driver", reason: msg }); };
             await recordFallback(`offer shape incomplete (${shape.missing.join(", ")})`); continue;
           }
         }
@@ -2676,7 +2681,7 @@ async function runAutoDispatchInternal(
       // Universal claim fallback: eligibility or data uncertainty must never
       // strand a live offer. The fallback ETA goal is used only when no road ETA can be computed.
       const acceptFallback = async (reason: string, rawResponse: unknown, zoneDistanceMiles: number | null = null) => {
-        const eta = Math.min(settings.maxEtaMinutes, offer.maxEta ?? settings.maxEtaMinutes);
+        const eta = MAX_QUOTED_ETA_MINUTES;
         const accept = await postAccept(fetchImpl, baseUrl, cookies, offer.callRequestId, eta, 0, "auto-accept by Lightning Dispatch; awaiting driver assignment");
         if (!accept.ok) {
           const failed = `accept POST failed after retry (${accept.attempts.map((a) => a.error ?? `HTTP ${a.status}`).join("; ")}) — offer could not be claimed`;
@@ -2684,7 +2689,7 @@ async function runAutoDispatchInternal(
           result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_accept_failed", escalated: true, reason: failed });
           return;
         }
-        const accepted = `${reason} — accepted with driverId 0 at the ${eta}-minute ETA goal; awaiting driver assignment`;
+        const accepted = `${reason} — accepted with driverId 0 at ${eta} minutes (ETA capped at 60); awaiting driver assignment`;
         await record({ decision: "auto_accept_no_driver", driverId: "0", etaMinutes: eta, zoneDistanceMiles, reason: accepted, rawResponse: { offer, cause: reason, accept: accept.raw, evidence: rawResponse } });
         result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "auto_accept_no_driver", escalated: true, reason: accepted });
       };
@@ -2896,7 +2901,7 @@ async function runAutoDispatchInternal(
         await acceptFallback(guardOutcome.blockedReason === "job_state_unknown" ? "job state unknown" : "no eligible same-state driver (no eligible driver with a provable state); using universal fallback", { offer, stateGuard: guardOutcome.excluded });
         continue;
       }
-      const effectiveMaxEta = settings.maxEtaMinutes; // goal only; never caps or gates dispatch
+      const effectiveMaxEta = MAX_QUOTED_ETA_MINUTES;
       const driver = chosen?.driver ?? null;
       // The driver the accept POST carries: the human-chosen driver when a
       // manual reassignment was respected (even offline — their driverId IS the
@@ -2917,7 +2922,7 @@ async function runAutoDispatchInternal(
       let etaMinutes = chosen
         ? finalEtaMinutes(chosen.baseMinutes, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta)
         : null;
-      const postEta = etaMinutes ?? effectiveMaxEta;
+      const postEta = Math.min(MAX_QUOTED_ETA_MINUTES, etaMinutes ?? MAX_QUOTED_ETA_MINUTES);
       const postNotes = dispatchDriverId
         ? (humanReassigned ? "auto-accept by Lightning Dispatch; keeping the human-assigned driver" : "auto-accept by Lightning Dispatch")
         : "auto-accept by Lightning Dispatch; awaiting driver assignment";
@@ -2964,11 +2969,11 @@ async function runAutoDispatchInternal(
         ? null
         : humanReassigned
           ? (manualEligible
-              ? `human-chosen driver ${dispatchDriverName} (${manualDriverId}) is not in the live nearestDrivers payload (offline or no GPS) — accepted WITH that driver (their id IS the assignment; ETA goal ${effectiveMaxEta} min (no road ETA available; no ETA fabricated))${manualNote ? `; ${manualNote}` : ""}`
+              ? `human-chosen driver ${dispatchDriverName} (${manualDriverId}) is not in the live nearestDrivers payload (offline or no GPS) — accepted WITH that driver (their id IS the assignment; ETA capped at 60 (no road ETA available; no ETA fabricated))${manualNote ? `; ${manualNote}` : ""}`
               : `human-chosen driver ${dispatchDriverName} (${manualDriverId}) is NOT in the offer's eligible list [${offer.drivers!.join(", ")}] — Towbook would silently drop their id, so the offer is accepted WITHOUT dispatch (never overwrite a human's choice with a different driver); assign manually on Towbook${manualNote ? `; ${manualNote}` : ""}`)
           : eligibleIds
-            ? `no ELIGIBLE checked-in driver with real GPS to quote an honest workload ETA (offer eligible list [${offer.drivers!.join(", ")}]${allLoadedNote ?? ""}; accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually, ETA goal ${effectiveMaxEta} min — no ETA recorded)`
-            : `no checked-in driver with real GPS to quote an honest workload ETA${allLoadedNote ?? ""} — accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually (ETA quoted at the SLA ceiling — no ETA recorded)`;
+            ? `no ELIGIBLE checked-in driver with real GPS to quote an honest workload ETA (offer eligible list [${offer.drivers!.join(", ")}]${allLoadedNote ?? ""}; accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually, ETA capped at 60 — no road ETA available)`
+            : `no checked-in driver with real GPS to quote an honest workload ETA${allLoadedNote ?? ""} — accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually (ETA capped at 60 — no road ETA available)`;
       // --- accept (the ONE state-changing call) — with a self-healing retry:
       // an expired session mid-offer (401/403/login-page on the POST) triggers
       // recovery, and the accept is retried once with the recovered session.
@@ -3009,7 +3014,7 @@ async function runAutoDispatchInternal(
           decision: "offer_lost_race",
           driverId: driver ? String(driver.driverId) : null,
           driverName: driver ? String(driver.driverName ?? "") : null,
-          etaMinutes, zoneDistanceMiles: zoneDistance, reason,
+          etaMinutes: etaMinutes == null ? null : Math.min(MAX_QUOTED_ETA_MINUTES, etaMinutes), zoneDistanceMiles: zoneDistance, reason,
           rawResponse: { offer, eta: etaFacts, accept: accept.raw, attempts: accept.attempts.map((a) => ({ status: a.status, body: a.body })) },
         });
         result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "offer_lost_race", escalated: false, reason });
@@ -3021,7 +3026,7 @@ async function runAutoDispatchInternal(
           decision: "escalated_accept_failed",
           driverId: driver ? String(driver.driverId) : null,
           driverName: driver ? String(driver.driverName ?? "") : null,
-          etaMinutes, zoneDistanceMiles: zoneDistance, reason,
+          etaMinutes: etaMinutes == null ? null : Math.min(MAX_QUOTED_ETA_MINUTES, etaMinutes), zoneDistanceMiles: zoneDistance, reason,
           rawResponse: { offer, eta: etaFacts, accept: accept.raw, attempts: accept.attempts.map((a) => ({ status: a.status, body: a.body })) },
         });
         result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_accept_failed", escalated: true, reason });
@@ -3153,7 +3158,7 @@ async function runAutoDispatchInternal(
             decision: "auto_accept_with_driver",
             callId: verification.callId,
             driverId: String(dispatchDriverId), driverName: dispatchDriverName ?? null,
-            etaMinutes, zoneDistanceMiles: zoneDistance, reason,
+            etaMinutes: etaMinutes == null ? null : Math.min(MAX_QUOTED_ETA_MINUTES, etaMinutes), zoneDistanceMiles: zoneDistance, reason,
             rawResponse: { offer, eta: etaFacts, accept: accept.raw, verification, serviceQualification },
           });
           // Assigned-offer push: notify the contractor's phone (single-strike
@@ -3173,7 +3178,7 @@ async function runAutoDispatchInternal(
             decision: "escalated_dispatch_pending",
             callId: verification.callId,
             driverId: String(dispatchDriverId), driverName: dispatchDriverName ?? null,
-            etaMinutes, zoneDistanceMiles: zoneDistance, reason,
+            etaMinutes: etaMinutes == null ? null : Math.min(MAX_QUOTED_ETA_MINUTES, etaMinutes), zoneDistanceMiles: zoneDistance, reason,
             rawResponse: { offer, eta: etaFacts, accept: accept.raw, verification, serviceQualification, state: "PENDING/UNVERIFIED" },
           });
           if (pending && deps.notifyDispatchPending) {
