@@ -37,7 +37,7 @@ async function reassignNotHeaded(orgId:string, job:Record<string,unknown>, oldId
   let drivers:unknown[]=[];
   try { const r=await fetch(`${session.baseUrl}/api/nearestDrivers?latitude=${lat}&longitude=${lng}&checkInForAllDrivers=true`,{headers:{cookie:session.cookies,accept:"application/json"}}); const b=await r.json(); drivers=Array.isArray(b)?b:[]; } catch { return escalate(orgId,jobId,oldId,"reassigned_no_candidate","Towbook driver list unavailable"); }
   drivers=drivers.filter(d=>Number((d as Record<string,unknown>)?.driverId)!==Number(oldId));
-  const queues=await loadOrgDriverQueues(orgId), gps=await loadDriverGpsFixes(orgId), anchors=await loadDriverAnchors(orgId), lightningAvailable=await loadLightningAvailableDrivers(orgId);
+  const queues=await loadOrgDriverQueues(orgId), gps=await loadDriverGpsFixes(orgId), anchors=await loadDriverAnchors(orgId);
   const serviceQualification={serviceType:job.service_type?String(job.service_type):null,assessed:Boolean(job.service_type),excluded:[] as Array<{driverId:number;reason:string}>};
   const resolution=resolveStateFromAddress(String(job.pickup ?? ""));
   const state=resolution.state;
