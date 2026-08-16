@@ -1932,7 +1932,6 @@ export async function chooseBestDriverByRoad(
     (a.distanceBasis === "gps" ? 0 : 1) - (b.distanceBasis === "gps" ? 0 : 1) ||
     (a.distanceMiles - b.distanceMiles > 0.01 ? 1 : b.distanceMiles - a.distanceMiles > 0.01 ? -1 : 0) ||
     a.baseMinutes - b.baseMinutes ||
-    (area?.zoneMatches?.get(String(b.driver.driverId)) ? 1 : 0) - (area?.zoneMatches?.get(String(a.driver.driverId)) ? 1 : 0) ||
     (area?.regionalPreference?.get(String(b.driver.driverId)) ?? 0) - (area?.regionalPreference?.get(String(a.driver.driverId)) ?? 0) ||
     String(a.driver.driverId ?? "").localeCompare(String(b.driver.driverId ?? ""));
 
@@ -2777,35 +2776,9 @@ async function runAutoDispatchInternal(
         result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_state_unknown", escalated: true, reason });
         continue;
       }
-      const zoneRows = await sql()`SELECT id,lat,lng,radius_miles,zip_codes FROM dispatch_zones WHERE org_id=${orgId} AND active=TRUE AND state=${zoneState.state.toUpperCase()}` as Array<Record<string, unknown>>;
-      const zoneLat = zoneState.source === "authoritative" && zoneState.authoritativeLat != null
-        ? zoneState.authoritativeLat : Number(offer.startLocationLatitude);
-      const zoneLng = zoneState.source === "authoritative" && zoneState.authoritativeLng != null
-        ? zoneState.authoritativeLng : Number(offer.startLocationLongitude);
-      const jobZip = rawStartingForZone ? zipOf(rawStartingForZone) : null;
-      const lat = zoneLat, lng = zoneLng;
-      const usableZones = zoneRows.map((z) => {
-        const zLat = Number(z.lat), zLng = Number(z.lng), radius = Number(z.radius_miles);
-        const zips = Array.isArray(z.zip_codes) ? z.zip_codes.map(String) : [];
-        const zipMatch = Boolean(jobZip && zips.includes(jobZip));
-        const latDelta = radius / 69;
-        const lngDelta = radius / (69 * Math.max(0.1, Math.cos(zLat * Math.PI / 180)));
-        const inBox = Math.abs(lat - zLat) <= latDelta && Math.abs(lng - zLng) <= lngDelta;
-        const distance = haversineMiles(lat, lng, zLat, zLng);
-        return { id: String(z.id), distance, matched: zipMatch || (inBox && distance <= radius) };
-      }).filter((z) => z.matched).sort((a, b) => a.distance - b.distance);
-      const zoneDistance = usableZones[0]?.distance ?? null;
-      if (!usableZones.length) {
-        // Keep the nearest resolved-state zone distance for the out-of-zone
-        // ledger too (the fallback claim still records it as a diagnostic).
-        const nearestZoneDistance = zoneRows.reduce((nearest, z) => {
-          const distance = haversineMiles(lat, lng, Number(z.lat), Number(z.lng));
-          return nearest == null || distance < nearest ? distance : nearest;
-        }, null as number | null);
-        await acceptFallback(`pickup is outside active ${zoneState.state.toUpperCase()} dispatch zones`, { offer, state: zoneState, zonesChecked: zoneRows.length }, nearestZoneDistance);
-        continue;
-      }
-
+      // Zone membership is intentionally bypassed (owner directive 2026-08-16).
+      // State resolution remains active: CT and TX drivers are never mixed.
+      const zoneDistance: number | null = null;
       // --- expiration check ---
       if (Date.parse(offer.expirationDateUtc) < Date.now()) {
         const reason = `offer expired (expirationDateUtc=${offer.expirationDateUtc}) — not auto-accepted (no accept)`;
@@ -2979,7 +2952,7 @@ async function runAutoDispatchInternal(
         }),
       };
       const guardOutcome: StateGuardOutcome = { active: false, jobState: null, blocked: false, blockedReason: null, checked: 0, inState: 0, excluded: [] };
-      const zoneMatches = await loadZoneMatches(orgId, candidates, lookupAnchor.lat, lookupAnchor.lng, zoneState.state);
+      const zoneMatches = new Map<string, boolean>();
       const regionalPreference = await loadRegionalPreferenceMatches(orgId, candidates, lookupAnchor.lat, lookupAnchor.lng, driverQueues);
       const areaCtx: AreaContext = humanReassigned
         ? { gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches, regionalPreference }

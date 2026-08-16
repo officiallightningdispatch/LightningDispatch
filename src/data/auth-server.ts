@@ -172,7 +172,7 @@ export async function effectiveDriverIdentity(u: AuthUser): Promise<DriverIdenti
   }
   if (u.linkedDriverUserId) {
     const rows = await sql()`SELECT u.name, u.towbook_driver_id, u.deactivated_at
-      FROM users u JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${u.orgId} AND m.role='contractor'
+      FROM users u JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${u.orgId} AND (m.role='contractor' OR u.towbook_driver_id IS NOT NULL)
       WHERE u.id=${u.linkedDriverUserId} LIMIT 1`;
     if (!rows.length) return null;
     const r = rows[0] as Record<string, unknown>;
@@ -344,7 +344,7 @@ export async function listLinkableDriversCore(): Promise<DriverLinkStatusResult>
   const q = sql();
   const linkedRow = u.linkedDriverUserId
     ? (await q`SELECT d.id, d.name, d.towbook_driver_id, d.deactivated_at
-        FROM users d JOIN organization_memberships m ON m.user_id=d.id AND m.org_id=${u.orgId} AND m.role='contractor'
+        FROM users d JOIN organization_memberships m ON m.user_id=d.id AND m.org_id=${u.orgId} AND (m.role='contractor' OR d.towbook_driver_id IS NOT NULL)
         WHERE d.id=${u.linkedDriverUserId} LIMIT 1`)[0] as Record<string, unknown> | undefined
     : undefined;
   const linked = linkedRow && linkedRow.towbook_driver_id != null
@@ -373,7 +373,7 @@ export async function listLinkableDriversCore(): Promise<DriverLinkStatusResult>
       (SELECT MAX(updated_at) FROM towbook_sessions ts WHERE ts.org_id=${u.orgId} AND ts.towbook_driver_id=u.towbook_driver_id AND ts.session_kind='driver') AS last_session,
       (SELECT MAX(captured_at) FROM driver_locations dl WHERE dl.org_id=${u.orgId} AND dl.driver_id=u.id) AS last_ping
     FROM users u
-    JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${u.orgId} AND m.role='contractor'
+    JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${u.orgId} AND (m.role='contractor' OR u.towbook_driver_id IS NOT NULL)
     WHERE u.deactivated_at IS NULL AND u.towbook_driver_id IS NOT NULL
       -- drivers already linked to ANY account are not linkable (one owner per
       -- driver, partial unique index) — the link column lives on the SOURCE
@@ -406,7 +406,7 @@ export async function linkDriverAccountCore(driverUserId: unknown): Promise<{ ok
   const q = sql();
   if (u.towbookDriverId) return { ok: false, error: "Your account is already a driver — the Driver view switch is on in your header." };
   const target = (await q`SELECT d.id, d.name, d.towbook_driver_id, d.deactivated_at
-    FROM users d JOIN organization_memberships m ON m.user_id=d.id AND m.org_id=${u.orgId} AND m.role='contractor'
+    FROM users d JOIN organization_memberships m ON m.user_id=d.id AND m.org_id=${u.orgId} AND (m.role='contractor' OR d.towbook_driver_id IS NOT NULL)
     WHERE d.id=${driverUserId} LIMIT 1`)[0] as Record<string, unknown> | undefined;
   // The join is the authorization check, before any link write: a driver from
   // another org is indistinguishable from a missing account to this caller.
@@ -448,7 +448,7 @@ export async function unlinkDriverAccountCore(): Promise<{ ok: true } | { ok: fa
     WHERE s.id=${u.id} LIMIT 1`)[0] as Record<string, unknown> | undefined;
   if (!before || before.linked_driver_user_id == null) return { ok: false, error: "No driver account is linked." };
   // Refuse to mutate a link whose target is not a contractor in this org.
-  const target = await q`SELECT 1 FROM users d JOIN organization_memberships m ON m.user_id=d.id AND m.org_id=${u.orgId} AND m.role='contractor' WHERE d.id=${before.linked_driver_user_id} LIMIT 1`;
+  const target = await q`SELECT 1 FROM users d JOIN organization_memberships m ON m.user_id=d.id AND m.org_id=${u.orgId} AND (m.role='contractor' OR d.towbook_driver_id IS NOT NULL) WHERE d.id=${before.linked_driver_user_id} LIMIT 1`;
   if (!target.length) return { ok: false, error: "The linked driver is not in this account." };
   await q`UPDATE users SET linked_driver_user_id=NULL WHERE id=${u.id}`;
   await writeLinkAudit(u, "driver_link_unset", String(before.linked_driver_user_id), { driverUserId: String(before.linked_driver_user_id) });

@@ -117,7 +117,7 @@ export async function isDriverDeactivated(orgId: string, towbookDriverId: string
   const q = await db();
   const rows = await q`SELECT u.deactivated_at
     FROM users u
-    JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${orgId} AND m.role = 'contractor'
+    JOIN organization_memberships m ON m.user_id = u.id AND m.org_id = ${orgId} AND (m.role = 'contractor' OR u.towbook_driver_id IS NOT NULL)
     WHERE u.towbook_driver_id = ${towbookDriverId} OR u.towbook_user_id = ${towbookDriverId}
     LIMIT 1`;
   return rows.length > 0 && rows[0].deactivated_at != null;
