@@ -80,11 +80,11 @@ check("6: TX placeholder expansion includes GPS/anchor drivers and never parks d
   assert.match(dispatcher, /in-state driver pool expanded from anchors\/fixes/);
 });
 
-check("7: over-ceiling recalc dispatches with uncapped ledger detail and capped quote", () => {
+check("7: over-goal recalc dispatches with accurate uncapped quote", () => {
   assert.match(dispatcher, /const rawRecalcEta = Math\.ceil\(recalculated\.baseMinutes\) \+ settings\.etaBufferMinutes/);
-  assert.match(dispatcher, /recalcOverCeiling/);
-  assert.match(dispatcher, /dispatched with ETA \$\{rawRecalcEta\} min — SLA-ceiling quote capped at \$\{effectiveMaxEta\}/);
-  assert.match(dispatcher, /etaMinutes = finalEtaMinutes\(recalculated\.baseMinutes, settings\.etaBufferMinutes, settings\.etaFloorMinutes, effectiveMaxEta\)/);
+  assert.doesNotMatch(dispatcher, /recalcOverCeiling/);
+  assert.match(dispatcher, /accurate ETA \$\{rawRecalcEta\} min/);
+  assert.match(dispatcher, /return Math\.max\(floor, raw\)/);
 });
 
 check("8: owner-role towbook driver is effective for reassign and state guarded", () => {

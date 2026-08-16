@@ -1981,21 +1981,18 @@ export async function chooseBestDriverByRoad(
   return winners[0];
 }
 
-/** Final quoted ETA: ceil(base minutes) + prep buffer, clamped to
- *  [floor, ceiling]. The ceiling is a hard SLA cap per owner direction
- *  2026-08-15 (org max, lowered by the offer's own maxEta). */
+/** Final quoted ETA: ceil(base minutes) + prep buffer, with only the
+ * configured minimum floor. max ETA is a goal, never a dispatch gate or cap. */
 export function finalEtaMinutes(
   baseMinutes: number,
   bufferMinutes: number,
   floorMinutes: number,
-  ceilingMinutes: number,
+  _maxEtaMinutes?: number,
 ): number {
   const raw = Math.ceil(Number.isFinite(baseMinutes) ? baseMinutes : 0) + (Number.isFinite(bufferMinutes) ? bufferMinutes : 0);
   const floor = Math.round(floorMinutes) || 5;
-  const ceiling = Math.max(floor, Math.round(ceilingMinutes) || 45);
-  // Keep the floor for malformed/near-zero estimates while hard-capping every
-  // quote at the SLA ceiling, including queue-inclusive estimates.
-  return Math.min(ceiling, Math.max(floor, raw));
+  // maxEtaMinutes is an SLA goal, not a cap: preserve the computed ETA.
+  return Math.max(floor, raw);
 }
 
 /** Human-readable ETA breakdown for decision reasons. The label NAMES the
@@ -2033,7 +2030,7 @@ export function etaDetailLabel(c: ChosenDriverEta, buffer: number, floor: number
     : c.originBasis === "gps"
       ? `; origin: app GPS fix${c.gpsFixAgeMinutes != null ? ` (${Math.round(c.gpsFixAgeMinutes)} min old)` : ""}`
       : "";
-  return `ETA ${finalMinutes} min (${base} + buffer ${buffer}${delay}${tomtomNote}${pingNote}; floor ${floor}, ceiling ${ceiling}; straight-line ${c.straightLineMinutes}; GPS ${Number(c.originLat) || Number(c.driver.latitude)},${Number(c.originLng) || Number(c.driver.longitude)}${originNote})`;
+  return `ETA ${finalMinutes} min (${base} + buffer ${buffer}${delay}${tomtomNote}${pingNote}; floor ${floor}; straight-line ${c.straightLineMinutes}; GPS ${Number(c.originLat) || Number(c.driver.latitude)},${Number(c.originLng) || Number(c.driver.longitude)}${originNote})`;
 }
 
 /** Human-readable area/origin note for the decision reason (owner-directed
@@ -2748,7 +2745,7 @@ async function runAutoDispatchInternal(
         });
 
       // Universal claim fallback: eligibility or data uncertainty must never
-      // strand a live offer. The SLA ceiling is an honest not-yet-assigned ETA.
+      // strand a live offer. The fallback ETA goal is used only when no road ETA can be computed.
       const acceptFallback = async (reason: string, rawResponse: unknown, zoneDistanceMiles: number | null = null) => {
         const eta = Math.min(settings.maxEtaMinutes, offer.maxEta ?? settings.maxEtaMinutes);
         const accept = await postAccept(fetchImpl, baseUrl, cookies, offer.callRequestId, eta, 0, "auto-accept by Lightning Dispatch; awaiting driver assignment");
@@ -2758,7 +2755,7 @@ async function runAutoDispatchInternal(
           result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_accept_failed", escalated: true, reason: failed });
           return;
         }
-        const accepted = `${reason} — accepted with driverId 0 at the ${eta}-minute SLA ceiling; awaiting driver assignment`;
+        const accepted = `${reason} — accepted with driverId 0 at the ${eta}-minute ETA goal; awaiting driver assignment`;
         await record({ decision: "auto_accept_no_driver", driverId: "0", etaMinutes: eta, zoneDistanceMiles, reason: accepted, rawResponse: { offer, cause: reason, accept: accept.raw, evidence: rawResponse } });
         result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "auto_accept_no_driver", escalated: true, reason: accepted });
       };
@@ -2970,7 +2967,7 @@ async function runAutoDispatchInternal(
         await acceptFallback(guardOutcome.blockedReason === "job_state_unknown" ? "job state unknown" : "no eligible same-state driver (no eligible driver with a provable state); using universal fallback", { offer, stateGuard: guardOutcome.excluded });
         continue;
       }
-      const effectiveMaxEta = Math.min(settings.maxEtaMinutes, offer.maxEta ?? settings.maxEtaMinutes);
+      const effectiveMaxEta = settings.maxEtaMinutes; // goal only; never caps or gates dispatch
       const driver = chosen?.driver ?? null;
       // The driver the accept POST carries: the human-chosen driver when a
       // manual reassignment was respected (even offline — their driverId IS the
@@ -3038,10 +3035,10 @@ async function runAutoDispatchInternal(
         ? null
         : humanReassigned
           ? (manualEligible
-              ? `human-chosen driver ${dispatchDriverName} (${manualDriverId}) is not in the live nearestDrivers payload (offline or no GPS) — accepted WITH that driver (their id IS the assignment; ETA quoted at the ${effectiveMaxEta}-min ceiling — no road ETA fabricated)${manualNote ? `; ${manualNote}` : ""}`
+              ? `human-chosen driver ${dispatchDriverName} (${manualDriverId}) is not in the live nearestDrivers payload (offline or no GPS) — accepted WITH that driver (their id IS the assignment; ETA goal ${effectiveMaxEta} min (no road ETA available; no ETA fabricated))${manualNote ? `; ${manualNote}` : ""}`
               : `human-chosen driver ${dispatchDriverName} (${manualDriverId}) is NOT in the offer's eligible list [${offer.drivers!.join(", ")}] — Towbook would silently drop their id, so the offer is accepted WITHOUT dispatch (never overwrite a human's choice with a different driver); assign manually on Towbook${manualNote ? `; ${manualNote}` : ""}`)
           : eligibleIds
-            ? `no ELIGIBLE checked-in driver with real GPS to quote an honest workload ETA (offer eligible list [${offer.drivers!.join(", ")}]${allLoadedNote ?? ""}; accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually, ETA quoted at the ${effectiveMaxEta}-min ceiling — no ETA recorded)`
+            ? `no ELIGIBLE checked-in driver with real GPS to quote an honest workload ETA (offer eligible list [${offer.drivers!.join(", ")}]${allLoadedNote ?? ""}; accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually, ETA goal ${effectiveMaxEta} min — no ETA recorded)`
             : `no checked-in driver with real GPS to quote an honest workload ETA${allLoadedNote ?? ""} — accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually (ETA quoted at the SLA ceiling — no ETA recorded)`;
       // --- accept (the ONE state-changing call) — with a self-healing retry:
       // an expired session mid-offer (401/403/login-page on the POST) triggers
@@ -3157,9 +3154,8 @@ async function runAutoDispatchInternal(
             dispatchDriverId = Number(recalculated.driver.driverId) || 0;
             dispatchDriverName = String(recalculated.driver.driverName ?? dispatchDriverId);
             const rawRecalcEta = Math.ceil(recalculated.baseMinutes) + settings.etaBufferMinutes;
-            const recalcOverCeiling = rawRecalcEta > effectiveMaxEta;
             etaMinutes = finalEtaMinutes(recalculated.baseMinutes, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta);
-            recalculationNote = `first choice ${firstChoice} became unavailable (verification saw ${verification.driverOnCall == null ? "no eligible driver" : `driver ${verification.driverOnCall}`}) → recalculated to ${dispatchDriverId}${recalcOverCeiling ? `; dispatched with ETA ${rawRecalcEta} min — SLA-ceiling quote capped at ${effectiveMaxEta}` : ""}`;
+            recalculationNote = `first choice ${firstChoice} became unavailable (verification saw ${verification.driverOnCall == null ? "no eligible driver" : `driver ${verification.driverOnCall}`}) → recalculated to ${dispatchDriverId}; accurate ETA ${rawRecalcEta} min`;
             {
               verification = await verifyDispatch(fetchImpl, baseUrl, cookies, offer, callIdFromAcceptResponse(accept.raw), dispatchDriverId, {
                 retryDelayMs: deps.verifyRetryDelayMs ?? 10000,
@@ -3208,7 +3204,7 @@ async function runAutoDispatchInternal(
         if (verification.ok) {
           const etaLabel = etaMinutes != null && chosen
             ? ` — ${etaDetailLabel(chosen, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta, etaMinutes)}`
-            : " — no road ETA quoted (driver not in the live nearestDrivers payload; ETA at the SLA ceiling)";
+            : " — no road ETA quoted (driver not in the live nearestDrivers payload; ETA goal (no road ETA available))";
           const areaNote = chosen ? areaSelectionNote(chosen, offer.startLocationLatitude, offer.startLocationLongitude) : null;
           const qualificationNote = serviceQualification.excluded.length
             ? `; service-type '${serviceQualification.serviceType}' excluded ${serviceQualification.excluded.map((e) => `driver ${e.driverId}: ${e.reason}`).join("; ")}`
