@@ -562,7 +562,7 @@ export async function batteryAgentStepCore(user: PhotoUser, data: unknown, opts:
       if (types.length) { const t=types[0] as Record<string,unknown>; installTypeId=String(t.id); installFeeCents=Number(t.customer_price_cents); driverPayoutCents=Number(t.driver_payout_cents); }
       else if (code === "STANDARD" || code === "ADVANCED") { installTypeId=""; installFeeCents=code === "ADVANCED" ? rates.installAdvancedCents : rates.installStandardCents; driverPayoutCents=code === "ADVANCED" ? 6500 : 4500; }
       else return { ok: false, code: "invalid_state", message: "Select an available installation type." };
-      const productRows = await q`SELECT id, retail_cents, installation_cents, warranty_years, free_replacement_years, core_charge_cents, display_name FROM battery_products WHERE org_id=${user.orgId} AND group_size=${sale.batteryGroupSize} AND active=true AND availability <> 'unavailable' LIMIT 1`;
+      const productRows = await q`SELECT id, retail_cents, installation_cents, warranty_years, free_replacement_years, core_charge_cents, display_name FROM battery_products WHERE org_id=${user.orgId} AND active=true AND availability <> 'unavailable' AND (group_size=${sale.batteryGroupSize} OR alternate_group_sizes @> ${JSON.stringify([sale.batteryGroupSize])}::jsonb) LIMIT 1`;
       if (!productRows.length) return { ok: false, code: "invalid_state", message: "This fitment is awaiting dispatcher or owner review." };
       const product=productRows[0] as Record<string,unknown>; const batteryPriceCents=Number(product.retail_cents);
       const quote = batteryQuoteCents(batteryPriceCents, installFeeCents, rates.taxRateBps, rates.adminFeeBps);
