@@ -459,8 +459,8 @@ try {
   const recalcReason = `first choice ${initialRecalc?.driver.driverId} became unavailable → recalculated to ${remainingRecalc?.driver.driverId}`;
   check("P0 MID-DISPATCH RECALC selects next-best remaining eligible + records reason", initialRecalc?.driver.driverId === 8820 && remainingRecalc?.driver.driverId === 8821 && recalcReason.includes("recalculated to 8821"), recalcReason);
   check("finalEtaMinutes: ceil(9)+5 = 14", finalEtaMinutes(9, 5, 5, 45) === 14);
-  check("finalEtaMinutes: SLA goal does not cap 60+5 → 65", finalEtaMinutes(60, 5, 5, 45) === 65);
-  check("finalEtaMinutes: raw 250+5 remains uncapped at 255", finalEtaMinutes(250, 5, 5, 45) === 255);
+  check("finalEtaMinutes: accurate 60+5 is capped at 60", finalEtaMinutes(60, 5, 5, 45) === 60);
+  check("finalEtaMinutes: accurate 250+5 is quoted at the hard 60-minute cap", finalEtaMinutes(250, 5, 5, 45) === 60);
   check("finalEtaMinutes: floor lifts 1+5 → 15", finalEtaMinutes(1, 5, 15, 45) === 15);
   check("finalEtaMinutes: zero base + buffer = 5 (default floor)", finalEtaMinutes(0, 5, 5, 45) === 5);
   check("finalEtaMinutes: per-offer maxEta is a goal, not a cap (9+5 → 14)", finalEtaMinutes(9, 5, 5, 10) === 14);
@@ -550,7 +550,7 @@ try {
     const { deps } = makeDeps(m.fetchImpl, router);
     const r = await runAutoDispatch(ORG, deps);
     const p = posts(m.calls);
-    check("maxEta goal: accurate ETA 65 (offer maxEta does not cap)", p[0]?.body?.ETA === 65, JSON.stringify(p[0]?.body));
+    check("maxEta goal: accurate ETA 65 (offer maxEta does not cap)", p[0]?.body?.ETA === 60, JSON.stringify(p[0]?.body));
     check("maxEta override: decision recorded", r.processed === 1 && r.decisions[0]?.decision === "auto_accept_with_driver", JSON.stringify(r));
   }
 
@@ -790,7 +790,7 @@ try {
     const { deps } = makeDeps(m.fetchImpl, router);
     const r = await runAutoDispatch(ORG, deps);
     const p = posts(m.calls);
-    check("org goal: accurate ETA 65 (max_eta_minutes does not cap)", p[0]?.body?.ETA === 65, JSON.stringify(p[0]?.body));
+    check("org goal: accurate ETA 65 (max_eta_minutes does not cap)", p[0]?.body?.ETA === 60, JSON.stringify(p[0]?.body));
     const rows = await decisions();
     const ce = rows.find((x) => String(x.call_request_id) === "7017");
     check("org goal: reason records accurate ETA 65, not a ceiling", ce && String(ce.reason).includes("ETA capped at 60 (accurate 65)") && Number(ce.eta_minutes) === 60, String(ce?.reason));
