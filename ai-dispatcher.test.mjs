@@ -459,8 +459,8 @@ try {
   const recalcReason = `first choice ${initialRecalc?.driver.driverId} became unavailable → recalculated to ${remainingRecalc?.driver.driverId}`;
   check("P0 MID-DISPATCH RECALC selects next-best remaining eligible + records reason", initialRecalc?.driver.driverId === 8820 && remainingRecalc?.driver.driverId === 8821 && recalcReason.includes("recalculated to 8821"), recalcReason);
   check("finalEtaMinutes: ceil(9)+5 = 14", finalEtaMinutes(9, 5, 5, 45) === 14);
-  check("finalEtaMinutes: accurate 60+5 is capped at 60", finalEtaMinutes(60, 5, 5, 45) === 60);
-  check("finalEtaMinutes: accurate 250+5 is quoted at the hard 60-minute cap", finalEtaMinutes(250, 5, 5, 45) === 60);
+  check("finalEtaMinutes: accurate 60+5 preserves accurate ETA", finalEtaMinutes(60, 5, 5, 45) === 65);
+  check("finalEtaMinutes: accurate 250+5 remains uncapped", finalEtaMinutes(250, 5, 5, 45) === 255);
   check("finalEtaMinutes: floor lifts 1+5 → 15", finalEtaMinutes(1, 5, 15, 45) === 15);
   check("finalEtaMinutes: zero base + buffer = 5 (default floor)", finalEtaMinutes(0, 5, 5, 45) === 5);
   check("finalEtaMinutes: per-offer maxEta is a goal, not a cap (9+5 → 14)", finalEtaMinutes(9, 5, 5, 10) === 14);
@@ -492,9 +492,10 @@ try {
   /* ============ 6) session_unavailable (undecryptable session) ============ */
   {
     await q`UPDATE towbook_sessions SET encrypted_session='v1.garbage' WHERE org_id=${ORG}`;
-    const { deps } = makeDeps(makeFetch({ offers: [], drivers: [] }).fetchImpl);
+    const m = makeFetch({ offers: [], drivers: [] });
+    const { deps } = makeDeps(m.fetchImpl);
     const r = await runAutoDispatch(ORG, deps);
-    check("undecryptable session → skipped session_unavailable", r.skipped === "session_unavailable", JSON.stringify(r));
+    check("undecryptable session → recovery failure is classified, no decisions, no dispatch", String(r.skipped).includes("session recovery failed") && r.decisions.length === 0 && posts(m.calls).length === 0, JSON.stringify(r));
     await q`UPDATE towbook_sessions SET encrypted_session=${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))} WHERE org_id=${ORG}`;
   }
 
@@ -550,7 +551,7 @@ try {
     const { deps } = makeDeps(m.fetchImpl, router);
     const r = await runAutoDispatch(ORG, deps);
     const p = posts(m.calls);
-    check("maxEta goal: accurate ETA 65 (offer maxEta does not cap)", p[0]?.body?.ETA === 60, JSON.stringify(p[0]?.body));
+    check("maxEta goal: accurate ETA 65 (offer maxEta does not cap)", p[0]?.body?.ETA === 65, JSON.stringify(p[0]?.body));
     check("maxEta override: decision recorded", r.processed === 1 && r.decisions[0]?.decision === "auto_accept_with_driver", JSON.stringify(r));
   }
 
@@ -567,7 +568,7 @@ try {
     const { deps } = makeDeps(m.fetchImpl, router, { stateResolver: async () => "CT" });
     const r = await runAutoDispatch(ORG, deps); const p = posts(m.calls);
     const row = (await q`SELECT * FROM ai_dispatcher_decisions WHERE org_id=${ORG} AND call_request_id='327309797'`)[0];
-    check("owner incident 327309797: in-state driver auto-accepted at accurate ETA 79, quoted ETA 60", r.decisions[0]?.decision === "auto_accept_with_driver" && p[0]?.body?.driverId === 788001 && p[0]?.body?.ETA === 60 && Number(row?.eta_minutes) === 60 && String(row?.reason).includes("ETA capped at 60 (accurate 79)"), JSON.stringify({ decision: r.decisions[0], post: p[0], row }));
+    check("owner incident 327309797: in-state driver auto-accepted at accurate ETA 79, uncapped ETA 79", r.decisions[0]?.decision === "auto_accept_with_driver" && p[0]?.body?.driverId === 788001 && p[0]?.body?.ETA === 79 && Number(row?.eta_minutes) === 79 && String(row?.reason).includes("ETA 79 min"), JSON.stringify({ decision: r.decisions[0], post: p[0], row }));
   }
 
   /* ============ 10) boundary: 29.5 mi in-zone accepted ============ */
@@ -790,10 +791,10 @@ try {
     const { deps } = makeDeps(m.fetchImpl, router);
     const r = await runAutoDispatch(ORG, deps);
     const p = posts(m.calls);
-    check("org goal: accurate ETA 65 (max_eta_minutes does not cap)", p[0]?.body?.ETA === 60, JSON.stringify(p[0]?.body));
+    check("org goal: accurate ETA 65 (max_eta_minutes does not cap)", p[0]?.body?.ETA === 65, JSON.stringify(p[0]?.body));
     const rows = await decisions();
     const ce = rows.find((x) => String(x.call_request_id) === "7017");
-    check("org goal: reason records accurate ETA 65, not a ceiling", ce && String(ce.reason).includes("ETA capped at 60 (accurate 65)") && Number(ce.eta_minutes) === 60, String(ce?.reason));
+    check("org goal: reason records accurate ETA 65, not a ceiling", ce && String(ce.reason).includes("ETA 65 min") && !String(ce.reason).includes("capped") && Number(ce.eta_minutes) === 65 && ce.raw_response?.eta?.finalMinutes === 65, String(ce?.reason));
   }
 
   /* ============ 24) choice BY ROAD ETA: better road time beats better straight-line ============ */
