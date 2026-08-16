@@ -826,6 +826,13 @@ export async function chargeBatterySaleHandler(data: unknown, opts?: { fetchImpl
   if (!u) return { ok: false as const, code: "unauthorized" as const, message: "Sign in as a driver first." };
   return chargeBatterySaleCore(u, data, opts);
 }
+export type BatteryInstallTypeRow = { id:string; code:string; label:string; description:string; customerPriceCents:number; driverPayoutCents:number; difficulty:string; minutes:number; requirements:string[] };
+export async function listBatteryInstallTypesHandler() {
+  if (!configured()) return [] as BatteryInstallTypeRow[];
+  const { currentUser } = await import('./auth-server'); const u = await currentUser(); if (!u) return [] as BatteryInstallTypeRow[];
+  const q = await db(); const rows = await q`SELECT id,code,label,description,customer_price_cents,driver_payout_cents,difficulty,estimated_minutes,requirements FROM battery_install_types WHERE org_id=${u.orgId} AND active=true ORDER BY estimated_minutes,code`;
+  return (rows as Record<string,unknown>[]).map(r=>({id:String(r.id),code:String(r.code),label:String(r.label??r.code),description:String(r.description??''),customerPriceCents:Number(r.customer_price_cents),driverPayoutCents:Number(r.driver_payout_cents),difficulty:String(r.difficulty),minutes:Number(r.estimated_minutes),requirements:Array.isArray(r.requirements)?r.requirements.map(String):[]}));
+}
 export async function listBatterySalesHandler() {
   if (!configured()) return [] as BatterySaleOwnerRow[];
   const { currentUser } = await import("./auth-server");
