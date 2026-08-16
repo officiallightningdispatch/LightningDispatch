@@ -342,6 +342,12 @@ try {
   // heavy-tow service type trips capability-mismatch — not missing-compliance.
   await q`INSERT INTO contractor_documents(id,org_id,contractor_id,doc_type_id,storage_key,status,uploaded_by_user_id) VALUES('qual-doc-capability',${ORG7},${QUAL_USERS[5]},'qual-doc-a','x','verified',${USER}),('qual-doc-capability-b',${ORG7},${QUAL_USERS[5]},'qual-doc-b','x','verified',${USER}) ON CONFLICT (id) DO UPDATE SET org_id=EXCLUDED.org_id, contractor_id=EXCLUDED.contractor_id, doc_type_id=EXCLUDED.doc_type_id, storage_key=EXCLUDED.storage_key, status=EXCLUDED.status, uploaded_by_user_id=EXCLUDED.uploaded_by_user_id`;
   await q`UPDATE contractor_profiles SET vehicle_type='van' WHERE user_id=${QUAL_USERS[5]} AND org_id=${ORG7}`;
+  // Tow-capability companion: the owner rule requires tow-capable AND ONLINE —
+  // seed the GO lease (fresh heartbeat) for the qualified tow-truck driver so the
+  // 92014 companion case exercises capability+availability, not an offline rejection.
+  await q`INSERT INTO driver_availability_log(org_id,user_id,day,online_minutes,ping_count,session_started_at,heartbeat_at,updated_at)
+    VALUES(${ORG7},${QUAL_USERS[4]},CURRENT_DATE,0,1,NOW(),NOW(),NOW())
+    ON CONFLICT (org_id,user_id,day) DO UPDATE SET session_started_at=NOW(),heartbeat_at=NOW(),updated_at=NOW()`;
   await q`UPDATE org_settings SET qualification_gate_enabled=TRUE WHERE org_id=${ORG7}`;
   created = true;
   // Production-shaped zoning fixture: auto-accept now resolves state + active
