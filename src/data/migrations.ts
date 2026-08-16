@@ -1524,6 +1524,166 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`ALTER TABLE tip_cashouts ADD COLUMN IF NOT EXISTS covered_tire_plug_ids JSONB NOT NULL DEFAULT '[]'::jsonb`;
     await q`ALTER TABLE payout_records ADD COLUMN IF NOT EXISTS tire_plug_cents INTEGER NOT NULL DEFAULT 0`;
   }],
+  [70, async (q) => {
+    // Battery B1 core catalog and inventory model. This migration is additive:
+    // Phase 1 battery_sales remains intact and is extended in migration 71.
+    await q`CREATE TABLE IF NOT EXISTS battery_products (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      group_size TEXT NOT NULL,
+      alternate_group_sizes JSONB NOT NULL DEFAULT '[]'::jsonb,
+      display_name TEXT NOT NULL DEFAULT 'LIGHTNING GOLD BATTERY',
+      retail_cents INTEGER NOT NULL CHECK (retail_cents >= 0),
+      installation_cents INTEGER NOT NULL CHECK (installation_cents >= 0),
+      warranty_years INTEGER NOT NULL CHECK (warranty_years >= 0),
+      free_replacement_years INTEGER NOT NULL CHECK (free_replacement_years >= 0),
+      core_charge_cents INTEGER NOT NULL CHECK (core_charge_cents >= 0),
+      availability TEXT NOT NULL CHECK (availability IN ('in_stock','limited','unavailable','special_order')),
+      active BOOLEAN NOT NULL DEFAULT TRUE,
+      image_key TEXT,
+      compatibility_review_required BOOLEAN NOT NULL DEFAULT FALSE,
+      source_reference_internal TEXT,
+      internal_cost_cents INTEGER,
+      internal_margin_cents INTEGER,
+      source_brand TEXT,
+      source_line TEXT,
+      source_part_number TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (org_id, group_size)
+    )`;
+    await q`CREATE TABLE IF NOT EXISTS battery_compatibility (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      make TEXT NOT NULL,
+      model TEXT NOT NULL,
+      year_from INTEGER NOT NULL,
+      year_to INTEGER NOT NULL,
+      trim TEXT,
+      engine TEXT,
+      battery_group_size TEXT NOT NULL,
+      source_reference_internal TEXT,
+      status TEXT NOT NULL DEFAULT 'review' CHECK (status IN ('approved','review','rejected')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CHECK (year_from >= 1886 AND year_to >= year_from),
+      FOREIGN KEY (org_id, battery_group_size) REFERENCES battery_products(org_id, group_size) ON DELETE RESTRICT
+    )`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS battery_compatibility_fitment_uidx
+      ON battery_compatibility(org_id, lower(make), lower(model), year_from, year_to, battery_group_size, lower(COALESCE(trim, '')), lower(COALESCE(engine, ''))) `;
+    await q`CREATE TABLE IF NOT EXISTS battery_install_types (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      code TEXT NOT NULL CHECK (code IN ('STANDARD','ADVANCED','EUROPEAN','BATTERY_LOCATION_REMOTE','PROGRAMMING_REQUIRED','DUAL_BATTERY')),
+      customer_price_cents INTEGER NOT NULL CHECK (customer_price_cents >= 0),
+      driver_payout_cents INTEGER NOT NULL CHECK (driver_payout_cents >= 0),
+      difficulty TEXT NOT NULL,
+      estimated_minutes INTEGER NOT NULL CHECK (estimated_minutes > 0),
+      requirements JSONB NOT NULL DEFAULT '[]'::jsonb,
+      active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (org_id, code)
+    )`;
+    await q`CREATE TABLE IF NOT EXISTS battery_inventory (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      product_id TEXT NOT NULL REFERENCES battery_products(id) ON DELETE CASCADE,
+      on_hand_units INTEGER NOT NULL CHECK (on_hand_units >= 0),
+      reserved_units INTEGER NOT NULL DEFAULT 0 CHECK (reserved_units >= 0),
+      held_units INTEGER NOT NULL DEFAULT 0 CHECK (held_units >= 0),
+      reorder_threshold INTEGER NOT NULL DEFAULT 0 CHECK (reorder_threshold >= 0),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (org_id, product_id)
+    )`;
+  }],
+  [71, async (q) => {
+    // Sale snapshots make catalog edits unable to mutate historical charges.
+    await q`ALTER TABLE battery_sales ADD COLUMN IF NOT EXISTS product_id TEXT`;
+    await q`ALTER TABLE battery_sales ADD COLUMN IF NOT EXISTS compatibility_id TEXT`;
+    await q`ALTER TABLE battery_sales ADD COLUMN IF NOT EXISTS install_type_id TEXT`;
+    await q`ALTER TABLE battery_sales ADD COLUMN IF NOT EXISTS group_size TEXT`;
+    await q`ALTER TABLE battery_sales ADD COLUMN IF NOT EXISTS alternate_group_size TEXT`;
+    await q`ALTER TABLE battery_sales ADD COLUMN IF NOT EXISTS retail_snapshot_cents INTEGER`;
+    await q`ALTER TABLE battery_sales ADD COLUMN IF NOT EXISTS installation_snapshot_cents INTEGER`;
+    await q`ALTER TABLE battery_sales ADD COLUMN IF NOT EXISTS warranty_years_snapshot INTEGER`;
+    await q`ALTER TABLE battery_sales ADD COLUMN IF NOT EXISTS free_replacement_years_snapshot INTEGER`;
+    await q`ALTER TABLE battery_sales ADD COLUMN IF NOT EXISTS core_charge_snapshot_cents INTEGER`;
+    await q`ALTER TABLE battery_sales ADD COLUMN IF NOT EXISTS driver_payout_snapshot_cents INTEGER`;
+    await q`ALTER TABLE battery_sales ADD COLUMN IF NOT EXISTS inventory_state TEXT`;
+    await q`ALTER TABLE battery_sales ADD COLUMN IF NOT EXISTS inventory_reserved_at TIMESTAMPTZ`;
+    await q`ALTER TABLE battery_sales ADD COLUMN IF NOT EXISTS inventory_held_at TIMESTAMPTZ`;
+    await q`ALTER TABLE battery_sales ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ`;
+    await q`ALTER TABLE battery_sales ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ`;
+    await q`ALTER TABLE battery_sales ADD COLUMN IF NOT EXISTS customer_facing_brand TEXT CHECK (customer_facing_brand = 'LIGHTNING GOLD BATTERY')`;
+    await q`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'battery_sales_product_fk') THEN ALTER TABLE battery_sales ADD CONSTRAINT battery_sales_product_fk FOREIGN KEY (product_id) REFERENCES battery_products(id) ON DELETE SET NULL; END IF; END $$`;
+    await q`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'battery_sales_compatibility_fk') THEN ALTER TABLE battery_sales ADD CONSTRAINT battery_sales_compatibility_fk FOREIGN KEY (compatibility_id) REFERENCES battery_compatibility(id) ON DELETE SET NULL; END IF; END $$`;
+    await q`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'battery_sales_install_type_fk') THEN ALTER TABLE battery_sales ADD CONSTRAINT battery_sales_install_type_fk FOREIGN KEY (install_type_id) REFERENCES battery_install_types(id) ON DELETE SET NULL; END IF; END $$`;
+    await q`CREATE TABLE IF NOT EXISTS battery_inventory_ledger (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      product_id TEXT NOT NULL REFERENCES battery_products(id) ON DELETE RESTRICT,
+      sale_id TEXT REFERENCES battery_sales(id) ON DELETE SET NULL,
+      job_id TEXT REFERENCES dispatch_jobs(id) ON DELETE SET NULL,
+      event_type TEXT NOT NULL CHECK (event_type IN ('reserve','payment_hold','complete_decrement','cancel_release','manual_adjust','release')),
+      delta_units INTEGER NOT NULL,
+      quantity_after INTEGER NOT NULL CHECK (quantity_after >= 0),
+      idempotency_key TEXT NOT NULL,
+      actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (org_id, idempotency_key)
+    )`;
+    await q`CREATE TABLE IF NOT EXISTS battery_install_photos (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      sale_id TEXT NOT NULL REFERENCES battery_sales(id) ON DELETE CASCADE,
+      install_job_id TEXT NOT NULL REFERENCES dispatch_jobs(id) ON DELETE CASCADE,
+      photo_type TEXT NOT NULL CHECK (photo_type IN ('before','old','new','installed')),
+      storage_key TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'uploaded',
+      uploaded_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (org_id, sale_id, photo_type)
+    )`;
+    await q`CREATE TABLE IF NOT EXISTS battery_warranties (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      sale_id TEXT NOT NULL REFERENCES battery_sales(id) ON DELETE CASCADE,
+      product_id TEXT NOT NULL REFERENCES battery_products(id) ON DELETE RESTRICT,
+      install_job_id TEXT NOT NULL REFERENCES dispatch_jobs(id) ON DELETE CASCADE,
+      vin TEXT,
+      group_size TEXT NOT NULL,
+      warranty_years INTEGER NOT NULL CHECK (warranty_years >= 0),
+      starts_at TIMESTAMPTZ NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','expired','voided')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      voided_at TIMESTAMPTZ,
+      voided_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+      CHECK (expires_at > starts_at),
+      UNIQUE (org_id, sale_id)
+    )`;
+  }],
+  [72, async (q) => {
+    // Query indexes are deliberately org-prefixed for tenant isolation and
+    // predictable plans. No compatibility rows or production orgs are seeded.
+    await q`CREATE INDEX IF NOT EXISTS battery_products_org_active_idx ON battery_products(org_id, active)`;
+    await q`CREATE INDEX IF NOT EXISTS battery_compatibility_org_make_model_idx ON battery_compatibility(org_id, make, model)`;
+    await q`CREATE INDEX IF NOT EXISTS battery_install_types_org_active_idx ON battery_install_types(org_id, active)`;
+    await q`CREATE INDEX IF NOT EXISTS battery_inventory_org_product_idx ON battery_inventory(org_id, product_id)`;
+    await q`CREATE INDEX IF NOT EXISTS battery_sales_org_product_idx ON battery_sales(org_id, product_id)`;
+    await q`CREATE INDEX IF NOT EXISTS battery_sales_org_compatibility_idx ON battery_sales(org_id, compatibility_id)`;
+    await q`CREATE INDEX IF NOT EXISTS battery_sales_org_install_type_idx ON battery_sales(org_id, install_type_id)`;
+    await q`CREATE INDEX IF NOT EXISTS battery_inventory_ledger_org_product_created_idx ON battery_inventory_ledger(org_id, product_id, created_at)`;
+    await q`CREATE INDEX IF NOT EXISTS battery_inventory_ledger_org_sale_idx ON battery_inventory_ledger(org_id, sale_id)`;
+    await q`CREATE INDEX IF NOT EXISTS battery_inventory_ledger_org_job_idx ON battery_inventory_ledger(org_id, job_id)`;
+    await q`CREATE INDEX IF NOT EXISTS battery_install_photos_org_install_job_idx ON battery_install_photos(org_id, install_job_id)`;
+    await q`CREATE INDEX IF NOT EXISTS battery_install_photos_org_sale_idx ON battery_install_photos(org_id, sale_id)`;
+    await q`CREATE INDEX IF NOT EXISTS battery_warranties_org_status_expiry_idx ON battery_warranties(org_id, status, expires_at)`;
+    await q`CREATE INDEX IF NOT EXISTS battery_warranties_org_install_job_idx ON battery_warranties(org_id, install_job_id)`;
+    await q`CREATE INDEX IF NOT EXISTS battery_warranties_org_product_idx ON battery_warranties(org_id, product_id)`;
+  }],
  ];
 export async function ensureSchema() {
   const q = sql();
