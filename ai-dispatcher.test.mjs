@@ -480,7 +480,7 @@ try {
 
   /* ============ 4) settings defaults (lazily created row) ============ */
   const s = await getOrgSettings(ORG);
-  check("org_settings defaults: enabled + 06606 centroid + 30mi + 45min + buffer 5 + floor 5", s.aiDispatcherEnabled === true && s.zoneLat === 41.208862 && s.zoneLng === -73.207253 && s.zoneRadiusMiles === 30 && s.maxEtaMinutes === 60 && s.etaBufferMinutes === 5 && s.etaFloorMinutes === 5, JSON.stringify(s));
+  check("org_settings defaults: enabled + 06606 centroid + 30mi + 45min + buffer 5 + floor 5", s.aiDispatcherEnabled === true && s.zoneLat === 41.208862 && s.zoneLng === -73.207253 && s.zoneRadiusMiles === 30 && s.maxEtaMinutes === 45 && s.etaBufferMinutes === 5 && s.etaFloorMinutes === 5, JSON.stringify(s));
 
   /* ============ 5) not_connected (org with no session) ============ */
   {
