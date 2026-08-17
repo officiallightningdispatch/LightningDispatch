@@ -305,7 +305,7 @@ const posts = (calls) => calls.filter((c) => c.method === "POST");
 // Keep exact free-driver ETA assertions isolated from verified accepts in prior blocks.
 const clearDispatch = (orgId) => q`DELETE FROM dispatch_jobs WHERE org_id=${orgId}`;
 const clearOrgDispatch = () => clearDispatch(ORG);
-const fallbackAccept = (r, calls, id, eta = 45) => r.decisions[0]?.decision === "auto_accept_no_driver" && r.decisions[0]?.escalated === true && posts(calls).length === 1 && String(posts(calls)[0].url).includes(`/api/callRequests/${id}`) && Number(posts(calls)[0].body.driverId) === 0 && Number(posts(calls)[0].body.ETA) === eta && String(posts(calls)[0].body.notes).includes("awaiting driver assignment");
+const fallbackAccept = (r, calls, id, eta = 60) => r.decisions[0]?.decision === "auto_accept_no_driver" && r.decisions[0]?.escalated === true && posts(calls).length === 1 && String(posts(calls)[0].url).includes(`/api/callRequests/${id}`) && Number(posts(calls)[0].body.driverId) === 0 && Number(posts(calls)[0].body.ETA) === eta && String(posts(calls)[0].body.notes).includes("awaiting driver assignment");
 
 try {
   // ---- setup: schema (idempotent; applies v8), QA orgs + owner + encrypted session
@@ -582,7 +582,7 @@ try {
     const { deps } = makeDeps(m.fetchImpl, router);
     const r = await runAutoDispatch(ORG, deps);
     const p = posts(m.calls);
-    check("maxEta goal: offer maxEta does not gate acceptance; org quote is 45", p[0]?.body?.ETA === 45, JSON.stringify(p[0]?.body));
+    check("maxEta goal: offer maxEta does not gate acceptance; org quote is 60", p[0]?.body?.ETA === 60, JSON.stringify(p[0]?.body));
     check("maxEta override: decision recorded", r.processed === 1 && r.decisions[0]?.decision === "auto_accept_with_driver", JSON.stringify(r));
   }
 
@@ -617,7 +617,7 @@ try {
     const r = await runAutoDispatch(ORG, deps); const p = posts(m.calls);
     check("hard cap acceptFallback maxEta 91: auto_accept_no_driver with quote 60", r.decisions[0]?.decision === "auto_accept_no_driver" && p[0]?.body?.driverId === 0 && p[0]?.body?.ETA === 60, JSON.stringify({ decision: r.decisions[0], post: p[0] }));
   }
-  await q`UPDATE org_settings SET max_eta_minutes=45 WHERE org_id=${ORG}`;
+  await q`UPDATE org_settings SET max_eta_minutes=60 WHERE org_id=${ORG}`;
   /* ============ 10) boundary: 29.5 mi in-zone accepted ============ */
   {
     const m = makeFetch({
@@ -648,7 +648,7 @@ try {
     const m = makeFetch({ offers: [offer(7006, { lat: 0, lng: 0 })], drivers: [] });
     const { deps } = makeDeps(m.fetchImpl);
     const r = await runAutoDispatch(ORG, deps);
-    check("missing coords: auto_accept_no_driver, driverId 0, SLA accept", r.decisions[0]?.decision === "auto_accept_no_driver" && r.decisions[0]?.escalated === true && posts(m.calls).length === 1 && String(posts(m.calls)[0].body.driverId) === "0" && Number(posts(m.calls)[0].body.ETA) === 45 && String(posts(m.calls)[0].body.notes).includes("awaiting driver assignment"), JSON.stringify({ decision: r.decisions[0], post: posts(m.calls)[0] }));
+    check("missing coords: auto_accept_no_driver, driverId 0, SLA accept", r.decisions[0]?.decision === "auto_accept_no_driver" && r.decisions[0]?.escalated === true && posts(m.calls).length === 1 && String(posts(m.calls)[0].body.driverId) === "0" && Number(posts(m.calls)[0].body.ETA) === 60 && String(posts(m.calls)[0].body.notes).includes("awaiting driver assignment"), JSON.stringify({ decision: r.decisions[0], post: posts(m.calls)[0] }));
   }
 
   /* ============ 13) expired offer escalation ============ */
@@ -665,7 +665,7 @@ try {
     const m = makeFetch({ offers: [bad], drivers: [] });
     const { deps } = makeDeps(m.fetchImpl);
     const r = await runAutoDispatch(ORG, deps);
-    check("shape: auto_accept_no_driver, driverId 0, SLA accept", r.decisions[0]?.decision === "auto_accept_no_driver" && r.decisions[0]?.escalated === true && posts(m.calls).length === 1 && String(posts(m.calls)[0].body.driverId) === "0" && Number(posts(m.calls)[0].body.ETA) === 45 && String(posts(m.calls)[0].body.notes).includes("awaiting driver assignment"), JSON.stringify({ decision: r.decisions[0], post: posts(m.calls)[0] }));
+    check("shape: auto_accept_no_driver, driverId 0, SLA accept", r.decisions[0]?.decision === "auto_accept_no_driver" && r.decisions[0]?.escalated === true && posts(m.calls).length === 1 && String(posts(m.calls)[0].body.driverId) === "0" && Number(posts(m.calls)[0].body.ETA) === 60 && String(posts(m.calls)[0].body.notes).includes("awaiting driver assignment"), JSON.stringify({ decision: r.decisions[0], post: posts(m.calls)[0] }));
     const rows = await decisions();
     const sr = rows.find((x) => String(x.call_request_id) === "7008");
     check("shape: decision keyed by callRequestId, evidence carries the full original offer", sr && String(sr.call_request_id) === "7008" && sr.raw_response?.evidence?.offer?.accountName === bad.accountName && sr.raw_response?.evidence?.offer?.startLocationLatitude === undefined, JSON.stringify(sr));
@@ -676,7 +676,7 @@ try {
     const m = makeFetch({ offers: [offer(7009)], drivers: [], nearestDriversStatus: 500 });
     const { deps } = makeDeps(m.fetchImpl);
     const r = await runAutoDispatch(ORG, deps);
-    check("driver lookup 500: auto_accept_no_driver, driverId 0, SLA accept", r.decisions[0]?.decision === "auto_accept_no_driver" && r.decisions[0]?.escalated === true && posts(m.calls).length === 1 && String(posts(m.calls)[0].body.driverId) === "0" && Number(posts(m.calls)[0].body.ETA) === 45 && String(posts(m.calls)[0].body.notes).includes("awaiting driver assignment"), JSON.stringify({ decision: r.decisions[0], post: posts(m.calls)[0] }));
+    check("driver lookup 500: auto_accept_no_driver, driverId 0, SLA accept", r.decisions[0]?.decision === "auto_accept_no_driver" && r.decisions[0]?.escalated === true && posts(m.calls).length === 1 && String(posts(m.calls)[0].body.driverId) === "0" && Number(posts(m.calls)[0].body.ETA) === 60 && String(posts(m.calls)[0].body.notes).includes("awaiting driver assignment"), JSON.stringify({ decision: r.decisions[0], post: posts(m.calls)[0] }));
   }
 
   /* ============ 16) accept failure: one retry, then escalation (never dropped) ============ */
@@ -1470,7 +1470,7 @@ try {
     const m = makeFetch({ offers: [offer(6004, { omitLat: true, omitLng: true, startingLocation: "" })], drivers: [] });
     const { deps } = makeDeps(m.fetchImpl);
     const r = await runAutoDispatch(ORG6, deps);
-    check("coords no-address: universal fallback accept, driverId 0, SLA accept", r.decisions[0]?.decision === "auto_accept_no_driver" && r.decisions[0]?.escalated === true && posts(m.calls).length === 1 && String(posts(m.calls)[0].body.driverId) === "0" && Number(posts(m.calls)[0].body.ETA) === 45 && String(posts(m.calls)[0].body.notes).includes("awaiting driver assignment"), JSON.stringify({ decision: r.decisions[0], post: posts(m.calls)[0] }));
+    check("coords no-address: universal fallback accept, driverId 0, SLA accept", r.decisions[0]?.decision === "auto_accept_no_driver" && r.decisions[0]?.escalated === true && posts(m.calls).length === 1 && String(posts(m.calls)[0].body.driverId) === "0" && Number(posts(m.calls)[0].body.ETA) === 60 && String(posts(m.calls)[0].body.notes).includes("awaiting driver assignment"), JSON.stringify({ decision: r.decisions[0], post: posts(m.calls)[0] }));
   }
   {
     // (f) dedupe stays sane: the DB-resolved offer (6001, same content) is
