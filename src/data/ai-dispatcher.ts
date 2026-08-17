@@ -2016,8 +2016,9 @@ export async function chooseBestDriverByRoad(
   return winners[0];
 }
 
-/** Final quoted ETA: ceil(base minutes) + prep buffer, with only the
- * configured minimum floor. max ETA is a goal, never a dispatch gate or cap. */
+/** Final quoted ETA: ceil(base minutes) + prep buffer, with the quoted ETA
+ * hard-capped at the org ceiling (60, owner 2026-08-17). This is NEVER a
+ * dispatch gate (owner 2026-08-16): ETA does not reject or strand dispatch. */
 export function finalEtaMinutes(
   baseMinutes: number,
   bufferMinutes: number,
@@ -2026,8 +2027,7 @@ export function finalEtaMinutes(
 ): number {
   const raw = Math.ceil(Number.isFinite(baseMinutes) ? baseMinutes : 0) + (Number.isFinite(bufferMinutes) ? bufferMinutes : 0);
   const floor = Math.round(floorMinutes) || 5;
-  // maxEtaMinutes is an SLA goal, not a cap: preserve the computed ETA.
-  return Math.max(floor, raw);
+  return Math.min(Math.max(floor, raw), Math.max(1, Math.round(_maxEtaMinutes ?? 60)));
 }
 
 /** Human-readable ETA breakdown for decision reasons. The label NAMES the
@@ -2826,7 +2826,7 @@ async function runAutoDispatchInternal(
               const reason = `offer expired (expirationDateUtc=${expiration}) — not auto-accepted`;
               await recordDecision(orgId, actor, { callRequestId: String(id), callId: null, decision: "escalated_expired", driverId: null, driverName: null, etaMinutes: null, zoneDistanceMiles: null, reason, rawResponse: { offer: raw } }); result.processed++; result.decisions.push({ callRequestId: String(id), decision: "escalated_expired", escalated: true, reason }); continue;
             }
-            const recordFallback = async (reason: string) => { const eta = Number(numeric(raw.maxEta) ?? settings.maxEtaMinutes); const a = await postAccept(fetchImpl, baseUrl, cookies, String(id), eta, 0, "auto-accept by Lightning Dispatch; awaiting driver assignment"); const decision = a.ok ? "auto_accept_no_driver" : "escalated_accept_failed"; const msg = a.ok ? `${reason} — accepted with driverId 0 at the ${eta}-minute SLA ceiling` : `accept POST failed after retry (${a.attempts.map((x) => x.error ?? `HTTP ${x.status}`).join("; ")})`; await recordDecision(orgId, actor, { callRequestId: String(id), callId: null, decision, driverId: a.ok ? "0" : null, driverName: null, etaMinutes: a.ok ? eta : null, zoneDistanceMiles: null, reason: msg, rawResponse: { offer: raw, accept: a.raw, attempts: a.attempts } }); result.processed++; result.decisions.push({ callRequestId: String(id), decision, escalated: decision !== "auto_accept_no_driver", reason: msg }); };
+            const recordFallback = async (reason: string) => { const eta = Math.min(settings.maxEtaMinutes, Number(numeric(raw.maxEta) ?? settings.maxEtaMinutes)); const a = await postAccept(fetchImpl, baseUrl, cookies, String(id), eta, 0, "auto-accept by Lightning Dispatch; awaiting driver assignment"); const decision = a.ok ? "auto_accept_no_driver" : "escalated_accept_failed"; const msg = a.ok ? `${reason} — accepted with driverId 0 at the ${eta}-minute SLA ceiling` : `accept POST failed after retry (${a.attempts.map((x) => x.error ?? `HTTP ${x.status}`).join("; ")})`; await recordDecision(orgId, actor, { callRequestId: String(id), callId: null, decision, driverId: a.ok ? "0" : null, driverName: null, etaMinutes: a.ok ? eta : null, zoneDistanceMiles: null, reason: msg, rawResponse: { offer: raw, accept: a.raw, attempts: a.attempts } }); result.processed++; result.decisions.push({ callRequestId: String(id), decision, escalated: decision !== "auto_accept_no_driver", reason: msg }); };
             await recordFallback(`offer shape incomplete (${shape.missing.join(", ")})`); continue;
           }
         }
@@ -2868,7 +2868,7 @@ async function runAutoDispatchInternal(
       // Universal claim fallback: eligibility or data uncertainty must never
       // strand a live offer. The fallback ETA goal is used only when no road ETA can be computed.
       const acceptFallback = async (reason: string, rawResponse: unknown, zoneDistanceMiles: number | null = null) => {
-        const eta = Math.min(settings.maxEtaMinutes, offer.maxEta ?? settings.maxEtaMinutes);
+        const eta = Math.min(settings.maxEtaMinutes, Number(numeric(offer.maxEta) ?? settings.maxEtaMinutes));
         const accept = await postAccept(fetchImpl, baseUrl, cookies, offer.callRequestId, eta, 0, "auto-accept by Lightning Dispatch; awaiting driver assignment");
         if (!accept.ok) {
           const failed = `accept POST failed after retry (${accept.attempts.map((a) => a.error ?? `HTTP ${a.status}`).join("; ")}) — offer could not be claimed`;

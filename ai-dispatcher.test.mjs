@@ -485,11 +485,13 @@ try {
   const recalcReason = `first choice ${initialRecalc?.driver.driverId} became unavailable → recalculated to ${remainingRecalc?.driver.driverId}`;
   check("P0 MID-DISPATCH RECALC selects next-best remaining eligible + records reason", initialRecalc?.driver.driverId === 8820 && remainingRecalc?.driver.driverId === 8821 && recalcReason.includes("recalculated to 8821"), recalcReason);
   check("finalEtaMinutes: ceil(9)+5 = 14", finalEtaMinutes(9, 5, 5, 45) === 14);
-  check("finalEtaMinutes: SLA goal does not cap 60+5 → 65", finalEtaMinutes(60, 5, 5, 45) === 65);
-  check("finalEtaMinutes: raw 250+5 remains uncapped at 255", finalEtaMinutes(250, 5, 5, 45) === 255);
+  check("finalEtaMinutes: hard cap 60+5 → 60", finalEtaMinutes(60, 5, 5, 60) === 60);
+  check("finalEtaMinutes: 1525+5 hard cap → 60", finalEtaMinutes(1525, 5, 5, 60) === 60);
+  check("finalEtaMinutes: 10+5 remains below cap", finalEtaMinutes(10, 5, 5, 60) === 15);
+  check("finalEtaMinutes: raw 250+5 hard-capped at configured 45", finalEtaMinutes(250, 5, 5, 45) === 45);
   check("finalEtaMinutes: floor lifts 1+5 → 15", finalEtaMinutes(1, 5, 15, 45) === 15);
   check("finalEtaMinutes: zero base + buffer = 5 (default floor)", finalEtaMinutes(0, 5, 5, 45) === 5);
-  check("finalEtaMinutes: per-offer maxEta is a goal, not a cap (9+5 → 14)", finalEtaMinutes(9, 5, 5, 10) === 14);
+  check("finalEtaMinutes: configured cap applies (9+5 → 10)", finalEtaMinutes(9, 5, 5, 10) === 10);
   check("fallbackRoadMinutes: 10 mi → 27 min (10/30*60*1.35)", fallbackRoadMinutes(10) === 27);
 
   /* ============ 3) pure functions: offer shape rail ============ */
@@ -1218,8 +1220,8 @@ try {
     const pickAll = await chooseBestDriverByRoad([dA, dB], 41.2, -73.2, Rq3, new Map([...qA3, ...qB3]));
     check("all-loaded: closest driver B wins over farther A despite A's better chain ETA", pickAll?.driver.driverId === 3002 && pickAll?.queueInclusive === true, JSON.stringify(pickAll));
     check("all-loaded: chain math recorded for closest B (3 jobs ≈ 115 min + final leg 15; arrival 130)", pickAll?.queueMinutes === 115 && pickAll?.queuedJobCount === 3 && pickAll?.finalLegMinutes === 15 && pickAll?.baseMinutes === 130, JSON.stringify(pickAll));
-    check("all-loaded: quoted ETA includes queue time (ceil(130)+5 = 135)", finalEtaMinutes(pickAll.baseMinutes, 5, 5, 180) === 135, String(finalEtaMinutes(pickAll.baseMinutes, 5, 5, 180)));
-    check("all-loaded: SLA goal does not cap accurate queue ETA (135); floor rail kept", finalEtaMinutes(pickAll.baseMinutes, 5, 5, 45) === 135, String(finalEtaMinutes(pickAll.baseMinutes, 5, 5, 45)));
+    check("all-loaded: quoted ETA hard-caps queue time at 60 (ceil(130)+5)", finalEtaMinutes(pickAll.baseMinutes, 5, 5, 180) === 60, String(finalEtaMinutes(pickAll.baseMinutes, 5, 5, 180)));
+    check("all-loaded: queue ETA remains accepted while quoted value is capped", finalEtaMinutes(pickAll.baseMinutes, 5, 5, 45) === 45, String(finalEtaMinutes(pickAll.baseMinutes, 5, 5, 45)));
     // workloadAwareArrivalMinutes directly: fallback factor when routing fails
     const dirQ = await workloadAwareArrivalMinutes(dA, qA3.get("3001").queuedJobs, 41.2, -73.2, makeRouter({ "41.15,-73.10": null, "41.16,-73.11": null, "41.17,-73.12": null }));
     check("queue model: router failure → factor fallback per leg (still > 90 min service)", dirQ && dirQ.arrivalMinutes > 90 && dirQ.queueMinutes > 90 && dirQ.finalLegMinutes > 0, JSON.stringify(dirQ));
