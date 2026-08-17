@@ -64,7 +64,7 @@ check("D: queue-aware ETA exact arithmetic is uncapped", () => {
   assert.ok(quoted > 45);
   assert.match(source, /queueMinutes \+= leg\.minutes \+ SERVICE_MINUTES_PER_JOB/);
   assert.match(source, /arrivalMinutes: queueMinutes \+ finalLeg\.minutes/);
-  assert.match(source, /return Math\.max\(floor, raw\)/);
+  assert.match(source, /return Math.min(Math.max(floor, raw), Math.max(1, Math.round(_maxEtaMinutes ?? 60)))/);
 });
 check("E: no queued jobs uses direct route and routing failures remain honest", () => {
   assert.match(source, /if \(total === 0\) return null/);
