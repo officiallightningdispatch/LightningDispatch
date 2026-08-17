@@ -1791,6 +1791,7 @@ try {
     const WEST_HAVEN = { lat: 41.27, lng: -73.05 };
     const NEW_HAVEN = { lat: 41.31, lng: -72.93 };
     const STAMFORD = { lat: 41.05, lng: -73.54 };
+    const freshFix = (c) => ({ lat: c.lat, lng: c.lng, capturedAt: new Date().toISOString() });
     const anchorOf = (driverTowbookId, c, jobId = `geo-${driverTowbookId}`) => ({
       driverTowbookId: String(driverTowbookId), lat: c.lat, lng: c.lng, jobId, assignedAt: new Date().toISOString(),
     });
@@ -1817,7 +1818,7 @@ try {
       "41.08,-73.47": 600,   // Jayden (Darien) → New Haven: fast, but OUT of area
       "41.27,-73.05": 3600,  // Levi (West Haven) → New Haven: slow, but IN area
     });
-    const pickNh = await chooseBestDriverByRoad([jayden, levi], NEW_HAVEN.lat, NEW_HAVEN.lng, geoRouter, undefined, { anchors });
+    const pickNh = await chooseBestDriverByRoad([jayden, levi], NEW_HAVEN.lat, NEW_HAVEN.lng, geoRouter, undefined, { anchors, gpsFixes: new Map([["703785", freshFix(DARIEN)], ["717660", freshFix(WEST_HAVEN)]]) });
     check("in-area preference: New Haven job → West-Haven Levi, NOT Darien Jayden (owner example)",
       pickNh?.driver.driverId === 717660 && pickNh?.areaFallback === false && pickNh?.anchor?.driverTowbookId === "717660",
       JSON.stringify(pickNh && { d: pickNh.driver.driverId, fb: pickNh.areaFallback, anchor: pickNh.anchor?.driverTowbookId, base: pickNh.baseMinutes }));
@@ -1831,7 +1832,7 @@ try {
       ["703785", anchorOf(703785, DARIEN)],
       ["717660", anchorOf(717660, STAMFORD)],
     ]);
-    const pickFb = await chooseBestDriverByRoad([jayden, leviStamford], NEW_HAVEN.lat, NEW_HAVEN.lng, geoRouter, undefined, { anchors: anchorsBothOut });
+    const pickFb = await chooseBestDriverByRoad([jayden, leviStamford], NEW_HAVEN.lat, NEW_HAVEN.lng, geoRouter, undefined, { anchors: anchorsBothOut, gpsFixes: new Map([["703785", freshFix(DARIEN)], ["717660", freshFix(STAMFORD)]]) });
     check("fallback: no in-area candidate → global closest-by-ETA (areaFallback true), fast Jayden wins",
       pickFb?.driver.driverId === 703785 && pickFb?.areaFallback === true &&
       String(areaSelectionNote(pickFb, NEW_HAVEN.lat, NEW_HAVEN.lng)).includes("global closest-by-ETA fallback"),
@@ -1842,7 +1843,7 @@ try {
     // configured at all the engine behaves exactly as before (shortest road
     // ETA wins, payload origins).
     const anchorsJaydenOnly = new Map([["703785", anchorOf(703785, DARIEN)]]);
-    const pickFlex = await chooseBestDriverByRoad([jayden, levi], NEW_HAVEN.lat, NEW_HAVEN.lng, geoRouter, undefined, { anchors: anchorsJaydenOnly });
+    const pickFlex = await chooseBestDriverByRoad([jayden, levi], NEW_HAVEN.lat, NEW_HAVEN.lng, geoRouter, undefined, { anchors: anchorsJaydenOnly, gpsFixes: new Map([["703785", freshFix(DARIEN)], ["717660", freshFix(WEST_HAVEN)]]) });
     check("no-anchor drivers flexible: unanchored Levi takes the New Haven job (anchored Jayden out-of-area excluded)",
       pickFlex?.driver.driverId === 717660 && pickFlex?.areaFallback === false && pickFlex?.anchor === null,
       JSON.stringify(pickFlex && { d: pickFlex.driver.driverId, anchor: pickFlex.anchor }));
