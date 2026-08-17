@@ -2531,15 +2531,10 @@ async function retryPendingAssignments(
   const last = retrySweepLastRun.get(orgId) ?? 0;
   if (Date.now() - last < RETRY_SWEEP_INTERVAL_MS) return;
   retrySweepLastRun.set(orgId, Date.now());
-  const rows = await sql() `SELECT j.towbook_job_id, j.pickup, j.pickup_lat, j.pickup_lng,
-      j.service_type, j.raw_json, d.id AS decision_id, d.reason
-    FROM dispatch_jobs j JOIN ai_dispatcher_decisions d
-      ON d.org_id=j.org_id
-      AND d.decision='auto_accept_no_driver'
-      AND (d.call_request_id=j.towbook_job_id OR d.call_id=j.towbook_job_id OR d.raw_response->'offer'->>'callRequestId'=j.towbook_job_id OR d.raw_response->'offer'->>'id'=j.towbook_job_id)
-    WHERE j.org_id=${orgId} AND j.status IN ('new','accepted')
-      AND (j.assigned_driver_towbook_id IS NULL OR j.assigned_driver_towbook_id='0')
-    ORDER BY j.created_at ASC LIMIT 100`;
+  const rows = await sql() `SELECT id AS decision_id, call_request_id, call_id, raw_response
+    FROM ai_dispatcher_decisions
+    WHERE org_id=${orgId} AND decision='auto_accept_no_driver' AND driver_id='0'
+    ORDER BY created_at ASC LIMIT 100`;
   if (!rows.length) return;
   const callsRes = await towbookFetch(fetchImpl, `${baseUrl}/api/calls`, cookies);
   const calls = callsRes.ok && Array.isArray(callsRes.body) ? callsRes.body as unknown[] : [];
@@ -2548,24 +2543,26 @@ async function retryPendingAssignments(
     loadOrgDriverQueues(orgId), loadDriverAnchors(orgId), loadDriverGpsFixes(orgId), loadLightningAvailableDrivers(orgId),
   ]);
   for (const row of rows as Array<Record<string, unknown>>) {
-    const id = String(row.towbook_job_id ?? '');
-    const raw = row.raw_json && typeof row.raw_json === 'object' ? row.raw_json as Record<string, unknown> : {};
-    const lat = Number(row.pickup_lat ?? raw.startLocationLatitude), lng = Number(row.pickup_lng ?? raw.startLocationLongitude);
-    if (!id || !Number.isFinite(lat) || !Number.isFinite(lng) || lat === 0 || lng === 0) continue;
-    const call = calls.find((c) => c && typeof c === 'object' && (String((c as Record<string, unknown>).id ?? '') === id || String((c as Record<string, unknown>).callRequestId ?? '') === id)) as Record<string, unknown> | undefined;
-    const assigned = call ? firstDriverIdOnCall(call) : null;
-    if (!call || (assigned != null && assigned !== '0')) continue;
-    const rawOffer: Record<string, unknown> = { ...raw, callRequestId: id, startLocationLatitude: lat, startLocationLongitude: lng,
-      expirationDateUtc: String(raw.expirationDateUtc ?? new Date(Date.now() + 86400000).toISOString()),
-      status: 2, maxEta: Number(raw.maxEta ?? settings.maxEtaMinutes), purchaseOrderNumber: raw.purchaseOrderNumber ?? null,
-      drivers: Array.isArray(raw.drivers) ? raw.drivers : null, serviceType: String(row.service_type ?? raw.serviceType ?? '') };
-    const shape = buildOfferShape(rawOffer, lat, lng);
+    const callRequestId = String(row.call_request_id ?? '');
+    const callId = row.call_id == null ? '' : String(row.call_id);
+    const call = calls.find((c) => c && typeof c === 'object' && (String((c as Record<string, unknown>).callRequestId ?? '') === callRequestId || (callId !== '' && String((c as Record<string, unknown>).id ?? '') === callId))) as Record<string, unknown> | undefined;
+    if (!call || (firstDriverIdOnCall(call) ?? '0') !== '0') continue;
+    const raw = row.raw_response && typeof row.raw_response === 'object' ? row.raw_response as Record<string, unknown> : {};
+    const rawOffer = raw.offer && typeof raw.offer === 'object' ? raw.offer as Record<string, unknown> : raw;
+    const callLat = Number(call.startLocationLatitude ?? call.latitude ?? call.pickupLatitude);
+    const callLng = Number(call.startLocationLongitude ?? call.longitude ?? call.pickupLongitude);
+    const lat = Number(rawOffer.startLocationLatitude ?? rawOffer.latitude ?? callLat);
+    const lng = Number(rawOffer.startLocationLongitude ?? rawOffer.longitude ?? callLng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat === 0 || lng === 0) continue;
+    const rawOfferForShape: Record<string, unknown> = { ...rawOffer, callRequestId: callRequestId || String(rawOffer.callRequestId ?? ''), startLocationLatitude: lat, startLocationLongitude: lng,
+      expirationDateUtc: String(rawOffer.expirationDateUtc ?? new Date(Date.now() + 86400000).toISOString()), status: Number(rawOffer.status ?? 2), maxEta: Number(rawOffer.maxEta ?? settings.maxEtaMinutes), purchaseOrderNumber: rawOffer.purchaseOrderNumber ?? null, drivers: Array.isArray(rawOffer.drivers) ? rawOffer.drivers : null };
+    const shape = buildOfferShape(rawOfferForShape, lat, lng);
     if (!shape.ok) continue;
     const offer = shape.offer;
     const nd = await towbookFetch(fetchImpl, `${baseUrl}/api/nearestDrivers?latitude=${lat}&longitude=${lng}&checkInForAllDrivers=true`, cookies);
     if (!nd.ok || !Array.isArray(nd.body)) continue;
     const candidates = nd.body as unknown[];
-    const jobState = (await resolveJobState(orgId, rawOffer, String(row.pickup ?? raw.startingLocation ?? ''), resolveTomtomKey(deps.env ?? process.env) ?? '', fetchImpl)).state;
+    const jobState = (await resolveJobState(orgId, rawOfferForShape, String(call.startingLocation ?? call.pickup ?? ''), resolveTomtomKey(deps.env ?? process.env) ?? '', fetchImpl)).state;
     const guard: StateGuardOutcome = { active:false, jobState:null, blocked:false, blockedReason:null, checked:0, inState:0, excluded:[] };
     const serviceQualification: ServiceQualificationOutcome = { serviceType: offer.serviceType ?? null, assessed:Boolean(offer.serviceType?.trim()), excluded:[] };
     const chosen = await chooseBestDriverByRoad(candidates, lat, lng,
@@ -2577,12 +2574,14 @@ async function retryPendingAssignments(
     if (!chosen || guard.blocked) continue; // universal hold remains until an in-state candidate exists
     const driverId = Number(chosen.driver.driverId);
     if (!Number.isFinite(driverId) || driverId <= 0) continue;
-    const verification = await verifyDispatch(fetchImpl, baseUrl, cookies, offer, id, driverId, { retryDelayMs: deps.verifyRetryDelayMs ?? 10000, maxAttempts: deps.verifyMaxAttempts ?? 6, allowAssign: true });
+    const verification = await verifyDispatch(fetchImpl, baseUrl, cookies, offer, callId || String(call.id ?? callRequestId), driverId, { retryDelayMs: deps.verifyRetryDelayMs ?? 10000, maxAttempts: deps.verifyMaxAttempts ?? 6, allowAssign: true });
     if (!verification.ok) continue;
-    if (verification.call) { try { await upsertVerifiedDispatchJob(orgId, offer, verification.call, verification.callId ?? id, driverId, String(chosen.driver.driverName ?? driverId)); } catch { /* ledger remains authoritative */ } }
-    const reason = `retry sweep (5-minute): accepted and dispatched to ${String(chosen.driver.driverName ?? driverId)} (driver ${driverId}, VERIFIED on call ${verification.callId ?? id}); same-state selection; prior driverId 0 hold resolved`;
-    await sql() `UPDATE ai_dispatcher_decisions SET decision='auto_accept_with_driver', escalated=FALSE, driver_id=${String(driverId)}, driver_name=${String(chosen.driver.driverName ?? driverId)}, call_id=${verification.callId ?? id}, reason=${reason}, raw_response=raw_response || ${JSON.stringify({ retrySweep:true, verification })}::jsonb WHERE id=${String(row.decision_id)} AND org_id=${orgId}`;
+    if (verification.call) { try { await upsertVerifiedDispatchJob(orgId, offer, verification.call, verification.callId ?? callId || String(call.id ?? callRequestId), driverId, String(chosen.driver.driverName ?? driverId)); } catch { /* ledger remains authoritative */ } }
+    const reason = `retry sweep (5-minute): accepted and dispatched to ${String(chosen.driver.driverName ?? driverId)} (driver ${driverId}, VERIFIED on call ${verification.callId ?? callId || String(call.id ?? callRequestId)}); same-state selection; prior driverId 0 hold resolved`;
+    await sql() `UPDATE ai_dispatcher_decisions SET decision='auto_accept_with_driver', escalated=FALSE, driver_id=${String(driverId)}, driver_name=${String(chosen.driver.driverName ?? driverId)}, call_id=${verification.callId ?? callId || String(call.id ?? callRequestId)}, reason=${reason}, raw_response=raw_response || ${JSON.stringify({ retrySweep:true, verification })}::jsonb WHERE id=${String(row.decision_id)} AND org_id=${orgId}`;
     try { await deps.syncForOrg(orgId, 'sync:auto-accept-retry', actor ?? undefined); } catch { /* sweep is best effort */ }
+    retrySweepLastRun.delete(orgId);
+    retrySweepLastRun.delete(orgId);
   }
 }
 const retryStateCache = new Map<string, string | null>();
