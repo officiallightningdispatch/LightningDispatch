@@ -626,7 +626,8 @@ export async function getPayPeriodDetailCore(actor: PayoutActor, periodId: strin
       railsMap.set(rec.rail, g);
     }
     const missingCompletion = await q`SELECT id, towbook_job_id, assigned_driver_towbook_id
-      FROM dispatch_jobs WHERE org_id=${actor.orgId} AND status='completed' AND completed_at IS NULL
+      FROM dispatch_jobs WHERE org_id=${actor.orgId} AND status='completed'
+        AND (raw_json->>'completionTime' IS NULL OR btrim(raw_json->>'completionTime')='')
         AND created_at < ${iso(new Date(period.endsAt))}`;
     const completionDiagnostics = (missingCompletion as Record<string, unknown>[]).map((r) => ({ jobId: String(r.id), towbookJobId: r.towbook_job_id == null ? null : String(r.towbook_job_id), driverId: r.assigned_driver_towbook_id == null ? null : String(r.assigned_driver_towbook_id) }));
     const totals = {
@@ -680,7 +681,8 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
     const wasComputed = String(periodRow.status) === "computed";
 
     const completionDiagnosticsRows = await q`SELECT id, towbook_job_id, assigned_driver_towbook_id
-      FROM dispatch_jobs WHERE org_id=${actor.orgId} AND status='completed' AND completed_at IS NULL
+      FROM dispatch_jobs WHERE org_id=${actor.orgId} AND status='completed'
+        AND (raw_json->>'completionTime' IS NULL OR btrim(raw_json->>'completionTime')='')
         AND created_at < ${iso(endsAt)}`;
     const completionDiagnostics = (completionDiagnosticsRows as Record<string, unknown>[]).map((r) => ({
       jobId: String(r.id), towbookJobId: r.towbook_job_id == null ? null : String(r.towbook_job_id),
@@ -692,16 +694,13 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
         COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(dj.raw_json->'invoiceItems') = 'array' THEN dj.raw_json->'invoiceItems' ELSE '[]'::jsonb END) item WHERE COALESCE(item->>'name','') ILIKE '%GOA%'))::int AS goa_job_count
       FROM dispatch_jobs dj
       WHERE dj.org_id=${actor.orgId} AND dj.status='completed'
-        AND COALESCE(
-          CASE WHEN dj.raw_json->>'completionTime' ~ '^\\s*\\d{4}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?([+-]\\d{2}:?\\d{2}|Z)?\\s*$'
-            THEN (dj.raw_json->>'completionTime')::timestamp AT TIME ZONE 'America/New_York'
-          END, dj.completed_at
-        ) >= ${iso(startsAt)} AND COALESCE(
-          CASE WHEN dj.raw_json->>'completionTime' ~ '^\\s*\\d{4}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?([+-]\\d{2}:?\\d{2}|Z)?\\s*$'
-            THEN (dj.raw_json->>'completionTime')::timestamp AT TIME ZONE 'America/New_York'
-          END, dj.completed_at
-        ) < ${iso(endsAt)}
         AND dj.assigned_driver_towbook_id IS NOT NULL
+        AND COALESCE(dj.towbook_status, '') NOT IN ('255', 'cancelled', 'canceled')
+        AND COALESCE(dj.raw_json->>'statusId', dj.raw_json->'status'->>'id', dj.raw_json->>'status') NOT IN ('255', 'cancelled', 'canceled')
+        AND CASE WHEN dj.raw_json->>'completionTime' ~ '^\\s*\\d{4}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?([+-]\\d{2}:?\\d{2}|Z)?\\s*$'
+          THEN (dj.raw_json->>'completionTime')::timestamp AT TIME ZONE 'America/New_York' END >= ${iso(startsAt)}
+        AND CASE WHEN dj.raw_json->>'completionTime' ~ '^\\s*\\d{4}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?([+-]\\d{2}:?\\d{2}|Z)?\\s*$'
+          THEN (dj.raw_json->>'completionTime')::timestamp AT TIME ZONE 'America/New_York' END < ${iso(endsAt)}
       GROUP BY dj.assigned_driver_towbook_id`;
     // BUSY-TIME BONUS (owner-locked 2026-08-13): 3+ ASSIGNED calls per
     // contractor within one clock hour = busy hour; +$1 per job COMPLETED in
@@ -714,9 +713,11 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
     const { computeBusyBonus, jobAssignmentMs, jobCompletedMs } = await import("./busy-bonus-core");
     const busyJobRows = await q`
       SELECT dj.assigned_driver_towbook_id AS tb_id, dj.status,
-        dj.assigned_at, dj.completed_at, dj.created_at, dj.raw_json
+        dj.assigned_at, NULL::timestamptz AS completed_at, dj.created_at, dj.raw_json
       FROM dispatch_jobs dj
-      WHERE dj.org_id=${actor.orgId} AND dj.assigned_driver_towbook_id IS NOT NULL`;
+      WHERE dj.org_id=${actor.orgId} AND dj.assigned_driver_towbook_id IS NOT NULL
+        AND COALESCE(dj.towbook_status, '') NOT IN ('255', 'cancelled', 'canceled')
+        AND COALESCE(dj.raw_json->>'statusId', dj.raw_json->'status'->>'id', dj.raw_json->>'status') NOT IN ('255', 'cancelled', 'canceled')`;
     const assignByTb = new Map<string, Array<number | null>>();
     const completeByTb = new Map<string, Array<number | null>>();
     for (const r of busyJobRows as Record<string, unknown>[]) {
