@@ -3,6 +3,7 @@ import { CarFront, Home, Inbox, Briefcase, DollarSign, LayoutDashboard, List, Lo
 import { useEffect, useState, type ReactNode } from "react";
 import { authStatus, type AuthUser } from "~/data/auth";
 import { getMyProfilePhoto } from "~/data/driver-profile-photo";
+import { countUnreadOwnerNotifications } from "~/data/owner-notifications";
 import { Avatar } from "~/components/ui";
 
 export type Portal = "driver" | "ops" | "owner";
@@ -178,6 +179,8 @@ export function AppShell({
   const [moreOpen, setMoreOpen] = useState(false);
   const meta = PORTAL_META[portal];
   const identity = useSessionIdentity();
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
+  useEffect(() => { if (portal !== "owner") return; let live = true; const poll = () => { void countUnreadOwnerNotifications().then((r) => { if (live && r.ok) setUnreadNotifications(r.count); }).catch(() => {}); }; poll(); const t = setInterval(poll, 30000); return () => { live = false; clearInterval(t); }; }, [portal, location.pathname]);
   const { dataUrl: profilePhotoUrl } = useProfilePhoto(portal);
   /** A nav item is active on its exact path, or on any sub-route of it (so the
    *  Contractors tab stays highlighted on /owner/contractors/:id). The bare
@@ -220,7 +223,7 @@ export function AppShell({
         </div>
       </div>
     )}
-    <div className="mx-auto flex max-w-7xl"><aside className="hidden w-56 shrink-0 border-r border-ink-100 py-5 pr-4 md:block"><nav className="space-y-1" aria-label="Portal navigation">{links.map(l => <Link key={l.to} to={l.to as any} className={`flex h-11 items-center gap-3 rounded-xl px-3 text-sm font-semibold ${isActive(l.to) ? "bg-ink-950 text-white" : "text-ink-500 hover:bg-ink-50"}`}><l.icon className="size-4" />{l.label}</Link>)}</nav></aside>
+    <div className="mx-auto flex max-w-7xl"><aside className="hidden w-56 shrink-0 border-r border-ink-100 py-5 pr-4 md:block"><nav className="space-y-1" aria-label="Portal navigation">{links.map(l => <Link key={l.to} to={l.to as any} className={`flex h-11 items-center gap-3 rounded-xl px-3 text-sm font-semibold ${isActive(l.to) ? "bg-ink-950 text-white" : "text-ink-500 hover:bg-ink-50"}`}><l.icon className="size-4" />{l.label}{portal === "owner" && l.to === "/owner/notifications" && unreadNotifications > 0 ? <span className="ml-auto min-w-5 rounded-full bg-danger-500 px-1.5 text-center text-[10px] font-bold leading-5 text-white">{unreadNotifications > 99 ? "99+" : unreadNotifications}</span> : null}</Link>)}</nav></aside>
     <main className={`min-w-0 flex-1 px-4 py-7 sm:px-6 ${portal === "driver" ? "mx-auto max-w-lg md:max-w-none" : ""} ${slim ? "max-w-none px-0 py-0" : ""}`}>{!slim && <div className="mb-7"><p className="mb-2 text-xs font-bold uppercase tracking-[.18em] text-brand-600">{meta.portalLabel}</p><h1 className="text-2xl font-bold tracking-tight sm:text-3xl">{title}</h1><p className="mt-1 text-sm text-ink-500">{description}</p></div>}{children}</main>
     </div>
     <nav className="fixed inset-x-0 bottom-0 z-20 flex border-t border-ink-100 bg-surface/95 p-1 backdrop-blur md:hidden" aria-label="Portal navigation">{mobile.map(l => <Link key={l.to} to={l.to as any} className={`flex min-h-11 flex-1 flex-col items-center justify-center gap-0.5 rounded-lg text-[11px] font-semibold ${isActive(l.to) ? "text-brand-600" : "text-ink-500"}`}><l.icon className="size-4" /><span>{l.label}</span></Link>)}{more && more.length > 0 ? <button type="button" onClick={() => setMoreOpen(true)} aria-haspopup="dialog" aria-expanded={moreOpen} aria-label="More options" className={`flex min-h-11 flex-1 flex-col items-center justify-center gap-0.5 rounded-lg text-[11px] font-semibold ${more.some(l => isActive(l.to)) ? "text-brand-600" : "text-ink-500"}`}>

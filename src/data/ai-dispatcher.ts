@@ -5,6 +5,7 @@ import { decryptSession } from "./towbook-key";
 import { resolveTomtomKey } from "./tomtom-key";
 export { resolveTomtomKey } from "./tomtom-key";
 import type { RecoveryResult } from "./towbook-recovery";
+import { recordOwnerNotification } from "./owner-notifications-core";
 
 /* ============================ AI dispatcher engine ============================
  * Owner-directed: every pending, unexpired Towbook motor-club offer is claimed
@@ -1014,6 +1015,11 @@ async function recordDecision(
     VALUES(gen_random_uuid()::text, ${orgId}, ${d.callRequestId}, ${d.callId}, ${d.decision}, ${escalated}, ${d.driverId}, ${d.driverName}, ${d.etaMinutes}, ${d.zoneDistanceMiles}, ${d.reason}, ${JSON.stringify(d.rawResponse ?? null)}::jsonb)
     ON CONFLICT DO NOTHING RETURNING id`;
   if (!inserted.length) return false; // a concurrent poll already processed this offer
+  if (escalated) {
+    try {
+      await recordOwnerNotification(orgId, { kind: "escalation", title: d.decision === "rejected_tow_no_eligible_driver" ? "REJECTED TOW JOB" : "Offer needs your attention", body: d.reason, route: "/owner/ai-dispatcher", callRequestId: d.callRequestId, payload: { decision: d.decision, callId: d.callId, driverId: d.driverId } });
+    } catch { /* notification archive must never block dispatch */ }
+  }
   if (!actor) return true;
   try {
     // Audit action: accepts are "ai_dispatcher:accept" (owner-specified verb);

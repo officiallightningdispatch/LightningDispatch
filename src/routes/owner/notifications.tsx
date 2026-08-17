@@ -1,4 +1,4 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { AlertTriangle, Bell, Check, CheckCircle2, CircleDollarSign, Inbox, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AppShell } from "~/components/app-shell";

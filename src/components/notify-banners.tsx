@@ -35,6 +35,7 @@ import { etaMinutesLabel } from "~/components/driver-eta";
 import { useDispatchStore } from "~/lib/store";
 import { listAiDispatcherDecisions } from "~/data/server";
 import { listTipCashoutRequests } from "~/data/tip-cashout";
+import { listOwnerNotifications, recordOwnerNotification } from "~/data/owner-notifications";
 
 export type BannerKind = "job" | "escalation" | "cancelled" | "assignment" | "completed" | "cashout";
 
@@ -263,6 +264,7 @@ export function OwnerNotificationLayer() {
         const data = await refresh();
         const decisions = await listAiDispatcherDecisions({ data: { escalatedOnly: true, limit: 20 } });
         const cashoutResult = await listTipCashoutRequests();
+        const archive = await listOwnerNotifications({ data: { limit: 100 } });
         if (stop || !data) return;
         const cashouts = cashoutResult.ok ? cashoutResult.data.open : [];
 
@@ -278,6 +280,7 @@ export function OwnerNotificationLayer() {
           setSeenIds(jobsKey, mergeSeen(getSeenIds(jobsKey), jobs.map((j) => j.id)));
           setSeenIds(decisionsKey, mergeSeen(getSeenIds(decisionsKey), decisions.map((d) => d.id)));
           setSeenIds(cashoutsKey, mergeSeen(getSeenIds(cashoutsKey), cashouts.map((c) => c.id)));
+          if (archive.ok) { const ids = archive.data.map((n) => n.kind + ":" + (n.payload && typeof n.payload === "object" && "sourceId" in n.payload ? String((n.payload as {sourceId: unknown}).sourceId) : n.id)); setSeenIds(jobsKey, mergeSeen(getSeenIds(jobsKey), ids)); }
           previousJobs.current = new Map(jobs.map((j) => [j.id, String((data?.jobs ?? []).find((raw) => raw.id === j.id)?.status ?? "")]));
           booted.current = true;
           return;
@@ -351,7 +354,10 @@ export function OwnerNotificationLayer() {
             to: "/owner/money",
           });
         }
-        if (items.length) push(items);
+        if (items.length) {
+          for (const item of items) { try { await recordOwnerNotification({ data: { kind: item.kind, title: item.title, body: item.body, route: item.to, payload: { sourceId: item.id } , callRequestId: item.kind === "escalation" ? item.id.slice(4) : null } }); } catch { /* archive never blocks polling */ } }
+          push(items);
+        }
       } catch {
         /* transient poll failure — never break the loop */
       }
