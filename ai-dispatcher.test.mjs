@@ -1458,7 +1458,7 @@ try {
       geocodeOverride: async () => ({ lat: 29.03, lng: -98.99, score: 14, freeformAddress: "500 Frontage Rd, Cotulla, TX 78014" }),
     });
     const r = await runAutoDispatch(ORG6, deps);
-    check("coords cotulla: universal fallback accept", fallbackAccept(r, m.calls, "6003"), JSON.stringify({ decision: r.decisions[0], post: posts(m.calls)[0] }));
+    check("coords cotulla: universal fallback accept", fallbackAccept(r, m.calls, "6003", 45), JSON.stringify({ decision: r.decisions[0], post: posts(m.calls)[0] }));
     check("coords cotulla: reason notes coords-0 fallback + awaiting driver assignment", String(r.decisions[0]?.reason).includes("no usable pickup coordinates") && String(r.decisions[0]?.reason).includes("awaiting driver assignment"), String(r.decisions[0]?.reason));
     const rows = await q`SELECT call_request_id, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='6003'`;
     const sr = rows[0];
