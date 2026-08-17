@@ -56,6 +56,8 @@ export type DriverCall = {
    *  completed), else enrouteTime, else createDate. Used by the Earnings
    *  Today/Week toggle + per-job rows. null when the call has no timestamps. */
   updatedAtIso: string | null;
+  /** Towbook completionTime, authoritative for payday windows. */
+  completedAtIso: string | null;
   /** Service-time live counter data (completion-goals-spec.md, owner-directed
    *  2026-08-13): arrival moment for the running mm:ss timer + the owner's
    *  goal for this service. arrivedAtIso is the SERVER timestamp (LD
@@ -493,6 +495,7 @@ export function normalizeDriverCall(call: Record<string, unknown>): DriverCall |
     pickupLat: Number.isFinite(wLat) && wLat !== 0 ? wLat : null,
     pickupLng: Number.isFinite(wLng) && wLng !== 0 ? wLng : null,
     updatedAtIso: callUpdatedAt(call),
+    completedAtIso: typeof call.completionTime === "string" ? call.completionTime : null,
     arrivedAtIso: callArrivalAt(call),
     goalSeconds: null,
     serviceKey: null,
@@ -547,6 +550,7 @@ async function platformOnlyCalls(user: { orgId: string; towbookDriverId: string 
         pickupLat: Number.isFinite(lat) && lat !== 0 ? lat : null,
         pickupLng: Number.isFinite(lng) && lng !== 0 ? lng : null,
         updatedAtIso: r.completed_at != null ? new Date(String(r.completed_at)).toISOString() : new Date(String(r.created_at)).toISOString(),
+        completedAtIso: r.completed_at != null ? new Date(String(r.completed_at)).toISOString() : null,
         arrivedAtIso: arrivedAt,
         goalSeconds: null,
         serviceKey: null,

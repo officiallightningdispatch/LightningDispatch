@@ -73,7 +73,7 @@ function EarningsView() {
   const now = useMemo(() => new Date(), []);
 
   const filteredCompleted = useMemo(
-    () => (state?.ok ? state.completed.filter((c) => inRange(c.updatedAtIso, range, now)) : []),
+    () => (state?.ok ? state.completed.filter((c) => inRange(c.completedAtIso, range, now)) : []),
     [state, range, now],
   );
   const filteredTirePlugs = useMemo(
@@ -122,7 +122,7 @@ function EarningsView() {
       let tips = 0;
       if (state?.ok) {
         for (const c of state.completed) {
-          const t = c.updatedAtIso ? new Date(c.updatedAtIso).getTime() : Number.NaN;
+          const t = c.completedAtIso ? new Date(c.completedAtIso).getTime() : Number.NaN;
           if (Number.isFinite(t) && t >= start.getTime() && t < end.getTime()) jobs += 1;
         }
         for (const tip of state.tips) {

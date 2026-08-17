@@ -684,14 +684,41 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
         AND dj.assigned_driver_towbook_id IS NOT NULL
         AND (dj.raw_json->>'completionTime' IS NULL OR NOT (dj.raw_json->>'completionTime' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}(T| )[0-9]{2}:[0-9]{2}:[0-9]{2}'))`;
     const unknownCompletionTimeRows = Number((unknownCompletionRows[0] as Record<string, unknown> | undefined)?.count ?? 0);
-    const jobRows = await q`
-      SELECT dj.assigned_driver_towbook_id AS tb_id, COUNT(*)::int AS job_count
+    // Keep each qualifying row: GOA is a per-job rate override and reassignment
+    // is a row-level attribution guard, so an aggregate SQL count cannot model
+    // either rule honestly. Final cancelled rows are never payable, including
+    // completed-then-cancelled Towbook records (status 255).
+    const candidateJobRows = await q`
+      SELECT dj.assigned_driver_towbook_id AS tb_id, dj.status, dj.raw_json, dj.manually_reassigned_at
       FROM dispatch_jobs dj
       WHERE dj.org_id=${actor.orgId} AND dj.status='completed'
+        AND COALESCE(dj.raw_json->>'statusId', dj.raw_json->>'status') NOT IN ('255','cancelled','canceled')
         AND CASE WHEN dj.raw_json->>'completionTime' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}(T| )[0-9]{2}:[0-9]{2}:[0-9]{2}' THEN (dj.raw_json->>'completionTime')::timestamptz END >= ${iso(startsAt)}
         AND CASE WHEN dj.raw_json->>'completionTime' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}(T| )[0-9]{2}:[0-9]{2}:[0-9]{2}' THEN (dj.raw_json->>'completionTime')::timestamptz END < ${iso(endsAt)}
-        AND dj.assigned_driver_towbook_id IS NOT NULL
-      GROUP BY dj.assigned_driver_towbook_id`;
+        AND dj.assigned_driver_towbook_id IS NOT NULL`;
+    const hasReassignmentEvidence = (value: unknown): boolean => {
+      if (!value || typeof value !== "object") return false;
+      if (Array.isArray(value)) return value.some(hasReassignmentEvidence);
+      return Object.entries(value as Record<string, unknown>).some(([key, child]) =>
+        /reassign/i.test(key) && (child != null && child !== false && child !== "" && child !== 0) || hasReassignmentEvidence(child));
+    };
+    const payableJobs = (candidateJobRows as Record<string, unknown>[]).filter((r) => {
+      if (r.manually_reassigned_at != null) return false;
+      let raw: unknown = r.raw_json;
+      if (typeof raw === "string") { try { raw = JSON.parse(raw); } catch { return false; } }
+      return !hasReassignmentEvidence(raw);
+    });
+    const jobRows = [...payableJobs.reduce((m, r) => {
+      const tb = String(r.tb_id);
+      const row = m.get(tb) ?? { tb_id: tb, job_count: 0, goa_count: 0 };
+      row.job_count += 1;
+      let raw: unknown = r.raw_json;
+      if (typeof raw === "string") { try { raw = JSON.parse(raw); } catch { raw = null; } }
+      const items = raw && typeof raw === "object" && Array.isArray((raw as Record<string, unknown>).invoiceItems)
+        ? (raw as Record<string, unknown>).invoiceItems as unknown[] : [];
+      if (items.some((item) => item && typeof item === "object" && (/goa/i.test(String((item as Record<string, unknown>).name ?? "")) || Number((item as Record<string, unknown>).price) === 10))) row.goa_count += 1;
+      m.set(tb, row); return m;
+    }, new Map<string, { tb_id: string; job_count: number; goa_count: number }>()).values()];
     // BUSY-TIME BONUS (owner-locked 2026-08-13): 3+ ASSIGNED calls per
     // contractor within one clock hour = busy hour; +$1 per job COMPLETED in
     // that busy hour. Derived here (pure busy-bonus-core math) from every
@@ -822,7 +849,11 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
         ? `${String(method.bank_institution_name ?? "").trim() || "Bank"} ••${String(method.bank_last4 ?? "").trim()}`.trim()
         : String(method.handle ?? "").trim() || null) : null;
       const handleMasked = method ? maskHandle(rail!, method.handle != null ? String(method.handle) : null, method.bank_institution_name != null ? String(method.bank_institution_name) : null, method.bank_last4 != null ? String(method.bank_last4) : null) : "";
-      const grossCents = e.payrateCents != null ? e.payrateCents * e.jobCount : 0;
+      // GOA rows pay the flat $10 amount; every other payable row uses the
+      // contractor's configured rate. GOA was counted from invoiceItems only.
+      const goaCount = (jobRows as Record<string, unknown>[]).filter((r) => String(r.tb_id) === [...userByTb.entries()].find(([, v]) => v.userId === uid)?.[0]).reduce((s, r) => s + Number(r.goa_count ?? 0), 0);
+      const normalJobCount = Math.max(0, e.jobCount - goaCount);
+      const grossCents = (goaCount * 1000) + (e.payrateCents != null ? e.payrateCents * normalJobCount : 0);
       const tipsCents = e.tipsCents;
       const tirePlugCents = e.tirePlugCents;
       const busy = busyByUser.get(uid) ?? { bonusCents: 0, bonusJobs: 0, hours: null as { startsAtIso: string; completedJobs: number }[] | null };
