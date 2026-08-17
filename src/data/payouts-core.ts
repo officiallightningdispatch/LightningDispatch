@@ -435,6 +435,7 @@ export type PayPeriodDetail = {
     paidCount: number;
     blockedCount: number;
     rails: { rail: PayoutRail; count: number; totalCents: number }[];
+    completionDiagnostics?: { jobId: string; towbookJobId: string | null; driverId: string | null }[];
   };
 };
 export type PayPeriodList = {
@@ -622,6 +623,10 @@ export async function getPayPeriodDetailCore(actor: PayoutActor, periodId: strin
       g.totalCents += rec.totalCents;
       railsMap.set(rec.rail, g);
     }
+    const missingCompletion = await q`SELECT id, towbook_job_id, assigned_driver_towbook_id
+      FROM dispatch_jobs WHERE org_id=${actor.orgId} AND status='completed' AND completed_at IS NULL
+        AND created_at < ${iso(new Date(period.endsAt))}`;
+    const completionDiagnostics = (missingCompletion as Record<string, unknown>[]).map((r) => ({ jobId: String(r.id), towbookJobId: r.towbook_job_id == null ? null : String(r.towbook_job_id), driverId: r.assigned_driver_towbook_id == null ? null : String(r.assigned_driver_towbook_id) }));
     const totals = {
       grossCents: rows.reduce((s, r) => s + r.grossCents, 0),
       tipsCents: rows.reduce((s, r) => s + r.tipsCents, 0),
@@ -633,6 +638,7 @@ export async function getPayPeriodDetailCore(actor: PayoutActor, periodId: strin
       dueCount: rows.filter((r) => r.status === "computed").length,
       paidCount: rows.filter((r) => r.status === "paid").length,
       blockedCount: rows.filter((r) => r.status === "blocked").length,
+      completionDiagnostics,
       rails: [...railsMap.entries()]
         .map(([rail, g]) => ({ rail, count: g.count, totalCents: g.totalCents }))
         .sort((a, b) => b.totalCents - a.totalCents),
@@ -670,6 +676,14 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
     if (endsAt.getTime() > now.getTime()) return err("invalid_input", "This period is still open — it closes Sunday 11:59 PM ET.");
     const wasPaid = String(periodRow.status) === "paid";
     const wasComputed = String(periodRow.status) === "computed";
+
+    const completionDiagnosticsRows = await q`SELECT id, towbook_job_id, assigned_driver_towbook_id
+      FROM dispatch_jobs WHERE org_id=${actor.orgId} AND status='completed' AND completed_at IS NULL
+        AND created_at < ${iso(endsAt)}`;
+    const completionDiagnostics = (completionDiagnosticsRows as Record<string, unknown>[]).map((r) => ({
+      jobId: String(r.id), towbookJobId: r.towbook_job_id == null ? null : String(r.towbook_job_id),
+      driverId: r.assigned_driver_towbook_id == null ? null : String(r.assigned_driver_towbook_id),
+    }));
 
     const jobRows = await q`
       SELECT dj.assigned_driver_towbook_id AS tb_id, COUNT(*)::int AS job_count
@@ -897,6 +911,7 @@ async function buildDetailFallback(actor: PayoutActor, periodId: string, records
     paidCount: records.filter((r) => r.status === "paid").length,
     blockedCount: records.filter((r) => r.status === "blocked").length,
     rails: [],
+    completionDiagnostics: [],
   };
   return { period, records, totals };
 }
