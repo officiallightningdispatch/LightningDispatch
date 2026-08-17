@@ -1903,7 +1903,8 @@ try {
     await q`INSERT INTO ai_dispatcher_decisions(id,org_id,call_request_id,decision,escalated,driver_id,reason,raw_response) VALUES(${randomUUID()},${ORG6},'94001','auto_accept_no_driver',TRUE,'0','initial in-state hold',${JSON.stringify({offer: retryOffer})}::jsonb)`;
     const first = makeFetch({ offers: [], drivers: [], liveCalls: [retryCall] });
     const { deps: firstDeps } = makeDeps(first.fetchImpl, makeRouter(), { env: {}, stateResolver: async () => "CT" });
-    await runAutoDispatch(ORG6, firstDeps);
+    const firstNow = Date.now; Date.now = () => firstNow() + 5 * 60 * 1000 + 1;
+    try { await runAutoDispatch(ORG6, firstDeps); } finally { Date.now = firstNow; }
     let row = (await q`SELECT decision,driver_id FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='94001'`)[0];
     check("retry re-select: no in-state candidate stays parked", row?.decision === "auto_accept_no_driver" && String(row?.driver_id) === "0" && !posts(first.calls).some((p) => Number(p.body?.driverId) > 0), JSON.stringify(row));
     const originalNow = Date.now; Date.now = () => originalNow() + 5 * 60 * 1000 + 1;
