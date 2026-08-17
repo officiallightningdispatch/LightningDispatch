@@ -1563,6 +1563,27 @@ try {
     await setZone(origZone.zone_lat, origZone.zone_lng, origZone.zone_radius_miles);
   }
 
+  /* ============ 27k) GB Texas state-dispatch regressions (owner incident 2026-08-16) ============ */
+  {
+    const tx = "307 MARIMOOR DRIVE, HUTTO, TX 78634";
+    const gb = 721132;
+    const ct = 703785;
+    const insertGbEvidence = (suffix, id = gb) => q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, pickup, raw_json, pickup_lat, pickup_lng, assigned_driver_towbook_id)
+      VALUES(${'gb-tx-' + suffix + '-' + FIXTURE_TAG}, ${ORG6}, 'GB evidence', '', 30.477, -97.705, 'Hutto TX', 'jump', 'completed', NOW() - INTERVAL '1 hour', '', ${'tb-' + suffix + '-' + FIXTURE_TAG}, ${tx}, ${JSON.stringify({ startingLocation: tx, purchaseOrderNumber: 'gb-' + suffix })}::jsonb, 30.477, -97.705, ${String(id)})`;
+    await insertGbEvidence('low-score');
+    const low = makeFetch({ offers: [offer(327442737, { omitLat: true, omitLng: true, startingLocation: tx, drivers: [gb, ct], purchaseOrderNumber: '112818454' })], drivers: [driver(ct, 'CT nearest result')] });
+    const { deps: lowDeps } = makeDeps(low.fetchImpl, null, { stateResolver: async (_id, lat) => Number(lat) < 35 ? "TX" : "CT", geocodeOverride: async () => ({ lat: 30.477, lng: -97.705, score: 14.7465858459, freeformAddress: tx }) });
+    const lowRun = await runAutoDispatch(ORG6, lowDeps);
+    check("GB/TX low-score geocode: address state survives score 14.7 and assigns GB", lowRun.decisions[0]?.decision === "auto_accept_with_driver" && posts(low.calls)[0]?.body?.driverId === gb && lowRun.decisions[0]?.driverId === gb, JSON.stringify({ decision: lowRun.decisions[0], post: posts(low.calls)[0]?.body }));
+    check("GB/TX low-score geocode: CT nearest result is never cross-state fallback", posts(low.calls).every((c) => c.body?.driverId == null || Number(c.body.driverId) !== ct), JSON.stringify(posts(low.calls).map((c) => c.body)));
+    await insertGbEvidence('stale-no-zone');
+    const stale = makeFetch({ offers: [offer(327442738, { lat: 30.477, lng: -97.705, startingLocation: tx, drivers: [gb, ct], purchaseOrderNumber: '112818455' })], drivers: [driver(ct, 'CT nearest result', { lat: 41.2, lng: -73.2 })] });
+    const { deps: staleDeps } = makeDeps(stale.fetchImpl, null, { stateResolver: async () => "CT" });
+    const staleRun = await runAutoDispatch(ORG6, staleDeps);
+    check("GB/TX durable evidence: stale lease + no zone still auto-accepts GB", staleRun.decisions[0]?.decision === "auto_accept_with_driver" && staleRun.decisions[0]?.driverId === gb && posts(stale.calls)[0]?.body?.driverId === gb, JSON.stringify({ decision: staleRun.decisions[0], post: posts(stale.calls)[0]?.body }));
+    check("GB/TX durable evidence: CT driver is blocked by in-state-only guard", posts(stale.calls).every((c) => c.body?.driverId == null || Number(c.body.driverId) !== ct), JSON.stringify(posts(stale.calls).map((c) => c.body)));
+  }
+
   /* ============ 27k) tick observability: ai_dispatcher_runs (backlog #1) ============ */
   {
     // Every tick leaves a run row: gated, every skipped state, empty feed,
