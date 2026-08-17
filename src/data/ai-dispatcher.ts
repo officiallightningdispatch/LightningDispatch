@@ -315,11 +315,9 @@ export type DriverGpsFix = {
   capturedAt: string;
 };
 
-/** Where the road ETA was routed FROM — surfaced in the offer/audit so a
- *  stale-GPS fallback is never silent: "gps" = fresh app fix, "anchor" = the
- *  driver's anchor center (stale fix), "payload" = the nearestDrivers payload
- *  lat/lng (no app fix — the pre-geography default). */
-export type EtaOriginBasis = "gps" | "anchor" | "payload";
+/** Where the road ETA was routed FROM. Dispatch accepts only a fresh app GPS
+ *  origin; Towbook payload and assignment evidence are never valid bases. */
+export type EtaOriginBasis = "gps";
 
 /** Start of today's ET business day (America/New_York 00:00) as UTC ms —
  *  DST-aware: the offset is resolved from the ET calendar date, so winter EST
@@ -1461,7 +1459,7 @@ export type ChosenDriverEta = {
   driver: NearestDriver;
   /** Geographic distance from the selected ETA origin to pickup, in miles. */
   distanceMiles: number;
-  /** GPS is primary-truth; anchor/payload origins are honest fallbacks. */
+  /** Dispatch origin is always the driver's real app GPS fix. */
   distanceBasis: "gps" | "fallback";
   /** Route seconds from the road router; null when routing failed (fallback used). */
   roadSeconds: number | null;
@@ -1514,8 +1512,7 @@ export type ChosenDriverEta = {
    *  ETA was routed FROM (freshest app GPS fix, anchor center, or payload). */
   originLat: number;
   originLng: number;
-  /** What produced the origin: "gps" (fresh app fix), "anchor" (anchor center
-   *  — stale fix), "payload" (nearestDrivers lat/lng — no app fix). */
+  /** What produced the origin; always "gps" for a selected driver. */
   originBasis: EtaOriginBasis;
   /** Age of the freshest app GPS fix in minutes (null when no fix exists). */
   gpsFixAgeMinutes: number | null;
@@ -1788,27 +1785,27 @@ export async function chooseBestDriverByRoad(
   const usedAreaFallback = areaPool.length === 0;
   const pool = usedAreaFallback ? servicePool : areaPool;
 
-  // ETA origin per driver: freshest app GPS fix when fresh (≤ 15 min); a
-  // STALE fix falls back to the anchor center (basis noted — the offer/audit
-  // must never silently quote a stale position); no app fix at all keeps the
-  // payload GPS (the pre-geography default — absence of a ping is not treated
-  // as a stale ping).
-  const originFor = (d: NearestDriver): { lat: number; lng: number; basis: EtaOriginBasis; fixAgeMinutes: number | null } => {
-    const did = String(d.driverId);
-    const fix = area?.gpsFixes?.get(did);
-    let fixAge: number | null = null;
-    if (fix) {
-      const t = Date.parse(fix.capturedAt);
-      if (Number.isFinite(t)) fixAge = (now.getTime() - t) / 60000;
-    }
-    if (fix && fixAge != null && fixAge >= 0 && fixAge <= STALE_GPS_FIX_MINUTES) {
-      return { lat: fix.lat, lng: fix.lng, basis: "gps", fixAgeMinutes: fixAge };
-    }
-    const anchor = area?.anchors?.get(did);
-    if (fix && fixAge != null && fixAge > STALE_GPS_FIX_MINUTES && anchor) {
-      return { lat: anchor.lat, lng: anchor.lng, basis: "anchor", fixAgeMinutes: fixAge };
-    }
-    return { lat: Number(d.latitude), lng: Number(d.longitude), basis: "payload", fixAgeMinutes: fixAge };
+  // Owner directive 2026-08-17: driver origin is ONLY the freshest real app
+  // GPS fix in driver_locations (24h window). Payload coordinates and the
+  // assignment anchor are never a location, ETA origin, or state evidence.
+  // A stale fix can prove state but cannot produce a road ETA; callers below
+  // therefore exclude it from routing and selection until a fresh fix arrives.
+  const stateOriginFor = (d: NearestDriver): { lat: number; lng: number; fixAgeMinutes: number } | null => {
+    const fix = area?.gpsFixes?.get(String(d.driverId));
+    if (!fix) return null;
+    const captured = Date.parse(fix.capturedAt);
+    const age = Number.isFinite(captured) ? (now.getTime() - captured) / 60000 : Infinity;
+    // State proof allows a real app fix anywhere in the 24h evidence window.
+    if (!Number.isFinite(age) || age < 0 || age > 24 * 60) return null;
+    return { lat: fix.lat, lng: fix.lng, fixAgeMinutes: age };
+  };
+  const originFor = (d: NearestDriver): { lat: number; lng: number; basis: EtaOriginBasis; fixAgeMinutes: number } | null => {
+    const fix = area?.gpsFixes?.get(String(d.driverId));
+    if (!fix) return null;
+    const t = Date.parse(fix.capturedAt);
+    const fixAge = Number.isFinite(t) ? (now.getTime() - t) / 60000 : Infinity;
+    if (!Number.isFinite(fixAge) || fixAge < 0 || fixAge > STALE_GPS_FIX_MINUTES) return null;
+    return { lat: fix.lat, lng: fix.lng, basis: "gps", fixAgeMinutes: fixAge };
   };
 
   // --- STATE-TIERED GUARD (owner directive 2026-08-15). Resolve state from
@@ -1828,9 +1825,15 @@ export async function chooseBestDriverByRoad(
     const excluded: StateGuardOutcome["excluded"] = [];
     for (const d of statePool) {
       const did = Number(d.driverId);
-      const origin = originFor(d);
+      const stateOrigin = stateOriginFor(d);
       guardOut.checked++;
-      const st = await area.stateGuard.resolveDriverState(did, origin.lat, origin.lng);
+      // No real app GPS fix in 24h: no state proof and no selection. A stale
+      // real fix remains valid state evidence, but is rejected from road ETA.
+      if (!stateOrigin) {
+        excluded.push({ driverId: did, state: null, reason: "no app GPS fix — excluded (no state proof)" });
+        continue;
+      }
+      const st = await area.stateGuard.resolveDriverState(did, stateOrigin.lat, stateOrigin.lng);
       if (st && st.toUpperCase() === area.stateGuard.jobState.toUpperCase()) {
         inState.push(d);
         if (d.isCheckedIn === true || area.lightningAvailable?.has(String(d.driverId))) onlineInState.push(d);
@@ -1862,6 +1865,7 @@ export async function chooseBestDriverByRoad(
     const activeCount = driverActiveCount(d, queues);
     const origin = originFor(d);
     const anchor = area?.anchors?.get(String(d.driverId)) ?? null;
+    if (!origin) return null; // no fresh app GPS fix — fail closed
     if (activeCount > 0) {
       // Workload-aware (owner-directed 2026-08-11): a driver with active jobs
       // must finish them before this offer — remaining on the in-progress job
@@ -1980,6 +1984,7 @@ export async function chooseBestDriverByRoad(
   const modeled = await Promise.all(pool.map(async (d): Promise<ChosenDriverEta | null> => {
     const geometry = queueGeometryFor(d, queues);
     const origin = originFor(d);
+    if (!origin) return null; // no fresh app GPS fix — fail closed
     const arrival = await workloadAwareArrivalMinutes(d, geometry, pickupLat, pickupLng, roadRouter, driverActiveCount(d, queues), origin);
     if (!arrival) return null; // free driver — cannot be in the all-loaded path
     const straightLineMinutes = Math.max(1, Math.ceil(Number(d.estimatedTimeSeconds) / 60));
@@ -2060,11 +2065,7 @@ export function etaDetailLabel(c: ChosenDriverEta, buffer: number, floor: number
   // ETA-origin transparency (owner-directed 2026-08-13): the label prints the
   // ACTUAL origin the road ETA was routed FROM and names the basis — a stale
   // app fix routed from the anchor center is never silent in the ledger.
-  const originNote = c.originBasis === "anchor"
-    ? `; origin: anchor center${c.gpsFixAgeMinutes != null ? ` (GPS fix ${Math.round(c.gpsFixAgeMinutes)} min old)` : " (no app GPS fix)"}`
-    : c.originBasis === "gps"
-      ? `; origin: app GPS fix${c.gpsFixAgeMinutes != null ? ` (${Math.round(c.gpsFixAgeMinutes)} min old)` : ""}`
-      : "";
+  const originNote = `; origin: app GPS fix${c.gpsFixAgeMinutes != null ? ` (${Math.round(c.gpsFixAgeMinutes)} min old)` : ""}`;
   return `ETA ${finalMinutes} min (${base} + buffer ${buffer}${delay}${tomtomNote}${pingNote}; floor ${floor}; straight-line ${c.straightLineMinutes}; GPS ${Number(c.originLat) || Number(c.driver.latitude)},${Number(c.originLng) || Number(c.driver.longitude)}${originNote})`;
 }
 
@@ -2081,10 +2082,8 @@ export function areaSelectionNote(c: ChosenDriverEta, pickupLat: number, pickupL
     parts.push(`area anchor job ${c.anchor.jobId} (${c.anchor.lat.toFixed(4)},${c.anchor.lng.toFixed(4)}; pickup ${dist.toFixed(1)} mi ${dist <= c.anchorRadiusMiles ? "in-circle" : "OUTSIDE"})`);
   }
   if (c.areaFallback) parts.push("no in-area candidate — global closest-by-ETA fallback");
-  if (c.originBasis === "anchor") {
-    parts.push(`ETA origin: anchor center (app GPS fix ${c.gpsFixAgeMinutes != null ? `${Math.round(c.gpsFixAgeMinutes)} min old` : "absent"})`);
-  } else if (c.originBasis === "gps") {
-    parts.push(`ETA origin: app GPS fix (${c.gpsFixAgeMinutes != null ? `${Math.round(c.gpsFixAgeMinutes)} min old` : "fresh"})`);
+  if (c.originBasis === "gps") {
+    parts.push(`ETA origin: app GPS fix${c.gpsFixAgeMinutes != null ? ` (${Math.round(c.gpsFixAgeMinutes)} min old)` : ""}`);
   }
   return parts.length ? `; ${parts.join("; ")}` : null;
 }
@@ -3069,12 +3068,8 @@ async function runAutoDispatchInternal(
       const stateGuardCtx: StateGuardContext = {
         jobState: jobState ? jobState.toUpperCase() : null,
         resolveDriverState: async (driverId, lat, lng) => {
-          // Durable dispatch evidence outranks the live-origin resolver. This
-          // remains true when tests or callers inject a resolver: an injected
-          // live location can be stale, while a completed pickup is durable
-          // proof of the driver's service state for this offer.
-          const durableState = driverDispatchEvidence.get(String(driverId))?.state;
-          if (durableState) return durableState;
+          // State proof is strictly reverse-geocoded from the driver's real
+          // app GPS origin. Towbook assignment evidence is never state proof.
           if (deps.stateGuardResolver) return deps.stateGuardResolver(driverId, lat, lng);
           const key = driverStateCacheKey(driverId, lat, lng);
           if (reverseStateCache.has(key)) return reverseStateCache.get(key) ?? null;
