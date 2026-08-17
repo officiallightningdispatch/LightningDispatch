@@ -533,6 +533,9 @@ try {
 
   /* ============ 7) auto-accept with driver: ROAD ETA (route + buffer) ============ */
   {
+    // Real app GPS is required; payload coordinates alone are ineligible.
+    await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES(${`ad-gps-603482-${FIXTURE_TAG}`}, ${ORG}, ${USER}, '603482', 41.15, -73.1, ${new Date().toISOString()})`;
+    await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES(${`ad-gps-703785-${FIXTURE_TAG}`}, ${ORG}, ${USER}, '703785', 41.18, -73.15, ${new Date().toISOString()})`;
     const m = makeFetch({
       offers: [offer(7001)],
       drivers: [
@@ -584,7 +587,8 @@ try {
     const { deps } = makeDeps(m.fetchImpl, router);
     const r = await runAutoDispatch(ORG, deps);
     const p = posts(m.calls);
-    check("maxEta goal: offer maxEta does not gate acceptance; org quote is 60", p[0]?.body?.ETA === 60, JSON.stringify(p[0]?.body));
+    // Quote uses the seeded real app GPS origin; maxEta never gates acceptance.
+    check("maxEta goal: offer maxEta does not gate acceptance; GPS-origin quote is 44", p[0]?.body?.ETA === 44, JSON.stringify(p[0]?.body));
     check("maxEta override: decision recorded", r.processed === 1 && r.decisions[0]?.decision === "auto_accept_with_driver", JSON.stringify(r));
   }
 
