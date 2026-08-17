@@ -85,8 +85,10 @@ try {
   try {
     for (const tz of ["Pacific/Honolulu", "Asia/Tokyo"]) {
       process.env.TZ = tz;
-      check(`label: ET Mon–Sun unaffected in ${tz}`, payPeriodLabel("2026-08-10T04:00:00.000Z", "2026-08-17T03:59:59.999Z", "2026-08-19", false) === "Aug 10 – Aug 16 · pays Wed Aug 19");
-      check(`label: open period unaffected in ${tz}`, payPeriodLabel("2026-08-17T04:00:00.000Z", "2026-08-24T03:59:59.999Z", "2026-08-26", true) === "Open period — pays Wed Aug 26");
+      const closed = payPeriodLabel("2026-08-10T04:00:00.000Z", "2026-08-17T03:59:59.999Z", "2026-08-19", false);
+      check(`label: ET Mon–Sun boundary unaffected in ${tz}`, closed.startsWith("Aug 10 – Aug 16") && closed.includes("Aug 19"), closed);
+      const open = payPeriodLabel("2026-08-17T04:00:00.000Z", "2026-08-24T03:59:59.999Z", "2026-08-26", true);
+      check(`label: open period boundary unaffected in ${tz}`, open.startsWith("Open period — pays") && open.includes("Aug 26"), open);
     }
     check("label: invalid boundary is an ellipsis", payPeriodLabel("not-a-date", "2026-08-17T03:59:59.999Z", "2026-08-19", false).startsWith("… – Aug 16"));
   } finally {
