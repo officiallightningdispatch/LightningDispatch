@@ -116,7 +116,7 @@ try {
   check("resolve: created_at last resort for assignment", jobAssignmentMs({ created_at: new Date(H - 5) }) === H - 5);
   check("resolve: completion needs completed_at or raw completionTime", jobCompletedMs({ created_at: new Date(H - 5) }) === null);
   check("resolve: raw completionTime used when completed_at missing", jobCompletedMs({ raw_json: { completionTime: "2026-07-15T14:45:00" } }) === Date.parse("2026-07-15T14:45:00Z"));
-  check("resolve: completed_at wins", jobCompletedMs({ completed_at: new Date(H + 9), raw_json: { completionTime: "2026-07-15T13:45:00" } }) === H + 9);
+  check("resolve: raw completionTime wins over completed_at", jobCompletedMs({ completed_at: new Date(H + 9), raw_json: { completionTime: "2026-07-15T13:45:00" } }) === Date.parse("2026-07-15T13:45:00Z"));
 }
 
 /* ===================== 2) FIXTURES (closed past period) ===================== */
@@ -148,7 +148,7 @@ const E = Date.parse("2026-07-15T22:00:00.000Z");
 const F = Date.parse("2026-07-16T14:00:00.000Z"); // D3 raw-import busy hour
 const job = (id, tbId, status, at, assignedAt, completedAt, raw) =>
   q`INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, phone, lat, lng, area, service_type, status, created_at, assigned_at, completed_at, assigned_driver_towbook_id, raw_json) VALUES
-    (${id}, ${ORG}, ${id.replace(/^qa-bb-j-/, "")}, ${"C"}, ${"9145550100"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, ${status}, ${iso(at)}, ${assignedAt ? iso(assignedAt) : null}, ${completedAt ? iso(completedAt) : null}, ${tbId}, ${raw ? JSON.stringify(raw) : null})`;
+    (${id}, ${ORG}, ${id.replace(/^qa-bb-j-/, "")}, ${"C"}, ${"9145550100"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, ${status}, ${iso(at)}, ${assignedAt ? iso(assignedAt) : null}, ${completedAt ? iso(completedAt) : null}, ${tbId}, ${raw ? JSON.stringify(raw) : (completedAt ? JSON.stringify({ completionTime: iso(completedAt) }) : null)})`;
 
 // D1 — busy hour A (14:00Z): assignments A1,A2,A3,X1 (4 ≥ 3 → busy); completions in A: A1,A2,X1 (3 → +$3).
 //      busy hour C (20:00Z): assignments C1..C4 (4 ≥ 3 → busy); completions in C: C1,C2 (2 → +$2).
@@ -204,8 +204,8 @@ let detail;
   const d3 = detail.records.find((r) => r.contractorId === D3);
   check("compute: D3 raw dispatchTime/completionTime path → +$4 (3 raw + 1 normal all complete in hour F)", d3 && d3.busyBonusCents === 400 && d3.busyBonusJobs === 4
     && d3.busyBonusHours && d3.busyBonusHours.length === 1 && d3.busyBonusHours[0].startsAtIso === iso(F) && d3.busyBonusHours[0].completedJobs === 4, JSON.stringify(d3));
-  check("compute: D3 jobCount = 1 (only the completed_at row counts toward gross)", d3 && d3.jobCount === 1 && d3.grossCents === 10000 && d3.totalCents === 10400, JSON.stringify(d3));
-  check("compute: totals.busyBonusCents = $9 across the manifest", detail && detail.totals.busyBonusCents === 900 && detail.totals.totalCents === 81500 + 30000 + 10400, JSON.stringify(detail?.totals));
+  check("compute: D3 jobCount = 4 (raw completionTime rows are authoritative for gross)", d3 && d3.jobCount === 4 && d3.grossCents === 40000 && d3.totalCents === 40400, JSON.stringify(d3));
+  check("compute: totals.busyBonusCents = $9 across the manifest", detail && detail.totals.busyBonusCents === 900 && detail.totals.totalCents === 81500 + 30000 + 40400, JSON.stringify(detail?.totals));
   // payment_transactions mirror includes the bonus (the amount the owner sends)
   const mirror = await q`SELECT amount_cents FROM payment_transactions WHERE org_id=${ORG} AND idempotency_key=${`payout-pr-${PERIOD}-${D1}`}`;
   check("mirror: D1 payout mirror = 81500 (gross + tips + busy bonus)", mirror.length === 1 && Number(mirror[0].amount_cents) === 81500, JSON.stringify(mirror));
@@ -216,7 +216,7 @@ let detail;
   const res = await computePaydayCore(ACTOR, PERIOD);
   check("recompute: ok", res.ok, JSON.stringify(res));
   check("recompute: D1 bonus unchanged ($5)", res.ok && res.data.records.find((r) => r.contractorId === D1)?.busyBonusCents === 500, JSON.stringify(res.data?.records));
-  check("recompute: totals unchanged (900 bonus, 121900 total)", res.ok && res.data.totals.busyBonusCents === 900 && res.data.totals.totalCents === 121900, JSON.stringify(res.data?.totals));
+  check("recompute: totals unchanged (900 bonus, 151900 total)", res.ok && res.data.totals.busyBonusCents === 900 && res.data.totals.totalCents === 151900, JSON.stringify(res.data?.totals));
   const rows = await q`SELECT COUNT(*)::int AS c FROM payout_records WHERE org_id=${ORG} AND period_id=${PERIOD}`;
   check("recompute: no duplicate records (3)", Number(rows[0].c) === 3, JSON.stringify(rows));
 }

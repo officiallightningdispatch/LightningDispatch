@@ -107,6 +107,16 @@ await q`INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, pho
   (${J3}, ${ORG}, ${"9103"}, ${"C3"}, ${"9145550103"}, 41.1, -73.5, ${"CT"}, ${"Lock"}, 'completed', ${iso(new Date(closed.startsAt.getTime() + 8600e3))}, ${iso(new Date(closed.startsAt.getTime() + 8600e3))}, ${TB2}),
   (${J_OUT}, ${ORG}, ${"9104"}, ${"C4"}, ${"9145550104"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, 'completed', ${iso(new Date(closed.endsAt.getTime() + 3600e3))}, ${iso(new Date(closed.endsAt.getTime() + 3600e3))}, ${TB1}),
   (${J_EDGE}, ${ORG}, ${"9105"}, ${"C5"}, ${"9145550105"}, 41.1, -73.5, ${"CT"}, ${"Jump"}, 'completed', ${iso(new Date(closed.endsAt.getTime() - 1000))}, ${iso(new Date(closed.endsAt.getTime() - 1000))}, ${TB3})`;
+// Towbook completionTime is authoritative; deliberately diverge J1 from sync clock
+// to prove the payday query uses raw completionTime.
+await q`UPDATE dispatch_jobs SET raw_json = jsonb_build_object('completionTime', ${new Date(closed.startsAt.getTime() + 3600e3).toISOString()}::text) WHERE org_id=${ORG} AND id=${J1}`;
+await q`UPDATE dispatch_jobs SET raw_json = jsonb_build_object('completionTime', ${new Date(closed.startsAt.getTime() + 7200e3).toISOString()}::text) WHERE org_id=${ORG} AND id=${J2}`;
+await q`UPDATE dispatch_jobs SET raw_json = jsonb_build_object('completionTime', ${new Date(closed.startsAt.getTime() + 8600e3).toISOString()}::text) WHERE org_id=${ORG} AND id=${J3}`;
+await q`UPDATE dispatch_jobs SET raw_json = jsonb_build_object('completionTime', ${new Date(closed.endsAt.getTime() + 3600e3).toISOString()}::text) WHERE org_id=${ORG} AND id=${J_OUT}`;
+await q`UPDATE dispatch_jobs SET raw_json = jsonb_build_object('completionTime', ${new Date(closed.endsAt.getTime() - 1000).toISOString()}::text) WHERE org_id=${ORG} AND id=${J_EDGE}`;
+const J_UNKNOWN = `qa-pd-junknown-${randomUUID()}`;
+await q`INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, phone, lat, lng, area, service_type, status, created_at, completed_at, assigned_driver_towbook_id, raw_json) VALUES
+  (${J_UNKNOWN}, ${ORG}, ${"9107"}, ${"C7"}, ${"9145550107"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, 'completed', ${iso(closed.startsAt)}, ${iso(closed.startsAt)}, ${TB1}, ${JSON.stringify({ completionTime: "garbage" })})`;
 // D3 also has an uncompleted job inside the window — must NOT count
 await q`INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, phone, lat, lng, area, service_type, status, created_at, assigned_driver_towbook_id) VALUES
   (${`qa-pd-jopen-${randomUUID()}`}, ${ORG}, ${"9106"}, ${"C6"}, ${"9145550106"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, 'dispatched', ${iso(new Date(closed.startsAt.getTime() + 5000e3))}, ${TB3})`;
@@ -135,6 +145,7 @@ let detail;
   check("compute: ok", res.ok, JSON.stringify(res));
   detail = res.ok ? res.data : null;
   check("compute: period status → computed", detail && detail.period.status === "computed", JSON.stringify(detail?.period));
+  check("compute: unknown completion diagnostics visible", detail && detail.diagnostics?.unknownCompletionTimeRows === 1, JSON.stringify(detail?.diagnostics));
   // D1: 2 jobs × $100 + $25 tip = $225, verified venmo → computed
   const d1 = detail.records.find((r) => r.contractorId === D1);
   check("compute: D1 gross = 2 × $100", d1 && d1.grossCents === 20000, JSON.stringify(d1));
@@ -216,8 +227,8 @@ let detail;
   const PERIOD2 = `pay-${ORG}-fresh`;
   await q`INSERT INTO pay_periods(id, org_id, starts_at, ends_at, payout_due_on, status) VALUES
     (${PERIOD2}, ${ORG}, ${iso(fresh.startsAt)}, ${iso(fresh.endsAt)}, ${fresh.payoutDueOn}, 'open')`;
-  await q`INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, phone, lat, lng, area, service_type, status, created_at, completed_at, assigned_driver_towbook_id) VALUES
-    (${`qa-pd-jf-${randomUUID()}`}, ${ORG}, ${"9201"}, ${"CF"}, ${"9145550107"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, 'completed', ${iso(new Date(fresh.startsAt.getTime() + 3600e3))}, ${iso(new Date(fresh.startsAt.getTime() + 3600e3))}, ${TB3})`;
+  await q`INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, phone, lat, lng, area, service_type, status, created_at, completed_at, assigned_driver_towbook_id, raw_json) VALUES
+    (${`qa-pd-jf-${randomUUID()}`}, ${ORG}, ${"9201"}, ${"CF"}, ${"9145550107"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, 'completed', ${iso(new Date(fresh.startsAt.getTime() + 3600e3))}, ${iso(new Date(fresh.startsAt.getTime() + 3600e3))}, ${TB3}, ${JSON.stringify({ completionTime: iso(new Date(fresh.startsAt.getTime() + 3600e3)) })})`;
   const c2 = await computePaydayCore(ACTOR, PERIOD2);
   check("fresh: D3 verified now → computed + rail group", c2.ok && c2.data.records.find((r) => r.contractorId === D3)?.status === "computed" && c2.data.records.find((r) => r.contractorId === D3)?.rail === "cash_app", JSON.stringify(c2.data?.records));
   // mark ALL paid in period2 → period flips to paid (no blocked rows)

@@ -436,6 +436,9 @@ export type PayPeriodDetail = {
     blockedCount: number;
     rails: { rail: PayoutRail; count: number; totalCents: number }[];
   };
+  /** Rows that cannot be placed in a payday window because Towbook did not
+   * provide a parseable authoritative completionTime. */
+  diagnostics?: { unknownCompletionTimeRows: number };
 };
 export type PayPeriodList = {
   periods: PayPeriod[]; // newest first
@@ -628,6 +631,7 @@ export async function getPayPeriodDetailCore(actor: PayoutActor, periodId: strin
       tirePlugCents: rows.reduce((s, r) => s + r.tirePlugCents, 0),
       busyBonusCents: rows.reduce((s, r) => s + r.busyBonusCents, 0),
       totalCents: rows.reduce((s, r) => s + r.totalCents, 0),
+      unknownTimestampCount: 0,
       contractorCount: rows.length,
       jobCount: rows.reduce((s, r) => s + r.jobCount, 0),
       dueCount: rows.filter((r) => r.status === "computed").length,
@@ -671,11 +675,21 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
     const wasPaid = String(periodRow.status) === "paid";
     const wasComputed = String(periodRow.status) === "computed";
 
+    // Towbook's completionTime is the authoritative payday instant. Keep the
+    // cast behind a shape guard: PostgreSQL timestamptz casts throw on garbage.
+    const unknownCompletionRows = await q`
+      SELECT COUNT(*)::int AS count
+      FROM dispatch_jobs dj
+      WHERE dj.org_id=${actor.orgId} AND dj.status='completed'
+        AND dj.assigned_driver_towbook_id IS NOT NULL
+        AND (dj.raw_json->>'completionTime' IS NULL OR NOT (dj.raw_json->>'completionTime' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}(T| )[0-9]{2}:[0-9]{2}:[0-9]{2}'))`;
+    const unknownCompletionTimeRows = Number((unknownCompletionRows[0] as Record<string, unknown> | undefined)?.count ?? 0);
     const jobRows = await q`
       SELECT dj.assigned_driver_towbook_id AS tb_id, COUNT(*)::int AS job_count
       FROM dispatch_jobs dj
       WHERE dj.org_id=${actor.orgId} AND dj.status='completed'
-        AND dj.completed_at >= ${iso(startsAt)} AND dj.completed_at < ${iso(endsAt)}
+        AND CASE WHEN dj.raw_json->>'completionTime' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}(T| )[0-9]{2}:[0-9]{2}:[0-9]{2}' THEN (dj.raw_json->>'completionTime')::timestamptz END >= ${iso(startsAt)}
+        AND CASE WHEN dj.raw_json->>'completionTime' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}(T| )[0-9]{2}:[0-9]{2}:[0-9]{2}' THEN (dj.raw_json->>'completionTime')::timestamptz END < ${iso(endsAt)}
         AND dj.assigned_driver_towbook_id IS NOT NULL
       GROUP BY dj.assigned_driver_towbook_id`;
     // BUSY-TIME BONUS (owner-locked 2026-08-13): 3+ ASSIGNED calls per
@@ -871,7 +885,13 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
     } catch { /* best-effort audit */ }
 
     const detail = await getPayPeriodDetailCore(actor, periodId);
-    return detail.ok && detail.data ? detail : ok(await buildDetailFallback(actor, periodId, records));
+    if (detail.ok && detail.data) {
+      detail.data.diagnostics = { unknownCompletionTimeRows };
+      return detail;
+    }
+    const fallback = await buildDetailFallback(actor, periodId, records);
+    fallback.diagnostics = { unknownCompletionTimeRows };
+    return ok(fallback);
   } catch (e) {
     return err("database_error", e instanceof Error ? e.message : "Unable to compute payday.");
   }
@@ -891,6 +911,7 @@ async function buildDetailFallback(actor: PayoutActor, periodId: string, records
     busyBonusCents: records.reduce((s, r) => s + r.busyBonusCents, 0),
     tirePlugCents: records.reduce((s, r) => s + r.tirePlugCents, 0),
     totalCents: records.reduce((s, r) => s + r.totalCents, 0),
+    unknownTimestampCount: 0,
     contractorCount: records.length,
     jobCount: records.reduce((s, r) => s + r.jobCount, 0),
     dueCount: records.filter((r) => r.status === "computed").length,

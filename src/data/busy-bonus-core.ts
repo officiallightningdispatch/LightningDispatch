@@ -107,17 +107,16 @@ export function jobAssignmentMs(r: JobEventRow): number | null {
   return toMs(r.created_at);
 }
 
-/** The instant a job was completed (bonus eligibility input): local
- *  completed_at → raw completionTime. A job with NO completion timestamp
- *  returns null (it cannot be placed in an hour → no bonus). */
+/** The instant a job was completed (bonus eligibility input): Towbook's
+ * authoritative raw completionTime → local completed_at fallback. A job with
+ * NO completion timestamp returns null (it cannot be placed in an hour). */
 export function jobCompletedMs(r: JobEventRow): number | null {
-  const c = toMs(r.completed_at);
-  if (c != null) return c;
   if (r.raw_json && typeof r.raw_json === "object") {
     const raw = r.raw_json as Record<string, unknown>;
-    return parseRawTimestamp(raw.completionTime ?? raw.completion_time);
+    const authoritative = parseRawTimestamp(raw.completionTime ?? raw.completion_time);
+    if (authoritative != null) return authoritative;
   }
-  return null;
+  return toMs(r.completed_at);
 }
 
 /** Busy-hour starts (epoch ms of the ET clock-hour start, ascending, unique)
