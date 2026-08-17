@@ -1104,7 +1104,9 @@ export async function getMoneyOverviewCore(actor: PayoutActor): Promise<PayoutRe
     const weeklyTips = await q`SELECT u.id AS driver_id, u.name AS driver_name,
         COALESCE(SUM(ct.amount_cents), 0)::int AS tips_cents, COUNT(ct.id)::int AS tip_count
       FROM users u JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${actor.orgId}
-      LEFT JOIN completion_tips ct ON ct.org_id=${actor.orgId} AND ct.driver_id=u.id AND ct.status='paid'
+      LEFT JOIN completion_tips ct ON ct.org_id=${actor.orgId}
+        AND (ct.driver_id=u.id OR (ct.driver_id IS NULL AND ct.driver_towbook_id=u.towbook_driver_id))
+        AND ct.status='paid'
         AND ct.created_at >= ${iso(weekly.startsAt)} AND ct.created_at < ${iso(new Date(weekly.endsAt.getTime() + 1))}
       WHERE m.role='driver'
       GROUP BY u.id, u.name ORDER BY u.name ASC`;
