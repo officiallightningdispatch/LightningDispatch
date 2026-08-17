@@ -999,11 +999,11 @@ export async function getOrgSettings(orgId: string): Promise<OrgAiSettings> {
     zoneLng: Number(r.zone_lng),
     zoneRadiusMiles: Number(r.zone_radius_miles),
     maxEtaMinutes: Number(r.max_eta_minutes) || 45,
-    etaBufferMinutes: Number(r.eta_buffer_minutes) || 5,
-    etaFloorMinutes: Number(r.eta_floor_minutes) || 5,
+    etaBufferMinutes: Number(r.eta_buffer_minutes) || 3,
+    etaFloorMinutes: Number(r.eta_floor_minutes) || 3,
     qualificationGateEnabled: r.qualification_gate_enabled !== false,
     nudgeEnabled: r.nudge_enabled !== false,
-    reassignNotHeadedMinutes: Number(r.reassign_not_headed_minutes) || 5,
+    reassignNotHeadedMinutes: Number(r.reassign_not_headed_minutes) || 3,
   };
 }
 
@@ -2026,7 +2026,7 @@ export function finalEtaMinutes(
   _maxEtaMinutes?: number,
 ): number {
   const raw = Math.ceil(Number.isFinite(baseMinutes) ? baseMinutes : 0) + (Number.isFinite(bufferMinutes) ? bufferMinutes : 0);
-  const floor = Math.round(floorMinutes) || 5;
+  const floor = Math.round(floorMinutes) || 3;
   return Math.min(Math.max(floor, raw), Math.max(1, Math.round(_maxEtaMinutes ?? 60)));
 }
 
@@ -2428,7 +2428,7 @@ async function upsertVerifiedDispatchJob(orgId: string, offer: OfferShape, call:
   const phone = String(call.phone ?? call.customerPhone ?? "");
   await sql() `INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, phone, customer_phone, lat, lng, pickup_lat, pickup_lng, pickup, area, service_type, status, assigned_driver_towbook_id, assigned_driver_name, towbook_status, raw_json, created_at, assigned_at)
     VALUES(gen_random_uuid()::text, ${orgId}, ${callId || offer.callRequestId}, ${String(customer)}, ${phone}, ${phone}, ${lat}, ${lng}, ${lat}, ${lng}, ${pickup}, ${pickup}, ${service}, ${status}, ${String(driverId)}, ${driverName}, ${String(statusValue ?? "")}, ${JSON.stringify(call)}::jsonb, NOW(), NOW())
-    ON CONFLICT (org_id, towbook_job_id) WHERE towbook_job_id IS NOT NULL DO UPDATE SET customer_name=EXCLUDED.customer_name, phone=EXCLUDED.phone, customer_phone=EXCLUDED.customer_phone, lat=EXCLUDED.lat, lng=EXCLUDED.lng, pickup_lat=EXCLUDED.pickup_lat, pickup_lng=EXCLUDED.pickup_lng, pickup=EXCLUDED.pickup, area=EXCLUDED.area, service_type=EXCLUDED.service_type, status=EXCLUDED.status, assigned_driver_towbook_id=EXCLUDED.assigned_driver_towbook_id, assigned_driver_name=EXCLUDED.assigned_driver_name, towbook_status=EXCLUDED.towbook_status, raw_json=EXCLUDED.raw_json, assigned_at=COALESCE(dispatch_jobs.assigned_at, EXCLUDED.assigned_at)`;
+    ON CONFLICT (org_id, towbook_job_id) WHERE towbook_job_id IS NOT NULL DO UPDATE SET customer_name=EXCLUDED.customer_name, phone=EXCLUDED.phone, customer_phone=EXCLUDED.customer_phone, lat=EXCLUDED.lat, lng=EXCLUDED.lng, pickup_lat=EXCLUDED.pickup_lat, pickup_lng=EXCLUDED.pickup_lng, pickup=EXCLUDED.pickup, area=EXCLUDED.area, service_type=EXCLUDED.service_type, status=EXCLUDED.status, assigned_driver_towbook_id=EXCLUDED.assigned_driver_towbook_id, assigned_driver_name=EXCLUDED.assigned_driver_name, towbook_status=EXCLUDED.towbook_status, raw_json=EXCLUDED.raw_json, assigned_at=CASE WHEN dispatch_jobs.assigned_driver_towbook_id IS DISTINCT FROM EXCLUDED.assigned_driver_towbook_id THEN EXCLUDED.assigned_at ELSE COALESCE(dispatch_jobs.assigned_at, EXCLUDED.assigned_at) END`;
 }
 /** Post-accept verification loop (the core of the dispatch fix): GET the
  *  created call and check the chosen driver is actually on it

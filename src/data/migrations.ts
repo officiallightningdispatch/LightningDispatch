@@ -1544,6 +1544,11 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
       WHERE status='completed' AND completed_at IS NULL AND raw_json->>'completionTime' IS NOT NULL
         AND raw_json->>'completionTime' <> ''`;
   }],
+  [79, async (q) => {
+    // Owner-directed assignment countdown: three minutes from the current driver's assignment instant.
+    await q`ALTER TABLE org_settings ALTER COLUMN reassign_not_headed_minutes SET DEFAULT 3`;
+    await q`UPDATE org_settings SET reassign_not_headed_minutes=3 WHERE reassign_not_headed_minutes IS NULL OR reassign_not_headed_minutes=5`;
+  }],
   [78, async (q) => {
     // GOA flat-$10 payday rule: persist the GOA job count per payout record
     // so the owner manifest re-read shows the same count the compute used.

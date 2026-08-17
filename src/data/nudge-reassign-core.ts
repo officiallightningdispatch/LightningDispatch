@@ -23,7 +23,10 @@ export async function recordNudge(orgId:string, jobId:string, driverId:string|nu
 async function sendPush(orgId:string, driverId:string, jobId:string, message:string):Promise<void> {
   try { const {sendAssignmentPushByTowbookDriver}=await import("./push-core"); await sendAssignmentPushByTowbookDriver(orgId,driverId,{callId:jobId,callRequestId:null,jobType:"Dispatch",location:"",etaMinutes:null,jobUrl:"/driver",message,tag:`nudge-${message}-${jobId}`}); } catch { /* best effort */ }
 }
-async function sendWarningPush(orgId:string, driverId:string, jobId:string):Promise<void> { return sendPush(orgId,driverId,jobId,"You haven't left yet — the job will be reassigned shortly"); }
+async function sendWarningPush(orgId:string, driverId:string, jobId:string, status:string):Promise<void> {
+  const message=status === "offered" ? "Accept the job — it will be reassigned shortly" : "You haven't left yet — the job will be reassigned shortly";
+  return sendPush(orgId,driverId,jobId,message);
+}
 
 /** Select and execute one reassignment. All Towbook writes go through the proven
  * reassign core, which reads back the call and preserves its lifecycle status. */
@@ -80,10 +83,16 @@ async function escalate(orgId:string,jobId:string,driverId:string,reason:string,
 export async function processAssignmentNudges(orgId:string, now:Date = new Date()):Promise<void> {
   const settings=await sql()`SELECT nudge_enabled,reassign_not_headed_minutes FROM org_settings WHERE org_id=${orgId}`;
   if (settings.length && settings[0].nudge_enabled === false) return;
-  const mins=Number(settings[0]?.reassign_not_headed_minutes)||5;
-  const rows=await sql()`SELECT id,assigned_driver_towbook_id,assigned_at,pickup_lat,pickup_lng,pickup,service_type,towbook_job_id,status FROM dispatch_jobs WHERE org_id=${orgId} AND assigned_driver_towbook_id IS NOT NULL AND assigned_at IS NOT NULL AND status IN ('offered','accepted','en_route') AND assigned_at <= ${new Date(now.getTime()-mins*60000).toISOString()}`;
+  const mins=Number(settings[0]?.reassign_not_headed_minutes)||3;
+  const rows=await sql()`SELECT id,assigned_driver_towbook_id,assigned_at,pickup_lat,pickup_lng,pickup,service_type,towbook_job_id,status FROM dispatch_jobs WHERE org_id=${orgId} AND assigned_driver_towbook_id IS NOT NULL AND assigned_at IS NOT NULL AND status IN ('offered','accepted','en_route') AND assigned_at <= ${new Date(now.getTime()-Math.max(0, mins-1)*60000).toISOString()}`;
   for (const r of rows as Array<Record<string,unknown>>) {
     const jobId=String(r.id), oldId=String(r.assigned_driver_towbook_id);
+    const ageMinutes=(now.getTime()-new Date(String(r.assigned_at)).getTime())/60000;
+    const warning=await sql()`SELECT 1 FROM dispatch_nudge_events WHERE org_id=${orgId} AND job_id=${jobId} AND kind='warning' LIMIT 1`;
+    if (ageMinutes < mins) {
+      if (!warning.length) { await recordNudge(orgId,jobId,oldId,"warning","not_headed_1m_remaining"); await sendWarningPush(orgId,oldId,jobId,String(r.status)); }
+      continue;
+    }
     const fixes=await sql()`SELECT latitude,longitude,captured_at,speed_mph FROM driver_locations WHERE org_id=${orgId} AND towbook_driver_id=${oldId} AND captured_at >= ${new Date(String(r.assigned_at)).toISOString()} ORDER BY captured_at`;
     const check=isDriverHeaded((fixes as Array<Record<string,unknown>>).map(f=>({latitude:Number(f.latitude),longitude:Number(f.longitude),capturedAt:String(f.captured_at),speedMph:f.speed_mph==null?null:Number(f.speed_mph)})),Number(r.pickup_lat),Number(r.pickup_lng),String(r.assigned_at),now);
     if (check.headed) continue;
@@ -95,8 +104,6 @@ export async function processAssignmentNudges(orgId:string, now:Date = new Date(
       continue;
     }
     if (attempted.length) continue;
-    const warning=await sql()`SELECT 1 FROM dispatch_nudge_events WHERE org_id=${orgId} AND job_id=${jobId} AND kind='warning' LIMIT 1`;
-    if (!warning.length && mins>=4) { await recordNudge(orgId,jobId,oldId,"warning","not_headed_4m"); await sendWarningPush(orgId,oldId,jobId); }
     await reassignNotHeaded(orgId,r,oldId,now);
     const completed=await sql()`SELECT 1 FROM dispatch_nudge_events WHERE org_id=${orgId} AND job_id=${jobId} AND kind='reassigned' LIMIT 1`;
     if (!completed.length) await recordNudge(orgId,jobId,oldId,"reassign_attempted","reassigned_no_candidate");
