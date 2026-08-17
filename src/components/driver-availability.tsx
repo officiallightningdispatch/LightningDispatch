@@ -95,13 +95,19 @@ export function AvailabilityPill({
       onClick={onToggle}
       disabled={pending}
       aria-pressed={online}
-      title={online ? "GO — you're actively working. Tap to go Offline." : "Offline — you can still be assigned. Tap to GO."}
+      title={online ? "Online — you're actively working. Tap to go offline." : "Offline — tap to go online."}
       className={`flex h-11 min-w-[6.5rem] items-center justify-center gap-2 rounded-full px-4 text-sm font-bold transition-all duration-150 active:scale-95 motion-reduce:transform-none disabled:pointer-events-none disabled:opacity-60 ${
-        online ? "bg-brand-500 text-white shadow-card" : "bg-ink-950 text-white"
+        online ? "bg-orange-500 text-white shadow-card" : "bg-ink-950 text-white"
       }`}
     >
       {pending && <Loader2 className="size-4 animate-spin" aria-hidden="true" />}
-      <span>{online ? "GO" : "Offline"}</span>
+      {online && (
+        <span className="relative flex size-2" aria-hidden="true">
+          <span className="absolute inline-flex size-full animate-ping rounded-full bg-white/60" style={{ animationDuration: "1.8s" }} />
+          <span className="relative inline-flex size-2 rounded-full bg-white" />
+        </span>
+      )}
+      <span>{online ? "online" : "offline"}</span>
     </button>
   );
 }
