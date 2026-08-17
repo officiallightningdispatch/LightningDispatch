@@ -1022,6 +1022,11 @@ try {
     check("stale-guard: recorded round searched statuses 0..9 in order and NEVER matched", v8 && v8.raw_response?.verification?.attempts?.length === 10 && v8.raw_response?.verification?.attempts?.every((t) => t.matched === false) && [0,1,2,3,4,5,6,7,8,9].every((st, i) => v8.raw_response?.verification?.attempts?.[i]?.url?.includes(`status=${st}`)), JSON.stringify(v8?.raw_response?.verification?.attempts));
   }
   {
+    // This fixture intentionally proves that the only offer-listed driver has
+    // no real app GPS proof. Section 24 seeds 603482 for its road-ranking
+    // assertion, while clearOrgDispatch only deletes dispatch_jobs; remove
+    // that unrelated GPS row so 8015 cannot inherit it across sections.
+    await q`DELETE FROM driver_locations WHERE org_id=${ORG} AND towbook_driver_id='603482'`;
     // eligibility rail: offer.drivers[] EXCLUDES the only free driver → engine must
     // NOT dispatch them; accept driverId 0 + escalate (the 703785 root cause path)
     const m = makeFetch({ offers: [{ ...offer(8015), drivers: [603482] }], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })] });
