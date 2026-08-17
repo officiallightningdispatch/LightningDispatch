@@ -22,6 +22,7 @@ import { Route as DriverIndexRouteImport } from './routes/driver/index'
 import { Route as OwnerSettingsRouteImport } from './routes/owner/settings'
 import { Route as OwnerQueueRouteImport } from './routes/owner/queue'
 import { Route as OwnerPerformanceRouteImport } from './routes/owner/performance'
+import { Route as OwnerNotificationsRouteImport } from './routes/owner/notifications'
 import { Route as OwnerMoneyRouteImport } from './routes/owner/money'
 import { Route as OwnerMetricsRouteImport } from './routes/owner/metrics'
 import { Route as OwnerHistoryRouteImport } from './routes/owner/history'
@@ -113,6 +114,11 @@ const OwnerQueueRoute = OwnerQueueRouteImport.update({
 const OwnerPerformanceRoute = OwnerPerformanceRouteImport.update({
   id: '/performance',
   path: '/performance',
+  getParentRoute: () => OwnerRoute,
+} as any)
+const OwnerNotificationsRoute = OwnerNotificationsRouteImport.update({
+  id: '/notifications',
+  path: '/notifications',
   getParentRoute: () => OwnerRoute,
 } as any)
 const OwnerMoneyRoute = OwnerMoneyRouteImport.update({
@@ -279,6 +285,7 @@ export interface FileRoutesByFullPath {
   '/owner/history': typeof OwnerHistoryRoute
   '/owner/metrics': typeof OwnerMetricsRouteWithChildren
   '/owner/money': typeof OwnerMoneyRoute
+  '/owner/notifications': typeof OwnerNotificationsRoute
   '/owner/performance': typeof OwnerPerformanceRoute
   '/owner/queue': typeof OwnerQueueRoute
   '/owner/settings': typeof OwnerSettingsRoute
@@ -316,6 +323,7 @@ export interface FileRoutesByTo {
   '/owner/drivers': typeof OwnerDriversRoute
   '/owner/history': typeof OwnerHistoryRoute
   '/owner/money': typeof OwnerMoneyRoute
+  '/owner/notifications': typeof OwnerNotificationsRoute
   '/owner/performance': typeof OwnerPerformanceRoute
   '/owner/queue': typeof OwnerQueueRoute
   '/owner/settings': typeof OwnerSettingsRoute
@@ -359,6 +367,7 @@ export interface FileRoutesById {
   '/owner/history': typeof OwnerHistoryRoute
   '/owner/metrics': typeof OwnerMetricsRouteWithChildren
   '/owner/money': typeof OwnerMoneyRoute
+  '/owner/notifications': typeof OwnerNotificationsRoute
   '/owner/performance': typeof OwnerPerformanceRoute
   '/owner/queue': typeof OwnerQueueRoute
   '/owner/settings': typeof OwnerSettingsRoute
@@ -403,6 +412,7 @@ export interface FileRouteTypes {
     | '/owner/history'
     | '/owner/metrics'
     | '/owner/money'
+    | '/owner/notifications'
     | '/owner/performance'
     | '/owner/queue'
     | '/owner/settings'
@@ -440,6 +450,7 @@ export interface FileRouteTypes {
     | '/owner/drivers'
     | '/owner/history'
     | '/owner/money'
+    | '/owner/notifications'
     | '/owner/performance'
     | '/owner/queue'
     | '/owner/settings'
@@ -482,6 +493,7 @@ export interface FileRouteTypes {
     | '/owner/history'
     | '/owner/metrics'
     | '/owner/money'
+    | '/owner/notifications'
     | '/owner/performance'
     | '/owner/queue'
     | '/owner/settings'
@@ -598,6 +610,13 @@ declare module '@tanstack/react-router' {
       path: '/performance'
       fullPath: '/owner/performance'
       preLoaderRoute: typeof OwnerPerformanceRouteImport
+      parentRoute: typeof OwnerRoute
+    }
+    '/owner/notifications': {
+      id: '/owner/notifications'
+      path: '/notifications'
+      fullPath: '/owner/notifications'
+      preLoaderRoute: typeof OwnerNotificationsRouteImport
       parentRoute: typeof OwnerRoute
     }
     '/owner/money': {
@@ -877,6 +896,7 @@ interface OwnerRouteChildren {
   OwnerHistoryRoute: typeof OwnerHistoryRoute
   OwnerMetricsRoute: typeof OwnerMetricsRouteWithChildren
   OwnerMoneyRoute: typeof OwnerMoneyRoute
+  OwnerNotificationsRoute: typeof OwnerNotificationsRoute
   OwnerPerformanceRoute: typeof OwnerPerformanceRoute
   OwnerQueueRoute: typeof OwnerQueueRoute
   OwnerSettingsRoute: typeof OwnerSettingsRoute
@@ -893,6 +913,7 @@ const OwnerRouteChildren: OwnerRouteChildren = {
   OwnerHistoryRoute: OwnerHistoryRoute,
   OwnerMetricsRoute: OwnerMetricsRouteWithChildren,
   OwnerMoneyRoute: OwnerMoneyRoute,
+  OwnerNotificationsRoute: OwnerNotificationsRoute,
   OwnerPerformanceRoute: OwnerPerformanceRoute,
   OwnerQueueRoute: OwnerQueueRoute,
   OwnerSettingsRoute: OwnerSettingsRoute,
