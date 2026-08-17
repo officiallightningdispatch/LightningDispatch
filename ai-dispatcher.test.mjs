@@ -1213,6 +1213,20 @@ try {
     check("constants: MAX_DRIVER_QUEUE=3, SERVICE_MINUTES_PER_JOB=30", MAX_DRIVER_QUEUE === 3 && SERVICE_MINUTES_PER_JOB === 30, `cap=${MAX_DRIVER_QUEUE} service=${SERVICE_MINUTES_PER_JOB}`);
     // (a) 2-job driver eligible, 3-job driver NOT — even when the 3-job driver
     // is road-nearer.
+    const area28Gps = new Map([
+      ["1001", { lat: 41.19, lng: -73.15, capturedAt: new Date().toISOString() }],
+      ["1002", { lat: 41.18, lng: -73.14, capturedAt: new Date().toISOString() }],
+      ["2001", { lat: 41.19, lng: -73.15, capturedAt: new Date().toISOString() }],
+      ["2002", { lat: 41.18, lng: -73.14, capturedAt: new Date().toISOString() }],
+      ["2003", { lat: 41.19, lng: -73.15, capturedAt: new Date().toISOString() }],
+      ["2004", { lat: 41.10, lng: -73.00, capturedAt: new Date().toISOString() }],
+      ["2005", { lat: 41.19, lng: -73.15, capturedAt: new Date().toISOString() }],
+      ["2006", { lat: 41.19, lng: -73.15, capturedAt: new Date().toISOString() }],
+      ["2007", { lat: 41.19, lng: -73.15, capturedAt: new Date().toISOString() }],
+      ["3001", { lat: 41.15, lng: -73.10, capturedAt: new Date().toISOString() }],
+      ["3002", { lat: 41.25, lng: -73.25, capturedAt: new Date().toISOString() }],
+    ]);
+    const area28 = { gpsFixes: area28Gps };
     const q2 = new Map([["1001", { activeCount: 2, queuedJobs: [
       { pickupLat: 41.16, pickupLng: -73.11, status: "en_route", createdAt: "t1" },
       { pickupLat: 41.17, pickupLng: -73.12, status: "arrived", createdAt: "t2" },
@@ -1226,13 +1240,13 @@ try {
     const threeJob = driver(1002, "Three Job", { lat: 41.18, lng: -73.14, etaSec: 300 }); // road-nearer
     // Rq: GPS→J1 900s; J1→J2 300s (new key); J2→offer 600s (new key); threeJob GPS 300s
     const Rq = makeRouter({ "41.19,-73.15": 900, "41.18,-73.14": 300, "41.16,-73.11": 300, "41.17,-73.12": 600 });
-    const pickCap = await chooseBestDriverByRoad([twoJob, threeJob], 41.2, -73.2, Rq, new Map([...q2, ...q3]));
+    const pickCap = await chooseBestDriverByRoad([twoJob, threeJob], 41.2, -73.2, Rq, new Map([...q2, ...q3]), area28);
     check("queue cap: 2-job driver eligible, 3-job driver excluded — 2-job ETA is now workload-aware", pickCap?.driver.driverId === 1001 && pickCap?.queueInclusive === true, JSON.stringify(pickCap));
     check("queue cap: workload chain math (travel 15 + service 30 + travel 5 + service 30 + final 10 = 90)", pickCap?.queueMinutes === 80 && pickCap?.queuedJobCount === 2 && pickCap?.finalLegMinutes === 10 && pickCap?.baseMinutes === 90 && pickCap?.startedOnScene === false, JSON.stringify(pickCap));
     // payload-calls cross-check: 2 active payload calls eligible, 3 not
     const pay2 = driver(2001, "Pay Two", { lat: 41.19, lng: -73.15, etaSec: 604, calls: [{ callId: 1, status: 3 }, { callId: 2, status: 4 }] });
     const pay3 = driver(2002, "Pay Three", { lat: 41.18, lng: -73.14, etaSec: 300, calls: [{ callId: 1, status: 3 }, { callId: 2, status: 3 }, { callId: 3, status: 3 }] });
-    const pickPay = await chooseBestDriverByRoad([pay2, pay3], 41.2, -73.2, Rq);
+    const pickPay = await chooseBestDriverByRoad([pay2, pay3], 41.2, -73.2, Rq, undefined, area28);
     check("queue cap via payload calls: 2-call driver eligible, 3-call driver excluded", pickPay?.driver.driverId === 2001, JSON.stringify(pickPay));
     check("driverActiveCount: max(payload, dispatch_jobs) per driver", driverActiveCount(pay2, new Map()) === 2 && driverActiveCount(pay3, new Map()) === 3 && driverActiveCount(twoJob, q2) === 2 && driverActiveCount(threeJob, q3) === 3, "");
     // completed/cancelled payload calls never count toward the cap
@@ -1241,7 +1255,7 @@ try {
     // (b) nearest (min road ETA) wins among sub-3-job drivers
     const subFar = driver(2004, "Sub Far", { lat: 41.1, lng: -73.0, etaSec: 604, calls: [{ callId: 1, status: 3 }] });
     const subNear = driver(2005, "Sub Near", { lat: 41.19, lng: -73.15, etaSec: 604, calls: [{ callId: 1, status: 3 }] });
-    const pickSub = await chooseBestDriverByRoad([subFar, subNear], 41.2, -73.2, makeRouter({ "41.10,-73.00": 3600, "41.19,-73.15": 600 }));
+    const pickSub = await chooseBestDriverByRoad([subFar, subNear], 41.2, -73.2, makeRouter({ "41.10,-73.00": 3600, "41.19,-73.15": 600 }), undefined, area28);
     check("nearest wins among sub-3-job drivers (workload ETA 40 min = 30 service + 10 road, vs 90)", pickSub?.driver.driverId === 2005 && pickSub?.baseMinutes === 40, JSON.stringify(pickSub));
     // (c) ALL-LOADED: both at the cap → queue-inclusive arrival wins + math recorded
     // A: legs 600s(10m) + 300s(5m) + 300s(5m) + 3×30 service = 110 queue; final 600s=10 → 120
@@ -1268,7 +1282,7 @@ try {
       "41.27,-73.27": 300,
       "41.28,-73.28": 900, // B J3 → offer (final leg from the LAST job, not GPS)
     });
-    const pickAll = await chooseBestDriverByRoad([dA, dB], 41.2, -73.2, Rq3, new Map([...qA3, ...qB3]));
+    const pickAll = await chooseBestDriverByRoad([dA, dB], 41.2, -73.2, Rq3, new Map([...qA3, ...qB3]), area28);
     check("all-loaded: closest driver B wins over farther A despite A's better chain ETA", pickAll?.driver.driverId === 3002 && pickAll?.queueInclusive === true, JSON.stringify(pickAll));
     check("all-loaded: chain math recorded for closest B (3 jobs ≈ 115 min + final leg 15; arrival 130)", pickAll?.queueMinutes === 115 && pickAll?.queuedJobCount === 3 && pickAll?.finalLegMinutes === 15 && pickAll?.baseMinutes === 130, JSON.stringify(pickAll));
     check("all-loaded: quoted ETA hard-caps queue time at 60 (ceil(130)+5)", finalEtaMinutes(pickAll.baseMinutes, 5, 5, 60) === 60, String(finalEtaMinutes(pickAll.baseMinutes, 5, 5, 60)));
@@ -1308,7 +1322,7 @@ try {
     const stale = { ...driver(2006, "Stale GPS", { lat: 41.19, lng: -73.15, etaSec: 604 }), gpsUpdatedAtUtc: new Date(Date.now() - 30 * 60000).toISOString() };
     check("gpsPingAgeMinutes: detects a 30-min-old ping", gpsPingAgeMinutes(stale) != null && gpsPingAgeMinutes(stale) >= 29 && gpsPingAgeMinutes(stale) <= 31, String(gpsPingAgeMinutes(stale)));
     check("gpsPingAgeMinutes: no timestamp → null (nothing to flag)", gpsPingAgeMinutes(driver(2007, "Fresh", { etaSec: 604 })) === null, "");
-    const stalePick = await chooseBestDriverByRoad([stale], 41.2, -73.2, makeRouter({ "41.19,-73.15": 600 }));
+    const stalePick = await chooseBestDriverByRoad([stale], 41.2, -73.2, makeRouter({ "41.19,-73.15": 600 }), undefined, area28);
     check("stale GPS: decision label flags 'GPS ping age 30 min'", stalePick != null && String(etaDetailLabel(stalePick, 5, 5, 45, 15)).includes("GPS ping age 30 min"), String(stalePick && etaDetailLabel(stalePick, 5, 5, 45, 15)));
   }
 
