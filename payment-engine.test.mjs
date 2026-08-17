@@ -56,6 +56,7 @@ const {
   scanClubMailCore,
   mirrorTipCore,
   listTipsCore,
+  backfillTipMirrorsCore,
   getPaymentSquareConfigCore,
 } = await import("./src/data/payment-engine-core.ts");
 const { assertQaOrg } = await import("./src/data/db-guard.ts");
@@ -635,20 +636,56 @@ await setup();
   check("public config → app id + location id ONLY (no token)", cfgOk.ok === true && cfgOk.data.applicationId === "app_test" && cfgOk.data.locationId === "loc_test" && !JSON.stringify(cfgOk).includes("test-square-token"), JSON.stringify(cfgOk));
 }
 
-/* ============ 16) listTips: driver attribution via completion_tips join ============ */
+/* ============ 16) authoritative completion_tips attribution + mirror backfill ============ */
 {
-  const tipId = `tip-cc-${TAG}`;
-  const tipJob = `tb-447100-${TAG}`;
-  await q`INSERT INTO completion_tips(id, org_id, job_id, driver_id, driver_towbook_id, amount_cents, currency, square_payment_id, status, attempt, idempotency_key)
-    VALUES(${tipId}, ${ORG}, ${tipJob}, ${DRIVER}, '910088', 750, 'USD', 'pymt_tip_cc', 'paid', 1, ${`tip-${tipJob}-1`})`;
-  const m = await mirrorTipCore(ACTOR, { tipId });
-  check("tip mirrored into ledger (separate from club charges)", m.ok === true && m.data.kind === "tip", JSON.stringify(m));
+  // Three paid tips deliberately have NO payment_transactions mirrors. The
+  // fourth paid tip is the earlier section-10 mirror; declined is excluded.
+  const jobs = [
+    [`tip-job-old-${TAG}`, "Older Customer", "tire", "2026-08-10T10:00:00Z"],
+    [`tip-job-mid-${TAG}`, "Middle Customer", "jump", "2026-08-11T10:00:00Z"],
+    [`tip-job-new-${TAG}`, "Newest Customer", "unlock", "2026-08-12T10:00:00Z"],
+  ];
+  for (const [id, customer, service, created] of jobs) {
+    await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note)
+      VALUES(${id}, ${ORG}, ${customer}, '555-0100', 41.3, -72.9, 'New Haven', ${service}, 'completed', ${created}, '')`;
+  }
+  const paid = [
+    [`tip-auth-old-${TAG}`, jobs[0][0], 300, "2026-08-10T10:00:00Z"],
+    [`tip-auth-mid-${TAG}`, jobs[1][0], 400, "2026-08-11T10:00:00Z"],
+    [`tip-auth-new-${TAG}`, jobs[2][0], 500, "2026-08-12T10:00:00Z"],
+  ];
+  for (const [id, job, cents, created] of paid) {
+    await q`INSERT INTO completion_tips(id, org_id, job_id, driver_id, driver_towbook_id, amount_cents, currency, square_payment_id, status, attempt, idempotency_key, created_at)
+      VALUES(${id}, ${ORG}, ${job}, ${DRIVER}, '910088', ${cents}, 'USD', ${`pymt-${id}`}, 'paid', 1, ${`tip-${id}-1`}, ${created})`;
+  }
+  await q`INSERT INTO completion_tips(id, org_id, job_id, driver_id, driver_towbook_id, amount_cents, currency, status, created_at)
+    VALUES(${`tip-auth-declined-${TAG}`}, ${ORG}, ${jobs[2][0]}, ${DRIVER}, '910088', 999, 'USD', 'declined', '2026-08-13T10:00:00Z')`;
+
+  const beforeMirrors = await q`SELECT COUNT(*)::int AS n FROM payment_transactions WHERE org_id=${ORG} AND kind='tip'`;
+  check("regression fixture has three paid tips without mirrors", Number(beforeMirrors[0].n) === 1, JSON.stringify(beforeMirrors));
   const tips = await listTipsCore(ACTOR);
-  check("listTips shows driver name + towbook id", tips.ok === true && tips.data.length >= 1 && tips.data.some((t) => t.driverName === "QA Tip Driver" && t.driverTowbookId === "910088" && t.amountCents === 750), JSON.stringify(tips.data));
-  check("tips seroval-safe", tips.data.every((t) => t.driverName !== undefined && t.driverTowbookId !== undefined && Object.values(t).every((v) => v !== undefined)), JSON.stringify(tips.data[0]));
-  const kindCounts = await q`SELECT kind, COUNT(*)::int AS n FROM payment_transactions WHERE org_id=${ORG} AND kind IN ('tip','club_charge') GROUP BY kind`;
-  const kinds = Object.fromEntries(kindCounts.map((k) => [String(k.kind), Number(k.n)]));
-  check("tips kept as kind='tip' rows, club charges kind='club_charge' (never merged)", (kinds.tip ?? 0) >= 1 && (kinds.club_charge ?? 0) >= 1, JSON.stringify(kinds));
+  const returned = tips.ok ? tips.data : [];
+  const total = returned.reduce((sum, tip) => sum + tip.amountCents, 0);
+  const dbTotal = await q`SELECT COALESCE(SUM(amount_cents),0)::int AS n FROM completion_tips WHERE org_id=${ORG} AND status='paid'`;
+  check("listTips returns authoritative paid tips without mirrors; declined excluded", tips.ok === true && returned.length === 4 && total === Number(dbTotal[0].n) && total === 1700, JSON.stringify({ returned: returned.length, total, dbTotal }));
+  check("listTips newest first", returned[0].tipId === `tip-auth-new-${TAG}` && returned[1].tipId === `tip-auth-mid-${TAG}`, JSON.stringify(returned.map((t) => t.tipId)));
+  check("listTips attribution includes driver + customer + service", returned.some((t) => t.tipId === `tip-auth-new-${TAG}` && t.driverName === "QA Tip Driver" && t.driverTowbookId === "910088" && t.jobCustomerName === "Newest Customer" && t.jobServiceType === "unlock"), JSON.stringify(returned));
+  check("listTips serializable and all amounts present", returned.every((t) => t.driverName !== undefined && t.driverTowbookId !== undefined && t.jobCustomerName !== undefined && t.jobServiceType !== undefined && Object.values(t).every((v) => v !== undefined)), JSON.stringify(returned[0]));
+
+  // A payout and cash-out-ish adjustment must survive an idempotent tip backfill.
+  await q`INSERT INTO payment_transactions(id, org_id, kind, amount_cents, currency, status, idempotency_key)
+    VALUES(${`payout-${TAG}`}, ${ORG}, 'payout', 123, 'USD', 'charged', ${`payout-key-${TAG}`}),
+          (${`adjustment-${TAG}`}, ${ORG}, 'adjustment', 77, 'USD', 'charged', ${`cashout-key-${TAG}`})`;
+  const filled = await backfillTipMirrorsCore(ACTOR);
+  check("backfill inserts exactly missing paid mirrors with result shape", filled.ok === true && filled.inserted === 3 && filled.existing === 1 && filled.total === 4, JSON.stringify(filled));
+  const filledAgain = await backfillTipMirrorsCore(ACTOR);
+  check("backfill second invocation inserts zero (idempotent)", filledAgain.ok === true && filledAgain.inserted === 0 && filledAgain.existing === 4 && filledAgain.total === 4, JSON.stringify(filledAgain));
+  const kindsAfter = await q`SELECT kind, COUNT(*)::int AS n FROM payment_transactions WHERE org_id=${ORG} GROUP BY kind`;
+  const kinds = Object.fromEntries(kindsAfter.map((k) => [String(k.kind), Number(k.n)]));
+  check("backfill never touches payout or adjustment rows", kinds.payout === 1 && kinds.adjustment === 1 && kinds.tip === 4, JSON.stringify(kinds));
+  const deniedList = await listTipsCore(WRONG_ACTOR);
+  const deniedBackfill = await backfillTipMirrorsCore(WRONG_ACTOR);
+  check("tips functions deny non-owner/admin", deniedList.ok === false && deniedList.code === "unauthorized" && deniedBackfill.ok === false && deniedBackfill.code === "unauthorized", JSON.stringify({ deniedList, deniedBackfill }));
 }
 
 /* ============ 17) approval gate: staging NEVER charges; only /v2/payments is ever called ============ */
