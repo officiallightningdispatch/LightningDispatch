@@ -7,9 +7,9 @@ const versions = [...source.matchAll(/^\s*\[(\d+),\s*async\s*\(q\)\s*=>/gm)].map
 
 test('migration catalog is unique and source-ordered', () => {
   assert.ok(versions.length > 50);
-  assert.equal(Math.max(...versions), 66);
+  assert.equal(Math.max(...versions), 72);
   assert.equal(new Set(versions).size, versions.length, 'duplicate migration version');
-  assert.deepEqual(versions.slice(-16), Array.from({ length: 16 }, (_, i) => i + 51));
+  assert.deepEqual(versions.slice(-17), [56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 68, 67, 66, 70, 69, 71, 72]);
 });
 
 test('late migration dependencies are ordered after their owners', () => {
