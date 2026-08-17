@@ -428,6 +428,23 @@ export async function loadZoneMatches(orgId: string, candidates: unknown[], lat:
   return out;
 }
 
+/** Durable dispatch evidence for drivers whose Towbook nearestDrivers row is hidden by a stale/placeholder pickup anchor. */
+export async function loadDriverDispatchEvidence(orgId: string): Promise<Map<string, { lat: number; lng: number; state: string | null }>> {
+  const out = new Map<string, { lat: number; lng: number; state: string | null }>();
+  try {
+    const rows = await sql() `SELECT assigned_driver_towbook_id, pickup, pickup_lat, pickup_lng FROM dispatch_jobs WHERE org_id=${orgId} AND assigned_driver_towbook_id IS NOT NULL AND pickup_lat IS NOT NULL AND pickup_lng IS NOT NULL AND pickup_lat != 0 AND pickup_lng != 0 ORDER BY created_at DESC` as Array<Record<string, unknown>>;
+    for (const row of rows) {
+      const id = String(row.assigned_driver_towbook_id ?? "");
+      if (!id || out.has(id)) continue;
+      const lat = Number(row.pickup_lat), lng = Number(row.pickup_lng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+      const state = typeof row.pickup === "string" ? resolveStateFromAddress(row.pickup).state : null;
+      out.set(id, { lat, lng, state });
+    }
+  } catch { /* supplemental evidence must never block dispatch */ }
+  return out;
+}
+
 export async function loadDriverGpsFixes(orgId: string): Promise<Map<string, DriverGpsFix>> {
   try {
     const rows = await sql()`SELECT DISTINCT ON (towbook_driver_id) towbook_driver_id, latitude, longitude, captured_at
@@ -2755,11 +2772,12 @@ async function runAutoDispatchInternal(
     // (dispatch_jobs assignment history + driver_locations — no migration),
     // then let chooseBestDriverByRoad apply the in-area rule + fresh-fix ETA
     // origin per offer. Never throws (each loader degrades to empty).
-    const [driverQueues, driverAnchors, driverGpsFixes, lightningAvailable] = await Promise.all([
+    const [driverQueues, driverAnchors, driverGpsFixes, lightningAvailable, driverDispatchEvidence] = await Promise.all([
       loadOrgDriverQueues(orgId),
       loadDriverAnchors(orgId),
       loadDriverGpsFixes(orgId),
       loadLightningAvailableDrivers(orgId),
+      loadDriverDispatchEvidence(orgId),
     ]);
 
     for (const rawOffer of offers) {
@@ -2955,8 +2973,8 @@ async function runAutoDispatchInternal(
           : false;
         if (!hasInState) {
           const seen = new Set(candidates.map((d) => Number((d as NearestDriver).driverId)));
-          for (const id of new Set([...driverGpsFixes.keys(), ...driverAnchors.keys()])) {
-            const numericId = Number(id), point = driverGpsFixes.get(id) ?? driverAnchors.get(id);
+          for (const id of new Set([...driverGpsFixes.keys(), ...driverAnchors.keys(), ...driverDispatchEvidence.keys()])) {
+            const numericId = Number(id), evidence = driverDispatchEvidence.get(id), point = driverGpsFixes.get(id) ?? driverAnchors.get(id) ?? evidence;
             if (!Number.isFinite(numericId) || numericId <= 0 || seen.has(numericId) || (eligibleIds && !eligibleIds.has(numericId)) || !point) continue;
             const supplemental: NearestDriver = { driverId: numericId, driverName: `Driver ${numericId}`, latitude: point.lat, longitude: point.lng, estimatedTimeSeconds: null, isCheckedIn: false };
             if ((await stateOf(supplemental))?.toUpperCase() !== zoneState.state.toUpperCase()) continue;
@@ -3041,6 +3059,8 @@ async function runAutoDispatchInternal(
       const stateGuardCtx: StateGuardContext = {
         jobState: jobState ? jobState.toUpperCase() : null,
         resolveDriverState: deps.stateGuardResolver ?? (async (driverId, lat, lng) => {
+          const durableState = driverDispatchEvidence.get(String(driverId))?.state;
+          if (durableState) return durableState;
           const key = driverStateCacheKey(driverId, lat, lng);
           if (reverseStateCache.has(key)) return reverseStateCache.get(key) ?? null;
           const st = tomtomKeyForGuard ? await reverseGeocodeState(lat, lng, tomtomKeyForGuard, fetchImpl) : null;
