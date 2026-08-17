@@ -1462,6 +1462,13 @@ try {
     check("coords validation: score floor constant is 40", GEOCODE_SCORE_FLOOR === 40, String(GEOCODE_SCORE_FLOOR));
   }
   {
+    // ORG6 coordinate-resolution fixtures use the same real app-GPS rule as
+    // production: the Towbook driver payload coordinates are not a GPS fix.
+    // Seed once before (b) so the DB and geocode paths both have a fresh fix.
+    await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at)
+      VALUES(${'qa6-gps-703785-' + FIXTURE_TAG}, ${ORG6}, ${USER}, '703785', 41.2, -73.2, ${new Date().toISOString()})`;
+  }
+  {
     // (b) engine, DB-first: the call already sits in dispatch_jobs (the sync
     // imported it with real waypoint coords) → the coordinate-less offer
     // resolves from the DB and dispatches NORMALLY — no escalation, decision
@@ -1639,6 +1646,8 @@ try {
     const tx = "307 MARIMOOR DRIVE, HUTTO, TX 78634";
     const gb = 721132;
     const ct = 703785;
+    await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at)
+      VALUES(${'gb-gps-721132-' + FIXTURE_TAG}, ${ORG6}, ${USER}, '721132', 30.477, -97.705, ${new Date().toISOString()})`;
     const insertGbEvidence = (suffix, id = gb) => q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, pickup, raw_json, pickup_lat, pickup_lng, assigned_driver_towbook_id)
       VALUES(${'gb-tx-' + suffix + '-' + FIXTURE_TAG}, ${ORG6}, 'GB evidence', '', 30.477, -97.705, 'Hutto TX', 'jump', 'completed', NOW() - INTERVAL '1 hour', '', ${'tb-' + suffix + '-' + FIXTURE_TAG}, ${tx}, ${JSON.stringify({ startingLocation: tx, purchaseOrderNumber: 'gb-' + suffix })}::jsonb, 30.477, -97.705, ${String(id)})`;
     await insertGbEvidence('low-score');
@@ -1939,6 +1948,14 @@ try {
     // These are end-to-end fixtures: the real state guard, candidate ordering,
     // accept POST, verification, and decision ledger must all agree on the tier.
     const stateByDriver = new Map();
+    await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES
+      (${'tier-gps-93001-' + FIXTURE_TAG}, ${ORG6}, ${USER}, '93001', 41.19, -73.15, ${new Date().toISOString()}),
+      (${'tier-gps-93002-' + FIXTURE_TAG}, ${ORG6}, ${USER}, '93002', 41.19, -73.15, ${new Date().toISOString()}),
+      (${'tier-gps-93005-' + FIXTURE_TAG}, ${ORG6}, ${USER}, '93005', 41.19, -73.15, ${new Date().toISOString()}),
+      (${'tier-gps-93003-' + FIXTURE_TAG}, ${ORG6}, ${USER}, '93003', 41.15, -73.10, ${new Date().toISOString()}),
+      (${'tier-gps-93006-' + FIXTURE_TAG}, ${ORG6}, ${USER}, '93006', 41.15, -73.10, ${new Date().toISOString()}),
+      (${'tier-gps-93007-' + FIXTURE_TAG}, ${ORG6}, ${USER}, '93007', 41.15, -73.10, ${new Date().toISOString()}),
+      (${'tier-gps-93004-' + FIXTURE_TAG}, ${ORG6}, ${USER}, '93004', 40.7, -74.0, ${new Date().toISOString()})`;
     const runTier = async (id, ds, opts = {}) => {
       for (const [driverId, state] of Object.entries(opts.states ?? {})) stateByDriver.set(Number(driverId), state);
       const m = makeFetch({ offers: [offer(id, { maxEta: opts.maxEta, drivers: ds.map((d) => d.driverId) })], drivers: ds });
@@ -1995,6 +2012,8 @@ try {
     check("retry re-select: no in-state candidate stays parked", row?.decision === "auto_accept_no_driver" && String(row?.driver_id) === "0" && !posts(first.calls).some((p) => Number(p.body?.driverId) > 0), JSON.stringify(row));
     const originalNow = Date.now; Date.now = () => originalNow() + 10 * 60 * 1000 + 2;
     try {
+      await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at)
+        VALUES(${'retry-gps-94011-' + FIXTURE_TAG}, ${ORG6}, ${USER}, '94011', 41.19, -73.15, ${new Date().toISOString()})`;
       const second = makeFetch({ offers: [], drivers: [driver(94011, "Retry CT driver", { checkedIn: true })], liveCalls: [retryCall] });
       const { deps: secondDeps } = makeDeps(second.fetchImpl, makeRouter(), { env: {}, stateResolver: async () => "CT" });
       await runAutoDispatch(ORG6, secondDeps);
@@ -2007,6 +2026,8 @@ try {
     const o = offer(94002, { startingLocation: "AUSTIN TX", lat: 30.62, lng: -97.65 });
     const c = { id: 9400201, callRequestId: 94002, startLocationLatitude: o.startLocationLatitude, startLocationLongitude: o.startLocationLongitude, startingLocation: "AUSTIN TX", status: { id: 0 }, assets: [{ id: 424242, driver: { id: 0, name: "" } }] };
     await q`INSERT INTO ai_dispatcher_decisions(id,org_id,call_request_id,decision,escalated,driver_id,reason,raw_response) VALUES(${randomUUID()},${ORG6},'94002','auto_accept_no_driver',TRUE,'0','TX hold',${JSON.stringify({offer:o})}::jsonb)`;
+    await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at)
+      VALUES(${'retry-gps-94012-' + FIXTURE_TAG}, ${ORG6}, ${USER}, '94012', 30.62, -97.65, ${new Date().toISOString()})`;
     const m = makeFetch({ offers: [], drivers: [driver(94012, "Offline TX Towbook driver", { checkedIn: false, lat: 30.62, lng: -97.65 })], liveCalls: [c] });
     const { deps } = makeDeps(m.fetchImpl, makeRouter(), { env: {}, stateResolver: async () => "TX" });
     await runAutoDispatch(ORG6, deps);
@@ -2039,6 +2060,9 @@ try {
 
   /* ============ qualification gate (Phase B ③) ============ */
   {
+    await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES
+      (${'qual-gps-' + QUAL_TB[1] + '-' + FIXTURE_TAG}, ${ORG7}, ${USER}, ${String(QUAL_TB[1])}, 41.19, -73.15, ${new Date().toISOString()}),
+      (${'qual-gps-' + QUAL_TB[4] + '-' + FIXTURE_TAG}, ${ORG7}, ${USER}, ${String(QUAL_TB[4])}, 41.19, -73.15, ${new Date().toISOString()})`;
     const runQ = async (id, ds, extra={}) => { const m=makeFetch({offers:[offer(id,{ drivers: ds.map((d)=>d.driverId), ...(extra.offer||{}) })],drivers:ds}); const {deps}=makeDeps(m.fetchImpl); const r=await runAutoDispatch(ORG7,deps); return {r,m,rows:await q`SELECT * FROM ai_dispatcher_decisions WHERE org_id=${ORG7} AND call_request_id=${String(id)}`}; };
     const cases = [
       ['deactivated', QUAL_TB[0], 'deactivated'], ['org-inactive', QUAL_TB[6], 'org-inactive'],
