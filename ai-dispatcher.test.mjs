@@ -866,6 +866,9 @@ try {
   /* ============ 24) choice BY ROAD ETA: better road time beats better straight-line ============ */
   {
     await clearOrgDispatch();
+    // Pin both real app GPS origins; the selector must not inherit stale
+    // fixture rows or use Towbook payload coordinates.
+    await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES(${`ad-gps-703785-road-${FIXTURE_TAG}`}, ${ORG}, ${USER}, '703785', 41.1, -73.0, ${new Date().toISOString()}),(${`ad-gps-603482-road-${FIXTURE_TAG}`}, ${ORG}, ${USER}, '603482', 41.19, -73.15, ${new Date().toISOString()})`;
     const m = makeFetch({
       offers: [offer(7018)],
       drivers: [
