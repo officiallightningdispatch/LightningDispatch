@@ -1265,14 +1265,14 @@ try {
     // driver + pickup coords; the engine counts from exactly this table).
     const seedJob = (id, driverId, lat, lng, createdAgoH) => q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, pickup_lat, pickup_lng, assigned_driver_towbook_id)
       VALUES(${id}, ${ORG4}, 'QA Queued', '555-0101', 0, 0, 'Bridgeport', 'jump', 'en_route', ${new Date(Date.now() - createdAgoH * 3600e3).toISOString()}, '', ${lat}, ${lng}, ${driverId})`;
-    await seedJob(`qa4-a1`, "3001", 41.16, -73.11, 3);
-    await seedJob(`qa4-a2`, "3001", 41.17, -73.12, 2);
-    await seedJob(`qa4-a3`, "3001", 41.18, -73.13, 1);
-    await seedJob(`qa4-b1`, "3002", 41.26, -73.26, 3);
-    await seedJob(`qa4-b2`, "3002", 41.27, -73.27, 2);
-    await seedJob(`qa4-b3`, "3002", 41.28, -73.28, 1);
-    await seedJob(`qa4-c1`, "3003", 41.10, -73.00, 2);
-    await seedJob(`qa4-c2`, "3003", 41.11, -73.01, 1);
+    await seedJob(`qa4-a1-${FIXTURE_TAG}`, "3001", 41.16, -73.11, 3);
+    await seedJob(`qa4-a2-${FIXTURE_TAG}`, "3001", 41.17, -73.12, 2);
+    await seedJob(`qa4-a3-${FIXTURE_TAG}`, "3001", 41.18, -73.13, 1);
+    await seedJob(`qa4-b1-${FIXTURE_TAG}`, "3002", 41.26, -73.26, 3);
+    await seedJob(`qa4-b2-${FIXTURE_TAG}`, "3002", 41.27, -73.27, 2);
+    await seedJob(`qa4-b3-${FIXTURE_TAG}`, "3002", 41.28, -73.28, 1);
+    await seedJob(`qa4-c1-${FIXTURE_TAG}`, "3003", 41.10, -73.00, 2);
+    await seedJob(`qa4-c2-${FIXTURE_TAG}`, "3003", 41.11, -73.01, 1);
     const queues = await loadOrgDriverQueues(ORG4);
     check("loadOrgDriverQueues: counts per driver from dispatch_jobs (3/3/2)", queues.get("3001")?.activeCount === 3 && queues.get("3002")?.activeCount === 3 && queues.get("3003")?.activeCount === 2 && queues.get("3001")?.queuedJobs.length === 3, JSON.stringify([...queues].map(([k, v]) => [k, v.activeCount])));
 
@@ -1907,7 +1907,7 @@ try {
     try { await runAutoDispatch(ORG6, firstDeps); } finally { Date.now = firstNow; }
     let row = (await q`SELECT decision,driver_id FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='94001'`)[0];
     check("retry re-select: no in-state candidate stays parked", row?.decision === "auto_accept_no_driver" && String(row?.driver_id) === "0" && !posts(first.calls).some((p) => Number(p.body?.driverId) > 0), JSON.stringify(row));
-    const originalNow = Date.now; Date.now = () => originalNow() + 5 * 60 * 1000 + 1;
+    const originalNow = Date.now; Date.now = () => originalNow() + 10 * 60 * 1000 + 2;
     try {
       const second = makeFetch({ offers: [], drivers: [driver(94011, "Retry CT driver", { checkedIn: true })], liveCalls: [retryCall] });
       const { deps: secondDeps } = makeDeps(second.fetchImpl, makeRouter(), { env: {}, stateResolver: async () => "CT" });
