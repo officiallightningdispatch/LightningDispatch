@@ -1520,6 +1520,23 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`UPDATE contractor_profiles SET vehicle_type = 'other' WHERE vehicle_type = 'Other'`;
   }],
 
+  [70, async (q) => {
+    await q`CREATE TABLE IF NOT EXISTS owner_notifications (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL,
+      title TEXT NOT NULL,
+      body TEXT,
+      route TEXT,
+      payload JSONB,
+      call_request_id TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      read_at TIMESTAMPTZ
+    )`;
+    await q`CREATE INDEX IF NOT EXISTS owner_notifications_org_created_idx ON owner_notifications(org_id, created_at DESC)`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS owner_notifications_org_call_escalation_uidx ON owner_notifications(org_id, call_request_id) WHERE call_request_id IS NOT NULL AND kind='escalation'`;
+  }],
+
   [69, async (q) => {
     await q`ALTER TABLE tip_cashouts ADD COLUMN IF NOT EXISTS covered_tire_plug_ids JSONB NOT NULL DEFAULT '[]'::jsonb`;
     await q`ALTER TABLE payout_records ADD COLUMN IF NOT EXISTS tire_plug_cents INTEGER NOT NULL DEFAULT 0`;

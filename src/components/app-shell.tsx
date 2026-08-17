@@ -1,5 +1,5 @@
 import { Link, useLocation } from "@tanstack/react-router";
-import { CarFront, Home, Inbox, Briefcase, DollarSign, LayoutDashboard, List, LogOut, MoreHorizontal, Settings, User, UserRound, Users, History, BarChart3, Wallet, Bot, Map, UserCog, Zap, FileWarning } from "lucide-react";
+import { CarFront, Home, Inbox, Briefcase, DollarSign, LayoutDashboard, List, LogOut, MoreHorizontal, Settings, User, UserRound, Users, History, BarChart3, Wallet, Bot, Map, UserCog, Zap, FileWarning, Bell } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { authStatus, type AuthUser } from "~/data/auth";
 import { getMyProfilePhoto } from "~/data/driver-profile-photo";
@@ -55,6 +55,7 @@ const NAV: Record<Portal, PortalNav> = {
       { to: "/owner/metrics", label: "Metrics", icon: BarChart3 },
       { to: "/owner/claims", label: "Claims", icon: FileWarning },
       { to: "/owner/money", label: "Payments", icon: Wallet },
+      { to: "/owner/notifications", label: "Notifications", icon: Bell },
       { to: "/owner/ai-dispatcher", label: "AI Dispatcher", icon: Bot },
       { to: "/owner/settings", label: "Settings", icon: Settings },
       { to: "/owner/zones", label: "Zones", icon: Map },
