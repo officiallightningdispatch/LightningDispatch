@@ -80,7 +80,7 @@ const timeLabel = (iso: string | null) => {
 
 function MoneyView() {
   const toast = useToast();
-  const [overview, setOverview] = useState<{ revenueCents: number; revenueChargedCount: number; revenueStagedCount: number; tipsCents: number; tipsCount: number; payoutsDueCents: number; payoutsDueCount: number; payoutsDueOn: string | null; hasRealMoney: boolean } | null>(null);
+  const [overview, setOverview] = useState<{ revenueCents: number; revenueChargedCount: number; revenueStagedCount: number; tipsCents: number; tipsCount: number; weeklyTipsCents: number; weeklyTipCount: number; weeklyTipsByDriver: { driverId: string; driverName: string; tipsCents: number; tipCount: number }[]; payoutsDueCents: number; payoutsDueCount: number; payoutsDueOn: string | null; hasRealMoney: boolean } | null>(null);
   const [periods, setPeriods] = useState<PayPeriod[] | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<PayPeriodDetail | null>(null);
