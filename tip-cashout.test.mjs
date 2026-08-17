@@ -116,6 +116,13 @@ await q`INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, pho
   (${J1}, ${ORG}, ${"cash001"}, ${"C1"}, ${"9145550101"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, 'completed', ${iso(new Date(closed.startsAt.getTime() + 3600e3))}, ${iso(new Date(closed.startsAt.getTime() + 3600e3))}, ${TB1}),
   (${J2}, ${ORG}, ${"cash002"}, ${"C2"}, ${"9145550102"}, 41.1, -73.5, ${"CT"}, ${"Jump"}, 'completed', ${iso(new Date(closed.startsAt.getTime() + 7200e3))}, ${iso(new Date(closed.startsAt.getTime() + 7200e3))}, ${TB1}),
   (${J4}, ${ORG}, ${"cash003"}, ${"C4"}, ${"9145550104"}, 41.1, -73.5, ${"CT"}, ${"Lock"}, 'completed', ${iso(new Date(closed.startsAt.getTime() + 8600e3))}, ${iso(new Date(closed.startsAt.getTime() + 8600e3))}, ${TB4})`;
+// Slice A (owner 2026-08-17): the completion instant is Towbook's authoritative
+// raw completionTime — never the sync's own completed_at clock. Without a real
+// raw_json.completionTime a completed job is excluded from payday (surfaced in
+// diagnostics), so the fixture must carry it for the payday-manifest assertions.
+await q`UPDATE dispatch_jobs SET raw_json = jsonb_build_object('completionTime', ${new Date(closed.startsAt.getTime() + 3600e3).toISOString()}::text) WHERE org_id=${ORG} AND id=${J1}`;
+await q`UPDATE dispatch_jobs SET raw_json = jsonb_build_object('completionTime', ${new Date(closed.startsAt.getTime() + 7200e3).toISOString()}::text) WHERE org_id=${ORG} AND id=${J2}`;
+await q`UPDATE dispatch_jobs SET raw_json = jsonb_build_object('completionTime', ${new Date(closed.startsAt.getTime() + 8600e3).toISOString()}::text) WHERE org_id=${ORG} AND id=${J4}`;
 // D1: ONE tip $25 in window (cashed out later → excluded from payday).
 // D2: tip $30 in window (bank unverified → cash-out REFUSED, tip stays in payday).
 // D4: tip A $8 in window (early) then tip B $10 in window (later, after A's cash-out).
