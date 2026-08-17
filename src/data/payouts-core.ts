@@ -692,7 +692,8 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
       SELECT dj.assigned_driver_towbook_id AS tb_id, dj.status, dj.raw_json, dj.manually_reassigned_at
       FROM dispatch_jobs dj
       WHERE dj.org_id=${actor.orgId} AND dj.status='completed'
-        AND COALESCE(dj.raw_json->>'statusId', dj.raw_json->>'status') NOT IN ('255','cancelled','canceled')
+        AND (COALESCE(dj.raw_json->>'statusId', dj.raw_json->>'status') IS NULL
+          OR COALESCE(dj.raw_json->>'statusId', dj.raw_json->>'status') NOT IN ('255','cancelled','canceled'))
         AND CASE WHEN dj.raw_json->>'completionTime' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}(T| )[0-9]{2}:[0-9]{2}:[0-9]{2}' THEN (dj.raw_json->>'completionTime')::timestamptz END >= ${iso(startsAt)}
         AND CASE WHEN dj.raw_json->>'completionTime' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}(T| )[0-9]{2}:[0-9]{2}:[0-9]{2}' THEN (dj.raw_json->>'completionTime')::timestamptz END < ${iso(endsAt)}
         AND dj.assigned_driver_towbook_id IS NOT NULL`;
