@@ -79,6 +79,7 @@ const NAV: Record<Portal, PortalNav> = {
       { to: "/owner/ai-dispatcher", label: "AI Dispatcher", icon: Bot },
       { to: "/owner/settings", label: "Settings", icon: Settings },
       { to: "/owner/zones", label: "Zones", icon: Map },
+      { to: "/owner/notifications", label: "Notifications", icon: Bell },
     ],
   },
   ops: {
