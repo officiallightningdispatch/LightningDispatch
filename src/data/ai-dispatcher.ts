@@ -2983,7 +2983,7 @@ async function runAutoDispatchInternal(
           for (const id of new Set([...driverGpsFixes.keys(), ...driverAnchors.keys(), ...driverDispatchEvidence.keys()])) {
             const numericId = Number(id), evidence = driverDispatchEvidence.get(id), point = driverGpsFixes.get(id) ?? driverAnchors.get(id) ?? evidence;
             if (!Number.isFinite(numericId) || numericId <= 0 || seen.has(numericId) || (eligibleIds && !eligibleIds.has(numericId)) || !point) continue;
-            const supplemental: NearestDriver = { driverId: numericId, driverName: `Driver ${numericId}`, latitude: point.lat, longitude: point.lng, estimatedTimeSeconds: null, isCheckedIn: false };
+            const supplemental: NearestDriver = { driverId: numericId, driverName: `Driver ${numericId}`, latitude: point.lat, longitude: point.lng, estimatedTimeSeconds: Math.max(60, fallbackRoadMinutes(haversineMiles(point.lat, point.lng, lookupAnchor.lat, lookupAnchor.lng)) * 60), isCheckedIn: false };
             if ((await stateOf(supplemental))?.toUpperCase() !== zoneState.state.toUpperCase()) continue;
             candidates.push(supplemental); seen.add(numericId); poolExpandedFromStateEvidence = true;
           }
