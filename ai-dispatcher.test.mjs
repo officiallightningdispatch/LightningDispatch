@@ -845,6 +845,10 @@ try {
   /* ============ 23) org max_eta_minutes is a goal, not a cap (road + buffer above goal) ============ */
   {
     await clearOrgDispatch();
+    // Pin the real app GPS origin for this cap assertion. Earlier cases may
+    // leave a different fix for 603482; dispatch routing must use this fix,
+    // never the Towbook payload coordinates.
+    await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES(${`ad-gps-603482-cap-${FIXTURE_TAG}`}, ${ORG}, ${USER}, '603482', 41.1, -73.0, ${new Date().toISOString()})`;
     const m = makeFetch({
       offers: [offer(7017)],
       drivers: [driver(603482, "Antone jerret", { lat: 41.1, lng: -73.0, etaSec: 3600 })], // road 3600s → raw ETA ~65; quote is hard-capped at 60 and never gates
