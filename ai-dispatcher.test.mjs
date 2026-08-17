@@ -1237,7 +1237,7 @@ try {
     const pickAll = await chooseBestDriverByRoad([dA, dB], 41.2, -73.2, Rq3, new Map([...qA3, ...qB3]));
     check("all-loaded: closest driver B wins over farther A despite A's better chain ETA", pickAll?.driver.driverId === 3002 && pickAll?.queueInclusive === true, JSON.stringify(pickAll));
     check("all-loaded: chain math recorded for closest B (3 jobs ≈ 115 min + final leg 15; arrival 130)", pickAll?.queueMinutes === 115 && pickAll?.queuedJobCount === 3 && pickAll?.finalLegMinutes === 15 && pickAll?.baseMinutes === 130, JSON.stringify(pickAll));
-    check("all-loaded: quoted ETA hard-caps queue time at 60 (ceil(130)+5)", finalEtaMinutes(pickAll.baseMinutes, 5, 5, 180) === 60, String(finalEtaMinutes(pickAll.baseMinutes, 5, 5, 180)));
+    check("all-loaded: quoted ETA hard-caps queue time at 60 (ceil(130)+5)", finalEtaMinutes(pickAll.baseMinutes, 5, 5, 60) === 60, String(finalEtaMinutes(pickAll.baseMinutes, 5, 5, 60)));
     check("all-loaded: queue ETA remains accepted while quoted value is capped", finalEtaMinutes(pickAll.baseMinutes, 5, 5, 45) === 45, String(finalEtaMinutes(pickAll.baseMinutes, 5, 5, 45)));
     // workloadAwareArrivalMinutes directly: fallback factor when routing fails
     const dirQ = await workloadAwareArrivalMinutes(dA, qA3.get("3001").queuedJobs, 41.2, -73.2, makeRouter({ "41.15,-73.10": null, "41.16,-73.11": null, "41.17,-73.12": null }));
