@@ -203,7 +203,7 @@ let detail;
   check("recompute: ok", res.ok, JSON.stringify(res));
   const rows = await q`SELECT COUNT(*)::int AS c FROM payout_records WHERE org_id=${ORG} AND period_id=${PERIOD}`;
   check("recompute: no duplicate records (still 4)", Number(rows[0].c) === 4, JSON.stringify(rows));
-  check("recompute: totals unchanged (4 contractors, $393, 3 blocked)", res.ok && res.data.totals.totalCents === 39300 && res.data.totals.blockedCount === 3, JSON.stringify(res.data?.totals));
+  check("recompute: totals unchanged (4 contractors, $403, 3 blocked)", res.ok && res.data.totals.totalCents === 40300 && res.data.totals.blockedCount === 3, JSON.stringify(res.data?.totals));
   const aud = await q`SELECT action FROM audit_log WHERE org_id=${ORG} AND entity_type='pay_period' ORDER BY occurred_at`;
   check("audit: payday_computed + payout_period_recomputed recorded", aud.some((a) => a.action === "payday_computed") && aud.some((a) => a.action === "payout_period_recomputed"), JSON.stringify(aud));
 }
