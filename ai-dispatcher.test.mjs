@@ -147,9 +147,10 @@ const jsonResponse = (status, body) => ({
  *  (simulating the 2026-08-10 incident: accepted driver ≠ driver on the call).
  *  `acceptedCallStatus` sets the status the fresh accept's call lands in
  *  (real world: 0 = Received — the 2026-08-12 dispatch gap). */
-function makeFetch({ offers, drivers, offersStatus = 200, offersBody = null, acceptStatus = 200, acceptBody = null, acceptFails = 0, nearestDriversStatus = 200, callDriverId = null, assignSucceeds = true, acceptResponseId = null, callsFailures = 0, acceptedCallStatus = 2, assetId = 424242, statusListExtra = {}, suppressCreatedFromStatusLists = false }) {
+function makeFetch({ offers, drivers, offersStatus = 200, offersBody = null, acceptStatus = 200, acceptBody = null, acceptFails = 0, nearestDriversStatus = 200, callDriverId = null, assignSucceeds = true, acceptResponseId = null, callsFailures = 0, acceptedCallStatus = 2, assetId = 424242, statusListExtra = {}, liveCalls = [], suppressCreatedFromStatusLists = false }) {
   const calls = [];
   let call = null; // the call created by the accept POST
+  const seededCalls = liveCalls.map((c) => structuredClone(c));
   let callsFailuresLeft = callsFailures;
   const fetchImpl = async (url, init = {}) => {
     const u = String(url);
@@ -186,11 +187,12 @@ function makeFetch({ offers, drivers, offersStatus = 200, offersBody = null, acc
       // {id, status:{id:1}, assets:[{id, drivers:[{driver:{id}}]}]}
       if (!assignSucceeds) return jsonResponse(500, { error: "assign boom" });
       const m2 = u.match(/\/api\/calls\/(\d+)$/);
-      if (call && m2 && String(call.id) === m2[1]) {
+      const target = call && m2 && String(call.id) === m2[1] ? call : seededCalls.find((c) => m2 && String(c.id) === m2[1]);
+      if (target) {
         const driverId = parsedBody?.assets?.[0]?.drivers?.[0]?.driver?.id;
         if (driverId != null) {
-          call.status = { id: 1 };
-          call.assets = [{ id: parsedBody.assets[0].id ?? assetId, drivers: [{ driver: { id: driverId, name: "Assigned" } }] }];
+          target.status = { id: 1 };
+          target.assets = [{ id: parsedBody.assets[0].id ?? assetId, drivers: [{ driver: { id: driverId, name: "Assigned" } }] }];
         }
       }
       return jsonResponse(200, { ok: true });
@@ -198,13 +200,18 @@ function makeFetch({ offers, drivers, offersStatus = 200, offersBody = null, acc
     if (u.includes("/api/calls")) {
       if (callsFailuresLeft > 0) { callsFailuresLeft--; return jsonResponse(500, { error: "call list boom" }); }
       const m = u.match(/\/api\/calls\/(\d+)$/);
-      if (m) return call && String(call.id) === m[1] ? jsonResponse(200, call) : jsonResponse(404, { error: "not found" });
+      if (m) {
+        if (call && String(call.id) === m[1]) return jsonResponse(200, call);
+        const seeded = seededCalls.find((c) => String(c.id) === m[1]);
+        return seeded ? jsonResponse(200, seeded) : jsonResponse(404, { error: "not found" });
+      }
       const sm = u.match(/status=(\d+)/);
       if (sm) {
         const status = Number(sm[1]);
         const created = call && call.status.id === status && !suppressCreatedFromStatusLists ? [call] : [];
-        return jsonResponse(200, [...created, ...(statusListExtra[status] ?? [])]);
+        return jsonResponse(200, [...created, ...seededCalls, ...(statusListExtra[status] ?? [])]);
       }
+      return jsonResponse(200, [...(call ? [call] : []), ...seededCalls]);
     }
     throw new Error(`mock fetch hit an unexpected URL: ${method} ${u}`);
   };
@@ -1887,6 +1894,60 @@ try {
 
     const e = await runTier(93005, [cross, offline, online], { states: { 93001: "CT", 93002: "CT", 93003: "NY" } });
     check("tier regression online same-state beats offline/cross-state", e.r.decisions[0]?.decision === "auto_accept_with_driver" && Number(e.row?.driver_id) === 93001 && posts(e.m.calls)[0]?.body?.driverId === 93001, JSON.stringify(e.row));
+  }
+
+  /* ============ retry sweep hermetic regressions ============ */
+  {
+    const retryOffer = offer(94001, { startingLocation: "BRIDGEPORT CT", drivers: [] });
+    const retryCall = { id: 9400101, callRequestId: 94001, startLocationLatitude: retryOffer.startLocationLatitude, startLocationLongitude: retryOffer.startLocationLongitude, startingLocation: "BRIDGEPORT CT", status: { id: 0 }, assets: [] };
+    await q`INSERT INTO ai_dispatcher_decisions(id,org_id,call_request_id,decision,escalated,driver_id,reason,raw_response) VALUES(${randomUUID()},${ORG6},'94001','auto_accept_no_driver',TRUE,'0','initial in-state hold',${JSON.stringify({offer: retryOffer})}::jsonb)`;
+    const first = makeFetch({ offers: [], drivers: [], liveCalls: [retryCall] });
+    const { deps: firstDeps } = makeDeps(first.fetchImpl, makeRouter(), { stateResolver: async () => "CT" });
+    await runAutoDispatch(ORG6, firstDeps);
+    let row = (await q`SELECT decision,driver_id FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='94001'`)[0];
+    check("retry re-select: no in-state candidate stays parked", row?.decision === "auto_accept_no_driver" && String(row?.driver_id) === "0" && !posts(first.calls).some((p) => Number(p.body?.driverId) > 0), JSON.stringify(row));
+    const originalNow = Date.now; Date.now = () => originalNow() + 5 * 60 * 1000 + 1;
+    try {
+      const second = makeFetch({ offers: [], drivers: [driver(94011, "Retry CT driver", { checkedIn: true })], liveCalls: [retryCall] });
+      const { deps: secondDeps } = makeDeps(second.fetchImpl, makeRouter(), { stateResolver: async () => "CT" });
+      await runAutoDispatch(ORG6, secondDeps);
+      row = (await q`SELECT decision,driver_id,reason FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='94001'`)[0];
+      const count = await q`SELECT count(*)::int n FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='94001'`;
+      check("retry re-select: eligible CT driver resolves SAME row", row?.decision === "auto_accept_with_driver" && String(row?.driver_id) === "94011" && Number(count[0].n) === 1 && posts(second.calls).some((p) => p.method === "PUT" && p.url.includes("/api/calls/9400101")), JSON.stringify({row,posts:posts(second.calls)}));
+    } finally { Date.now = originalNow; }
+  }
+  {
+    const o = offer(94002, { startingLocation: "AUSTIN TX", lat: 30.62, lng: -97.65 });
+    const c = { id: 9400201, callRequestId: 94002, startLocationLatitude: o.startLocationLatitude, startLocationLongitude: o.startLocationLongitude, startingLocation: "AUSTIN TX", status: { id: 0 }, assets: [] };
+    await q`INSERT INTO ai_dispatcher_decisions(id,org_id,call_request_id,decision,escalated,driver_id,reason,raw_response) VALUES(${randomUUID()},${ORG6},'94002','auto_accept_no_driver',TRUE,'0','TX hold',${JSON.stringify({offer:o})}::jsonb)`;
+    const m = makeFetch({ offers: [], drivers: [driver(94012, "Offline TX Towbook driver", { checkedIn: false, lat: 30.62, lng: -97.65 })], liveCalls: [c] });
+    const { deps } = makeDeps(m.fetchImpl, makeRouter(), { stateResolver: async () => "TX" });
+    await runAutoDispatch(ORG6, deps);
+    const row = (await q`SELECT decision,driver_id FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='94002'`)[0];
+    check("retry TX union: Towbook-only offline sole TX driver dispatched", row?.decision === "auto_accept_with_driver" && String(row?.driver_id) === "94012" && posts(m.calls).some((p) => p.method === "PUT"), JSON.stringify({row,posts:posts(m.calls)}));
+  }
+  {
+    const o = offer(94003, { startingLocation: "BRIDGEPORT CT" });
+    const c = { id: 9400301, callRequestId: 94003, startLocationLatitude: o.startLocationLatitude, startLocationLongitude: o.startLocationLongitude, startingLocation: "BRIDGEPORT CT", status: { id: 0 }, assets: [] };
+    await q`INSERT INTO ai_dispatcher_decisions(id,org_id,call_request_id,decision,escalated,driver_id,reason,raw_response) VALUES(${randomUUID()},${ORG6},'94003','auto_accept_no_driver',TRUE,'0','cross-state hold',${JSON.stringify({offer:o})}::jsonb)`;
+    const m = makeFetch({ offers: [], drivers: [driver(94013, "NY driver", { checkedIn: true, lat: 41.2, lng: -73.2 })], liveCalls: [c] });
+    const { deps } = makeDeps(m.fetchImpl, makeRouter(), { stateResolver: async () => "NY" });
+    const originalNow = Date.now; Date.now = () => originalNow() + 5 * 60 * 1000 + 2;
+    try { await runAutoDispatch(ORG6, deps); } finally { Date.now = originalNow; }
+    const row = (await q`SELECT decision,driver_id FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='94003'`)[0];
+    check("retry no-cross-state: out-of-state-only remains parked", row?.decision === "auto_accept_no_driver" && String(row?.driver_id) === "0" && !posts(m.calls).some((p) => p.method === "PUT"), JSON.stringify({row,posts:posts(m.calls)}));
+  }
+  {
+    const o = offer(94004, { startingLocation: "BRIDGEPORT CT" });
+    const c = { id: 9400401, callRequestId: 94004, startLocationLatitude: o.startLocationLatitude, startLocationLongitude: o.startLocationLongitude, startingLocation: "BRIDGEPORT CT", status: { id: 1 }, assets: [{ id: 1, driver: { id: 94014, name: "Already assigned" } }] };
+    await q`INSERT INTO ai_dispatcher_decisions(id,org_id,call_request_id,decision,escalated,driver_id,reason,raw_response) VALUES(${randomUUID()},${ORG6},'94004','auto_accept_no_driver',TRUE,'0','assigned skip',${JSON.stringify({offer:o})}::jsonb)`;
+    const m = makeFetch({ offers: [], drivers: [driver(94015, "Other CT driver")], liveCalls: [c] });
+    const { deps } = makeDeps(m.fetchImpl, makeRouter(), { stateResolver: async () => "CT" });
+    const originalNow = Date.now; Date.now = () => originalNow() + 5 * 60 * 1000 + 3;
+    try { await runAutoDispatch(ORG6, deps); } finally { Date.now = originalNow; }
+    const row = (await q`SELECT decision,driver_id FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='94004'`)[0];
+    const count = await q`SELECT count(*)::int n FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='94004'`;
+    check("retry assigned skip: existing driver leaves parked row unchanged", row?.decision === "auto_accept_no_driver" && String(row?.driver_id) === "0" && Number(count[0].n) === 1 && !posts(m.calls).some((p) => p.method === "PUT"), JSON.stringify({row,posts:posts(m.calls)}));
   }
 
   /* ============ qualification gate (Phase B ③) ============ */
