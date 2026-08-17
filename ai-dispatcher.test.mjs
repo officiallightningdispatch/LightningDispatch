@@ -600,6 +600,9 @@ try {
     // Fixture uses a fresh driver id (788001) so the queue is empty and the road ETA is
     // exact: 4440s -> raw 74 min + 5 buffer; quote is capped at 60 (703785 is reused
     // earlier in this suite and would carry an active queued job into this block).
+    // State and ETA origin must come from a real app GPS fix, not the offer payload.
+    await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES(${`ad-gps-788001-${FIXTURE_TAG}`}, ${ORG}, ${USER}, '788001', 41.1, -73.0, ${new Date().toISOString()})`;
+    await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES(${`ad-gps-788001-${FIXTURE_TAG}`}, ${ORG}, ${USER}, '788001', 41.1, -73.0, ${new Date().toISOString()})`;
     const m = makeFetch({ offers: [offer(327309797, { purchaseOrderNumber: "112781994", startingLocation: "STRATFORD CT", drivers: [788001] })], drivers: [driver(788001, "Jayden Fountain", { lat: 41.1, lng: -73.0, etaSec: 4440 })] });
     const router = makeRouter({ "41.10,-73.00": 4440 });
     const { deps } = makeDeps(m.fetchImpl, router, { stateResolver: async () => "CT" });
