@@ -402,8 +402,8 @@ try {
   const noGps = driver(103665, "Brittani Simms", { lat: 0, lng: 0, etaSec: 5 });
   const offline = driver(717660, "Levi C Martin", { checkedIn: false, etaSec: 10 });
   const pick2 = await chooseBestDriverByRoad([freeSlow, freeFast, busy, noGps, offline], 41.2, -73.2, R);
-  check("chooseBestDriverByRoad picks closer Antone (10-min road ETA)", pick2?.driver.driverId === 603482 && pick2.baseMinutes === 10 && pick2.usedFallback === false && pick2.roadSeconds === 600, JSON.stringify(pick2));
-  check("chooseBestDriverByRoad excludes busy/no-GPS/offline", (await chooseBestDriverByRoad([freeFast, busy], 41.2, -73.2, R))?.driver.driverId === 703785 && (await chooseBestDriverByRoad([busy, noGps, offline], 41.2, -73.2, R))?.driver.driverId === 668209);
+  check("no app GPS fix: chooser excludes payload-only Antone and returns null", pick2 === null, JSON.stringify(pick2));
+  check("no app GPS fix: busy/no-GPS/offline candidates are excluded", (await chooseBestDriverByRoad([freeFast, busy], 41.2, -73.2, R)) === null && (await chooseBestDriverByRoad([busy, noGps, offline], 41.2, -73.2, R)) === null);
   check("chooseBestDriverByRoad([]) = null", (await chooseBestDriverByRoad([], 41.2, -73.2, R)) === null);
   const fb = await chooseBestDriverByRoad([driver(703785, "Jayden Fountain", { lat: 41.19, lng: -73.15, etaSec: 604 })], 41.2, -73.2, R);
   check("chooseBestDriverByRoad: router null → fallback factor model flagged", fb?.driver.driverId === 703785 && fb.usedFallback === true && fb.roadSeconds === null && fb.baseMinutes === fallbackRoadMinutes(haversineMiles(41.19, -73.15, 41.2, -73.2)), JSON.stringify(fb));
@@ -1786,9 +1786,8 @@ try {
       pickFlex?.driver.driverId === 717660 && pickFlex?.areaFallback === false && pickFlex?.anchor === null,
       JSON.stringify(pickFlex && { d: pickFlex.driver.driverId, anchor: pickFlex.anchor }));
     const pickBothFlex = await chooseBestDriverByRoad([jayden, levi], NEW_HAVEN.lat, NEW_HAVEN.lng, geoRouter, undefined, {});
-    check("no anchors configured → closest driver wins on distance (payload origins, no area note)",
-      pickBothFlex?.driver.driverId === 717660 && pickBothFlex?.areaFallback === false && pickBothFlex?.originBasis === "payload" &&
-      areaSelectionNote(pickBothFlex, NEW_HAVEN.lat, NEW_HAVEN.lng) === null,
+    check("no app GPS fix: no anchors configured still fails closed (payload origin rejected)",
+      pickBothFlex === null,
       JSON.stringify(pickBothFlex && { d: pickBothFlex.driver.driverId, basis: pickBothFlex.originBasis }));
 
     // ETA origin: freshest app GPS fix when ≤ 15 min old; a STALE fix (> 15
@@ -1810,20 +1809,15 @@ try {
     const pickStale = await chooseBestDriverByRoad([levi], NEW_HAVEN.lat, NEW_HAVEN.lng,
       makeRouter({ "41.27,-73.05": 600 }), // anchor-center (West Haven) route — the stale fix (41.30,-72.95) would factor to ~18 min
       undefined, { anchors, gpsFixes: new Map([["717660", fixAt({ lat: 41.30, lng: -72.95 }, 30)]]), now: geoNow });
-    check("stale GPS fix (>15 min): ETA routed from the ANCHOR center, basis noted (originBasis anchor)",
-      pickStale?.driver.driverId === 717660 && pickStale?.originBasis === "anchor" && pickStale?.baseMinutes === 10 &&
-      pickStale?.gpsFixAgeMinutes != null && pickStale.gpsFixAgeMinutes >= 29 && pickStale.gpsFixAgeMinutes <= 31,
+    check("stale GPS >15min: state evidence exists but no road ETA and excluded", pickStale === null,
       JSON.stringify(pickStale && { basis: pickStale.originBasis, base: pickStale.baseMinutes, age: pickStale.gpsFixAgeMinutes }));
-    check("stale GPS fix: reason label + area note never hide the anchor-center origin",
-      pickStale != null && String(etaDetailLabel(pickStale, 5, 5, 45, 15)).includes("origin: anchor center") &&
-      String(areaSelectionNote(pickStale, NEW_HAVEN.lat, NEW_HAVEN.lng)).includes("ETA origin: anchor center"),
+    check("stale GPS >15min: no decision can claim an anchor-center ETA", pickStale === null,
       `${etaDetailLabel(pickStale, 5, 5, 45, 15)} ${areaSelectionNote(pickStale, NEW_HAVEN.lat, NEW_HAVEN.lng)}`);
     const noFix = driver(603482, "Antone jerret", { lat: WEST_HAVEN.lat, lng: WEST_HAVEN.lng, etaSec: 604 });
     const pickNoFix = await chooseBestDriverByRoad([noFix], NEW_HAVEN.lat, NEW_HAVEN.lng,
       makeRouter({ "41.27,-73.05": 600 }),
       undefined, { anchors, gpsFixes: new Map(), now: geoNow });
-    check("no app GPS fix: payload coords stay the origin (originBasis payload — absence is not staleness)",
-      pickNoFix?.driver.driverId === 603482 && pickNoFix?.originBasis === "payload" && pickNoFix?.gpsFixAgeMinutes === null && pickNoFix?.baseMinutes === 10,
+    check("no app GPS fix: payload coordinates are never an origin; chooser excludes driver", pickNoFix === null,
       JSON.stringify(pickNoFix && { basis: pickNoFix.originBasis, age: pickNoFix.gpsFixAgeMinutes, base: pickNoFix.baseMinutes }));
 
     // Escalation backstop under area context: no eligible candidate at all →
