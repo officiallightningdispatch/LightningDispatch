@@ -1202,11 +1202,16 @@ export const driverEarnings = createServerFn({ method: "GET" }).handler(async ()
     const queue = await fetchDriverQueue({ orgId: ctx.u.orgId, towbookDriverId: driverId });
     if (!queue.ok) return queue;
     const completed = queue.calls.filter((c) => c.statusId === 5 || c.statusId === 6);
+    // completion_tips is the canonical Square-capture ledger. Do not derive
+    // earnings from job_completions.tip: that legacy payload is not guaranteed
+    // to be present after the payment attempt and has no paid-status gate.
     const tipRows = await q`
-      SELECT jc.job_id, jc.tip, jc.updated_at, d.towbook_job_id, d.customer_name
-      FROM job_completions jc LEFT JOIN dispatch_jobs d ON d.id = jc.job_id AND d.org_id = jc.org_id
-      WHERE jc.org_id = ${ctx.u.orgId} AND jc.tip IS NOT NULL AND jc.tip->>'driver_towbook_id' = ${driverId}
-      ORDER BY jc.updated_at DESC`;
+      SELECT ct.job_id, ct.amount_cents, ct.currency, ct.status, ct.created_at, ct.driver_towbook_id,
+             d.towbook_job_id, d.customer_name
+      FROM completion_tips ct LEFT JOIN dispatch_jobs d ON d.id = ct.job_id AND d.org_id = ct.org_id
+      WHERE ct.org_id = ${ctx.u.orgId} AND ct.driver_id = ${ctx.identity.userRowId}
+        AND ct.driver_towbook_id = ${driverId} AND ct.status = 'paid'
+      ORDER BY ct.created_at DESC`;
     const tirePlugRows = await q`SELECT t.job_id, t.amount_cents, t.status, t.paid_at, d.towbook_job_id
       FROM tire_plug_transactions t LEFT JOIN dispatch_jobs d ON d.id=t.job_id AND d.org_id=t.org_id
       WHERE t.org_id=${ctx.u.orgId} AND t.contractor_user_id=${ctx.identity.userRowId} AND t.status='paid' ORDER BY t.paid_at DESC`;
@@ -1214,17 +1219,16 @@ export const driverEarnings = createServerFn({ method: "GET" }).handler(async ()
     const tirePlugTotalCents = tirePlugs.reduce((sum, row) => sum + row.amountCents, 0);
     const tips: DriverEarningsTip[] = [];
     for (const r of tipRows as Record<string, unknown>[]) {
-      const tip = typeof r.tip === "object" && r.tip != null ? (r.tip as Record<string, unknown>) : {};
-      const amountCents = Number(tip.amount_cents ?? 0);
+      const amountCents = Number(r.amount_cents ?? 0);
       if (!Number.isFinite(amountCents) || amountCents <= 0) continue;
       tips.push({
         jobId: String(r.job_id ?? ""),
         callNumber: r.towbook_job_id != null ? String(r.towbook_job_id) : null,
         customerName: r.customer_name != null ? String(r.customer_name) : null,
         amountCents,
-        currency: String(tip.currency ?? "USD"),
-        status: String(tip.status ?? "unknown"),
-        createdAtIso: r.updated_at != null ? new Date(String(r.updated_at)).toISOString() : null,
+        currency: String(r.currency ?? "USD"),
+        status: String(r.status ?? "unknown"),
+        createdAtIso: r.created_at != null ? new Date(String(r.created_at)).toISOString() : null,
       });
     }
     const tipsTotalCents = tips.reduce((s, t) => s + t.amountCents, 0);

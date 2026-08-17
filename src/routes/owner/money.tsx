@@ -346,6 +346,16 @@ function MoneyView() {
               detail={`${overview.tipsCount} paid tips — attributed to drivers${(cashouts?.openTotalCents ?? 0) > 0 ? ` · ${money(cashouts!.openTotalCents)} in open cash-outs` : ""}`}
             />
           </button>
+          <Card className="p-4 sm:col-span-3">
+            <div className="flex items-center justify-between gap-3">
+              <div><p className="text-xs font-bold uppercase tracking-wide text-ink-400">This week&apos;s tips</p><p className="text-2xl font-bold tabular-nums text-success-600">{money(overview.weeklyTipsCents)}</p></div>
+              <p className="text-xs text-ink-500">{overview.weeklyTipCount} paid tip{overview.weeklyTipCount === 1 ? "" : "s"} · Mon–Sun</p>
+            </div>
+            <div className="mt-3 divide-y divide-ink-100 border-t border-ink-100">
+              {overview.weeklyTipsByDriver.map((d) => <div key={d.driverId} className="flex items-center justify-between py-2 text-sm"><span className="font-semibold text-ink-700">{d.driverName}</span><span className="tabular-nums font-bold text-success-600">{money(d.tipsCents)} <span className="text-xs font-normal text-ink-400">({d.tipCount})</span></span></div>)}
+              {overview.weeklyTipsByDriver.length === 0 && <p className="py-2 text-xs text-ink-400">No paid tips this week.</p>}
+            </div>
+          </Card>
           <StatCard
             label="Payouts due"
             value={<span className="text-brand-700">{money(overview.payoutsDueCents)}</span>}

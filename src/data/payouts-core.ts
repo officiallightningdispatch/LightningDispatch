@@ -442,12 +442,16 @@ export type PayPeriodList = {
   currentPeriodId: string;
   defaultPeriodId: string; // the just-closed period (manifest default)
 };
+export type WeeklyTipByDriver = { driverId: string; driverName: string; tipsCents: number; tipCount: number };
 export type MoneyOverview = {
   revenueCents: number;
   revenueChargedCount: number;
   revenueStagedCount: number;
   tipsCents: number;
   tipsCount: number;
+  weeklyTipsCents: number;
+  weeklyTipCount: number;
+  weeklyTipsByDriver: WeeklyTipByDriver[];
   payoutsDueCents: number;
   payoutsDueCount: number;
   payoutsDueOn: string | null; // payout_due_on of the default period
@@ -1096,6 +1100,14 @@ export async function getMoneyOverviewCore(actor: PayoutActor): Promise<PayoutRe
     const staged = await q`SELECT COUNT(*)::int AS cnt FROM payment_transactions WHERE org_id=${actor.orgId} AND kind='club_charge' AND status='staged'`;
     const tips = await q`SELECT COALESCE(SUM(amount_cents), 0)::int AS total, COUNT(*)::int AS cnt
       FROM completion_tips WHERE org_id=${actor.orgId} AND status='paid'`;
+    const weekly = periodBoundariesFor(new Date());
+    const weeklyTips = await q`SELECT u.id AS driver_id, u.name AS driver_name,
+        COALESCE(SUM(ct.amount_cents), 0)::int AS tips_cents, COUNT(ct.id)::int AS tip_count
+      FROM users u JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${actor.orgId}
+      LEFT JOIN completion_tips ct ON ct.org_id=${actor.orgId} AND ct.driver_id=u.id AND ct.status='paid'
+        AND ct.created_at >= ${iso(weekly.startsAt)} AND ct.created_at < ${iso(new Date(weekly.endsAt.getTime() + 1))}
+      WHERE m.role='driver'
+      GROUP BY u.id, u.name ORDER BY u.name ASC`;
     const list = await listPayPeriodsCore(actor);
     let payoutsDueCents = 0;
     let payoutsDueCount = 0;
@@ -1116,6 +1128,9 @@ export async function getMoneyOverviewCore(actor: PayoutActor): Promise<PayoutRe
       revenueStagedCount: Number(staged[0]?.cnt ?? 0),
       tipsCents: Number(tips[0]?.total ?? 0),
       tipsCount: Number(tips[0]?.cnt ?? 0),
+      weeklyTipsCents: (weeklyTips as Record<string, unknown>[]).reduce((s, r) => s + Number(r.tips_cents ?? 0), 0),
+      weeklyTipCount: (weeklyTips as Record<string, unknown>[]).reduce((s, r) => s + Number(r.tip_count ?? 0), 0),
+      weeklyTipsByDriver: (weeklyTips as Record<string, unknown>[]).map((r) => ({ driverId: String(r.driver_id), driverName: String(r.driver_name ?? "Unknown driver"), tipsCents: Number(r.tips_cents ?? 0), tipCount: Number(r.tip_count ?? 0) })),
       payoutsDueCents,
       payoutsDueCount,
       payoutsDueOn,
