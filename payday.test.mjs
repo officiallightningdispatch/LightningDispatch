@@ -37,6 +37,13 @@ const ADMIN_ACTOR = { orgId: ORG, id: ADMIN, role: "admin" };
 const DRIVER_ACTOR = { orgId: ORG, id: D1, role: "contractor" };
 const WRONG_ORG = { orgId: ORG2, id: OTHER2, role: "owner" };
 const iso = (d) => new Date(d).toISOString();
+// Towbook completionTime is an ET wall-clock string (the query applies the
+// America/New_York timezone). Intl keeps this correct across DST transitions.
+const etWallClock = (instant) => new Date(instant).toLocaleString("sv-SE", {
+  timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+}).replace(" ", "T");
+const completionJson = (instant, extra = {}) => JSON.stringify({ completionTime: etWallClock(instant), ...extra });
 /* ---- cleanup (guarded, ALWAYS runs) ---- */
 const cleanup = async () => {
   await q`DELETE FROM audit_log WHERE org_id IN (${ORG}, ${ORG2}) OR actor_user_id IN (${OWNER}, ${ADMIN}, ${D1}, ${D2}, ${D3}, ${D4}, ${OTHER2})`;
@@ -101,12 +108,34 @@ await q`INSERT INTO pay_periods(id, org_id, starts_at, ends_at, payout_due_on, s
 const J1 = `qa-pd-j1-${randomUUID()}`, J2 = `qa-pd-j2-${randomUUID()}`, J3 = `qa-pd-j3-${randomUUID()}`;
 const J_OUT = `qa-pd-jout-${randomUUID()}`;
 const J_EDGE = `qa-pd-jedge-${randomUUID()}`;
-await q`INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, phone, lat, lng, area, service_type, status, created_at, completed_at, assigned_driver_towbook_id) VALUES
-  (${J1}, ${ORG}, ${"9101"}, ${"C1"}, ${"9145550101"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, 'completed', ${iso(new Date(closed.startsAt.getTime() + 3600e3))}, ${iso(new Date(closed.startsAt.getTime() + 3600e3))}, ${TB1}),
-  (${J2}, ${ORG}, ${"9102"}, ${"C2"}, ${"9145550102"}, 41.1, -73.5, ${"CT"}, ${"Jump"}, 'completed', ${iso(new Date(closed.startsAt.getTime() + 7200e3))}, ${iso(new Date(closed.startsAt.getTime() + 7200e3))}, ${TB1}),
-  (${J3}, ${ORG}, ${"9103"}, ${"C3"}, ${"9145550103"}, 41.1, -73.5, ${"CT"}, ${"Lock"}, 'completed', ${iso(new Date(closed.startsAt.getTime() + 8600e3))}, ${iso(new Date(closed.startsAt.getTime() + 8600e3))}, ${TB2}),
-  (${J_OUT}, ${ORG}, ${"9104"}, ${"C4"}, ${"9145550104"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, 'completed', ${iso(new Date(closed.endsAt.getTime() + 3600e3))}, ${iso(new Date(closed.endsAt.getTime() + 3600e3))}, ${TB1}),
-  (${J_EDGE}, ${ORG}, ${"9105"}, ${"C5"}, ${"9145550105"}, 41.1, -73.5, ${"CT"}, ${"Jump"}, 'completed', ${iso(new Date(closed.endsAt.getTime() - 1000))}, ${iso(new Date(closed.endsAt.getTime() - 1000))}, ${TB3})`;
+await q`INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, phone, lat, lng, area, service_type, status, created_at, completed_at, assigned_driver_towbook_id, raw_json) VALUES
+  (${J1}, ${ORG}, ${"9101"}, ${"C1"}, ${"9145550101"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, 'completed', ${iso(new Date(closed.startsAt.getTime() + 3600e3))}, ${iso(new Date(closed.startsAt.getTime() + 3600e3))}, ${TB1}, ${completionJson(new Date(closed.startsAt.getTime() + 3600e3))}),
+  (${J2}, ${ORG}, ${"9102"}, ${"C2"}, ${"9145550102"}, 41.1, -73.5, ${"CT"}, ${"Jump"}, 'completed', ${iso(new Date(closed.startsAt.getTime() + 7200e3))}, ${iso(new Date(closed.startsAt.getTime() + 7200e3))}, ${TB1}, ${completionJson(new Date(closed.startsAt.getTime() + 7200e3))}),
+  (${J3}, ${ORG}, ${"9103"}, ${"C3"}, ${"9145550103"}, 41.1, -73.5, ${"CT"}, ${"Lock"}, 'completed', ${iso(new Date(closed.startsAt.getTime() + 8600e3))}, ${iso(new Date(closed.startsAt.getTime() + 8600e3))}, ${TB2}, ${completionJson(new Date(closed.startsAt.getTime() + 8600e3))}),
+  (${J_OUT}, ${ORG}, ${"9104"}, ${"C4"}, ${"9145550104"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, 'completed', ${iso(new Date(closed.endsAt.getTime() + 3600e3))}, ${iso(new Date(closed.endsAt.getTime() + 3600e3))}, ${TB1}, ${completionJson(new Date(closed.endsAt.getTime() + 3600e3))}),
+  (${J_EDGE}, ${ORG}, ${"9105"}, ${"C5"}, ${"9145550105"}, 41.1, -73.5, ${"CT"}, ${"Jump"}, 'completed', ${iso(new Date(closed.endsAt.getTime() - 1000))}, ${iso(new Date(closed.endsAt.getTime() - 1000))}, ${TB3}, ${completionJson(new Date(closed.endsAt.getTime() - 1000))})`;
+// Eligibility regressions: cancelled states, missing assignment/timestamps,
+// GOA flat pay, and reassignment (only final completed assignee pays).
+const regressionAt = new Date(closed.startsAt.getTime() + 9000e3);
+const cancelled = (id, tbid, towId, raw = {}) => q`INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, phone, lat, lng, area, service_type, status, created_at, completed_at, assigned_driver_towbook_id, towbook_status, raw_json) VALUES
+  (${id}, ${ORG}, ${towId}, ${"Regression"}, ${"9145550199"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, 'completed', ${iso(regressionAt)}, ${iso(regressionAt)}, ${tbid}, 'cancelled', ${JSON.stringify({ completionTime: etWallClock(regressionAt), statusId: "255", ...raw })})`;
+const valid = (id, tbid, towId, raw = {}) => q`INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, phone, lat, lng, area, service_type, status, created_at, completed_at, assigned_driver_towbook_id, raw_json) VALUES
+  (${id}, ${ORG}, ${towId}, ${"Regression"}, ${"9145550199"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, 'completed', ${iso(regressionAt)}, ${iso(regressionAt)}, ${tbid}, ${JSON.stringify({ completionTime: etWallClock(regressionAt), ...raw })})`;
+const J_CANCEL = `qa-pd-cancel-${randomUUID()}`, J_THEN_CANCEL = `qa-pd-then-cancel-${randomUUID()}`;
+const J_NULL = `qa-pd-null-${randomUUID()}`, J_MISSING = `qa-pd-missing-${randomUUID()}`;
+const J_GARBAGE = `qa-pd-garbage-${randomUUID()}`, J_GOA = `qa-pd-goa-${randomUUID()}`;
+const J_GOA_CANCEL = `qa-pd-goa-cancel-${randomUUID()}`, J_REASSIGN_A = `qa-pd-reassign-a-${randomUUID()}`;
+const J_REASSIGN_B = `qa-pd-reassign-b-${randomUUID()}`;
+await cancelled(J_CANCEL, TB1, "9110");
+await q`INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, phone, lat, lng, area, service_type, status, created_at, completed_at, assigned_driver_towbook_id, raw_json) VALUES
+  (${J_THEN_CANCEL}, ${ORG}, ${"9111"}, ${"Regression"}, ${"9145550199"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, 'completed', ${iso(regressionAt)}, ${iso(regressionAt)}, ${TB1}, ${JSON.stringify({ completionTime: etWallClock(regressionAt), statusId: "255" })}),
+  (${J_NULL}, ${ORG}, ${"9112"}, ${"Regression"}, ${"9145550199"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, 'completed', ${iso(regressionAt)}, ${iso(regressionAt)}, NULL, ${completionJson(regressionAt)}),
+  (${J_MISSING}, ${ORG}, ${"9113"}, ${"Regression"}, ${"9145550199"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, 'completed', ${iso(regressionAt)}, ${iso(regressionAt)}, ${TB1}, ${JSON.stringify({})}),
+  (${J_GARBAGE}, ${ORG}, ${"9114"}, ${"Regression"}, ${"9145550199"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, 'completed', ${iso(regressionAt)}, ${iso(regressionAt)}, ${TB1}, ${JSON.stringify({ completionTime: "garbage" })})`;
+await valid(J_GOA, TB1, "9115", { invoiceItems: [{ name: "GOA", price: 10 }] });
+await cancelled(J_GOA_CANCEL, TB1, "9116", { invoiceItems: [{ name: "GOA", price: 10 }] });
+await cancelled(J_REASSIGN_A, TB1, "9117");
+await valid(J_REASSIGN_B, TB3, "9118");
 // D3 also has an uncompleted job inside the window — must NOT count
 await q`INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, phone, lat, lng, area, service_type, status, created_at, assigned_driver_towbook_id) VALUES
   (${`qa-pd-jopen-${randomUUID()}`}, ${ORG}, ${"9106"}, ${"C6"}, ${"9145550106"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, 'dispatched', ${iso(new Date(closed.startsAt.getTime() + 5000e3))}, ${TB3})`;
@@ -137,9 +166,9 @@ let detail;
   check("compute: period status → computed", detail && detail.period.status === "computed", JSON.stringify(detail?.period));
   // D1: 2 jobs × $100 + $25 tip = $225, verified venmo → computed
   const d1 = detail.records.find((r) => r.contractorId === D1);
-  check("compute: D1 gross = 2 × $100", d1 && d1.grossCents === 20000, JSON.stringify(d1));
+  check("compute: D1 gross = 2 × $100", d1 && d1.grossCents === 21000, JSON.stringify(d1));
   check("compute: D1 tips separate line = $25", d1 && d1.tipsCents === 2500, JSON.stringify(d1));
-  check("compute: D1 total = $225", d1 && d1.totalCents === 22500 && d1.status === "computed" && d1.rail === "venmo", JSON.stringify(d1));
+  check("compute: D1 total = $225", d1 && d1.totalCents === 23500 && d1.status === "computed" && d1.rail === "venmo", JSON.stringify(d1));
   check("compute: D1 full handle owner-only @jane", d1 && d1.handleFull === "@jane", JSON.stringify(d1));
   check("compute: D1 masked handle never full", d1 && d1.handleMasked !== "@jane" && d1.handleMasked.includes("••"), JSON.stringify(d1));
   // D2: no method → blocked, amount still recorded, rail NULL
@@ -148,15 +177,20 @@ let detail;
   // D3: unverified method → blocked, rail+handle snapshot, rate not set → gross 0, tip $10
   const d3 = detail.records.find((r) => r.contractorId === D3);
   check("compute: D3 blocked (unverified), handle snapshot kept", d3 && d3.status === "blocked" && d3.rail === "cash_app" && d3.methodStatus === "connected_unverified" && d3.handleFull === "$alex", JSON.stringify(d3));
-  check("compute: D3 rate not set → gross 0, tip separate $10", d3 && d3.payrateCents === null && d3.grossCents === 0 && d3.tipsCents === 1000 && d3.totalCents === 1000 && d3.jobCount === 1, JSON.stringify(d3));
+  check("compute: D3 rate not set → gross 0, tip separate $10", d3 && d3.payrateCents === null && d3.grossCents === 0 && d3.tipsCents === 1000 && d3.totalCents === 1000 && d3.jobCount === 2, JSON.stringify(d3));
   // D4: tips-only contractor → record with 0 jobs, $8 tip, no method → blocked
   const d4 = detail.records.find((r) => r.contractorId === D4);
   check("compute: D4 tips-only → 0 jobs + $8 tip, blocked (no method)", d4 && d4.jobCount === 0 && d4.grossCents === 0 && d4.tipsCents === 800 && d4.totalCents === 800 && d4.status === "blocked", JSON.stringify(d4));
   // out-of-window job + failed tip + open job excluded
   check("compute: exactly 4 records (out-of-window / failed / open-job excluded)", detail && detail.records.length === 4, JSON.stringify(detail?.records));
-  check("compute: totals — 4 contractors, $393 total ($350 gross + $43 tips)", detail && detail.totals.contractorCount === 4 && detail.totals.totalCents === 39300 && detail.totals.grossCents === 35000 && detail.totals.tipsCents === 4300 && detail.totals.blockedCount === 3 && detail.totals.dueCount === 1, JSON.stringify(detail?.totals));
+  check("compute: totals — 4 contractors, $393 total ($350 gross + $43 tips)", detail && detail.totals.contractorCount === 4 && detail.totals.totalCents === 40300 && detail.totals.grossCents === 36000 && detail.totals.tipsCents === 4300 && detail.totals.blockedCount === 3 && detail.totals.dueCount === 1, JSON.stringify(detail?.totals));
+  check("rules: cancelled/255 and completed-then-cancelled pay nothing", d1 && d1.jobCount === 3 && !detail.totals.completionDiagnostics.some((x) => x.jobId === J_CANCEL || x.jobId === J_THEN_CANCEL), JSON.stringify(d1));
+  check("rules: null assignment excluded without crash", d1 && d1.jobCount === 3 && !detail.totals.completionDiagnostics.some((x) => x.jobId === J_NULL), JSON.stringify(detail.totals));
+  check("rules: missing and garbage completionTime diagnose, no sync-clock fallback", detail.totals.completionDiagnostics.some((x) => x.jobId === J_MISSING) && detail.totals.completionDiagnostics.some((x) => x.jobId === J_GARBAGE), JSON.stringify(detail.totals.completionDiagnostics));
+  check("rules: GOA pays flat $10 and cancelled GOA is excluded", d1 && d1.goaJobCount === 1 && d1.grossCents === 21000, JSON.stringify(d1));
+  check("rules: reassignment pays final driver only", d1 && d1.jobCount === 3 && d3 && d3.jobCount === 3, JSON.stringify({ d1, d3 }));
   // rail groups: only VERIFIED rows group — Venmo (1) — $225
-  check("compute: rail groups only verified — venmo $225", detail && detail.totals.rails.length === 1 && detail.totals.rails[0].rail === "venmo" && detail.totals.rails[0].totalCents === 22500, JSON.stringify(detail?.totals.rails));
+  check("compute: rail groups only verified — venmo $225", detail && detail.totals.rails.length === 1 && detail.totals.rails[0].rail === "venmo" && detail.totals.rails[0].totalCents === 23500, JSON.stringify(detail?.totals.rails));
   // payment_transactions payout mirror
   const mirrors = await q`SELECT idempotency_key, amount_cents, status, kind FROM payment_transactions WHERE org_id=${ORG} AND kind='payout'`;
   check("mirror: 4 staged payout ledger rows", mirrors.length === 4 && mirrors.every((m) => m.status === "staged"), JSON.stringify(mirrors));
@@ -191,7 +225,7 @@ let detail;
 
   // recompute after pay: D1's paid row IMMUTABLE
   const recomputed = await computePaydayCore(ACTOR, PERIOD);
-  check("recompute: paid row untouched after recompute", recomputed.ok && recomputed.data.records.find((r) => r.contractorId === D1)?.status === "paid" && recomputed.data.records.find((r) => r.contractorId === D1)?.totalCents === 22500, JSON.stringify(recomputed.data?.records));
+  check("recompute: paid row untouched after recompute", recomputed.ok && recomputed.data.records.find((r) => r.contractorId === D1)?.status === "paid" && recomputed.data.records.find((r) => r.contractorId === D1)?.totalCents === 23500, JSON.stringify(recomputed.data?.records));
 
   // mark the WHOLE period paid — computed rows flip, blocked stay blocked
   const whole = await markPaydayPeriodPaidCore(ACTOR, PERIOD);
@@ -217,7 +251,7 @@ let detail;
   await q`INSERT INTO pay_periods(id, org_id, starts_at, ends_at, payout_due_on, status) VALUES
     (${PERIOD2}, ${ORG}, ${iso(fresh.startsAt)}, ${iso(fresh.endsAt)}, ${fresh.payoutDueOn}, 'open')`;
   await q`INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, phone, lat, lng, area, service_type, status, created_at, completed_at, assigned_driver_towbook_id) VALUES
-    (${`qa-pd-jf-${randomUUID()}`}, ${ORG}, ${"9201"}, ${"CF"}, ${"9145550107"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, 'completed', ${iso(new Date(fresh.startsAt.getTime() + 3600e3))}, ${iso(new Date(fresh.startsAt.getTime() + 3600e3))}, ${TB3})`;
+    (${`qa-pd-jf-${randomUUID()}`}, ${ORG}, ${"9201"}, ${"CF"}, ${"9145550107"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, 'completed', ${iso(new Date(fresh.startsAt.getTime() + 3600e3))}, ${iso(new Date(fresh.startsAt.getTime() + 3600e3))}, ${TB3}, ${completionJson(new Date(fresh.startsAt.getTime() + 3600e3))})`;
   const c2 = await computePaydayCore(ACTOR, PERIOD2);
   check("fresh: D3 verified now → computed + rail group", c2.ok && c2.data.records.find((r) => r.contractorId === D3)?.status === "computed" && c2.data.records.find((r) => r.contractorId === D3)?.rail === "cash_app", JSON.stringify(c2.data?.records));
   // mark ALL paid in period2 → period flips to paid (no blocked rows)
