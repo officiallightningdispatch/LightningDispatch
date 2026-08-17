@@ -627,7 +627,8 @@ export async function getPayPeriodDetailCore(actor: PayoutActor, periodId: strin
     }
     const missingCompletion = await q`SELECT id, towbook_job_id, assigned_driver_towbook_id
       FROM dispatch_jobs WHERE org_id=${actor.orgId} AND status='completed'
-        AND (raw_json->>'completionTime' IS NULL OR btrim(raw_json->>'completionTime')='')
+        AND (raw_json->>'completionTime' IS NULL OR btrim(raw_json->>'completionTime')=''
+          OR NOT (raw_json->>'completionTime' ~ '^\\s*\\d{4}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?([+-]\\d{2}:?\\d{2}|Z)?\\s*$'))
         AND created_at < ${iso(new Date(period.endsAt))}`;
     const completionDiagnostics = (missingCompletion as Record<string, unknown>[]).map((r) => ({ jobId: String(r.id), towbookJobId: r.towbook_job_id == null ? null : String(r.towbook_job_id), driverId: r.assigned_driver_towbook_id == null ? null : String(r.assigned_driver_towbook_id) }));
     const totals = {
@@ -682,7 +683,8 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
 
     const completionDiagnosticsRows = await q`SELECT id, towbook_job_id, assigned_driver_towbook_id
       FROM dispatch_jobs WHERE org_id=${actor.orgId} AND status='completed'
-        AND (raw_json->>'completionTime' IS NULL OR btrim(raw_json->>'completionTime')='')
+        AND (raw_json->>'completionTime' IS NULL OR btrim(raw_json->>'completionTime')=''
+          OR NOT (raw_json->>'completionTime' ~ '^\\s*\\d{4}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?([+-]\\d{2}:?\\d{2}|Z)?\\s*$'))
         AND created_at < ${iso(endsAt)}`;
     const completionDiagnostics = (completionDiagnosticsRows as Record<string, unknown>[]).map((r) => ({
       jobId: String(r.id), towbookJobId: r.towbook_job_id == null ? null : String(r.towbook_job_id),
