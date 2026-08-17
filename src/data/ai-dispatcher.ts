@@ -235,7 +235,7 @@ export type AutoDispatchRunResult = {
   gated: boolean; // ai_dispatcher_enabled=false → engine did nothing
   offersSeen: number;
   processed: number; // offers this run acted on (decisions written)
-  decisions: Array<{ callRequestId: string; decision: AiDispatcherDecision; escalated: boolean; reason: string }>;
+  decisions: Array<{ callRequestId: string; decision: AiDispatcherDecision; escalated: boolean; reason: string; driverId?: number | null }>;
   /** Whole-run skip reason when the engine could not even poll (not connected,
    *  session unavailable, offer fetch failed/unexpected) — never a decision. */
   skipped: string | null;
@@ -3369,7 +3369,7 @@ async function runAutoDispatchInternal(
               await recordNudge(orgId, String((jobRows[0] as Record<string, unknown>).id), String(dispatchDriverId), "assignment", "auto_accept");
             }
           } catch { /* ledger never blocks dispatch */ }
-          result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "auto_accept_with_driver", escalated: false, reason });
+          result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "auto_accept_with_driver", escalated: false, reason, driverId: Number(dispatchDriverId) || null });
         } else {
           const reason = `accepted (call ${verification.callId ?? "unknown"}) but dispatch is UNVERIFIED for ${dispatchDriverName ?? dispatchDriverId} (driver ${dispatchDriverId}) — ${verification.error}; pending retry will continue until the tied call appears${verificationRecoveryNote ? `; ${verificationRecoveryNote}` : ""}`;
           const pending = await record({
