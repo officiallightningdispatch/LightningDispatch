@@ -1352,6 +1352,10 @@ try {
     });
     // (d) accept still posts the chosen driverId + quoted ETA — all-loaded case:
     // both candidates at the 3-job cap → distance-first winner 3002, raw ETA 135 capped to 60.
+    // Engine cases use authoritative app GPS; the pure area28 map above is not persisted.
+    for (const [driverId, lat, lng] of [["3001", 41.15, -73.10], ["3002", 41.25, -73.25], ["3003", 41.19, -73.15]]) {
+      await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES(${`qa4-gps-${driverId}-${FIXTURE_TAG}`}, ${ORG4}, ${USER}, ${driverId}, ${lat}, ${lng}, ${new Date().toISOString()})`;
+    }
     {
       const m = makeFetch({
         offers: [{ ...offer(8031), drivers: [3001, 3002] }],
