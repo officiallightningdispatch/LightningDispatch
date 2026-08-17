@@ -1091,6 +1091,9 @@ try {
   {
     // 27f) engine end-to-end WITH a key, through the REAL resolveRouter path
     // (no routerOverride): TomTom URL hit, ETA = ceil(540/60)=9 + buffer 5 = 14,
+    // Strict actual-GPS rule: seed this fixture's own org-scoped fix;
+    // Towbook payload coordinates are not dispatch evidence.
+    await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES(${`ad-gps-603482-org3-27f-${FIXTURE_TAG}`}, ${ORG3}, ${USER}, '603482', 41.15, -73.1, ${new Date().toISOString()})`;
     // reason names tomtom-traffic + delay, raw_response.eta carries provider/
     // liveTraffic/trafficDelaySeconds/routerNotes.
     const m = makeFetch({ offers: [offer(8021)], drivers: [driver(603482, "Antone jerret", { lat: 41.15, lng: -73.1, etaSec: 1255 })] });
@@ -1109,6 +1112,8 @@ try {
   }
   {
     await clearDispatch(ORG3);
+    // Each dispatch-intent fixture seeds its own actual app GPS proof.
+    await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES(${`ad-gps-603482-org3-27g-${FIXTURE_TAG}`}, ${ORG3}, ${USER}, '603482', 41.15, -73.1, ${new Date().toISOString()})`;
     // 27g) engine end-to-end WITHOUT a key anywhere, through the REAL
     // resolveRouter path (no routerOverride): TOMTOM_KEY_FILE points nowhere so
     // the real stable key file never leaks into the test → OSRM URL hit (600s →
@@ -1125,6 +1130,8 @@ try {
   }
   {
     await clearDispatch(ORG3);
+    // Self-contained actual GPS proof for the router-override dispatch case.
+    await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES(${`ad-gps-603482-org3-27h-${FIXTURE_TAG}`}, ${ORG3}, ${USER}, '603482', 41.15, -73.1, ${new Date().toISOString()})`;
     // 27h) engine with a routerOverride tomtom provider (hermetic seam): the
     // decision reason records the provider without any real routing call.
     const m = makeFetch({ offers: [offer(8023)], drivers: [driver(603482, "Antone jerret", { lat: 41.15, lng: -73.1, etaSec: 1255 })] });
