@@ -1169,8 +1169,9 @@ export type DriverBusyBonus = {
   bonusJobs: number;
   bonusCents: number;
 };
+export type DriverCompletedCounts = { day: number; week: number; month: number; year: number };
 export type DriverEarningsResult =
-  | { ok: true; profile: { name: string; email: string; towbookDriverId: string; payrateCents: number | null }; completed: DriverCall[]; tips: DriverEarningsTip[]; tirePlugs: DriverEarningsTirePlug[]; busyBonus: DriverBusyBonus; totals: { completedJobs: number; tipsTotalCents: number; tipCount: number } }
+  | { ok: true; profile: { name: string; email: string; towbookDriverId: string; payrateCents: number | null }; completed: DriverCall[]; tips: DriverEarningsTip[]; tirePlugs: DriverEarningsTirePlug[]; busyBonus: DriverBusyBonus; completedCounts: DriverCompletedCounts; totals: { completedJobs: number; tipsTotalCents: number; tipCount: number } }
   | { ok: false; expired: boolean; message: string };
 /** The driver-facing email: real addresses are shown; derived @towbook.driver
  *  placeholders are internal-only and must never reach a driver's screen
@@ -1202,6 +1203,30 @@ export const driverEarnings = createServerFn({ method: "GET" }).handler(async ()
     const queue = await fetchDriverQueue({ orgId: ctx.u.orgId, towbookDriverId: driverId });
     if (!queue.ok) return queue;
     const completed = queue.calls.filter((c) => c.statusId === 5 || c.statusId === 6);
+    // Canonical completed-work counters: a job_completions row is the evidence
+    // of completion. Boundaries are evaluated in ET by Postgres, then converted
+    // back to instants for the half-open comparisons. Attribution follows the
+    // payout path: dispatch_jobs assigned_driver_towbook_id → this driver's
+    // Towbook identity. Never use the Towbook queue here (it is not a durable
+    // completion ledger and can omit older jobs).
+    const countRows = await q`
+      SELECT
+        COUNT(*) FILTER (WHERE jc.created_at >= (date_trunc('day', now() AT TIME ZONE 'America/New_York') AT TIME ZONE 'America/New_York')
+          AND jc.created_at < ((date_trunc('day', now() AT TIME ZONE 'America/New_York') + INTERVAL '1 day') AT TIME ZONE 'America/New_York'))::int AS day_count,
+        COUNT(*) FILTER (WHERE jc.created_at >= (date_trunc('week', now() AT TIME ZONE 'America/New_York') AT TIME ZONE 'America/New_York')
+          AND jc.created_at < ((date_trunc('week', now() AT TIME ZONE 'America/New_York') + INTERVAL '1 week') AT TIME ZONE 'America/New_York'))::int AS week_count,
+        COUNT(*) FILTER (WHERE jc.created_at >= (date_trunc('month', now() AT TIME ZONE 'America/New_York') AT TIME ZONE 'America/New_York')
+          AND jc.created_at < ((date_trunc('month', now() AT TIME ZONE 'America/New_York') + INTERVAL '1 month') AT TIME ZONE 'America/New_York'))::int AS month_count,
+        COUNT(*) FILTER (WHERE jc.created_at >= (date_trunc('year', now() AT TIME ZONE 'America/New_York') AT TIME ZONE 'America/New_York')
+          AND jc.created_at < ((date_trunc('year', now() AT TIME ZONE 'America/New_York') + INTERVAL '1 year') AT TIME ZONE 'America/New_York'))::int AS year_count
+      FROM job_completions jc
+      JOIN dispatch_jobs dj ON dj.org_id=jc.org_id AND dj.id=jc.job_id
+      WHERE jc.org_id=${ctx.u.orgId} AND dj.assigned_driver_towbook_id=${driverId}`;
+    const countRow = (countRows[0] ?? {}) as Record<string, unknown>;
+    const completedCounts: DriverCompletedCounts = {
+      day: Number(countRow.day_count ?? 0), week: Number(countRow.week_count ?? 0),
+      month: Number(countRow.month_count ?? 0), year: Number(countRow.year_count ?? 0),
+    };
     // completion_tips is the canonical Square-capture ledger. Do not derive
     // earnings from job_completions.tip: that legacy payload is not guaranteed
     // to be present after the payment attempt and has no paid-status gate.
@@ -1273,6 +1298,7 @@ export const driverEarnings = createServerFn({ method: "GET" }).handler(async ()
       tips,
       tirePlugs,
       busyBonus,
+      completedCounts,
       totals: { completedJobs: completed.length, tipsTotalCents: tipsTotalCents + tirePlugTotalCents, tipCount: tips.length + tirePlugs.length },
     };
   } catch {
