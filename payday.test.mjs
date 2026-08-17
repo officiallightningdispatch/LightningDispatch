@@ -9,7 +9,19 @@
 //   payment_transactions payout mirror, role gates, and zero QA rows after.
 //   DATABASE_URL=... bun payday.test.mjs
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { execSync } from "node:child_process";
 const { neon } = await import("@neondatabase/serverless");
+if (!process.env.DATABASE_URL) {
+  try {
+    const p = execSync("pgrep -f 'bun run serve.ts' | head -1").toString().trim();
+    if (p) {
+      const env = await readFile(`/proc/${p}/environ`, "utf8");
+      const entry = env.split("\0").find((v) => v.startsWith("DATABASE_URL="));
+      if (entry) process.env.DATABASE_URL = entry.slice("DATABASE_URL=".length);
+    }
+  } catch {}
+}
 const q = neon(process.env.DATABASE_URL);
 const {
   periodBoundariesFor, listPayPeriodsCore, getPayPeriodDetailCore, computePaydayCore,
@@ -101,12 +113,18 @@ await q`INSERT INTO pay_periods(id, org_id, starts_at, ends_at, payout_due_on, s
 const J1 = `qa-pd-j1-${randomUUID()}`, J2 = `qa-pd-j2-${randomUUID()}`, J3 = `qa-pd-j3-${randomUUID()}`;
 const J_OUT = `qa-pd-jout-${randomUUID()}`;
 const J_EDGE = `qa-pd-jedge-${randomUUID()}`;
+const J_REASSIGNED = `qa-pd-jreassigned-${randomUUID()}`;
+const J_CANCELLED = `qa-pd-jcancelled-${randomUUID()}`;
 await q`INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, phone, lat, lng, area, service_type, status, created_at, completed_at, assigned_driver_towbook_id) VALUES
   (${J1}, ${ORG}, ${"9101"}, ${"C1"}, ${"9145550101"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, 'completed', ${iso(new Date(closed.startsAt.getTime() + 3600e3))}, ${iso(new Date(closed.startsAt.getTime() + 3600e3))}, ${TB1}),
   (${J2}, ${ORG}, ${"9102"}, ${"C2"}, ${"9145550102"}, 41.1, -73.5, ${"CT"}, ${"Jump"}, 'completed', ${iso(new Date(closed.startsAt.getTime() + 7200e3))}, ${iso(new Date(closed.startsAt.getTime() + 7200e3))}, ${TB1}),
   (${J3}, ${ORG}, ${"9103"}, ${"C3"}, ${"9145550103"}, 41.1, -73.5, ${"CT"}, ${"Lock"}, 'completed', ${iso(new Date(closed.startsAt.getTime() + 8600e3))}, ${iso(new Date(closed.startsAt.getTime() + 8600e3))}, ${TB2}),
   (${J_OUT}, ${ORG}, ${"9104"}, ${"C4"}, ${"9145550104"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, 'completed', ${iso(new Date(closed.endsAt.getTime() + 3600e3))}, ${iso(new Date(closed.endsAt.getTime() + 3600e3))}, ${TB1}),
-  (${J_EDGE}, ${ORG}, ${"9105"}, ${"C5"}, ${"9145550105"}, 41.1, -73.5, ${"CT"}, ${"Jump"}, 'completed', ${iso(new Date(closed.endsAt.getTime() - 1000))}, ${iso(new Date(closed.endsAt.getTime() - 1000))}, ${TB3})`;
+  (${J_EDGE}, ${ORG}, ${"9105"}, ${"C5"}, ${"9145550105"}, 41.1, -73.5, ${"CT"}, ${"Jump"}, 'completed', ${iso(new Date(closed.endsAt.getTime() - 1000))}, ${iso(new Date(closed.endsAt.getTime() - 1000))}, ${TB3}),
+  (${J_REASSIGNED}, ${ORG}, ${"9108"}, ${"C8"}, ${"9145550108"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, 'completed', ${iso(new Date(closed.startsAt.getTime() + 9000e3))}, ${iso(new Date(closed.startsAt.getTime() + 9000e3))}, ${TB1}),
+  (${J_CANCELLED}, ${ORG}, ${"9109"}, ${"C9"}, ${"9145550109"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, 'completed', ${iso(new Date(closed.startsAt.getTime() + 10000e3))}, ${iso(new Date(closed.startsAt.getTime() + 10000e3))}, ${TB1})`;
+await q`UPDATE dispatch_jobs SET manually_reassigned_at=${iso(new Date())}, raw_json=jsonb_build_object('completionTime', ${new Date(closed.startsAt.getTime() + 9000e3).toISOString()}) WHERE org_id=${ORG} AND id=${J_REASSIGNED}`;
+await q`UPDATE dispatch_jobs SET raw_json=jsonb_build_object('completionTime', ${new Date(closed.startsAt.getTime() + 10000e3).toISOString()}, 'statusId', '255', 'status', 'cancelled') WHERE org_id=${ORG} AND id=${J_CANCELLED}`;
 // Towbook completionTime is authoritative; deliberately diverge J1 from sync clock
 // to prove the payday query uses raw completionTime.
 // GOA is identified by an invoiceItems entry whose name contains GOA; it pays flat $10.
@@ -152,6 +170,8 @@ let detail;
   check("compute: D1 GOA flat $10 plus normal $100", d1 && d1.grossCents === 11000, JSON.stringify(d1));
   check("compute: D1 tips separate line = $25", d1 && d1.tipsCents === 2500, JSON.stringify(d1));
   check("compute: D1 total = $135", d1 && d1.totalCents === 13500 && d1.status === "computed" && d1.rail === "venmo", JSON.stringify(d1));
+  check("compute: reassigned completed job excluded from original driver", d1 && d1.jobCount === 2, JSON.stringify(d1));
+  check("compute: raw status 255/cancelled completed row excluded", d1 && d1.grossCents === 11000, JSON.stringify(d1));
   check("compute: D1 full handle owner-only @jane", d1 && d1.handleFull === "@jane", JSON.stringify(d1));
   check("compute: D1 masked handle never full", d1 && d1.handleMasked !== "@jane" && d1.handleMasked.includes("••"), JSON.stringify(d1));
   // D2: no method → blocked, amount still recorded, rail NULL
