@@ -402,6 +402,7 @@ export type PayoutRecord = {
   handleFull: string | null; // OWNER-ONLY (PII)
   handleMasked: string;
   jobCount: number;
+  goaJobCount: number;
   payrateCents: number | null; // snapshot at compute; NULL = rate not set
   grossCents: number;
   tipsCents: number;
@@ -599,6 +600,7 @@ export async function getPayPeriodDetailCore(actor: PayoutActor, periodId: strin
       handleFull: r.handle_full != null ? String(r.handle_full) : null,
       handleMasked: String(r.handle_masked ?? ""),
       jobCount: r.job_count != null ? Number(r.job_count) : 0,
+      goaJobCount: 0,
       payrateCents: r.payrate_cents != null ? Number(r.payrate_cents) : null,
       grossCents: r.gross_cents != null ? Number(r.gross_cents) : 0,
       tipsCents: r.tips_cents != null ? Number(r.tips_cents) : 0,
@@ -686,7 +688,8 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
     }));
 
     const jobRows = await q`
-      SELECT dj.assigned_driver_towbook_id AS tb_id, COUNT(*)::int AS job_count
+      SELECT dj.assigned_driver_towbook_id AS tb_id, COUNT(*)::int AS job_count,
+        COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(dj.raw_json->'invoiceItems') = 'array' THEN dj.raw_json->'invoiceItems' ELSE '[]'::jsonb END) item WHERE COALESCE(item->>'name','') ILIKE '%GOA%'))::int AS goa_job_count
       FROM dispatch_jobs dj
       WHERE dj.org_id=${actor.orgId} AND dj.status='completed'
         AND COALESCE(
@@ -781,26 +784,27 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
     const tipCentsByUser = new Map<string, number>();
     for (const r of tipRows as Record<string, unknown>[]) tipCentsByUser.set(String(r.driver_id), Number(r.tip_cents ?? 0));
 
-    // contractor → { jobCount, payrateCents, tipsCents, tirePlugCents } keyed by user id
-    const earnByUser = new Map<string, { jobCount: number; payrateCents: number | null; tipsCents: number; tirePlugCents: number }>();
+    // contractor → earnings keyed by user id. GOA jobs are flat $10 regardless of rate.
+    const earnByUser = new Map<string, { jobCount: number; goaJobCount: number; payrateCents: number | null; tipsCents: number; tirePlugCents: number }>();
     for (const [uid, cents] of tireCentsByUser) {
       const u = [...userByTb.values()].find((v) => v.userId === uid);
       if (!u) continue;
-      const e = { jobCount: 0, payrateCents: u.payrateCents, tipsCents: 0, tirePlugCents: cents };
+      const e = { jobCount: 0, goaJobCount: 0, payrateCents: u.payrateCents, tipsCents: 0, tirePlugCents: cents };
       earnByUser.set(uid, e);
     }
     for (const r of jobRows as Record<string, unknown>[]) {
       const tb = String(r.tb_id);
       const u = userByTb.get(tb);
       if (!u) continue; // no LD user for this Towbook driver → cannot attribute pay
-      const e = earnByUser.get(u.userId) ?? { jobCount: 0, payrateCents: u.payrateCents, tipsCents: 0, tirePlugCents: 0 };
+      const e = earnByUser.get(u.userId) ?? { jobCount: 0, goaJobCount: 0, payrateCents: u.payrateCents, tipsCents: 0, tirePlugCents: 0 };
       e.jobCount += Number(r.job_count ?? 0);
+      e.goaJobCount += Number(r.goa_job_count ?? 0);
       earnByUser.set(u.userId, e);
     }
     for (const [uid, cents] of tipCentsByUser) {
       if (!earnByUser.has(uid)) {
         const u = userByTb.get([...userByTb.entries()].find(([, v]) => v.userId === uid)?.[0] ?? "");
-        earnByUser.set(uid, { jobCount: 0, payrateCents: u?.payrateCents ?? null, tipsCents: cents, tirePlugCents: 0 });
+        earnByUser.set(uid, { jobCount: 0, goaJobCount: 0, payrateCents: u?.payrateCents ?? null, tipsCents: cents, tirePlugCents: 0 });
       } else {
         earnByUser.get(uid)!.tipsCents = cents;
       }
@@ -830,7 +834,9 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
         ? `${String(method.bank_institution_name ?? "").trim() || "Bank"} ••${String(method.bank_last4 ?? "").trim()}`.trim()
         : String(method.handle ?? "").trim() || null) : null;
       const handleMasked = method ? maskHandle(rail!, method.handle != null ? String(method.handle) : null, method.bank_institution_name != null ? String(method.bank_institution_name) : null, method.bank_last4 != null ? String(method.bank_last4) : null) : "";
-      const grossCents = e.payrateCents != null ? e.payrateCents * e.jobCount : 0;
+      const grossCents = e.payrateCents != null
+        ? e.payrateCents * Math.max(0, e.jobCount - e.goaJobCount) + e.goaJobCount * 1000
+        : e.goaJobCount * 1000;
       const tipsCents = e.tipsCents;
       const tirePlugCents = e.tirePlugCents;
       const busy = busyByUser.get(uid) ?? { bonusCents: 0, bonusJobs: 0, hours: null as { startsAtIso: string; completedJobs: number }[] | null };
@@ -866,6 +872,7 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
         handleFull,
         handleMasked,
         jobCount: e.jobCount,
+        goaJobCount: e.goaJobCount,
         payrateCents: e.payrateCents,
         grossCents,
         tipsCents,

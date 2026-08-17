@@ -14,7 +14,7 @@ test('Towbook completionTime normalizes ET wall-clock and rejects garbage', () =
 });
 test('migration 72 is an idempotent NULL-only authoritative backfill', async () => {
   const source = await Bun.file('./src/data/migrations.ts').text();
-  const at = source.indexOf('// 72: repair Towbook completion instants');
+  const at = source.indexOf('[72, async');
   assert.ok(at > source.indexOf('[71,'));
   const block = source.slice(at, source.indexOf('  }],', at));
   assert.match(block, /completed_at = .*AT TIME ZONE 'America\/New_York'/);
