@@ -2966,6 +2966,13 @@ async function runAutoDispatchInternal(
         const resolveState = deps.stateGuardResolver;
         const stateOf = async (d: NearestDriver) => {
           const id = Number(d.driverId), lat = Number(d.latitude), lng = Number(d.longitude);
+          // Durable dispatch evidence is authoritative for a driver whose
+          // nearestDrivers row is stale/hidden. It must take precedence over
+          // an injected/reverse-geocoded live-origin resolver as well: the
+          // latter may describe the stale lease location, while the completed
+          // dispatch pickup proves the driver's service state for this job.
+          const durable = Number.isFinite(id) ? driverDispatchEvidence.get(String(id))?.state : null;
+          if (durable) return durable;
           return resolveState && Number.isFinite(id) && Number.isFinite(lat) && Number.isFinite(lng) ? resolveState(id, lat, lng) : null;
         };
         const hasInState = resolveState
@@ -3058,15 +3065,20 @@ async function runAutoDispatchInternal(
       // key makes every driver's state UNKNOWN, which also blocks).
       const stateGuardCtx: StateGuardContext = {
         jobState: jobState ? jobState.toUpperCase() : null,
-        resolveDriverState: deps.stateGuardResolver ?? (async (driverId, lat, lng) => {
+        resolveDriverState: async (driverId, lat, lng) => {
+          // Durable dispatch evidence outranks the live-origin resolver. This
+          // remains true when tests or callers inject a resolver: an injected
+          // live location can be stale, while a completed pickup is durable
+          // proof of the driver's service state for this offer.
           const durableState = driverDispatchEvidence.get(String(driverId))?.state;
           if (durableState) return durableState;
+          if (deps.stateGuardResolver) return deps.stateGuardResolver(driverId, lat, lng);
           const key = driverStateCacheKey(driverId, lat, lng);
           if (reverseStateCache.has(key)) return reverseStateCache.get(key) ?? null;
           const st = tomtomKeyForGuard ? await reverseGeocodeState(lat, lng, tomtomKeyForGuard, fetchImpl) : null;
           reverseStateCache.set(key, st);
           return st;
-        }),
+        },
       };
       const guardOutcome: StateGuardOutcome = { active: false, jobState: null, blocked: false, blockedReason: null, checked: 0, inState: 0, excluded: [] };
       const zoneMatches = new Map<string, boolean>();
