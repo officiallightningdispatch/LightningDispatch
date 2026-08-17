@@ -999,8 +999,8 @@ export async function getOrgSettings(orgId: string): Promise<OrgAiSettings> {
     zoneLng: Number(r.zone_lng),
     zoneRadiusMiles: Number(r.zone_radius_miles),
     maxEtaMinutes: Number(r.max_eta_minutes) || 45,
-    etaBufferMinutes: Number(r.eta_buffer_minutes) || 3,
-    etaFloorMinutes: Number(r.eta_floor_minutes) || 3,
+    etaBufferMinutes: Number(r.eta_buffer_minutes) || 5,
+    etaFloorMinutes: Number(r.eta_floor_minutes) || 5,
     qualificationGateEnabled: r.qualification_gate_enabled !== false,
     nudgeEnabled: r.nudge_enabled !== false,
     reassignNotHeadedMinutes: Number(r.reassign_not_headed_minutes) || 3,
@@ -2026,7 +2026,7 @@ export function finalEtaMinutes(
   _maxEtaMinutes?: number,
 ): number {
   const raw = Math.ceil(Number.isFinite(baseMinutes) ? baseMinutes : 0) + (Number.isFinite(bufferMinutes) ? bufferMinutes : 0);
-  const floor = Math.round(floorMinutes) || 3;
+  const floor = Math.round(floorMinutes) || 5;
   return Math.min(Math.max(floor, raw), Math.max(1, Math.round(_maxEtaMinutes ?? 60)));
 }
 
@@ -3258,8 +3258,14 @@ async function runAutoDispatchInternal(
         // a human reassignment: it may be a stale/racing Towbook assignment.
         // Only the proven manually_reassigned_at marker (looked up above as
         // humanReassigned) suppresses the normal recalc/repair flow.
+        // Never recalculate away from a freshly accepted driver merely because
+        // verification temporarily cannot see that driver. The acceptance
+        // countdown starts at this instant; only concrete Towbook evidence of
+        // a different driver on the call is a genuine lost race exception.
+        const verificationDriver = verification.driverOnCall == null ? null : Number(verification.driverOnCall);
+        const offerLostRace = verificationDriver != null && verificationDriver > 0 && verificationDriver !== dispatchDriverId;
         if (!verification.ok && verification.found && dispatchDriverId > 0
-          && !humanReassigned) {
+          && !humanReassigned && offerLostRace) {
           const firstChoice = dispatchDriverId;
           // Re-read the authoritative Towbook nearestDrivers payload at the
           // race point: this removes a driver who went offline/disappeared and

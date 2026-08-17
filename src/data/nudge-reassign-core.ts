@@ -88,14 +88,14 @@ export async function processAssignmentNudges(orgId:string, now:Date = new Date(
   for (const r of rows as Array<Record<string,unknown>>) {
     const jobId=String(r.id), oldId=String(r.assigned_driver_towbook_id);
     const ageMinutes=(now.getTime()-new Date(String(r.assigned_at)).getTime())/60000;
+    const fixes=await sql()`SELECT latitude,longitude,captured_at,speed_mph FROM driver_locations WHERE org_id=${orgId} AND towbook_driver_id=${oldId} AND captured_at >= ${new Date(String(r.assigned_at)).toISOString()} ORDER BY captured_at`;
+    const check=isDriverHeaded((fixes as Array<Record<string,unknown>>).map(f=>({latitude:Number(f.latitude),longitude:Number(f.longitude),capturedAt:String(f.captured_at),speedMph:f.speed_mph==null?null:Number(f.speed_mph)})),Number(r.pickup_lat),Number(r.pickup_lng),String(r.assigned_at),now);
+    if (check.headed) continue;
     const warning=await sql()`SELECT 1 FROM dispatch_nudge_events WHERE org_id=${orgId} AND job_id=${jobId} AND kind='warning' LIMIT 1`;
     if (ageMinutes < mins) {
       if (!warning.length) { await recordNudge(orgId,jobId,oldId,"warning","not_headed_1m_remaining"); await sendWarningPush(orgId,oldId,jobId,String(r.status)); }
       continue;
     }
-    const fixes=await sql()`SELECT latitude,longitude,captured_at,speed_mph FROM driver_locations WHERE org_id=${orgId} AND towbook_driver_id=${oldId} AND captured_at >= ${new Date(String(r.assigned_at)).toISOString()} ORDER BY captured_at`;
-    const check=isDriverHeaded((fixes as Array<Record<string,unknown>>).map(f=>({latitude:Number(f.latitude),longitude:Number(f.longitude),capturedAt:String(f.captured_at),speedMph:f.speed_mph==null?null:Number(f.speed_mph)})),Number(r.pickup_lat),Number(r.pickup_lng),String(r.assigned_at),now);
-    if (check.headed) continue;
     const reassigned=await sql()`SELECT 1 FROM dispatch_nudge_events WHERE org_id=${orgId} AND job_id=${jobId} AND kind='reassigned' LIMIT 1`;
     const attempted=await sql()`SELECT 1 FROM dispatch_nudge_events WHERE org_id=${orgId} AND job_id=${jobId} AND kind='reassign_attempted' LIMIT 1`;
     if (reassigned.length) {
