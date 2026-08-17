@@ -600,7 +600,7 @@ export async function getPayPeriodDetailCore(actor: PayoutActor, periodId: strin
       handleFull: r.handle_full != null ? String(r.handle_full) : null,
       handleMasked: String(r.handle_masked ?? ""),
       jobCount: r.job_count != null ? Number(r.job_count) : 0,
-      goaJobCount: 0,
+      goaJobCount: r.goa_job_count != null ? Number(r.goa_job_count) : 0,
       payrateCents: r.payrate_cents != null ? Number(r.payrate_cents) : null,
       grossCents: r.gross_cents != null ? Number(r.gross_cents) : 0,
       tipsCents: r.tips_cents != null ? Number(r.tips_cents) : 0,
@@ -698,7 +698,7 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
       WHERE dj.org_id=${actor.orgId} AND dj.status='completed'
         AND dj.assigned_driver_towbook_id IS NOT NULL
         AND COALESCE(dj.towbook_status, '') NOT IN ('255', 'cancelled', 'canceled')
-        AND COALESCE(dj.raw_json->>'statusId', dj.raw_json->'status'->>'id', dj.raw_json->>'status') NOT IN ('255', 'cancelled', 'canceled')
+        AND COALESCE(dj.raw_json->>'statusId', dj.raw_json->'status'->>'id', dj.raw_json->>'status', '') NOT IN ('255', 'cancelled', 'canceled')
         AND CASE WHEN dj.raw_json->>'completionTime' ~ '^\\s*\\d{4}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?([+-]\\d{2}:?\\d{2}|Z)?\\s*$'
           THEN (dj.raw_json->>'completionTime')::timestamp AT TIME ZONE 'America/New_York' END >= ${iso(startsAt)}
         AND CASE WHEN dj.raw_json->>'completionTime' ~ '^\\s*\\d{4}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?([+-]\\d{2}:?\\d{2}|Z)?\\s*$'
@@ -719,7 +719,7 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
       FROM dispatch_jobs dj
       WHERE dj.org_id=${actor.orgId} AND dj.assigned_driver_towbook_id IS NOT NULL
         AND COALESCE(dj.towbook_status, '') NOT IN ('255', 'cancelled', 'canceled')
-        AND COALESCE(dj.raw_json->>'statusId', dj.raw_json->'status'->>'id', dj.raw_json->>'status') NOT IN ('255', 'cancelled', 'canceled')`;
+        AND COALESCE(dj.raw_json->>'statusId', dj.raw_json->'status'->>'id', dj.raw_json->>'status', '') NOT IN ('255', 'cancelled', 'canceled')`;
     const assignByTb = new Map<string, Array<number | null>>();
     const completeByTb = new Map<string, Array<number | null>>();
     for (const r of busyJobRows as Record<string, unknown>[]) {
@@ -847,9 +847,9 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
       const totalCents = grossCents + tipsCents + tirePlugCents + busy.bonusCents;
       const recordId = `pr-${periodId}-${uid}`;
       const inserted = await q`INSERT INTO payout_records(id, org_id, period_id, contractor_id, method_id, rail, handle_full, handle_masked,
-          job_count, payrate_cents, gross_cents, tips_cents, tire_plug_cents, busy_bonus_cents, busy_bonus_jobs, busy_bonus_hours, total_cents, method_status, status, updated_at)
+          job_count, goa_job_count, payrate_cents, gross_cents, tips_cents, tire_plug_cents, busy_bonus_cents, busy_bonus_jobs, busy_bonus_hours, total_cents, method_status, status, updated_at)
         VALUES(${recordId}, ${actor.orgId}, ${periodId}, ${uid}, ${method ? String(method.id) : null}, ${rail}, ${handleFull}, ${handleMasked},
-          ${e.jobCount}, ${e.payrateCents}, ${grossCents}, ${tipsCents}, ${tirePlugCents}, ${busy.bonusCents}, ${busy.bonusJobs}, ${busyHoursJson ? JSON.stringify(busyHoursJson) : null}, ${totalCents}, ${methodStatus}, ${verified ? "computed" : "blocked"}, NOW())
+          ${e.jobCount}, ${e.goaJobCount}, ${e.payrateCents}, ${grossCents}, ${tipsCents}, ${tirePlugCents}, ${busy.bonusCents}, ${busy.bonusJobs}, ${busyHoursJson ? JSON.stringify(busyHoursJson) : null}, ${totalCents}, ${methodStatus}, ${verified ? "computed" : "blocked"}, NOW())
         ON CONFLICT (org_id, period_id, contractor_id) DO NOTHING
         RETURNING id`;
       const recordInserted = Array.isArray(inserted) && inserted.length > 0;
