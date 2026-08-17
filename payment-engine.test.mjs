@@ -668,7 +668,8 @@ await setup();
   const total = returned.reduce((sum, tip) => sum + tip.amountCents, 0);
   const dbTotal = await q`SELECT COALESCE(SUM(amount_cents),0)::int AS n FROM completion_tips WHERE org_id=${ORG} AND status='paid'`;
   check("listTips returns authoritative paid tips without mirrors; declined excluded", tips.ok === true && returned.length === 4 && total === Number(dbTotal[0].n) && total === 1700, JSON.stringify({ returned: returned.length, total, dbTotal }));
-  check("listTips newest first", returned[0].tipId === `tip-auth-new-${TAG}` && returned[1].tipId === `tip-auth-mid-${TAG}`, JSON.stringify(returned.map((t) => t.tipId)));
+  const authTips = returned.filter((tip) => tip.tipId.startsWith(`tip-auth-`));
+  check("listTips newest first", authTips.length === 3 && authTips[0].tipId === `tip-auth-new-${TAG}` && authTips[1].tipId === `tip-auth-mid-${TAG}` && authTips[2].tipId === `tip-auth-old-${TAG}`, JSON.stringify(authTips.map((t) => t.tipId)));
   check("listTips attribution includes driver + customer + service", returned.some((t) => t.tipId === `tip-auth-new-${TAG}` && t.driverName === "QA Tip Driver" && t.driverTowbookId === "910088" && t.jobCustomerName === "Newest Customer" && t.jobServiceType === "unlock"), JSON.stringify(returned));
   check("listTips serializable and all amounts present", returned.every((t) => t.driverName !== undefined && t.driverTowbookId !== undefined && t.jobCustomerName !== undefined && t.jobServiceType !== undefined && Object.values(t).every((v) => v !== undefined)), JSON.stringify(returned[0]));
 
