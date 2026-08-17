@@ -731,12 +731,18 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
     const { computeBusyBonus, jobAssignmentMs, jobCompletedMs } = await import("./busy-bonus-core");
     const busyJobRows = await q`
       SELECT dj.assigned_driver_towbook_id AS tb_id, dj.status,
-        dj.assigned_at, dj.completed_at, dj.created_at, dj.raw_json
+        dj.assigned_at, dj.completed_at, dj.created_at, dj.raw_json, dj.manually_reassigned_at
       FROM dispatch_jobs dj
-      WHERE dj.org_id=${actor.orgId} AND dj.assigned_driver_towbook_id IS NOT NULL`;
+      WHERE dj.org_id=${actor.orgId} AND dj.assigned_driver_towbook_id IS NOT NULL
+        AND (COALESCE(dj.raw_json->>'statusId', dj.raw_json->>'status') IS NULL
+          OR COALESCE(dj.raw_json->>'statusId', dj.raw_json->>'status') NOT IN ('255','cancelled','canceled'))`;
     const assignByTb = new Map<string, Array<number | null>>();
     const completeByTb = new Map<string, Array<number | null>>();
     for (const r of busyJobRows as Record<string, unknown>[]) {
+      if (r.manually_reassigned_at != null) continue;
+      let raw: unknown = r.raw_json;
+      if (typeof raw === "string") { try { raw = JSON.parse(raw); } catch { continue; } }
+      if (hasReassignmentEvidence(raw)) continue;
       const tb = String(r.tb_id);
       if (!tb) continue;
       const aMs = jobAssignmentMs(r);

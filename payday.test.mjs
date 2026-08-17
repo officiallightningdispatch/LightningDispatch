@@ -123,8 +123,8 @@ await q`INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, pho
   (${J_EDGE}, ${ORG}, ${"9105"}, ${"C5"}, ${"9145550105"}, 41.1, -73.5, ${"CT"}, ${"Jump"}, 'completed', ${iso(new Date(closed.endsAt.getTime() - 1000))}, ${iso(new Date(closed.endsAt.getTime() - 1000))}, ${TB3}),
   (${J_REASSIGNED}, ${ORG}, ${"9108"}, ${"C8"}, ${"9145550108"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, 'completed', ${iso(new Date(closed.startsAt.getTime() + 9000e3))}, ${iso(new Date(closed.startsAt.getTime() + 9000e3))}, ${TB1}),
   (${J_CANCELLED}, ${ORG}, ${"9109"}, ${"C9"}, ${"9145550109"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, 'completed', ${iso(new Date(closed.startsAt.getTime() + 10000e3))}, ${iso(new Date(closed.startsAt.getTime() + 10000e3))}, ${TB1})`;
-await q`UPDATE dispatch_jobs SET manually_reassigned_at=${iso(new Date())}, raw_json=jsonb_build_object('completionTime', ${new Date(closed.startsAt.getTime() + 9000e3).toISOString()}) WHERE org_id=${ORG} AND id=${J_REASSIGNED}`;
-await q`UPDATE dispatch_jobs SET raw_json=jsonb_build_object('completionTime', ${new Date(closed.startsAt.getTime() + 10000e3).toISOString()}, 'statusId', '255', 'status', 'cancelled') WHERE org_id=${ORG} AND id=${J_CANCELLED}`;
+await q`UPDATE dispatch_jobs SET manually_reassigned_at=${iso(new Date())}, raw_json=jsonb_build_object('completionTime', ${new Date(closed.startsAt.getTime() + 9000e3).toISOString()}::text) WHERE org_id=${ORG} AND id=${J_REASSIGNED}`;
+await q`UPDATE dispatch_jobs SET raw_json=jsonb_build_object('completionTime', ${new Date(closed.startsAt.getTime() + 10000e3).toISOString()}::text, 'statusId', '255', 'status', 'cancelled') WHERE org_id=${ORG} AND id=${J_CANCELLED}`;
 // Towbook completionTime is authoritative; deliberately diverge J1 from sync clock
 // to prove the payday query uses raw completionTime.
 // GOA is identified by an invoiceItems entry whose name contains GOA; it pays flat $10.
@@ -186,7 +186,7 @@ let detail;
   check("compute: D4 tips-only → 0 jobs + $8 tip, blocked (no method)", d4 && d4.jobCount === 0 && d4.grossCents === 0 && d4.tipsCents === 800 && d4.totalCents === 800 && d4.status === "blocked", JSON.stringify(d4));
   // out-of-window job + failed tip + open job excluded
   check("compute: exactly 4 records (out-of-window / failed / open-job excluded)", detail && detail.records.length === 4, JSON.stringify(detail?.records));
-  check("compute: totals — 4 contractors, $383 total ($340 gross + $43 tips)", detail && detail.totals.contractorCount === 4 && detail.totals.totalCents === 38300 && detail.totals.grossCents === 34000 && detail.totals.tipsCents === 4300 && detail.totals.blockedCount === 3 && detail.totals.dueCount === 1, JSON.stringify(detail?.totals));
+  check("compute: totals — 4 contractors, $303 total ($260 gross + $43 tips)", detail && detail.totals.contractorCount === 4 && detail.totals.totalCents === 30300 && detail.totals.grossCents === 26000 && detail.totals.tipsCents === 4300 && detail.totals.blockedCount === 3 && detail.totals.dueCount === 1, JSON.stringify(detail?.totals));
   // rail groups: only VERIFIED rows group — Venmo (1) — $225
   check("compute: rail groups only verified — venmo $135", detail && detail.totals.rails.length === 1 && detail.totals.rails[0].rail === "venmo" && detail.totals.rails[0].totalCents === 13500, JSON.stringify(detail?.totals.rails));
   // payment_transactions payout mirror
@@ -201,7 +201,7 @@ let detail;
   check("recompute: ok", res.ok, JSON.stringify(res));
   const rows = await q`SELECT COUNT(*)::int AS c FROM payout_records WHERE org_id=${ORG} AND period_id=${PERIOD}`;
   check("recompute: no duplicate records (still 4)", Number(rows[0].c) === 4, JSON.stringify(rows));
-  check("recompute: totals unchanged (4 contractors, $383, 3 blocked)", res.ok && res.data.totals.totalCents === 38300 && res.data.totals.blockedCount === 3, JSON.stringify(res.data?.totals));
+  check("recompute: totals unchanged (4 contractors, $303, 3 blocked)", res.ok && res.data.totals.totalCents === 30300 && res.data.totals.blockedCount === 3, JSON.stringify(res.data?.totals));
   const aud = await q`SELECT action FROM audit_log WHERE org_id=${ORG} AND entity_type='pay_period' ORDER BY occurred_at`;
   check("audit: payday_computed + payout_period_recomputed recorded", aud.some((a) => a.action === "payday_computed") && aud.some((a) => a.action === "payout_period_recomputed"), JSON.stringify(aud));
 }
