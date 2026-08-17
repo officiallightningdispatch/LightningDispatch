@@ -84,7 +84,7 @@ check("7: over-goal recalc dispatches with accurate uncapped quote", () => {
   assert.match(dispatcher, /const rawRecalcEta = Math\.ceil\(recalculated\.baseMinutes\) \+ settings\.etaBufferMinutes/);
   assert.doesNotMatch(dispatcher, /recalcOverCeiling/);
   assert.match(dispatcher, /accurate ETA \$\{rawRecalcEta\} min/);
-  assert.match(dispatcher, /return Math.min(Math.max(floor, raw), Math.max(1, Math.round(_maxEtaMinutes \?\? 60)))/);
+  assert.ok(dispatcher.includes("return Math.min(Math.max(floor, raw), Math.max(1, Math.round(_maxEtaMinutes ?? 60)));"));
 });
 
 check("8: owner-role towbook driver is effective for reassign and state guarded", () => {
