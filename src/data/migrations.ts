@@ -1545,6 +1545,15 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
   [71, async (q) => {
     await q`CREATE UNIQUE INDEX IF NOT EXISTS owner_notifications_org_kind_source_uidx ON owner_notifications(org_id, kind, (payload->>'sourceId')) WHERE (payload->>'sourceId') IS NOT NULL`;
   }],
+  // 72: repair Towbook completion instants from the authoritative local-time field.
+  [72, async (q) => {
+    // Towbook completionTime is ET wall-clock without an offset. PostgreSQL's
+    // America/New_York conversion is DST-aware and matches payday boundaries.
+    await q`UPDATE dispatch_jobs SET completed_at = (raw_json->>'completionTime')::timestamp AT TIME ZONE 'America/New_York'
+      WHERE status='completed' AND completed_at IS NULL AND raw_json->>'completionTime' IS NOT NULL
+        AND raw_json->>'completionTime' <> ''`;
+  }],
+
  ];
 export async function ensureSchema() {
   const q = sql();

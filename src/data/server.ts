@@ -944,6 +944,21 @@ export function buildTowbookSample(calls: Record<string, unknown>[], perObjectCa
 
 /** Normalized, lifecycle-mapped Towbook job. Exported for the server-only sync
  *  engine (src/data/sync-engine.ts) — type-only, zero client-bundle impact. */
+/** Towbook completionTime is timezone-less ET wall-clock. Normalize it once to an instant in America/New_York; payday windows and counters use the same instant. */
+export function normalizeTowbookCompletionTime(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const value = (raw as Record<string, unknown>).completionTime;
+  if (value == null || !String(value).trim()) return null;
+  const text = String(value).trim().replace(" ", "T");
+  if (/[zZ]|[+-]\d{2}:?\d{2}$/.test(text)) { const d = new Date(text); return Number.isFinite(d.getTime()) ? d.toISOString() : null; }
+  const naive = Date.parse(`${text}Z`); if (!Number.isFinite(naive)) return null;
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", timeZoneName: "longOffset" }).formatToParts(new Date(naive));
+  const zone = parts.find((p) => p.type === "timeZoneName")?.value ?? "GMT-05:00";
+  const m = /^GMT([+-])(\d{2}):(\d{2})$/.exec(zone);
+  const offset = m ? (m[1] === "+" ? 1 : -1) * (Number(m[2]) * 60 + Number(m[3])) : -300;
+  return new Date(naive - offset * 60_000).toISOString();
+}
+
 export type NormalizedJob = {
   towbookJobId: string;
   customer: string;
@@ -1139,8 +1154,8 @@ export async function upsertPulledJobs(
         const jobId = slug ? `tb-${slug}` : `tb-${Math.random().toString(36).slice(2, 10)}`;
         const coords = jobCoords(job);
         const assigned = assignedDriverFromRawCall(job.raw);
-        await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, customer_phone, vehicle_desc, pickup, dropoff, towbook_status, raw_json, pickup_lat, pickup_lng, assigned_driver_towbook_id, assigned_driver_name)
-          VALUES(${jobId}, ${orgId}, ${job.customer}, ${job.phone || ""}, 0, 0, ${job.pickup || "Unknown"}, ${job.serviceType}, ${job.status}, ${job.createdAt}, ${job.note}, ${job.towbookJobId}, ${job.phone || ""}, ${job.vehicle}, ${job.pickup}, ${job.dropoff}, ${job.towbookStatus}, ${JSON.stringify(job.raw)}::jsonb, ${coords.lat}, ${coords.lng}, ${assigned.towbookId}, ${assigned.name})`;
+        await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, customer_phone, vehicle_desc, pickup, dropoff, towbook_status, raw_json, pickup_lat, pickup_lng, assigned_driver_towbook_id, assigned_driver_name, completed_at)
+          VALUES(${jobId}, ${orgId}, ${job.customer}, ${job.phone || ""}, 0, 0, ${job.pickup || "Unknown"}, ${job.serviceType}, ${job.status}, ${job.createdAt}, ${job.note}, ${job.towbookJobId}, ${job.phone || ""}, ${job.vehicle}, ${job.pickup}, ${job.dropoff}, ${job.towbookStatus}, ${JSON.stringify(job.raw)}::jsonb, ${coords.lat}, ${coords.lng}, ${assigned.towbookId}, ${assigned.name}, ${job.status === "completed" ? normalizeTowbookCompletionTime(job.raw) : null})`;
         await q`INSERT INTO status_events(id, org_id, job_id, from_status, to_status, actor_user_id, actor_role, note)
           SELECT gen_random_uuid()::text, ${orgId}, ${jobId}, ${previousStatusFromHistory(job.raw, job.status)}, ${job.status}, ${actor.id}, ${actor.role}, ${`imported from Towbook (${trigger})`}`;
         await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
@@ -1171,7 +1186,7 @@ export async function upsertPulledJobs(
           pickup_lat=COALESCE(${coords.lat}, pickup_lat), pickup_lng=COALESCE(${coords.lng}, pickup_lng),
           assigned_driver_towbook_id=COALESCE(${assigned.towbookId}, assigned_driver_towbook_id),
           assigned_driver_name=COALESCE(${assigned.name}, assigned_driver_name),
-          completed_at=CASE WHEN ${job.status}='completed' AND completed_at IS NULL THEN NOW() ELSE completed_at END,
+          completed_at=CASE WHEN ${job.status}='completed' THEN COALESCE(${normalizeTowbookCompletionTime(job.raw)}, completed_at) WHEN ${job.status} NOT IN ('completed', 'cancelled') THEN NULL ELSE completed_at END,
           assigned_at=CASE WHEN ${job.status}='offered' AND assigned_at IS NULL THEN NOW() ELSE assigned_at END
           WHERE id=${String(cur.id)} AND org_id=${orgId}`;
         if (statusChanged) {
