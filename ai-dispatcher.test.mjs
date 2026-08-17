@@ -805,6 +805,7 @@ try {
   /* ============ 21) routing failure → fallback factor model (no fabricated road) ============ */
   {
     await clearOrgDispatch();
+    await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES(${`ad-gps-703785-fallback-${FIXTURE_TAG}`}, ${ORG}, ${USER}, '703785', 41.15, -73.1, ${new Date().toISOString()})`;
     const m = makeFetch({
       offers: [offer(7015)],
       drivers: [driver(703785, "Jayden Fountain", { lat: 41.15, lng: -73.1, etaSec: 604 })],
