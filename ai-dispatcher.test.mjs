@@ -406,7 +406,7 @@ try {
   check("no app GPS fix: busy/no-GPS/offline candidates are excluded", (await chooseBestDriverByRoad([freeFast, busy], 41.2, -73.2, R)) === null && (await chooseBestDriverByRoad([busy, noGps, offline], 41.2, -73.2, R)) === null);
   check("chooseBestDriverByRoad([]) = null", (await chooseBestDriverByRoad([], 41.2, -73.2, R)) === null);
   const fb = await chooseBestDriverByRoad([driver(703785, "Jayden Fountain", { lat: 41.19, lng: -73.15, etaSec: 604 })], 41.2, -73.2, R);
-  check("chooseBestDriverByRoad: router null → fallback factor model flagged", fb?.driver.driverId === 703785 && fb.usedFallback === true && fb.roadSeconds === null && fb.baseMinutes === fallbackRoadMinutes(haversineMiles(41.19, -73.15, 41.2, -73.2)), JSON.stringify(fb));
+  check("no app GPS fix: router-null driver excluded fail-closed (no fallback road ETA)", fb === null, JSON.stringify(fb));
   // T1–T6 proximity-first hermetic contract tests. Routing is mocked; these
   // deliberately make road ETA disagree with geographic proximity.
   const t1a = driver(8101, "T1 close", { lat: 41.195, lng: -73.195, etaSec: 1200 });
