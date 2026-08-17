@@ -1706,9 +1706,9 @@ try {
   {
     const rows = await decisions();
     const byDecision = rows.reduce((acc, x) => { acc[x.decision] = (acc[x.decision] || 0) + 1; return acc; }, {});
-        check("ledger: zones-off out-of-zone dispatch shifts one fallback to with-driver; hard rails unchanged", byDecision["auto_accept_with_driver"] === 19 && byDecision["auto_accept_no_driver"] === 4 && byDecision["escalated_out_of_zone"] === undefined && byDecision["escalated_missing_coords"] === undefined && byDecision["escalated_unexpected_shape"] === undefined && byDecision["escalated_driver_lookup_failed"] === undefined && byDecision["escalated_expired"] === 1 && byDecision["escalated_accept_failed"] === 1 && byDecision["escalated_dispatch_pending"] === 2, JSON.stringify(byDecision));
+        check("ledger: zones-off out-of-zone dispatch shifts one fallback to with-driver; hard rails unchanged", byDecision["auto_accept_with_driver"] === 20 && byDecision["auto_accept_no_driver"] === 5 && byDecision["escalated_out_of_zone"] === undefined && byDecision["escalated_missing_coords"] === undefined && byDecision["escalated_unexpected_shape"] === undefined && byDecision["escalated_driver_lookup_failed"] === undefined && byDecision["escalated_expired"] === 1 && byDecision["escalated_accept_failed"] === 1 && byDecision["escalated_dispatch_pending"] === 2, JSON.stringify(byDecision));
     const a = await audits();
-    check("audit: 23 ai_dispatcher:accept rows (19 with-driver + 4 no-driver universal fallback)", Number(a[0].n) === 23, String(a[0].n));
+    check("audit: 25 ai_dispatcher:accept rows (20 with-driver + 5 no-driver universal fallback)", Number(a[0].n) === 25, String(a[0].n));
     const adAudit = await q`SELECT count(*)::int n FROM audit_log WHERE org_id=${ORG} AND action='ai_dispatcher:decision'`;
     check("audit: 4 ai_dispatcher:decision rows (escalations: expired/accept-failed/dispatch-pending)", Number(adAudit[0].n) === 4, String(adAudit[0].n));
     // Scope to the OWNER session row: since migration 10 a real contractor
