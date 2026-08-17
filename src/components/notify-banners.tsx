@@ -28,7 +28,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { AlertTriangle, Volume2, VolumeX, X, XCircle, Zap } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SERVICE_LABELS } from "~/lib/job-ui";
-import { diffCancelledJobIds, diffEscalatedDecisionIds, diffNewCashoutIds, diffNewJobIds, formatCountdown, mergeSeen, reconcileEscalatedBanner, type NotifyCall } from "~/lib/notify";
+import { diffCancelledJobIds, diffEscalatedDecisionIds, diffNewCashoutIds, diffNewJobIds, formatCountdown, mergeSeen, mergeSeenPreserving, reconcileEscalatedBanner, type NotifyCall } from "~/lib/notify";
 import { getSeenIds, seenKey, setSeenIds } from "~/lib/notify-seen";
 import { playAlertSound, primeAudio, soundMuted, toggleSoundMuted, type SoundRole } from "~/lib/sound";
 import { etaMinutesLabel } from "~/components/driver-eta";
@@ -277,10 +277,20 @@ export function OwnerNotificationLayer() {
 
         if (!booted.current) {
           // First poll: seed everything visible — nothing on screen fires.
-          setSeenIds(jobsKey, mergeSeen(getSeenIds(jobsKey), jobs.map((j) => j.id)));
+          setSeenIds(jobsKey, mergeSeenPreserving(getSeenIds(jobsKey), jobs.map((j) => j.id), jobs.map((j) => j.id)));
           setSeenIds(decisionsKey, mergeSeen(getSeenIds(decisionsKey), decisions.map((d) => d.id)));
           setSeenIds(cashoutsKey, mergeSeen(getSeenIds(cashoutsKey), cashouts.map((c) => c.id)));
-          if (archive.ok) { const ids = archive.data.map((n: { id: string; kind: string; payload: unknown }) => n.kind + ":" + (n.payload && typeof n.payload === "object" && !Array.isArray(n.payload) && "sourceId" in n.payload ? String(n.payload.sourceId) : n.id)); setSeenIds(jobsKey, mergeSeen(getSeenIds(jobsKey), ids)); }
+          if (archive.ok) {
+            const sourceIds = (kind: string) => archive.data
+              .filter((n: { kind: string }) => n.kind === kind)
+              .map((n: { id: string; payload: unknown }) => {
+                const source = n.payload && typeof n.payload === "object" && !Array.isArray(n.payload) && "sourceId" in n.payload ? String((n.payload as { sourceId: unknown }).sourceId) : n.id;
+                return source.replace(/^(job:|cashout:|esc:|escalation:)/, "");
+              });
+            setSeenIds(jobsKey, mergeSeenPreserving(getSeenIds(jobsKey), sourceIds("job"), jobs.map((j) => j.id)));
+            setSeenIds(decisionsKey, mergeSeenPreserving(getSeenIds(decisionsKey), sourceIds("escalation"), decisions.map((d) => d.id)));
+            setSeenIds(cashoutsKey, mergeSeenPreserving(getSeenIds(cashoutsKey), sourceIds("cashout"), cashouts.map((c) => c.id)));
+          }
           previousJobs.current = new Map(jobs.map((j) => [j.id, String((data?.jobs ?? []).find((raw) => raw.id === j.id)?.status ?? "")]));
           booted.current = true;
           return;
@@ -295,9 +305,9 @@ export function OwnerNotificationLayer() {
         setBannerResolutions(decisions);
         const newDecs = diffEscalatedDecisionIds(getSeenIds(decisionsKey), decisions);
         const newCashouts = diffNewCashoutIds(getSeenIds(cashoutsKey), cashouts);
-        if (newJobs.length) setSeenIds(jobsKey, mergeSeen(getSeenIds(jobsKey), newJobs.map((j) => j.id)));
-        if (newDecs.length) setSeenIds(decisionsKey, mergeSeen(getSeenIds(decisionsKey), newDecs.map((d) => d.id)));
-        if (newCashouts.length) setSeenIds(cashoutsKey, mergeSeen(getSeenIds(cashoutsKey), newCashouts.map((c) => c.id)));
+        setSeenIds(jobsKey, mergeSeenPreserving(getSeenIds(jobsKey), newJobs.map((j) => j.id), jobs.map((j) => j.id)));
+        setSeenIds(decisionsKey, mergeSeenPreserving(getSeenIds(decisionsKey), newDecs.map((d) => d.id), decisions.map((d) => d.id)));
+        setSeenIds(cashoutsKey, mergeSeenPreserving(getSeenIds(cashoutsKey), newCashouts.map((c) => c.id), cashouts.map((c) => c.id)));
 
         const items: BannerItem[] = [];
         for (const j of newJobs) {

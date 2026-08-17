@@ -199,6 +199,22 @@ export function mergeSeen(
   return out.length > cap ? out.slice(out.length - cap) : out;
 }
 
+/** Merge while preserving every id currently present in a feed. This prevents
+ * a bounded set from rotating old-but-still-visible feed ids back into NEW. */
+export function mergeSeenPreserving(
+  seen: readonly string[],
+  added: readonly string[],
+  stillPresent: readonly string[],
+  cap: number = SEEN_CAP,
+): string[] {
+  const present = new Set((stillPresent ?? []).filter((id): id is string => typeof id === "string" && id !== ""));
+  const merged = mergeSeen(seen, added, Number.MAX_SAFE_INTEGER);
+  const kept = merged.filter((id) => present.has(id));
+  const historical = merged.filter((id) => !present.has(id));
+  const room = Math.max(0, cap - kept.length);
+  return [...historical.slice(Math.max(0, historical.length - room)), ...kept];
+}
+
 /** Tolerant parse of a persisted seen-set (JSON array of strings). Garbage,
  *  null, or a non-array → empty list (caller seeds on the next poll). */
 export function parseSeen(raw: string | null | undefined): string[] {

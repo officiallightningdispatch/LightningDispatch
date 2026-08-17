@@ -13,6 +13,7 @@ import {
   diffNewJobIds,
   isEscalationDecision,
   mergeSeen,
+  mergeSeenPreserving,
   parseSeen,
   formatCountdown,
   reconcileEscalatedBanner,
@@ -95,6 +96,22 @@ const CO = (id, amountCents = 1200, extra = {}) => ({ id, amountCents, contracto
   const seen = mergeSeen(["a", "b"], ["b", "c"]);
   check("mergeSeen dedupes", seen.join() === "a,b,c");
   check("mergeSeen skips empty ids", mergeSeen(["a"], ["", "a", null]).join() === "a");
+}
+
+/* --------------------------- feed-preserving seen-set regression --------------------------- */
+{
+  const jobs = Array.from({ length: 250 }, (_, i) => J(`job-${i}`));
+  let seen = mergeSeen([], jobs.slice(0, 200).map((j) => j.id));
+  for (let tick = 0; tick < 20; tick++) {
+    const added = diffNewJobIds(seen, jobs);
+    seen = mergeSeenPreserving(seen, added.map((j) => j.id), jobs.map((j) => j.id));
+    check(`long feed tick ${tick}: previously seen jobs do not re-fire`, tick === 0 ? added.length === 50 : added.length === 0);
+  }
+  check("preserving merge retains every current feed id", jobs.every((j) => seen.includes(j.id)));
+  const archiveSeed = ["job:job-42", "cashout:cash-1", "escalation:dec-1"];
+  const strip = (kind, id) => id.replace(new RegExp(`^${kind}:`), "");
+  const seeded = archiveSeed.map((id) => strip(id.split(":")[0], id));
+  check("archive job source id matches raw job id space", diffNewJobIds(seeded, [J("job-42")]).length === 0);
 }
 
 /* --------------------------- escalation match rule --------------------------- */
