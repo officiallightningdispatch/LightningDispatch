@@ -1658,7 +1658,7 @@ try {
     check("GB/TX low-score geocode: CT nearest result is never cross-state fallback", posts(low.calls).every((c) => c.body?.driverId == null || Number(c.body.driverId) !== ct), JSON.stringify(posts(low.calls).map((c) => c.body)));
     await insertGbEvidence('stale-no-zone');
     const stale = makeFetch({ offers: [offer(327442738, { lat: 30.477, lng: -97.705, startingLocation: tx, drivers: [gb, ct], purchaseOrderNumber: '112818455' })], drivers: [driver(ct, 'CT nearest result', { lat: 41.2, lng: -73.2 })] });
-    const { deps: staleDeps } = makeDeps(stale.fetchImpl, null, { stateResolver: async () => "CT" });
+    const { deps: staleDeps } = makeDeps(stale.fetchImpl, null, { stateResolver: async (_id, lat) => Number(lat) < 35 ? "TX" : "CT" });
     const staleRun = await runAutoDispatch(ORG6, staleDeps);
     check("GB/TX durable evidence: stale lease + no zone still auto-accepts GB", staleRun.decisions[0]?.decision === "auto_accept_with_driver" && staleRun.decisions[0]?.driverId === gb && posts(stale.calls)[0]?.body?.driverId === gb, JSON.stringify({ decision: staleRun.decisions[0], post: posts(stale.calls)[0]?.body }));
     check("GB/TX durable evidence: CT driver is blocked by in-state-only guard", posts(stale.calls).every((c) => c.body?.driverId == null || Number(c.body.driverId) !== ct), JSON.stringify(posts(stale.calls).map((c) => c.body)));
