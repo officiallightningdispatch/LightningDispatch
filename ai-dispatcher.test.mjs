@@ -411,26 +411,26 @@ try {
   // deliberately make road ETA disagree with geographic proximity.
   const t1a = driver(8101, "T1 close", { lat: 41.195, lng: -73.195, etaSec: 1200 });
   const t1b = driver(8102, "T1 far/fast", { lat: 41.10, lng: -73.00, etaSec: 1200 });
-  const t1 = await chooseBestDriverByRoad([t1a, t1b], 41.2, -73.2, makeRouter({ "41.20,-73.19": 3600, "41.10,-73.00": 60 }));
-  check("T1 closest GPS wins despite farther driver's lower road ETA", t1?.driver.driverId === 8101 && t1?.distanceBasis === "fallback" && t1?.baseMinutes === 60, JSON.stringify(t1));
+  const t1 = await chooseBestDriverByRoad([t1a, t1b], 41.2, -73.2, makeRouter({ "41.20,-73.19": 3600, "41.10,-73.00": 60 }), undefined, { gpsFixes: new Map([["8101", { lat: 41.195, lng: -73.195, capturedAt: new Date().toISOString() }], ["8102", { lat: 41.10, lng: -73.00, capturedAt: new Date().toISOString() }]]) });
+  check("T1 closest GPS wins despite farther driver's lower road ETA", t1?.driver.driverId === 8101 && t1?.originBasis === "gps" && t1?.baseMinutes === 60, JSON.stringify(t1));
   const t2a = driver(8201, "T2 near", { lat: 41.19, lng: -73.19, etaSec: 600 });
   const t2b = driver(8202, "T2 farther/fast", { lat: 41.13, lng: -73.13, etaSec: 600 });
-  const t2 = await chooseBestDriverByRoad([t2a, t2b], 41.2, -73.2, makeRouter({ "41.19,-73.19": 2400, "41.13,-73.13": 60 }));
-  check("T2 farther road-faster driver cannot steal from nearer eligible driver", t2?.driver.driverId === 8201, JSON.stringify(t2));
+  const t2 = await chooseBestDriverByRoad([t2a, t2b], 41.2, -73.2, makeRouter({ "41.19,-73.19": 2400, "41.13,-73.13": 60 }), undefined, { gpsFixes: new Map([["8201", { lat: 41.19, lng: -73.19, capturedAt: new Date().toISOString() }], ["8202", { lat: 41.13, lng: -73.13, capturedAt: new Date().toISOString() }]]) });
+  check("T2 farther road-faster driver cannot steal from nearer eligible driver", t2?.driver.driverId === 8201 && t2?.originBasis === "gps", JSON.stringify(t2));
   const t3ds = [
     driver(8301, "T3 closest", { lat: 41.198, lng: -73.198, etaSec: 1200 }),
     driver(8302, "T3 middle", { lat: 41.16, lng: -73.16, etaSec: 1200 }),
     driver(8303, "T3 far", { lat: 41.10, lng: -73.00, etaSec: 1200 }),
   ];
-  const t3 = await chooseBestDriverByRoad(t3ds, 41.2, -73.2, makeRouter({ "41.20,-73.20": 3600, "41.16,-73.16": 120, "41.10,-73.00": 60 }));
-  check("T3 three eligible drivers: closest wins regardless of ETA ordering", t3?.driver.driverId === 8301, JSON.stringify(t3));
+  const t3 = await chooseBestDriverByRoad(t3ds, 41.2, -73.2, makeRouter({ "41.20,-73.20": 3600, "41.16,-73.16": 120, "41.10,-73.00": 60 }), undefined, { gpsFixes: new Map([["8301", { lat: 41.198, lng: -73.198, capturedAt: new Date().toISOString() }], ["8302", { lat: 41.16, lng: -73.16, capturedAt: new Date().toISOString() }], ["8303", { lat: 41.10, lng: -73.00, capturedAt: new Date().toISOString() }]]) });
+  check("T3 three eligible drivers: closest wins regardless of ETA ordering", t3?.driver.driverId === 8301 && t3?.originBasis === "gps", JSON.stringify(t3));
   const t4fresh = driver(8401, "T4 fresh GPS", { lat: 41.195, lng: -73.195, etaSec: 1200 });
   const t4stale = { ...driver(8402, "T4 stale", { lat: 41.10, lng: -73.00, etaSec: 60 }), gpsUpdatedAtUtc: new Date(Date.now() - 30 * 60000).toISOString() };
   const t4 = await chooseBestDriverByRoad([t4fresh, t4stale], 41.2, -73.2, makeRouter({ "41.20,-73.19": 3600, "41.10,-73.00": 60 }), undefined, { gpsFixes: new Map([["8401", { lat: 41.195, lng: -73.195, capturedAt: new Date().toISOString() }]]), anchors: new Map([["8402", { driverTowbookId: "8402", lat: 41.10, lng: -73.00, jobId: "t4", assignedAt: new Date().toISOString() }]]) });
   check("T4 GPS-backed tier beats stale/fallback tier and preserves truthful ETA flags", t4?.driver.driverId === 8401 && t4.distanceBasis === "gps" && t4.usedFallback === false && t4.baseMinutes === 60, JSON.stringify(t4));
   const t5eligible = driver(8502, "T5 farther eligible", { lat: 41.15, lng: -73.15, etaSec: 600 });
-  const t5 = await chooseBestDriverByRoad([t5eligible], 41.2, -73.2, makeRouter({ "41.15,-73.15": 600 }));
-  check("T5 Towbook eligibility filters closest non-listed driver before proximity ranking", t5?.driver.driverId === 8502, JSON.stringify(t5));
+  const t5 = await chooseBestDriverByRoad([t5eligible], 41.2, -73.2, makeRouter({ "41.15,-73.15": 600 }), undefined, { gpsFixes: new Map([["8502", { lat: 41.15, lng: -73.15, capturedAt: new Date().toISOString() }]]) });
+  check("T5 Towbook eligibility filters closest non-listed driver before proximity ranking", t5?.driver.driverId === 8502 && t5?.originBasis === "gps", JSON.stringify(t5));
   const t6driver = driver(8601, "T6 payload origin", { lat: 41.10, lng: -73.00, etaSec: 1200 });
   const t6fix = { lat: 41.195, lng: -73.195, capturedAt: new Date().toISOString() };
   const t6 = await chooseBestDriverByRoad([t6driver], 41.2, -73.2, makeRouter({ "41.20,-73.19": 300, "41.10,-73.00": 3600 }), undefined, { gpsFixes: new Map([["8601", t6fix]]) });
@@ -439,7 +439,7 @@ try {
   // Availability UNION regression: Towbook check-in and Lightning GO are independent proofs.
   const unionStateGuard = { jobState: "CT", resolveDriverState: async () => "CT" };
   const antoneTowbookOnly = driver(603482, "Antone jerret", { checkedIn: true, etaSec: 600 });
-  const antoneArea = { stateGuard: unionStateGuard };
+  const antoneArea = { stateGuard: unionStateGuard, gpsFixes: new Map([["603482", { lat: 41.2, lng: -73.2, capturedAt: new Date().toISOString() }]]) };
   const antoneInitial = await chooseBestDriverByRoad([antoneTowbookOnly], 41.2, -73.2, makeRouter(), undefined, antoneArea);
   const antoneVerification = await chooseBestDriverByRoad([antoneTowbookOnly], 41.2, -73.2, makeRouter(), undefined, antoneArea);
   check("availability union Antoine Towbook-only: eligible and selected", antoneInitial?.driver.driverId === 603482, JSON.stringify(antoneInitial));
@@ -447,7 +447,7 @@ try {
   const noProof = driver(96301, "No availability proof", { checkedIn: false, etaSec: 600 });
   check("availability union fail-closed: no Towbook check-in and no Lightning lease", (await chooseBestDriverByRoad([noProof], 41.2, -73.2, makeRouter())) === null);
   const lightningOnly = driver(96302, "Lightning-only driver", { checkedIn: false, etaSec: 600 });
-  const lightningPick = await chooseBestDriverByRoad([lightningOnly], 41.2, -73.2, makeRouter(), undefined, { lightningAvailable: new Set(["96302"]) });
+  const lightningPick = await chooseBestDriverByRoad([lightningOnly], 41.2, -73.2, makeRouter(), undefined, { lightningAvailable: new Set(["96302"]), gpsFixes: new Map([["96302", { lat: 41.2, lng: -73.2, capturedAt: new Date().toISOString() }]]) });
   check("availability union Lightning-only: active GO lease qualifies", lightningPick?.driver.driverId === 96302, JSON.stringify(lightningPick));
   // Nudge uses Towbook nearestDrivers check-in through this chooser; no separate
   // Lightning state filter can exclude a checked-in driver.
@@ -456,10 +456,10 @@ try {
   const incompatible = { ...driver(8701, "T7 incompatible", { lat: 41.195, lng: -73.195 }), serviceExclusions: ["tire"] };
   const noCapability = driver(8703, "T7 no capability data", { lat: 41.19, lng: -73.19 });
   const compatible = driver(8702, "T7 compatible", { lat: 41.1, lng: -73.0 });
-  const t7 = await chooseBestDriverByRoad([incompatible, compatible], 41.2, -73.2, makeRouter(), undefined, { serviceType: "tire", serviceQualification });
+  const t7 = await chooseBestDriverByRoad([incompatible, compatible], 41.2, -73.2, makeRouter(), undefined, { serviceType: "tire", serviceQualification, gpsFixes: new Map([["8701", { lat: 41.195, lng: -73.195, capturedAt: new Date().toISOString() }], ["8702", { lat: 41.1, lng: -73.0, capturedAt: new Date().toISOString() }]]) });
   check("T7 service-incompatible closer driver excluded; next eligible selected and exclusion recorded", t7?.driver.driverId === 8702 && serviceQualification.excluded.some((e) => e.driverId === 8701 && e.reason.includes("explicitly does not perform service type 'tire'")), JSON.stringify({ choice: t7?.driver.driverId, excluded: serviceQualification.excluded }));
   const noDataQualification = { serviceType: "tire", assessed: false, excluded: [] };
-  const t7Fallback = await chooseBestDriverByRoad([noCapability], 41.2, -73.2, makeRouter(), undefined, { serviceType: "tire", serviceQualification: noDataQualification });
+  const t7Fallback = await chooseBestDriverByRoad([noCapability], 41.2, -73.2, makeRouter(), undefined, { serviceType: "tire", serviceQualification: noDataQualification, gpsFixes: new Map([["8703", { lat: 41.19, lng: -73.19, capturedAt: new Date().toISOString() }]]) });
   check("T7 no capability data remains eligible (live-pool safety)", t7Fallback?.driver.driverId === 8703 && noDataQualification.excluded.length === 0, JSON.stringify(t7Fallback));
   // P0 explicit safeguards: road-ETA ties are deterministic and offline
   // closest drivers never enter the eligible pool.
@@ -469,19 +469,21 @@ try {
   ];
   const tieRouter = makeRouter({ "41.20,-73.19": 600 });
   const tiePicks = [];
-  for (let i = 0; i < 4; i++) tiePicks.push((await chooseBestDriverByRoad(tieDrivers, 41.2, -73.2, tieRouter))?.driver.driverId);
+  const tieFixes = new Map([["8801", { lat: 41.2, lng: -73.19005, capturedAt: new Date().toISOString() }], ["8802", { lat: 41.2, lng: -73.19, capturedAt: new Date().toISOString() }]]);
+  for (let i = 0; i < 4; i++) tiePicks.push((await chooseBestDriverByRoad(tieDrivers, 41.2, -73.2, tieRouter, undefined, { gpsFixes: tieFixes }))?.driver.driverId);
   check("P0 ETA-TIE deterministic driverId winner across repeated selections", tiePicks.length === 4 && tiePicks.every((id) => id === tiePicks[0]) && tiePicks[0] === 8801, JSON.stringify(tiePicks));
   const offlineClosest = driver(8810, "Offline closest", { lat: 41.2, lng: -73.199, checkedIn: false });
   const onlineNext = driver(8811, "Online next", { lat: 41.2, lng: -73.18 });
-  const offlinePick = await chooseBestDriverByRoad([offlineClosest, onlineNext], 41.2, -73.2, makeRouter());
+  const offlinePick = await chooseBestDriverByRoad([offlineClosest, onlineNext], 41.2, -73.2, makeRouter(), undefined, { gpsFixes: new Map([["8811", { lat: 41.2, lng: -73.18, capturedAt: new Date().toISOString() }]]) });
   check("P0 OFFLINE-CLOSEST selects next eligible driver and never offline", offlinePick?.driver.driverId === 8811 && offlinePick?.driver.driverId !== 8810, JSON.stringify(offlinePick));
   // Recalculation contract: once the first choice is removed from the live
   // payload, the same chooser run over the remaining pool selects the next
   // eligible driver (the engine records the corresponding recalc reason).
   const recalcFirst = driver(8820, "Recalc first", { lat: 41.2, lng: -73.199 });
   const recalcNext = driver(8821, "Recalc next", { lat: 41.2, lng: -73.18 });
-  const initialRecalc = await chooseBestDriverByRoad([recalcFirst, recalcNext], 41.2, -73.2, makeRouter());
-  const remainingRecalc = await chooseBestDriverByRoad([recalcNext], 41.2, -73.2, makeRouter());
+  const recalcFixes = new Map([["8820", { lat: 41.2, lng: -73.199, capturedAt: new Date().toISOString() }], ["8821", { lat: 41.2, lng: -73.18, capturedAt: new Date().toISOString() }]]);
+  const initialRecalc = await chooseBestDriverByRoad([recalcFirst, recalcNext], 41.2, -73.2, makeRouter(), undefined, { gpsFixes: recalcFixes });
+  const remainingRecalc = await chooseBestDriverByRoad([recalcNext], 41.2, -73.2, makeRouter(), undefined, { gpsFixes: recalcFixes });
   const recalcReason = `first choice ${initialRecalc?.driver.driverId} became unavailable → recalculated to ${remainingRecalc?.driver.driverId}`;
   check("P0 MID-DISPATCH RECALC selects next-best remaining eligible + records reason", initialRecalc?.driver.driverId === 8820 && remainingRecalc?.driver.driverId === 8821 && recalcReason.includes("recalculated to 8821"), recalcReason);
   check("finalEtaMinutes: ceil(9)+5 = 14", finalEtaMinutes(9, 5, 5, 45) === 14);
