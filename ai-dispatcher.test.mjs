@@ -613,6 +613,7 @@ try {
 
   /* ============ 9b) hard-cap regressions: raw road ETA and fallback ETA ============ */
   {
+    await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES(${`ad-gps-788002-${FIXTURE_TAG}`}, ${ORG}, ${USER}, '788002', 41.1, -73.0, ${new Date().toISOString()})`;
     const m = makeFetch({ offers: [offer(327309798, { drivers: [788002] })], drivers: [driver(788002, "Raw ETA Driver", { lat: 41.1, lng: -73.0, etaSec: 90000 })] });
     const router = makeRouter({ "41.10,-73.00": 90000 });
     const { deps } = makeDeps(m.fetchImpl, router, { stateResolver: async () => "CT" });
