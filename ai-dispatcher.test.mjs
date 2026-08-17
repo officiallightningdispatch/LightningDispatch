@@ -1899,7 +1899,7 @@ try {
   /* ============ retry sweep hermetic regressions ============ */
   {
     const retryOffer = offer(94001, { startingLocation: "BRIDGEPORT CT", drivers: [] });
-    const retryCall = { id: 9400101, callRequestId: 94001, startLocationLatitude: retryOffer.startLocationLatitude, startLocationLongitude: retryOffer.startLocationLongitude, startingLocation: "BRIDGEPORT CT", status: { id: 0 }, assets: [] };
+    const retryCall = { id: 9400101, callRequestId: 94001, startLocationLatitude: retryOffer.startLocationLatitude, startLocationLongitude: retryOffer.startLocationLongitude, startingLocation: "BRIDGEPORT CT", status: { id: 0 }, assets: [{ id: 424242, driver: { id: 0, name: "" } }] };
     await q`INSERT INTO ai_dispatcher_decisions(id,org_id,call_request_id,decision,escalated,driver_id,reason,raw_response) VALUES(${randomUUID()},${ORG6},'94001','auto_accept_no_driver',TRUE,'0','initial in-state hold',${JSON.stringify({offer: retryOffer})}::jsonb)`;
     const first = makeFetch({ offers: [], drivers: [], liveCalls: [retryCall] });
     const { deps: firstDeps } = makeDeps(first.fetchImpl, makeRouter(), { env: {}, stateResolver: async () => "CT" });
@@ -1919,7 +1919,7 @@ try {
   }
   {
     const o = offer(94002, { startingLocation: "AUSTIN TX", lat: 30.62, lng: -97.65 });
-    const c = { id: 9400201, callRequestId: 94002, startLocationLatitude: o.startLocationLatitude, startLocationLongitude: o.startLocationLongitude, startingLocation: "AUSTIN TX", status: { id: 0 }, assets: [] };
+    const c = { id: 9400201, callRequestId: 94002, startLocationLatitude: o.startLocationLatitude, startLocationLongitude: o.startLocationLongitude, startingLocation: "AUSTIN TX", status: { id: 0 }, assets: [{ id: 424242, driver: { id: 0, name: "" } }] };
     await q`INSERT INTO ai_dispatcher_decisions(id,org_id,call_request_id,decision,escalated,driver_id,reason,raw_response) VALUES(${randomUUID()},${ORG6},'94002','auto_accept_no_driver',TRUE,'0','TX hold',${JSON.stringify({offer:o})}::jsonb)`;
     const m = makeFetch({ offers: [], drivers: [driver(94012, "Offline TX Towbook driver", { checkedIn: false, lat: 30.62, lng: -97.65 })], liveCalls: [c] });
     const { deps } = makeDeps(m.fetchImpl, makeRouter(), { env: {}, stateResolver: async () => "TX" });
