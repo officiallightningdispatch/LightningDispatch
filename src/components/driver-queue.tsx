@@ -47,9 +47,13 @@ export type GpsState = "idle" | "tracking" | "denied" | "unsupported" | "error";
  *  Never throws, never blocks the job queue. */
 export function useDriverGps(calls: DriverCall[] | null): GpsState {
   const [state, setState] = useState<GpsState>("idle");
+  // Location is a driver signal, not a dispatch-job signal. Towbook-side
+  // assignments can be mirrored late (or not yet appear in this queue), so
+  // never gate capture on an en-route/on-scene call. The server accepts a
+  // nullable job id and still records the real fix in driver_locations.
   const activeJobRef = useRef<string | null>(null);
   useEffect(() => {
-    const active = calls?.find((c) => c.statusId === 2 || c.statusId === 3); // en route / on scene
+    const active = calls?.find((c) => c.statusId === 2 || c.statusId === 3); // best-effort job association
     activeJobRef.current = active ? active.id : null;
   }, [calls]);
   useEffect(() => {
@@ -61,7 +65,8 @@ export function useDriverGps(calls: DriverCall[] | null): GpsState {
     let lastFixAt = 0;
     const tick = () => {
       const jobId = activeJobRef.current;
-      if (!jobId) { setState((s) => (s === "tracking" ? "idle" : s)); return; }
+      // Capture while the contractor is in the portal even when Towbook has
+      // assigned the job outside Lightning or sync has not exposed it yet.
       navigator.geolocation.getCurrentPosition(
         (pos) => {
           if (stopped) return;
