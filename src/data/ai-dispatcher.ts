@@ -2581,7 +2581,6 @@ async function retryPendingAssignments(
     await sql() `UPDATE ai_dispatcher_decisions SET decision='auto_accept_with_driver', escalated=FALSE, driver_id=${String(driverId)}, driver_name=${String(chosen.driver.driverName ?? driverId)}, call_id=${verification.callId ?? callId || String(call.id ?? callRequestId)}, reason=${reason}, raw_response=raw_response || ${JSON.stringify({ retrySweep:true, verification })}::jsonb WHERE id=${String(row.decision_id)} AND org_id=${orgId}`;
     try { await deps.syncForOrg(orgId, 'sync:auto-accept-retry', actor ?? undefined); } catch { /* sweep is best effort */ }
     retrySweepLastRun.delete(orgId);
-    retrySweepLastRun.delete(orgId);
   }
 }
 const retryStateCache = new Map<string, string | null>();
