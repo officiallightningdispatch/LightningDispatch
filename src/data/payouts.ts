@@ -23,6 +23,15 @@ export const PAYOUT_RAIL_LABELS: Record<PayoutRail, string> = {
   bank: "Bank account",
 };
 
+/** Format a pay-period boundary as a calendar date in Eastern Time, regardless
+ * of the viewer's local timezone. Invalid instants are shown as an ellipsis. */
+export function fmtEtShortDate(isoStr: string): string {
+  const d = new Date(isoStr);
+  return Number.isNaN(d.getTime()) ? "…" : new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York", month: "short", day: "numeric",
+  }).format(d);
+}
+
 const passthrough = (x: unknown) => x;
 
 /** The acting contractor's payout method (masked). null = no method on file. */
@@ -205,10 +214,7 @@ export const getMoneyOverview = createServerFn({ method: "GET" }).handler(async 
 /** Period label helper (client-safe, pure): "Oct 6 – Oct 12 · pays Wed Oct 15".
  *  The open period renders "Open period — pays Wed Oct 15". */
 export function payPeriodLabel(startsAtIso: string, endsAtIso: string, payoutDueOn: string, isCurrent: boolean): string {
-  const fmt = (isoStr: string) => {
-    const d = new Date(isoStr);
-    return Number.isNaN(d.getTime()) ? "…" : d.toLocaleDateString([], { month: "short", day: "numeric" });
-  };
+  const fmt = fmtEtShortDate;
   const due = payoutDueOn ? new Date(`${payoutDueOn}T00:00:00`) : null;
   const dueLabel = due && !Number.isNaN(due.getTime()) ? due.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) : "";
   if (isCurrent) return `Open period — pays ${dueLabel}`;

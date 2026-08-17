@@ -16,6 +16,7 @@ const {
   markPayoutPaidCore, markPaydayPeriodPaidCore, verifyPayoutMethodCore, rejectPayoutMethodCore,
   editPayoutMethodCore, getContractorPayoutMethodCore, getMyPayoutMethodCore, getMoneyOverviewCore, setMyPayoutMethodCore, maskHandle,
 } = await import("./src/data/payouts-core.ts");
+const { payPeriodLabel } = await import("./src/data/payouts.ts");
 const { ensureSchema } = await import("./src/data/migrations.ts");
 const { assertQaOrg } = await import("./src/data/db-guard.ts");
 await ensureSchema();
@@ -77,6 +78,21 @@ try {
   check("math: Mon 00:00 ET starts the new week", b4.startsAt.toISOString() === "2026-08-03T04:00:00.000Z", b4.startsAt.toISOString());
   const span = (b4.endsAt.getTime() - b4.startsAt.getTime() + 1);
   check("math: window is exactly 7 days (168h) for a non-DST week", span === 7 * 86400000, String(span));
+}
+/* ------------------------- period display labels ------------------------- */
+{
+  const originalTz = process.env.TZ;
+  try {
+    for (const tz of ["Pacific/Honolulu", "Asia/Tokyo"]) {
+      process.env.TZ = tz;
+      check(`label: ET Mon–Sun unaffected in ${tz}`, payPeriodLabel("2026-08-10T04:00:00.000Z", "2026-08-17T03:59:59.999Z", "2026-08-19", false) === "Aug 10 – Aug 16 · pays Wed Aug 19");
+      check(`label: open period unaffected in ${tz}`, payPeriodLabel("2026-08-17T04:00:00.000Z", "2026-08-24T03:59:59.999Z", "2026-08-26", true) === "Open period — pays Wed Aug 26");
+    }
+    check("label: invalid boundary is an ellipsis", payPeriodLabel("not-a-date", "2026-08-17T03:59:59.999Z", "2026-08-19", false).startsWith("… – Aug 16"));
+  } finally {
+    if (originalTz === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTz;
+  }
 }
 /* ------------------------- fixtures ------------------------- */
 await q`INSERT INTO organizations(id, name) VALUES(${ORG}, ${"qa payday"}), (${ORG2}, ${"qa payday 2"})`;
