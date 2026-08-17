@@ -709,6 +709,10 @@ try {
 
   /* ============ 17a) offer_lost_race: another provider already accepted the broadcast offer ============ */
   {
+    // ORG5 has its own fixture data; seed the driver's real app GPS origin
+    // once for the 17a/17b/17c variants. It matches the mock payload origin.
+    await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES(${`ad-gps-603482-org5-${FIXTURE_TAG}`}, ${ORG5}, ${USER}, '603482', 41.2, -73.2, ${new Date().toISOString()})`;
+
     // Towbook's real reply when another provider wins the offer first: the
     // accept POST returns this exact message. The old logic read it as a
     // successful accept, then post-accept verification failed ("call not found
