@@ -39,7 +39,10 @@ const writeCookie = async (name: string, value: string, maxAge: number) => {
 const configured = () => Boolean(process.env.DATABASE_URL);
 const hash = (password: string, salt = randomBytes(16).toString("hex")) => `${salt}:${scryptSync(password, salt, 64).toString("hex")}`;
 const verify = (password: string, stored: string) => { const [salt, hex] = stored.split(":"); if (!salt || !hex) return false; try { return timingSafeEqual(scryptSync(password, salt, 64), Buffer.from(hex, "hex")); } catch { return false; } };
-export async function ensureAuthSchema() {
+let authSchemaInit: Promise<void> | undefined;
+export function ensureAuthSchema(): Promise<void> {
+  if (authSchemaInit) return authSchemaInit;
+  authSchemaInit = (async () => {
   const q = sql();
   await q`CREATE TABLE IF NOT EXISTS organizations (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
   await q`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`;
@@ -59,6 +62,9 @@ export async function ensureAuthSchema() {
   // memberships become 'owner' — every manager gets owner access. Safe to run
   // repeatedly (idempotent); no-op when no 'manager' rows exist.
   await q`UPDATE organization_memberships SET role='owner' WHERE role='manager'`;
+  })();
+  authSchemaInit = authSchemaInit.catch((error) => { authSchemaInit = undefined; throw error; });
+  return authSchemaInit;
 }
 
 /* ------------------------------ login core ------------------------------ */
