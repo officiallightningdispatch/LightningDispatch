@@ -427,12 +427,23 @@ const TIP_PRESETS = [200, 500, 1000]; // $2 / $5 / $10
 
 /* ------- Square Web Payments SDK (client-side card tokenization) ------- */
 
+type SquareTokenResult = { status: string; token?: string; errors?: Array<{ code: string; detail: string }> };
 type SquareCard = {
   attach: (containerId: string) => Promise<void>;
-  tokenize: () => Promise<{ status: string; token?: string; errors?: Array<{ code: string; detail: string }> }>;
+  tokenize: () => Promise<SquareTokenResult>;
   destroy: () => Promise<void>;
 };
-type SquarePaymentsFactory = { card: () => Promise<SquareCard> };
+type SquareWallet = {
+  attach?: (containerId: string) => Promise<void>;
+  tokenize: () => Promise<SquareTokenResult>;
+  destroy?: () => Promise<void>;
+};
+type SquarePaymentRequest = { countryCode: string; currencyCode: string; total: { amount: string; label: string } };
+type SquarePaymentsFactory = {
+  card: () => Promise<SquareCard>;
+  applePay?: (request: SquarePaymentRequest) => Promise<SquareWallet>;
+  googlePay?: (request: SquarePaymentRequest) => Promise<SquareWallet>;
+};
 type SquareGlobal = { payments: (applicationId: string, locationId: string) => SquarePaymentsFactory };
 
 let squareScriptPromise: Promise<void> | null = null;
@@ -577,6 +588,9 @@ function SquareTipSection({
   const [declined, setDeclined] = useState(false);
   const [card, setCard] = useState<SquareCard | null>(null);
   const [cardError, setCardError] = useState("");
+  const [payments, setPayments] = useState<SquarePaymentsFactory | null>(null);
+  const [applePayAvailable, setApplePayAvailable] = useState(false);
+  const [googlePayAvailable, setGooglePayAvailable] = useState(false);
   const attemptRef = useRef(1);
   const containerIdRef = useRef(`sq-card-${Math.random().toString(36).slice(2, 10)}`);
 
@@ -590,12 +604,17 @@ function SquareTipSection({
         await loadSquareScript();
         if (disposed) return;
         const sq = (window as unknown as { Square?: SquareGlobal }).Square;
-        const payments = sq?.payments(cfg.applicationId, cfg.locationId);
-        if (!payments) throw new Error("Square payments couldn't start — refresh the page.");
-        created = await payments.card();
+        const sdkPayments = sq?.payments(cfg.applicationId, cfg.locationId);
+        if (!sdkPayments) throw new Error("Square payments couldn't start — refresh the page.");
+        setPayments(sdkPayments);
+        created = await sdkPayments.card();
         await created.attach(`#${containerIdRef.current}`);
         if (disposed) { await created.destroy().catch(() => {}); return; }
         setCard(created);
+        // Probe wallet support without making it part of card initialization.
+        const walletRequest: SquarePaymentRequest = { countryCode: "US", currencyCode: "USD", total: { amount: "5.00", label: "Lightning tip" } };
+        if (sdkPayments.applePay) { try { const wallet = await sdkPayments.applePay(walletRequest); await wallet.destroy?.(); if (!disposed) setApplePayAvailable(true); } catch { /* unavailable */ } }
+        if (sdkPayments.googlePay) { try { const wallet = await sdkPayments.googlePay(walletRequest); await wallet.destroy?.(); if (!disposed) setGooglePayAvailable(true); } catch { /* unavailable */ } }
       } catch (err) {
         if (!disposed) setCardError(err instanceof Error ? err.message : "Couldn't start the card form.");
       }
@@ -633,6 +652,23 @@ function SquareTipSection({
     } catch {
       setError("Couldn't charge the tip — check your connection and try again.");
     }
+    setBusy(false);
+  };
+
+  const chargeWallet = async (kind: "apple" | "google") => {
+    if (!payments) return;
+    if (!Number.isFinite(amountCents) || amountCents < 100 || amountCents > 1_000_000) { setError("Enter a tip of $1 – $10,000."); return; }
+    setBusy(true); setError("");
+    try {
+      const factory = kind === "apple" ? payments.applePay : payments.googlePay;
+      if (!factory) throw new Error("This wallet is unavailable on this device.");
+      const wallet = await factory({ countryCode: "US", currencyCode: "USD", total: { amount: (amountCents / 100).toFixed(2), label: "Lightning tip" } });
+      const tok = await wallet.tokenize();
+      await wallet.destroy?.();
+      if (tok.status !== "OK" || !tok.token) { setError(tok.errors?.[0]?.detail ?? "The wallet payment was cancelled."); return; }
+      const r = await chargeTip({ data: { jobId: callId, token: tok.token, amountCents, attempt: attemptRef.current } });
+      if (r.ok) { setChargedAmount(amountCents); onPaid(); } else { setError(r.message); if (r.retryable) attemptRef.current += 1; }
+    } catch (err) { setError(err instanceof Error ? err.message : "Couldn't charge the wallet tip — try again."); }
     setBusy(false);
   };
 
@@ -704,6 +740,10 @@ function SquareTipSection({
           />
         </label>
       </div>
+      {(applePayAvailable || googlePayAvailable) && <div className="mt-2 grid grid-cols-2 gap-2">
+        {applePayAvailable && <Button size="sm" className="bg-black text-white" disabled={busy} onClick={() => void chargeWallet("apple")}>Apple Pay</Button>}
+        {googlePayAvailable && <Button size="sm" className="bg-black text-white" disabled={busy} onClick={() => void chargeWallet("google")}>Google Pay</Button>}
+      </div>}
       <div id={containerIdRef.current} className="mt-2 rounded-lg border border-ink-200 bg-white px-2.5 py-1.5" />
       {cardError && (
         <p role="alert" className="mt-1.5 text-[11px] leading-snug text-danger-600">{cardError}</p>
