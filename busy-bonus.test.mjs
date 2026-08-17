@@ -146,9 +146,18 @@ const A = Date.parse("2026-07-15T14:00:00.000Z");
 const C = Date.parse("2026-07-15T20:00:00.000Z");
 const E = Date.parse("2026-07-15T22:00:00.000Z");
 const F = Date.parse("2026-07-16T14:00:00.000Z"); // D3 raw-import busy hour
-const job = (id, tbId, status, at, assignedAt, completedAt, raw) =>
-  q`INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, phone, lat, lng, area, service_type, status, created_at, assigned_at, completed_at, assigned_driver_towbook_id, raw_json) VALUES
-    (${id}, ${ORG}, ${id.replace(/^qa-bb-j-/, "")}, ${"C"}, ${"9145550100"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, ${status}, ${iso(at)}, ${assignedAt ? iso(assignedAt) : null}, ${completedAt ? iso(completedAt) : null}, ${tbId}, ${raw ? JSON.stringify(raw) : null})`;
+// Towbook completionTime is the authoritative completion instant (owner 2026-08-17):
+// the payday window query keys strictly on raw_json->>'completionTime', so every
+// completed fixture must carry it in ET wall-clock form, not just completed_at.
+const etWallClock = (instant) => new Date(instant).toLocaleString("sv-SE", {
+  timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+}).replace(" ", "T");
+const job = (id, tbId, status, at, assignedAt, completedAt, raw) => {
+  const rawJson = completedAt != null ? { completionTime: etWallClock(completedAt), ...(raw ?? {}) } : raw;
+  return q`INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, phone, lat, lng, area, service_type, status, created_at, assigned_at, completed_at, assigned_driver_towbook_id, raw_json) VALUES
+    (${id}, ${ORG}, ${id.replace(/^qa-bb-j-/, "")}, ${"C"}, ${"9145550100"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, ${status}, ${iso(at)}, ${assignedAt ? iso(assignedAt) : null}, ${completedAt ? iso(completedAt) : null}, ${tbId}, ${rawJson ? JSON.stringify(rawJson) : null})`;
+};
 
 // D1 — busy hour A (14:00Z): assignments A1,A2,A3,X1 (4 ≥ 3 → busy); completions in A: A1,A2,X1 (3 → +$3).
 //      busy hour C (20:00Z): assignments C1..C4 (4 ≥ 3 → busy); completions in C: C1,C2 (2 → +$2).
