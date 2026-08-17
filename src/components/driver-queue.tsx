@@ -28,6 +28,9 @@ export const STATUS_META: Record<number, { label: string; badge: string; dot: st
   4: { label: "Towing", badge: "bg-emerald-100 text-emerald-700", dot: "bg-emerald-500" },
   5: { label: "Completed", badge: "bg-emerald-100 text-emerald-700", dot: "bg-emerald-500" },
   6: { label: "Complete", badge: "bg-emerald-100 text-emerald-700", dot: "bg-emerald-500" },
+  // Towbook's terminal completion acknowledgement is 252. Keep it explicit
+  // rather than allowing the unknown-status fallback to mislabel real work.
+  252: { label: "Completed", badge: "bg-emerald-100 text-emerald-700", dot: "bg-emerald-500" },
   255: { label: "Cancelled", badge: "bg-danger-100 text-danger-600", dot: "bg-danger-500" },
 };
 export const etaLabel = (iso: string | null): string => {
