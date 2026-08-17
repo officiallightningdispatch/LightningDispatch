@@ -432,14 +432,17 @@ export async function loadZoneMatches(orgId: string, candidates: unknown[], lat:
 export async function loadDriverDispatchEvidence(orgId: string): Promise<Map<string, { lat: number; lng: number; state: string | null }>> {
   const out = new Map<string, { lat: number; lng: number; state: string | null }>();
   try {
-    const rows = await sql() `SELECT assigned_driver_towbook_id, pickup, pickup_lat, pickup_lng FROM dispatch_jobs WHERE org_id=${orgId} AND assigned_driver_towbook_id IS NOT NULL AND pickup_lat IS NOT NULL AND pickup_lng IS NOT NULL AND pickup_lat != 0 AND pickup_lng != 0 ORDER BY created_at DESC` as Array<Record<string, unknown>>;
+    const rows = await sql() `SELECT assigned_driver_towbook_id, created_at, pickup, pickup_lat, pickup_lng FROM dispatch_jobs WHERE org_id=${orgId} AND assigned_driver_towbook_id IS NOT NULL AND pickup_lat IS NOT NULL AND pickup_lng IS NOT NULL AND pickup_lat != 0 AND pickup_lng != 0 ORDER BY created_at DESC` as Array<Record<string, unknown>>;
     for (const row of rows) {
       const id = String(row.assigned_driver_towbook_id ?? "");
-      if (!id || out.has(id)) continue;
+      if (!id) continue;
       const lat = Number(row.pickup_lat), lng = Number(row.pickup_lng);
       if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
       const state = typeof row.pickup === "string" ? resolveStateFromAddress(row.pickup).state : null;
-      out.set(id, { lat, lng, state });
+      const existing = out.get(id);
+      // Keep the newest usable coordinates, but never let a newer row without
+      // a state erase an older row whose pickup proves the driver's state.
+      if (!existing || (!existing.state && state)) out.set(id, { lat, lng, state });
     }
   } catch { /* supplemental evidence must never block dispatch */ }
   return out;
