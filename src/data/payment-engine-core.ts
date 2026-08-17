@@ -165,7 +165,17 @@ export type MirrorTipResult =
 /** A tip ledger row with the paying driver's name (LEFT JOIN completion_tips →
  *  users) — the payment tab's tips view shows driver attribution without
  *  duplicating tip data. */
-export type TipLedgerRow = PaymentTxnRow & { driverName: string | null; driverTowbookId: string | null };
+export type TipLedgerRow = PaymentTxnRow & {
+  driverName: string | null;
+  driverTowbookId: string | null;
+  /** Authoritative completion_tips attribution, retained for job drill-down. */
+  tipId: string;
+  jobCustomerName: string | null;
+  jobServiceType: string | null;
+};
+export type BackfillTipsResult =
+  | { ok: true; inserted: number; existing: number; total: number }
+  | { ok: false; code: "unauthorized" | "database_error"; message: string };
 export type ListTipsResult =
   | { ok: true; data: TipLedgerRow[] }
   | { ok: false; code: "unauthorized" | "database_error"; message: string };
@@ -620,31 +630,55 @@ export async function mirrorTipCore(actor: PaymentEngineActor, data: unknown): P
 
 /* ------------------------------ tips (ledger) ------------------------------ */
 
-/** Owner/admin tips read: kind='tip' ledger rows newest first, with the paying
- *  driver's name (users join via completion_tips driver_id — the ledger row
- *  itself stays slim; the mirror already preserved attribution in
- *  completion_tips). Seroval-safe (driverName null, never undefined). */
+/** Owner/admin tips read. completion_tips is authoritative: this deliberately
+ * does not require a payment_transactions mirror, so historical paid tips cannot
+ * disappear from the Payments disclosure. */
 export async function listTipsCore(actor: PaymentEngineActor): Promise<ListTipsResult> {
   if (!canManage(actor)) return { ok: false, code: "unauthorized", message: "Only the owner or an admin can view tips." };
   try {
     await ensure();
     const q = await db();
-    const rows = await q`SELECT pt.*, u.name AS driver_name, ct.driver_towbook_id AS tip_driver_towbook_id
-      FROM payment_transactions pt
-      LEFT JOIN completion_tips ct ON pt.org_id=ct.org_id AND pt.idempotency_key = 'tip-mirror-' || ct.id
-      LEFT JOIN users u ON u.id = ct.driver_id
-      WHERE pt.org_id=${actor.orgId} AND pt.kind='tip'
-      ORDER BY pt.created_at DESC`;
-    return {
-      ok: true,
-      data: rows.map((r: Record<string, unknown>) => {
-        const str = (v: unknown): string | null => (v == null || v === "" ? null : String(v));
-        return { ...toTxnRow(r), driverName: str(r.driver_name), driverTowbookId: str(r.tip_driver_towbook_id) };
-      }),
-    };
-  } catch (err) {
-    return { ok: false, code: "database_error", message: err instanceof Error ? err.message : "Unable to list tips." };
-  }
+    const rows = await q`SELECT ct.*, pt.id AS mirror_id, pt.status AS mirror_status,
+        dj.customer_name AS job_customer_name, dj.service_type AS job_service_type,
+        COALESCE(u.name, dj.assigned_driver_name) AS driver_name
+      FROM completion_tips ct
+      LEFT JOIN payment_transactions pt ON pt.org_id=ct.org_id AND pt.kind='tip'
+        AND pt.idempotency_key = 'tip-mirror-' || ct.id
+      LEFT JOIN dispatch_jobs dj ON dj.org_id=ct.org_id AND (dj.id=ct.job_id OR dj.towbook_job_id=ct.job_id)
+      LEFT JOIN users u ON u.id=ct.driver_id
+      WHERE ct.org_id=${actor.orgId} AND ct.status='paid'
+      ORDER BY ct.created_at DESC`;
+    return { ok: true, data: rows.map((r: Record<string, unknown>) => {
+      const str = (v: unknown): string | null => (v == null || v === "" ? null : String(v));
+      const tip: PaymentTxnRow = {
+        id: str(r.mirror_id) ?? `tip-${String(r.id)}`, orgId: String(r.org_id), jobId: str(r.job_id),
+        kind: "tip", amountCents: Number(r.amount_cents) || 0, currency: String(r.currency ?? "USD"),
+        squarePaymentId: str(r.square_payment_id), status: r.mirror_status === "charged" ? "charged" : "charged",
+        clubName: null, cardLast4: null, cardBrand: null, cardExpiry: null, cardBillingZip: null,
+        chargePath: null, cardSourceId: null, poRef: null, sourceEmailMessageId: null,
+        sourceEmailReceivedAt: null, idempotencyKey: `tip-mirror-${String(r.id)}`, attempt: Number(r.attempt) || 0,
+        error: str(r.error), createdAt: new Date(String(r.created_at)).toISOString(), updatedAt: new Date(String(r.updated_at)).toISOString(),
+      };
+      return { ...tip, driverName: str(r.driver_name), driverTowbookId: str(r.driver_towbook_id), tipId: String(r.id), jobCustomerName: str(r.job_customer_name), jobServiceType: str(r.job_service_type) };
+    }) };
+  } catch (err) { return { ok: false, code: "database_error", message: err instanceof Error ? err.message : "Unable to list tips." }; }
+}
+
+/** Additive, idempotent repair for historical paid tips. It never updates an
+ * existing row and never touches cash-outs (which have a different kind). */
+export async function backfillTipMirrorsCore(actor: PaymentEngineActor): Promise<BackfillTipsResult> {
+  if (!canManage(actor)) return { ok: false, code: "unauthorized", message: "Only the owner or an admin can backfill tips." };
+  try {
+    await ensure(); const q = await db();
+    const before = await q`SELECT COUNT(*)::int AS n FROM payment_transactions WHERE org_id=${actor.orgId} AND kind='tip' AND idempotency_key LIKE 'tip-mirror-%'`;
+    const total = await q`SELECT COUNT(*)::int AS n FROM completion_tips WHERE org_id=${actor.orgId} AND status='paid'`;
+    await q`INSERT INTO payment_transactions(id,org_id,job_id,kind,amount_cents,currency,square_payment_id,status,idempotency_key,attempt)
+      SELECT 'ptx-' || LEFT(ct.org_id,8) || '-' || ct.id, ct.org_id, ct.job_id, 'tip', ct.amount_cents, ct.currency, ct.square_payment_id, 'charged', 'tip-mirror-' || ct.id, ct.attempt
+      FROM completion_tips ct WHERE ct.org_id=${actor.orgId} AND ct.status='paid'
+      ON CONFLICT (idempotency_key) DO NOTHING`;
+    const after = await q`SELECT COUNT(*)::int AS n FROM payment_transactions WHERE org_id=${actor.orgId} AND kind='tip' AND idempotency_key LIKE 'tip-mirror-%'`;
+    return { ok: true, inserted: Number(after[0].n)-Number(before[0].n), existing: Number(before[0].n), total: Number(total[0].n) };
+  } catch (err) { return { ok: false, code: "database_error", message: err instanceof Error ? err.message : "Unable to backfill tip mirrors." }; }
 }
 
 /** Owner/admin PUBLIC Square Web Payments config (application id + location id
@@ -671,6 +705,9 @@ async function resolveManageActor(): Promise<PaymentEngineActor | null> {
   if (!u || !ALLOWED_ROLES.includes(u.role)) return null;
   return { orgId: u.orgId, id: u.id, role: u.role };
 }
+
+/** Server-only actor resolver exposed to the facade for the additive backfill. */
+export async function resolveManageActorForBackfill(): Promise<PaymentEngineActor | null> { return resolveManageActor(); }
 
 export async function stageClubChargeHandler(data: unknown): Promise<StageClubChargeResult> {
   if (!configured()) return { ok: false, code: "database_error", message: "Requires database mode." };

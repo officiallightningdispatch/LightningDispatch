@@ -15,8 +15,8 @@
  * own Square dashboard and marking it paid. There is no per-club card on file.
  */
 import { createServerFn } from "@tanstack/react-start";
-import type { ScanClubMailResult, StageClubChargeResult, ListStagedChargesResult, ChargeStagedResult, MarkChargedOutsideResult, MirrorTipResult, ListTipsResult, SquarePublicConfigResult } from "./payment-engine-core";
-export type { PaymentTxnRow, ScanClubMailResult, StageClubChargeResult, ListStagedChargesResult, ChargeStagedResult, MarkChargedOutsideResult, MirrorTipResult, TipLedgerRow, ListTipsResult, SquarePublicConfigResult, ScanItem } from "./payment-engine-core";
+import type { ScanClubMailResult, StageClubChargeResult, ListStagedChargesResult, ChargeStagedResult, MarkChargedOutsideResult, MirrorTipResult, ListTipsResult, BackfillTipsResult, SquarePublicConfigResult } from "./payment-engine-core";
+export type { PaymentTxnRow, ScanClubMailResult, StageClubChargeResult, ListStagedChargesResult, ChargeStagedResult, MarkChargedOutsideResult, MirrorTipResult, TipLedgerRow, ListTipsResult, BackfillTipsResult, SquarePublicConfigResult, ScanItem } from "./payment-engine-core";
 
 const passthrough = (x: unknown) => x;
 
@@ -69,6 +69,13 @@ export const mirrorTip = createServerFn({ method: "POST" }).validator(passthroug
 export const listTips = createServerFn({ method: "GET" }).handler(async (): Promise<ListTipsResult> => {
   const core = await import("./payment-engine-core");
   return core.listTipsHandler();
+});
+
+/** Additive repair: create missing tip mirrors without touching payouts/cash-outs. */
+export const backfillTipMirrors = createServerFn({ method: "POST" }).handler(async (): Promise<BackfillTipsResult> => {
+  const core = await import("./payment-engine-core");
+  const actor = await core.resolveManageActorForBackfill();
+  return actor ? core.backfillTipMirrorsCore(actor) : { ok: false, code: "unauthorized", message: "Sign in as the owner or an admin first." };
 });
 
 /** PUBLIC Square Web Payments config (application id + location id only) for
