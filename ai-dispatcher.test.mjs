@@ -1874,7 +1874,7 @@ try {
     check("stale GPS >15min: state evidence exists but no road ETA and excluded", pickStale === null,
       JSON.stringify(pickStale && { basis: pickStale.originBasis, base: pickStale.baseMinutes, age: pickStale.gpsFixAgeMinutes }));
     check("stale GPS >15min: no decision can claim an anchor-center ETA", pickStale === null,
-      `${etaDetailLabel(pickStale, 5, 5, 45, 15)} ${areaSelectionNote(pickStale, NEW_HAVEN.lat, NEW_HAVEN.lng)}`);
+      `${pickStale ? etaDetailLabel(pickStale, 5, 5, 45, 15) : "null (stale fix: excluded from road ETA)"} ${pickStale ? areaSelectionNote(pickStale, NEW_HAVEN.lat, NEW_HAVEN.lng) : ""}`);
     const noFix = driver(603482, "Antone jerret", { lat: WEST_HAVEN.lat, lng: WEST_HAVEN.lng, etaSec: 604 });
     const pickNoFix = await chooseBestDriverByRoad([noFix], NEW_HAVEN.lat, NEW_HAVEN.lng,
       makeRouter({ "41.27,-73.05": 600 }),
