@@ -319,10 +319,10 @@ try {
   await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES(${ORG}, ${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))}, 'connected')`;
   await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES(${ORG3}, ${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))}, 'connected')`;
   await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES(${ORG4}, ${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))}, 'connected')`;
-  // ORG4: raise the ETA ceiling so the queue-inclusive ETA is quoted UNCLAMPED
+  // ORG4: set the ETA ceiling to the owner-mandated 60-minute quote cap
   // (a 3-job queue exceeds the quote ceiling but must still dispatch).
   await q`INSERT INTO org_settings(org_id) VALUES(${ORG4}) ON CONFLICT(org_id) DO NOTHING`;
-  await q`UPDATE org_settings SET max_eta_minutes=180 WHERE org_id=${ORG4}`;
+  await q`UPDATE org_settings SET max_eta_minutes=60 WHERE org_id=${ORG4}`;
   await q`INSERT INTO organizations(id, name) VALUES(${ORG5}, 'qa ai-dispatcher lost-race')`;
   await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES(${ORG5}, ${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))}, 'connected')`;
   await q`INSERT INTO organizations(id, name) VALUES(${ORG6}, 'qa ai-dispatcher coords')`;
