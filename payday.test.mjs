@@ -109,7 +109,8 @@ await q`INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, pho
   (${J_EDGE}, ${ORG}, ${"9105"}, ${"C5"}, ${"9145550105"}, 41.1, -73.5, ${"CT"}, ${"Jump"}, 'completed', ${iso(new Date(closed.endsAt.getTime() - 1000))}, ${iso(new Date(closed.endsAt.getTime() - 1000))}, ${TB3})`;
 // Towbook completionTime is authoritative; deliberately diverge J1 from sync clock
 // to prove the payday query uses raw completionTime.
-await q`UPDATE dispatch_jobs SET raw_json = jsonb_build_object('completionTime', ${new Date(closed.startsAt.getTime() + 3600e3).toISOString()}::text) WHERE org_id=${ORG} AND id=${J1}`;
+// GOA is identified by an invoiceItems entry whose name contains GOA; it pays flat $10.
+await q`UPDATE dispatch_jobs SET raw_json = jsonb_build_object('completionTime', ${new Date(closed.startsAt.getTime() + 3600e3).toISOString()}::text, 'invoiceItems', jsonb_build_array(jsonb_build_object('name','GOA - No Service','price',10))) WHERE org_id=${ORG} AND id=${J1}`;
 await q`UPDATE dispatch_jobs SET raw_json = jsonb_build_object('completionTime', ${new Date(closed.startsAt.getTime() + 7200e3).toISOString()}::text) WHERE org_id=${ORG} AND id=${J2}`;
 await q`UPDATE dispatch_jobs SET raw_json = jsonb_build_object('completionTime', ${new Date(closed.startsAt.getTime() + 8600e3).toISOString()}::text) WHERE org_id=${ORG} AND id=${J3}`;
 await q`UPDATE dispatch_jobs SET raw_json = jsonb_build_object('completionTime', ${new Date(closed.endsAt.getTime() + 3600e3).toISOString()}::text) WHERE org_id=${ORG} AND id=${J_OUT}`;
@@ -146,11 +147,11 @@ let detail;
   detail = res.ok ? res.data : null;
   check("compute: period status → computed", detail && detail.period.status === "computed", JSON.stringify(detail?.period));
   check("compute: unknown completion diagnostics visible", detail && detail.diagnostics?.unknownCompletionTimeRows === 1, JSON.stringify(detail?.diagnostics));
-  // D1: 2 jobs × $100 + $25 tip = $225, verified venmo → computed
+  // D1: GOA J1 flat $10 + normal J2 $100 + $25 tip = $135, verified venmo → computed
   const d1 = detail.records.find((r) => r.contractorId === D1);
-  check("compute: D1 gross = 2 × $100", d1 && d1.grossCents === 20000, JSON.stringify(d1));
+  check("compute: D1 GOA flat $10 plus normal $100", d1 && d1.grossCents === 11000, JSON.stringify(d1));
   check("compute: D1 tips separate line = $25", d1 && d1.tipsCents === 2500, JSON.stringify(d1));
-  check("compute: D1 total = $225", d1 && d1.totalCents === 22500 && d1.status === "computed" && d1.rail === "venmo", JSON.stringify(d1));
+  check("compute: D1 total = $135", d1 && d1.totalCents === 13500 && d1.status === "computed" && d1.rail === "venmo", JSON.stringify(d1));
   check("compute: D1 full handle owner-only @jane", d1 && d1.handleFull === "@jane", JSON.stringify(d1));
   check("compute: D1 masked handle never full", d1 && d1.handleMasked !== "@jane" && d1.handleMasked.includes("••"), JSON.stringify(d1));
   // D2: no method → blocked, amount still recorded, rail NULL
@@ -165,9 +166,9 @@ let detail;
   check("compute: D4 tips-only → 0 jobs + $8 tip, blocked (no method)", d4 && d4.jobCount === 0 && d4.grossCents === 0 && d4.tipsCents === 800 && d4.totalCents === 800 && d4.status === "blocked", JSON.stringify(d4));
   // out-of-window job + failed tip + open job excluded
   check("compute: exactly 4 records (out-of-window / failed / open-job excluded)", detail && detail.records.length === 4, JSON.stringify(detail?.records));
-  check("compute: totals — 4 contractors, $393 total ($350 gross + $43 tips)", detail && detail.totals.contractorCount === 4 && detail.totals.totalCents === 39300 && detail.totals.grossCents === 35000 && detail.totals.tipsCents === 4300 && detail.totals.blockedCount === 3 && detail.totals.dueCount === 1, JSON.stringify(detail?.totals));
+  check("compute: totals — 4 contractors, $383 total ($340 gross + $43 tips)", detail && detail.totals.contractorCount === 4 && detail.totals.totalCents === 38300 && detail.totals.grossCents === 34000 && detail.totals.tipsCents === 4300 && detail.totals.blockedCount === 3 && detail.totals.dueCount === 1, JSON.stringify(detail?.totals));
   // rail groups: only VERIFIED rows group — Venmo (1) — $225
-  check("compute: rail groups only verified — venmo $225", detail && detail.totals.rails.length === 1 && detail.totals.rails[0].rail === "venmo" && detail.totals.rails[0].totalCents === 22500, JSON.stringify(detail?.totals.rails));
+  check("compute: rail groups only verified — venmo $135", detail && detail.totals.rails.length === 1 && detail.totals.rails[0].rail === "venmo" && detail.totals.rails[0].totalCents === 13500, JSON.stringify(detail?.totals.rails));
   // payment_transactions payout mirror
   const mirrors = await q`SELECT idempotency_key, amount_cents, status, kind FROM payment_transactions WHERE org_id=${ORG} AND kind='payout'`;
   check("mirror: 4 staged payout ledger rows", mirrors.length === 4 && mirrors.every((m) => m.status === "staged"), JSON.stringify(mirrors));
@@ -180,7 +181,7 @@ let detail;
   check("recompute: ok", res.ok, JSON.stringify(res));
   const rows = await q`SELECT COUNT(*)::int AS c FROM payout_records WHERE org_id=${ORG} AND period_id=${PERIOD}`;
   check("recompute: no duplicate records (still 4)", Number(rows[0].c) === 4, JSON.stringify(rows));
-  check("recompute: totals unchanged (4 contractors, $393, 3 blocked)", res.ok && res.data.totals.totalCents === 39300 && res.data.totals.blockedCount === 3, JSON.stringify(res.data?.totals));
+  check("recompute: totals unchanged (4 contractors, $383, 3 blocked)", res.ok && res.data.totals.totalCents === 38300 && res.data.totals.blockedCount === 3, JSON.stringify(res.data?.totals));
   const aud = await q`SELECT action FROM audit_log WHERE org_id=${ORG} AND entity_type='pay_period' ORDER BY occurred_at`;
   check("audit: payday_computed + payout_period_recomputed recorded", aud.some((a) => a.action === "payday_computed") && aud.some((a) => a.action === "payout_period_recomputed"), JSON.stringify(aud));
 }
@@ -202,7 +203,7 @@ let detail;
 
   // recompute after pay: D1's paid row IMMUTABLE
   const recomputed = await computePaydayCore(ACTOR, PERIOD);
-  check("recompute: paid row untouched after recompute", recomputed.ok && recomputed.data.records.find((r) => r.contractorId === D1)?.status === "paid" && recomputed.data.records.find((r) => r.contractorId === D1)?.totalCents === 22500, JSON.stringify(recomputed.data?.records));
+  check("recompute: paid row untouched after recompute", recomputed.ok && recomputed.data.records.find((r) => r.contractorId === D1)?.status === "paid" && recomputed.data.records.find((r) => r.contractorId === D1)?.totalCents === 13500, JSON.stringify(recomputed.data?.records));
 
   // mark the WHOLE period paid — computed rows flip, blocked stay blocked
   const whole = await markPaydayPeriodPaidCore(ACTOR, PERIOD);
@@ -323,7 +324,7 @@ let detail;
   //    survives the method edits; recompute still leaves it untouched.
   const afterEdits = await computePaydayCore(ACTOR, PERIOD);
   const d1Paid = afterEdits.ok ? afterEdits.data.records.find((r) => r.contractorId === D1) : null;
-  check("immutable: paid record snapshot unchanged after method edits", d1Paid && d1Paid.status === "paid" && d1Paid.rail === "venmo" && d1Paid.handleFull === "@jane" && d1Paid.totalCents === 22500, JSON.stringify(d1Paid));
+  check("immutable: paid record snapshot unchanged after method edits", d1Paid && d1Paid.status === "paid" && d1Paid.rail === "venmo" && d1Paid.handleFull === "@jane" && d1Paid.totalCents === 13500, JSON.stringify(d1Paid));
   const perRows = await q`SELECT COUNT(*)::int AS c FROM payout_records WHERE org_id=${ORG} AND period_id=${PERIOD} AND status='paid'`;
   check("immutable: exactly the original paid rows remain (1)", Number(perRows[0].c) === 1, JSON.stringify(perRows));
 }

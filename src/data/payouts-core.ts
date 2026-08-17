@@ -716,7 +716,7 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
       if (typeof raw === "string") { try { raw = JSON.parse(raw); } catch { raw = null; } }
       const items = raw && typeof raw === "object" && Array.isArray((raw as Record<string, unknown>).invoiceItems)
         ? (raw as Record<string, unknown>).invoiceItems as unknown[] : [];
-      if (items.some((item) => item && typeof item === "object" && (/goa/i.test(String((item as Record<string, unknown>).name ?? "")) || Number((item as Record<string, unknown>).price) === 10))) row.goa_count += 1;
+      if (items.some((item) => item && typeof item === "object" && /goa/i.test(String((item as Record<string, unknown>).name ?? "")))) row.goa_count += 1;
       m.set(tb, row); return m;
     }, new Map<string, { tb_id: string; job_count: number; goa_count: number }>()).values()];
     // BUSY-TIME BONUS (owner-locked 2026-08-13): 3+ ASSIGNED calls per
