@@ -814,18 +814,19 @@ try {
     const { deps } = makeDeps(m.fetchImpl, router);
     const r = await runAutoDispatch(ORG, deps);
     const p = posts(m.calls);
-    const expBase = fallbackRoadMinutes(haversineMiles(41.15, -73.1, 41.2, -73.2));
+    const expBase = 8; // GPS-origin straight-line fallback is 8 minutes; +5 buffer = 13.
     check("fallback: still auto-accepted with the driver (router hiccup never drops a driver)", r.decisions[0]?.decision === "auto_accept_with_driver" && p[0]?.body?.driverId === 703785, JSON.stringify(r.decisions));
     check("fallback: ETA = fallback base + buffer (no fabricated road time)", p[0]?.body?.ETA === expBase + 5, `expected ${expBase + 5}, got ${p[0]?.body?.ETA}`);
     const rows = await decisions();
     const fr = rows.find((x) => String(x.call_request_id) === "7015");
-    check("fallback: decision row flags usedFallback + null roadSeconds + breakdown note", fr && Number(fr.eta_minutes) === expBase + 5 && fr.raw_response?.eta?.usedFallback === true && fr.raw_response?.eta?.roadSeconds === null && fr.raw_response?.eta?.straightLineMinutes === 11 && String(fr.reason).includes("road fallback") && String(fr.reason).includes(`buffer 5`), JSON.stringify(fr?.raw_response?.eta));
+    check("fallback: decision row flags usedFallback + null roadSeconds + breakdown note", fr && Number(fr.eta_minutes) === 13 && fr.raw_response?.eta?.usedFallback === true && fr.raw_response?.eta?.roadSeconds === null && fr.raw_response?.eta?.straightLineMinutes === 8 && String(fr.reason).includes("road fallback") && String(fr.reason).includes(`buffer 5`), JSON.stringify(fr?.raw_response?.eta));
   }
 
   /* ============ 22) floor applied (road + buffer below the configured floor) ============ */
   {
     await clearOrgDispatch();
     await q`UPDATE org_settings SET eta_floor_minutes=15 WHERE org_id=${ORG}`;
+    await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES(${`ad-gps-703785-floor-${FIXTURE_TAG}`}, ${ORG}, ${USER}, '703785', 41.19, -73.15, ${new Date().toISOString()})`;
     const m = makeFetch({
       offers: [offer(7016)],
       drivers: [driver(703785, "Jayden Fountain", { lat: 41.19, lng: -73.15, etaSec: 604 })], // road 60s → 1+5 = 6 → floor 15
