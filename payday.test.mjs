@@ -188,7 +188,7 @@ let detail;
   check("rules: null assignment excluded without crash", d1 && d1.jobCount === 3 && !detail.totals.completionDiagnostics.some((x) => x.jobId === J_NULL), JSON.stringify(detail.totals));
   check("rules: missing and garbage completionTime diagnose, no sync-clock fallback", detail.totals.completionDiagnostics.some((x) => x.jobId === J_MISSING) && detail.totals.completionDiagnostics.some((x) => x.jobId === J_GARBAGE), JSON.stringify(detail.totals.completionDiagnostics));
   check("rules: GOA pays flat $10 and cancelled GOA is excluded", d1 && d1.goaJobCount === 1 && d1.grossCents === 21000, JSON.stringify(d1));
-  check("rules: reassignment pays final driver only", d1 && d1.jobCount === 3 && d3 && d3.jobCount === 3, JSON.stringify({ d1, d3 }));
+  check("rules: reassignment pays final driver only", d1 && d1.jobCount === 3 && d3 && d3.jobCount === 2 && !detail.totals.completionDiagnostics.some((x) => x.jobId === J_REASSIGN_A || x.jobId === J_REASSIGN_B), JSON.stringify({ d1, d3 }));
   // rail groups: only VERIFIED rows group — Venmo (1) — $225
   check("compute: rail groups only verified — venmo $225", detail && detail.totals.rails.length === 1 && detail.totals.rails[0].rail === "venmo" && detail.totals.rails[0].totalCents === 23500, JSON.stringify(detail?.totals.rails));
   // payment_transactions payout mirror
