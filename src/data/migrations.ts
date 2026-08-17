@@ -513,20 +513,6 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
       PRIMARY KEY (org_id, user_id)
     )`;
   }],
-  [30, async (q) => {
-    // Owner↔contractor view toggle (owner-directed 2026-08-12): staff accounts
-    // (owner/admin) may link ONE active org contractor as their driver identity
-    // so they can switch to the driver app from the SAME sign-in (view-only —
-    // management powers stay role-gated server-side). Shape (a) — the staff row
-    // itself carries towbook_driver_id — is recognized at read time and needs
-    // no link column. Shape (b) stores the explicit link here. One driver per
-    // owner (single-valued column); one owner per driver (partial unique index).
-    // NOTE: numbered 30 (not the spec's stale 24/25) — 24-29 are consumed by
-    // later features; the payday plan must take 31-32 (lead directive 2026-08-12).
-    await q`ALTER TABLE users ADD COLUMN IF NOT EXISTS linked_driver_user_id TEXT REFERENCES users(id)`;
-    await q`CREATE UNIQUE INDEX IF NOT EXISTS users_linked_driver_uidx
-      ON users(linked_driver_user_id) WHERE linked_driver_user_id IS NOT NULL`;
-  }],
   [25, async (q) => {
     // Contractor-admin part 3 (owner-directed 2026-08-12): the DRIVER'S LICENSE
     // WITH FACIAL VERIFICATION pair — the license photo AND a live selfie, both
@@ -617,38 +603,6 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
       ('lesson-paperwork-done-right', 'paperwork-done-right', 'Paperwork done right', 'Your documents on file keep you cleared to work — and to go online.', 'documents', 'WHY IT MATTERS: Required documents gate your GO button. Missing or expired paperwork means you cannot take jobs at all.\n\nCHECKLIST:\n- Open Profile → Documents and check what is required\n- Upload each document as a clear, readable photo or PDF\n- For the driver''s license, add the live selfie too\n- Watch expiry dates — renew before they lapse\n- Re-upload promptly if the owner asks for a correction', 4, 10, TRUE)
     ON CONFLICT (slug) DO NOTHING`;
   }],
-  [28, async (q) => {
-    // Driver-portal feature batch (owner-directed 2026-08-12): payout method
-    // capture + profile photo. TWO additions:
-    //   1. payout_methods — ONE row per (org, contractor): the driver's
-    //      chosen payout rail (cash_app/venmo/zelle/bank) + handle. Owner-
-    //      confirmed verification happens OUTSIDE the app (no provider API can
-    //      prove a cashtag — the owner sends from their own app and marks it),
-    //      so the driver UI only captures/stores; status starts
-    //      connected_unverified and the owner verifies/rejects later (payday
-    //      milestone). "No method" = no row (derived at read). Handles are PII:
-    //      drivers always see masked forms; the full handle is owner-only.
-    //   2. contractor_profiles.profile_photo_key — B2 object key of the
-    //      driver's profile photo (avatar). Re-upload overwrites the same key.
-    await q`CREATE TABLE IF NOT EXISTS payout_methods (
-      id TEXT PRIMARY KEY,
-      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-      contractor_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      rail TEXT NOT NULL CHECK (rail IN ('cash_app','venmo','zelle','bank')),
-      handle TEXT,
-      bank_institution_name TEXT,
-      bank_last4 TEXT,
-      status TEXT NOT NULL DEFAULT 'connected_unverified'
-        CHECK (status IN ('connected_unverified','verified','rejected')),
-      reject_note TEXT,
-      is_default BOOLEAN NOT NULL DEFAULT TRUE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )`;
-    await q`CREATE UNIQUE INDEX IF NOT EXISTS payout_methods_org_contractor_uidx
-      ON payout_methods(org_id, contractor_id)`;
-    await q`ALTER TABLE contractor_profiles ADD COLUMN IF NOT EXISTS profile_photo_key TEXT`;
-  }],
   [27, async (q) => {
     // Contractor Management v2 "Uber-style" (owner-directed 2026-08-12,
     // contractor-management-spec.md). TWO additions:
@@ -685,6 +639,38 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
       PRIMARY KEY (org_id, user_id)
     )`;
   }],
+  [28, async (q) => {
+    // Driver-portal feature batch (owner-directed 2026-08-12): payout method
+    // capture + profile photo. TWO additions:
+    //   1. payout_methods — ONE row per (org, contractor): the driver's
+    //      chosen payout rail (cash_app/venmo/zelle/bank) + handle. Owner-
+    //      confirmed verification happens OUTSIDE the app (no provider API can
+    //      prove a cashtag — the owner sends from their own app and marks it),
+    //      so the driver UI only captures/stores; status starts
+    //      connected_unverified and the owner verifies/rejects later (payday
+    //      milestone). "No method" = no row (derived at read). Handles are PII:
+    //      drivers always see masked forms; the full handle is owner-only.
+    //   2. contractor_profiles.profile_photo_key — B2 object key of the
+    //      driver's profile photo (avatar). Re-upload overwrites the same key.
+    await q`CREATE TABLE IF NOT EXISTS payout_methods (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      contractor_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      rail TEXT NOT NULL CHECK (rail IN ('cash_app','venmo','zelle','bank')),
+      handle TEXT,
+      bank_institution_name TEXT,
+      bank_last4 TEXT,
+      status TEXT NOT NULL DEFAULT 'connected_unverified'
+        CHECK (status IN ('connected_unverified','verified','rejected')),
+      reject_note TEXT,
+      is_default BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS payout_methods_org_contractor_uidx
+      ON payout_methods(org_id, contractor_id)`;
+    await q`ALTER TABLE contractor_profiles ADD COLUMN IF NOT EXISTS profile_photo_key TEXT`;
+  }],
   [29, async (q) => {
     // job_feedback (2026-08-12, owner bug: "contractor feedback won't submit"):
     // the table was originally added to version 20 AFTER v20 had already been
@@ -701,6 +687,20 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`;
     await q`CREATE INDEX IF NOT EXISTS job_feedback_org_job_idx ON job_feedback(org_id, job_id)`;
+  }],
+  [30, async (q) => {
+    // Owner↔contractor view toggle (owner-directed 2026-08-12): staff accounts
+    // (owner/admin) may link ONE active org contractor as their driver identity
+    // so they can switch to the driver app from the SAME sign-in (view-only —
+    // management powers stay role-gated server-side). Shape (a) — the staff row
+    // itself carries towbook_driver_id — is recognized at read time and needs
+    // no link column. Shape (b) stores the explicit link here. One driver per
+    // owner (single-valued column); one owner per driver (partial unique index).
+    // NOTE: numbered 30 (not the spec's stale 24/25) — 24-29 are consumed by
+    // later features; the payday plan must take 31-32 (lead directive 2026-08-12).
+    await q`ALTER TABLE users ADD COLUMN IF NOT EXISTS linked_driver_user_id TEXT REFERENCES users(id)`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS users_linked_driver_uidx
+      ON users(linked_driver_user_id) WHERE linked_driver_user_id IS NOT NULL`;
   }],
   [31, async (q) => {
     // Damage-claims agent (owner-directed 2026-08-12, build order #6, PHASE 1):
@@ -1496,11 +1496,16 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`ALTER TABLE dispatch_zones ADD COLUMN IF NOT EXISTS unlock_jobs_required INTEGER NOT NULL DEFAULT 30`;
     await q`ALTER TABLE dispatch_zones ADD COLUMN IF NOT EXISTS color TEXT`;
   }],
-  // 66 (2026-08-15): vehicle-type vocabulary — normalize legacy/case variants to
-  // the owner-specified capability set (car | tow truck | other). The dispatch
-  // tow gate is fail-closed on exact 'tow truck', so stale values must not
-  // masquerade as capabilities; 'Other' also broke the editor select which now
-  // validates against the same three values the save path accepts.
+  [66, async (q) => {
+    await q`UPDATE contractor_profiles SET vehicle_type = 'tow truck' WHERE vehicle_type IN ('Flatbed','Wheel-lift','Integrated','Landoll')`;
+    await q`UPDATE contractor_profiles SET vehicle_type = 'other' WHERE vehicle_type = 'Other'`;
+  }],
+  [67, async (q) => {
+    await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS photos_flagged_missing BOOLEAN NOT NULL DEFAULT FALSE`;
+    await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS photos_flagged_missing_at TIMESTAMPTZ`;
+    await q`ALTER TABLE job_photos ADD COLUMN IF NOT EXISTS upload_attempts INTEGER NOT NULL DEFAULT 1`;
+    await q`ALTER TABLE job_photos ADD COLUMN IF NOT EXISTS last_upload_error TEXT`;
+  }],
   [68, async (q) => {
     await q`ALTER TABLE org_settings ADD COLUMN IF NOT EXISTS tire_plug_rate_cents INTEGER NOT NULL DEFAULT 4500`;
     await q`CREATE TABLE IF NOT EXISTS tire_plug_transactions (id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, job_id TEXT NOT NULL, contractor_user_id TEXT NOT NULL REFERENCES users(id), amount_cents INTEGER NOT NULL CHECK (amount_cents >= 0), status TEXT NOT NULL CHECK (status IN ('offered','approved','charged','paid','voided','declined')), square_charge_id TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), paid_at TIMESTAMPTZ, declined_reason TEXT)`;
@@ -1509,17 +1514,10 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`DROP TRIGGER IF EXISTS tire_plug_paid_immutable ON tire_plug_transactions`;
     await q`CREATE TRIGGER tire_plug_paid_immutable BEFORE UPDATE ON tire_plug_transactions FOR EACH ROW EXECUTE FUNCTION reject_paid_tire_plug_mutation()`;
   }],
-  [67, async (q) => {
-    await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS photos_flagged_missing BOOLEAN NOT NULL DEFAULT FALSE`;
-    await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS photos_flagged_missing_at TIMESTAMPTZ`;
-    await q`ALTER TABLE job_photos ADD COLUMN IF NOT EXISTS upload_attempts INTEGER NOT NULL DEFAULT 1`;
-    await q`ALTER TABLE job_photos ADD COLUMN IF NOT EXISTS last_upload_error TEXT`;
+  [69, async (q) => {
+    await q`ALTER TABLE tip_cashouts ADD COLUMN IF NOT EXISTS covered_tire_plug_ids JSONB NOT NULL DEFAULT '[]'::jsonb`;
+    await q`ALTER TABLE payout_records ADD COLUMN IF NOT EXISTS tire_plug_cents INTEGER NOT NULL DEFAULT 0`;
   }],
-  [66, async (q) => {
-    await q`UPDATE contractor_profiles SET vehicle_type = 'tow truck' WHERE vehicle_type IN ('Flatbed','Wheel-lift','Integrated','Landoll')`;
-    await q`UPDATE contractor_profiles SET vehicle_type = 'other' WHERE vehicle_type = 'Other'`;
-  }],
-
   [70, async (q) => {
     await q`CREATE TABLE IF NOT EXISTS owner_notifications (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1536,16 +1534,9 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE INDEX IF NOT EXISTS owner_notifications_org_created_idx ON owner_notifications(org_id, created_at DESC)`;
     await q`CREATE UNIQUE INDEX IF NOT EXISTS owner_notifications_org_call_escalation_uidx ON owner_notifications(org_id, call_request_id) WHERE call_request_id IS NOT NULL AND kind='escalation'`;
   }],
-
-  [69, async (q) => {
-    await q`ALTER TABLE tip_cashouts ADD COLUMN IF NOT EXISTS covered_tire_plug_ids JSONB NOT NULL DEFAULT '[]'::jsonb`;
-    await q`ALTER TABLE payout_records ADD COLUMN IF NOT EXISTS tire_plug_cents INTEGER NOT NULL DEFAULT 0`;
-  }],
-  // 71: idempotent source-based owner notification archive entries.
   [71, async (q) => {
     await q`CREATE UNIQUE INDEX IF NOT EXISTS owner_notifications_org_kind_source_uidx ON owner_notifications(org_id, kind, (payload->>'sourceId')) WHERE (payload->>'sourceId') IS NOT NULL`;
   }],
-  // 72: repair Towbook completion instants from the authoritative local-time field.
   [72, async (q) => {
     // Towbook completionTime is ET wall-clock without an offset. PostgreSQL's
     // America/New_York conversion is DST-aware and matches payday boundaries.

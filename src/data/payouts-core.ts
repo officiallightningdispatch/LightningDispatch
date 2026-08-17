@@ -689,7 +689,15 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
       SELECT dj.assigned_driver_towbook_id AS tb_id, COUNT(*)::int AS job_count
       FROM dispatch_jobs dj
       WHERE dj.org_id=${actor.orgId} AND dj.status='completed'
-        AND dj.completed_at >= ${iso(startsAt)} AND dj.completed_at < ${iso(endsAt)}
+        AND COALESCE(
+          CASE WHEN dj.raw_json->>'completionTime' ~ '^\\s*\\d{4}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?([+-]\\d{2}:?\\d{2}|Z)?\\s*$'
+            THEN (dj.raw_json->>'completionTime')::timestamp AT TIME ZONE 'America/New_York'
+          END, dj.completed_at
+        ) >= ${iso(startsAt)} AND COALESCE(
+          CASE WHEN dj.raw_json->>'completionTime' ~ '^\\s*\\d{4}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?([+-]\\d{2}:?\\d{2}|Z)?\\s*$'
+            THEN (dj.raw_json->>'completionTime')::timestamp AT TIME ZONE 'America/New_York'
+          END, dj.completed_at
+        ) < ${iso(endsAt)}
         AND dj.assigned_driver_towbook_id IS NOT NULL
       GROUP BY dj.assigned_driver_towbook_id`;
     // BUSY-TIME BONUS (owner-locked 2026-08-13): 3+ ASSIGNED calls per

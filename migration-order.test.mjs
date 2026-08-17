@@ -9,7 +9,8 @@ test('migration catalog is unique and source-ordered', () => {
   assert.ok(versions.length > 50);
   assert.equal(Math.max(...versions), 72);
   assert.equal(new Set(versions).size, versions.length, 'duplicate migration version');
-  assert.deepEqual(versions.slice(-17), [56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 68, 67, 66, 70, 69, 71, 72]);
+  assert.deepEqual(versions, [...versions].sort((a, b) => a - b), 'catalog source order must be strictly ascending');
+  assert.deepEqual(versions.slice(-8), [65, 66, 67, 68, 69, 70, 71, 72]);
 });
 
 test('late migration dependencies are ordered after their owners', () => {
