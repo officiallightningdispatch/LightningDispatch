@@ -18,6 +18,8 @@ import { TipCashoutPanel } from "~/components/tip-cashout-ui";
 import { completeJobWithPhotos, getJobPhotoStatus, setVehicleMatch, softCompleteJob, finalCompleteJob, uploadJobPhoto } from "~/data/driver-photos";
 import type { JobPhotoStatus, PhotoPhase, PhotoSide } from "~/data/driver-photos";
 import { captureCompletion, chargeTip, declineTip, getCompletionCapture, getSquareWebPaymentsConfig, isSquareConfigured } from "~/data/completion";
+import { getFuelFeeState, skipFuelFee } from "~/data/fuel-payment";
+import type { FuelState } from "~/data/fuel-payment-core";
 import type { CompletionCaptureStatus } from "~/data/completion";
 
 export const PHOTO_SIDES: PhotoSide[] = ["front", "driver_side", "passenger_side", "rear"];
@@ -169,6 +171,7 @@ export function JobPhotoFlow({ callId, jobStatus, onCompleted }: { callId: strin
   const [allowMissingPhotos, setAllowMissingPhotos] = useState(false);
   const [capture, setCapture] = useState<CompletionCaptureStatus | null>(null);
   const [squareConfigured, setSquareConfigured] = useState(false);
+  const [fuelState, setFuelState] = useState<FuelState | null>(null);
   const toast = useToast();
 
   const refresh = useCallback(async () => {
@@ -184,6 +187,8 @@ export function JobPhotoFlow({ callId, jobStatus, onCompleted }: { callId: strin
       setLoadError("Couldn't load photo status.");
     }
     try {
+      const f = await getFuelFeeState({ data: { jobId: callId } });
+      if (f && "eligible" in f) setFuelState(f);
       const c = await getCompletionCapture({ data: { jobId: callId } });
       if (c.ok) setCapture(c.completion);
     } catch {
@@ -321,6 +326,10 @@ export function JobPhotoFlow({ callId, jobStatus, onCompleted }: { callId: strin
           actionDisabled={!status.complete.pre_arrival || !(matchChecked || status.matchConfirmed) || PHOTO_SIDES.some((side) => slot("pre_arrival", side).busy)}
         />
       )}
+      {fuelState?.eligible && fuelState.status === "none" && status.complete.pre_arrival && (
+        <FuelFeeSection callId={callId} onDone={() => { void refresh(); toast("Fuel fee decision saved — the job flow continues."); }} />
+      )}
+      {fuelState?.status === "paid" && <div className="rounded-xl border border-success-200 bg-success-50 p-3 text-xs font-bold text-success-700">✓ Fuel delivery — $20.00 paid</div>}
       {showService && (
         <PhasePanel
           phase="service"
@@ -569,6 +578,11 @@ export function SignaturePad({ onChange, label = "Have the customer sign here" }
  *  the owner's access token. Presets + custom + "No tip". A failed charge
  *  offers retry or decline — the tip NEVER blocks completion (the complete
  *  button stays live; only signature + survey gate it). */
+function FuelFeeSection({ callId, onDone }: { callId: string; onDone: () => void }) {
+  const [busy, setBusy] = useState(false); const [error, setError] = useState("");
+  const skip = async () => { setBusy(true); setError(""); try { const r = await skipFuelFee({ data: { jobId: callId } }); if (r.ok) onDone(); else setError(r.message ?? "Unable to save decision."); } catch { setError("Unable to save decision — you can continue the job."); } setBusy(false); };
+  return <div className="mt-3 rounded-xl border border-brand-200 bg-brand-50/50 p-3"><p className="flex items-center gap-1.5 text-xs font-bold text-ink-800"><CreditCard className="size-3.5 text-brand-600" /> Fuel delivery — gas fee $20.00</p><p className="mt-1 text-xs text-ink-500">Charge the customer in-app, or skip if they pay cash. This never blocks photos or completion.</p><div className="mt-2 flex gap-2"><Button size="sm" className="flex-1" disabled={busy} onClick={() => { setError("Card form is unavailable here — use the customer’s cash option or retry shortly."); }}>Charge $20.00</Button><Button size="sm" variant="secondary" loading={busy} onClick={() => void skip()}>Skip</Button></div>{error && <p className="mt-1.5 text-[11px] text-danger-600">{error}</p>}</div>;
+}
 function SquareTipSection({
   callId,
   paidAmountCents,
