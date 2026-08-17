@@ -205,6 +205,10 @@ try {
     // Towbook driver identity; the recovery scenario must exercise an eligible
     // driver rather than bypassing the production gate.
     await q`INSERT INTO contractor_profiles(org_id, user_id, vehicle_type) VALUES(${org}, ${USER}, 'car')`;
+    // GPS-only dispatch selection requires a fresh app fix; seed the recovery
+    // fixture with the driver's current location so retry exercises session
+    // healing and verified dispatch rather than the no-driver hold path.
+    await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES(${`rx-gps-${org}`}, ${org}, ${USER}, ${String(DRIVER)}, 41.18, -73.15, NOW())`;
   }
   // Connected owner session rows (status='error' until the moment each test
   // needs them, so the running server's 3s background loop can never pick a

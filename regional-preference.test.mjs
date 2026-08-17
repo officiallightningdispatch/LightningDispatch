@@ -13,7 +13,7 @@ const offline = (id, lat, lng) => ({ ...driver(id, lat, lng), isCheckedIn: false
 const checks = [];
 async function check(name, fn) { try { await fn(); checks.push([name, true]); console.log(`PASS ${name}`); } catch (e) { checks.push([name, false]); console.error(`FAIL ${name}: ${e.message}`); throw e; } }
 const config = { core_centers: [{ name: "Bridgeport", lat: 41.1792, lng: -73.1894, radius_miles: 4 }, { name: "Milford", lat: 41.2307, lng: -73.064, radius_miles: 4 }], nearby_centers: [{ name: "Stratford", lat: 41.2043, lng: -73.1332, radius_miles: 3 }, { name: "Fairfield", lat: 41.1412, lng: -73.2637, radius_miles: 3 }, { name: "Orange", lat: 41.2787, lng: -73.0257, radius_miles: 3 }, { name: "Shelton", lat: 41.3165, lng: -73.0932, radius_miles: 3 }, { name: "Trumbull", lat: 41.2429, lng: -73.2007, radius_miles: 3 }, { name: "West Haven", lat: 41.2707, lng: -72.947, radius_miles: 3 }], priority_weight: 1, nearby_weight: 0.5, max_backlog_before_waive: 2, enabled: true };
-const pick = (candidates, lat, lng, queues = new Map(), area = {}) => chooseBestDriverByRoad(candidates, lat, lng, null, queues, area);
+const pick = (candidates, lat, lng, queues = new Map(), area = {}) => chooseBestDriverByRoad(candidates, lat, lng, null, queues, { ...area, gpsFixes: area.gpsFixes ?? new Map(candidates.map((d) => [String(d.driverId), { lat: d.latitude, lng: d.longitude, capturedAt: new Date().toISOString() }])) });
 let created = false;
 try {
   await ensureSchema();

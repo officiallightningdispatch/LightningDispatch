@@ -17,7 +17,7 @@ const checks = [];
 async function check(name, fn) { try { await fn(); checks.push([name, true]); console.log(`PASS ${name}`); } catch (e) { checks.push([name, false]); console.error(`FAIL ${name}: ${e.message}`); throw e; } }
 const driver = (id, lat, lng, extra = {}) => ({ driverId: id, isCheckedIn: true, latitude: lat, longitude: lng, estimatedTimeSeconds: 600, ...extra });
 const router = async (fromLat, fromLng) => ({ seconds: Math.max(60, Math.round(haversineMiles(fromLat, fromLng, 30.2672, -97.7431) * 60)), provider: "osrm", liveTraffic: false, trafficDelaySeconds: null, notes: "hermetic national router" });
-const pick = (drivers, area = {}, lat = 30.2672, lng = -97.7431, out = undefined) => chooseBestDriverByRoad(drivers, lat, lng, router, new Map(), area, out);
+const pick = (drivers, area = {}, lat = 30.2672, lng = -97.7431, out = undefined) => chooseBestDriverByRoad(drivers, lat, lng, router, new Map(), { ...area, gpsFixes: area.gpsFixes ?? new Map(drivers.map((d) => [String(d.driverId), { lat: d.latitude, lng: d.longitude, capturedAt: new Date().toISOString() }])) }, out);
 const stateArea = (jobState, states) => ({ stateGuard: { jobState, resolveDriverState: async (id) => states[String(id)] ?? null } }, { stateGuard: { active: false, jobState: null, blocked: false, blockedReason: null, checked: 0, inState: 0, excluded: [] } });
 let created = false;
 try {
