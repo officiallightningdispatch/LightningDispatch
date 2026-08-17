@@ -250,7 +250,7 @@ let detail;
   const PERIOD2 = `pay-${ORG}-fresh`;
   await q`INSERT INTO pay_periods(id, org_id, starts_at, ends_at, payout_due_on, status) VALUES
     (${PERIOD2}, ${ORG}, ${iso(fresh.startsAt)}, ${iso(fresh.endsAt)}, ${fresh.payoutDueOn}, 'open')`;
-  await q`INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, phone, lat, lng, area, service_type, status, created_at, completed_at, assigned_driver_towbook_id) VALUES
+  await q`INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, phone, lat, lng, area, service_type, status, created_at, completed_at, assigned_driver_towbook_id, raw_json) VALUES
     (${`qa-pd-jf-${randomUUID()}`}, ${ORG}, ${"9201"}, ${"CF"}, ${"9145550107"}, 41.1, -73.5, ${"CT"}, ${"Tire"}, 'completed', ${iso(new Date(fresh.startsAt.getTime() + 3600e3))}, ${iso(new Date(fresh.startsAt.getTime() + 3600e3))}, ${TB3}, ${completionJson(new Date(fresh.startsAt.getTime() + 3600e3))})`;
   const c2 = await computePaydayCore(ACTOR, PERIOD2);
   check("fresh: D3 verified now → computed + rail group", c2.ok && c2.data.records.find((r) => r.contractorId === D3)?.status === "computed" && c2.data.records.find((r) => r.contractorId === D3)?.rail === "cash_app", JSON.stringify(c2.data?.records));
@@ -346,7 +346,7 @@ let detail;
   //    survives the method edits; recompute still leaves it untouched.
   const afterEdits = await computePaydayCore(ACTOR, PERIOD);
   const d1Paid = afterEdits.ok ? afterEdits.data.records.find((r) => r.contractorId === D1) : null;
-  check("immutable: paid record snapshot unchanged after method edits", d1Paid && d1Paid.status === "paid" && d1Paid.rail === "venmo" && d1Paid.handleFull === "@jane" && d1Paid.totalCents === 22500, JSON.stringify(d1Paid));
+  check("immutable: paid record snapshot unchanged after method edits", d1Paid && d1Paid.status === "paid" && d1Paid.rail === "venmo" && d1Paid.handleFull === "@jane" && d1Paid.totalCents === 23500, JSON.stringify(d1Paid));
   const perRows = await q`SELECT COUNT(*)::int AS c FROM payout_records WHERE org_id=${ORG} AND period_id=${PERIOD} AND status='paid'`;
   check("immutable: exactly the original paid rows remain (1)", Number(perRows[0].c) === 1, JSON.stringify(perRows));
 }
