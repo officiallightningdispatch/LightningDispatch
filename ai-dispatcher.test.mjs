@@ -343,7 +343,7 @@ try {
   await q`INSERT INTO organization_memberships(org_id,user_id,role) VALUES(${ORG7},${QUAL_USERS[5]},'contractor')`;
   await q`INSERT INTO contractor_profiles(org_id,user_id,vehicle_type) VALUES(${ORG7},${QUAL_USERS[0]},'car'),(${ORG7},${QUAL_USERS[1]},'car'),(${ORG7},${QUAL_USERS[2]},'car'),(${ORG7},${QUAL_USERS[3]},'car'),(${ORG7},${QUAL_USERS[4]},'tow truck'),(${ORG7},${QUAL_USERS[5]},'car')`;
   // Idempotent after an interrupted run: stable fixture IDs must not collide.
-  await q`INSERT INTO contractor_doc_types(id,org_id,name) VALUES('qual-doc-a',${ORG7},'License A'),('qual-doc-b',${ORG7},'License B') ON CONFLICT (id) DO UPDATE SET org_id=EXCLUDED.org_id, name=EXCLUDED.name`;
+  await q`INSERT INTO contractor_doc_types(id,org_id,name) VALUES('qual-doc-a',${ORG7},'License A'),('qual-doc-b',${ORG7},'License B') ON CONFLICT (id) DO UPDATE SET org_id=EXCLUDED.org_id, name=EXCLUDED.name, active=TRUE`;
   await q`INSERT INTO contractor_documents(id,org_id,contractor_id,doc_type_id,storage_key,status,uploaded_by_user_id) VALUES('qual-doc-one',${ORG7},${QUAL_USERS[4]},'qual-doc-a','x','verified',${USER}),('qual-doc-two',${ORG7},${QUAL_USERS[4]},'qual-doc-b','x','verified',${USER}) ON CONFLICT (id) DO UPDATE SET org_id=EXCLUDED.org_id, contractor_id=EXCLUDED.contractor_id, doc_type_id=EXCLUDED.doc_type_id, storage_key=EXCLUDED.storage_key, status=EXCLUDED.status, uploaded_by_user_id=EXCLUDED.uploaded_by_user_id`;
   // Capability-mismatch driver needs BOTH active doc types verified (the gate
   // counts required_docs = all active types), so it passes compliance and the
