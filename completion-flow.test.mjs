@@ -50,9 +50,9 @@ const ORG3 = `qa-cf3-${TAG}`;           // payment failure → retry/decline; ne
 const OWNER = `qa-cf-owner-${TAG}`;
 const OWNER2 = `qa-cf2-owner-${TAG}`;
 const OWNER3 = `qa-cf3-owner-${TAG}`;
-const DRIVER = `qa-cf-driver-${TAG}`;
-const DRIVER2 = `qa-cf2-driver-${TAG}`;
-const DRIVER3 = `qa-cf3-driver-${TAG}`;
+const DRIVER = `qa-cf-driver-${randomUUID()}`;
+const DRIVER2 = `qa-cf2-driver-${randomUUID()}`;
+const DRIVER3 = `qa-cf3-driver-${randomUUID()}`;
 const OTHER = `qa-cf-other-${TAG}`;     // in ORG, not assigned to the job
 // Per-run Towbook user ids prevent crashed-run collisions on the global unique index.
 const tbu = (seed) => String(900_000_000n + BigInt("0x" + seed.slice(-36).replace(/-/g, "").slice(0, 10)) % 100_000_000n);
