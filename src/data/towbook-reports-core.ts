@@ -1,6 +1,7 @@
 /** Server-only Towbook CallWorkflow client and payday reconciliation. */
 import { randomUUID } from "node:crypto";
 import { sql } from "~/db";
+import { readOwnerCreds, type OwnerCreds } from "./towbook-recovery";
 
 export type TowbookReportErrorCode = "credentials_unavailable" | "authentication_failed" | "report_failed" | "invalid_response";
 export class TowbookReportError extends Error { constructor(public code: TowbookReportErrorCode, message: string) { super(message); this.name = "TowbookReportError"; } }
@@ -11,7 +12,10 @@ export type CallWorkflowRow = Record<string, unknown> & {
 };
 export type ReportWindow = { start: string; end: string; companyId?: number[] };
 let tokenCache: { token: string; expiresAt: number } | null = null;
+let credentialsReader: () => Promise<OwnerCreds | null> = readOwnerCreds;
 export function resetTowbookReportTokenCacheForTests() { tokenCache = null; }
+/** Test-only dependency injection; production always uses the stable secret-file reader. */
+export function setTowbookReportCredentialsReaderForTests(reader?: () => Promise<OwnerCreds | null>) { credentialsReader = reader ?? readOwnerCreds; }
 const endpoint = "https://app.towbook.com/api";
 const responseRows = (body: unknown): CallWorkflowRow[] => {
   if (Array.isArray(body)) return body as CallWorkflowRow[];
@@ -24,7 +28,10 @@ const responseRows = (body: unknown): CallWorkflowRow[] => {
 };
 async function bearer(): Promise<string> {
   if (tokenCache && tokenCache.expiresAt > Date.now() + 30_000) return tokenCache.token;
-  const username = process.env.TOWBOOK_USERNAME, password = process.env.TOWBOOK_PASSWORD;
+  const envUsername = process.env.TOWBOOK_USERNAME, envPassword = process.env.TOWBOOK_PASSWORD;
+  const stored = (!envUsername || !envPassword) ? await credentialsReader() : null;
+  const username = envUsername || stored?.username;
+  const password = envPassword || stored?.password;
   if (!username || !password) throw new TowbookReportError("credentials_unavailable", "Towbook report credentials are unavailable.");
   let r: Response;
   try { r = await fetch(`${endpoint}/authentication`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ username, password }) }); }

@@ -1,7 +1,7 @@
 // Hermetic Towbook report client/reconciliation tests. No network; DB checks run when DATABASE_URL is available.
 import { strict as assert } from "node:assert";
 const core = await import("./src/data/towbook-reports-core.ts");
-const { fetchCallWorkflow, reconcileCallWorkflow, reconcileDriverActivityCore, TowbookReportError, resetTowbookReportTokenCacheForTests, saveTowbookSnapshot } = core;
+const { fetchCallWorkflow, reconcileCallWorkflow, reconcileDriverActivityCore, TowbookReportError, resetTowbookReportTokenCacheForTests, setTowbookReportCredentialsReaderForTests, saveTowbookSnapshot } = core;
 const checks = [];
 const check = (name, fn) => { try { fn(); checks.push([name, true]); } catch (e) { checks.push([name, false]); throw e; } };
 const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -10,14 +10,21 @@ const calls = [];
 process.env.TOWBOOK_USERNAME = "qa-user"; process.env.TOWBOOK_PASSWORD = "qa-password";
 try {
   resetTowbookReportTokenCacheForTests();
+  setTowbookReportCredentialsReaderForTests(async () => ({ username: "file-user", password: "file-password" }));
+  delete process.env.TOWBOOK_USERNAME; delete process.env.TOWBOOK_PASSWORD;
   globalThis.fetch = async (url, init) => { calls.push({ url, init }); return url.endsWith("authentication") ? json({ token: "A".repeat(64), expiresAt: new Date(Date.now() + 300000).toISOString() }) : json({ reportData: [{ id: 1, driver: "Test", completed: "2026-08-10T10:00:00" }] }); };
   const first = await fetchCallWorkflow({ start: "2026-08-10T00:00:00", end: "2026-08-16T23:59:59" });
   await fetchCallWorkflow({ start: "2026-08-10T00:00:00", end: "2026-08-16T23:59:59" });
   check("client token cached", () => assert.equal(calls.filter(x => x.url.endsWith("authentication")).length, 1));
   check("client request shape", () => { const req = calls.find(x => x.url.endsWith("/reports")); assert.equal(req.init.method, "POST"); assert.equal(req.init.headers.authorization, `Bearer ${"A".repeat(64)}`); assert.equal(req.init.headers["X-API-Use-UTC"], "1"); assert.equal(req.init.headers["X-Company"], "all"); assert.deepEqual(JSON.parse(req.init.body), { dateStart:"2026-08-10T00:00:00", dateEnd:"2026-08-16T23:59:59", companyId:[23257], impounds:"0", reportType:"CallWorkflow", version:"2.0" }); });
   check("client rows", () => assert.equal(first.rows.length, 1));
+  check("file fallback credentials", () => { const auth = calls.find(x => x.url.endsWith("authentication")); assert.deepEqual(JSON.parse(auth.init.body), { username: "file-user", password: "file-password" }); });
+  resetTowbookReportTokenCacheForTests(); process.env.TOWBOOK_USERNAME = "env-user"; process.env.TOWBOOK_PASSWORD = "env-password"; globalThis.fetch = async (url, init) => { calls.push({ url, init }); return url.endsWith("authentication") ? json({ token: "D".repeat(64) }) : json({ reportData: [] }); }; await fetchCallWorkflow({start:"x",end:"y"});
+  check("environment precedence", () => { const auth = calls.filter(x => x.url.endsWith("authentication")).at(-1); assert.deepEqual(JSON.parse(auth.init.body), { username: "env-user", password: "env-password" }); });
   const fail = async (env, response, code) => { resetTowbookReportTokenCacheForTests(); process.env.TOWBOOK_USERNAME = env[0]; process.env.TOWBOOK_PASSWORD = env[1]; globalThis.fetch = async () => response instanceof Error ? Promise.reject(response) : response; await assert.rejects(() => fetchCallWorkflow({start:"x",end:"y"}), e => e instanceof TowbookReportError && e.code === code); };
+  setTowbookReportCredentialsReaderForTests(async () => null);
   await fail(["", ""], json({}), "credentials_unavailable");
+  check("credential error does not disclose values", async () => { /* classification above is intentionally value-free */ });
   await fail(["u", "p"], json({}, 401), "authentication_failed");
   globalThis.fetch = async (url) => url.endsWith("authentication") ? json({token:"B".repeat(64)}) : json({}, 500); await assert.rejects(() => fetchCallWorkflow({start:"x",end:"y"}), e => e.code === "report_failed");
   globalThis.fetch = async (url) => url.endsWith("authentication") ? json({token:"C".repeat(64)}) : json(null); await assert.rejects(() => fetchCallWorkflow({start:"x",end:"y"}), e => e.code === "invalid_response");
