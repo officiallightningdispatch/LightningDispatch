@@ -406,28 +406,173 @@ await setup();
   const st = summarizePhotos(rows);
   check("regression: pre-arrival + this service photo present on the PO job", st.counts.pre_arrival === 4 && st.counts.service === 1, JSON.stringify(st.counts));
 }
-/* ================================ summary + cleanup ================================ */
 } catch (e) { runError = e instanceof Error ? e : new Error(String(e)); }
+/* ================================ summary + cleanup ================================ */
 const failed = checks.filter(([, ok]) => !ok);
 console.log(`driver-photos.test.mjs: ${checks.length - failed.length}/${checks.length} passed`);
 if (runError) console.error(`driver-photos.test.mjs: ABORTED (${runError.name}): ${runError.message}`);
-// Prove cleanup: deleting the QA orgs cascades every row they created.
-for (const org of [ORG, ORG2, ORG3, ORG4]) { assertQaOrg(org); await q`DELETE FROM organizations WHERE id=${org}`.catch(() => {}); }
-for (const u of [OWNER, OWNER2, OWNER3, OWNER4, DRIVER, DRIVER2, DRIVER3, DRIVER4, OTHER]) await q`DELETE FROM users WHERE id=${u}`.catch(() => {});
+// Prove cleanup explicitly in FK-safe order. Do not swallow FK errors: a green
+// suite must prove that every QA row was actually deleted.
+const qaUsers = [OWNER, OWNER2, OWNER3, OWNER4, DRIVER, DRIVER2, DRIVER3, DRIVER4, OTHER];
+const del = async (label, result) => {
+  const rows = await result;
+  if (!Array.isArray(rows)) throw new Error(`cleanup ${label}: delete did not return rows`);
+  return rows.length;
+};
+// Every FK to users must be cleared before deleting a fixture user. Keep this
+// exhaustive list in sync with the information_schema FK scan (the query used
+// during the B6 gate); both directions are intentionally covered.
+const deleteUserChildren = async (u) => {
+  await del("academy_progress.user_id", q`DELETE FROM academy_progress WHERE user_id=${u} RETURNING *`);
+  await del("audit_log.actor_user_id", q`DELETE FROM audit_log WHERE actor_user_id=${u} RETURNING *`);
+  await del("battery_install_photo_overrides.actor_user_id", q`DELETE FROM battery_install_photo_overrides WHERE actor_user_id=${u} RETURNING *`);
+  await del("battery_install_photos.uploaded_by", q`DELETE FROM battery_install_photos WHERE uploaded_by=${u} RETURNING *`);
+  await del("battery_inventory_ledger.actor_user_id", q`DELETE FROM battery_inventory_ledger WHERE actor_user_id=${u} RETURNING *`);
+  await del("battery_sales.battery_photo_override_by", q`DELETE FROM battery_sales WHERE battery_photo_override_by=${u} RETURNING *`);
+  await del("battery_sales.contractor_user_id", q`DELETE FROM battery_sales WHERE contractor_user_id=${u} RETURNING *`);
+  await del("battery_warranties.voided_by", q`DELETE FROM battery_warranties WHERE voided_by=${u} RETURNING *`);
+  await del("contractor_doc_selfies.contractor_id", q`DELETE FROM contractor_doc_selfies WHERE contractor_id=${u} RETURNING *`);
+  await del("contractor_doc_selfies.uploaded_by_user_id", q`DELETE FROM contractor_doc_selfies WHERE uploaded_by_user_id=${u} RETURNING *`);
+  await del("contractor_documents.contractor_id", q`DELETE FROM contractor_documents WHERE contractor_id=${u} RETURNING *`);
+  await del("contractor_documents.uploaded_by_user_id", q`DELETE FROM contractor_documents WHERE uploaded_by_user_id=${u} RETURNING *`);
+  await del("contractor_form_docs.contractor_id", q`DELETE FROM contractor_form_docs WHERE contractor_id=${u} RETURNING *`);
+  await del("contractor_form_submissions.contractor_id", q`DELETE FROM contractor_form_submissions WHERE contractor_id=${u} RETURNING *`);
+  await del("contractor_form_submissions.section2_approved_by", q`DELETE FROM contractor_form_submissions WHERE section2_approved_by=${u} RETURNING *`);
+  await del("contractor_profiles.user_id", q`DELETE FROM contractor_profiles WHERE user_id=${u} RETURNING *`);
+  await del("contractor_schedules.updated_by_user_id", q`DELETE FROM contractor_schedules WHERE updated_by_user_id=${u} RETURNING *`);
+  await del("contractor_schedules.user_id", q`DELETE FROM contractor_schedules WHERE user_id=${u} RETURNING *`);
+  await del("driver_availability_log.user_id", q`DELETE FROM driver_availability_log WHERE user_id=${u} RETURNING *`);
+  await del("driver_locations.driver_id", q`DELETE FROM driver_locations WHERE driver_id=${u} RETURNING *`);
+  await del("job_photos.uploaded_by_user_id", q`DELETE FROM job_photos WHERE uploaded_by_user_id=${u} RETURNING *`);
+  await del("organization_memberships.user_id", q`DELETE FROM organization_memberships WHERE user_id=${u} RETURNING *`);
+  await del("payout_methods.contractor_id", q`DELETE FROM payout_methods WHERE contractor_id=${u} RETURNING *`);
+  await del("payout_records.contractor_id", q`DELETE FROM payout_records WHERE contractor_id=${u} RETURNING *`);
+  await del("payout_records.paid_by_user_id", q`DELETE FROM payout_records WHERE paid_by_user_id=${u} RETURNING *`);
+  await del("push_subscriptions.user_id", q`DELETE FROM push_subscriptions WHERE user_id=${u} RETURNING *`);
+  await del("sessions.user_id", q`DELETE FROM sessions WHERE user_id=${u} RETURNING *`);
+  await del("status_events.actor_user_id", q`DELETE FROM status_events WHERE actor_user_id=${u} RETURNING *`);
+  await del("tip_cashouts.contractor_id", q`DELETE FROM tip_cashouts WHERE contractor_id=${u} RETURNING *`);
+  await del("tip_cashouts.paid_by_user_id", q`DELETE FROM tip_cashouts WHERE paid_by_user_id=${u} RETURNING *`);
+  await del("tire_plug_transactions.contractor_user_id", q`DELETE FROM tire_plug_transactions WHERE contractor_user_id=${u} RETURNING *`);
+  await del("users linked drivers", q`UPDATE users SET linked_driver_user_id=NULL WHERE linked_driver_user_id=${u} RETURNING *`);
+};
+// Include failed-run fixtures, but never broaden beyond the qa-cf-* namespace.
+const qaOrgs = (await q`SELECT id FROM organizations WHERE id LIKE 'qa-photos%'`).map(({ id }) => id);
+const qaUserRows = await q`SELECT id FROM users WHERE id LIKE 'qa-photos%'`;
+const allQaUsers = [...new Set([...qaUsers, ...qaUserRows.map(({ id }) => id)])];
+for (const org of qaOrgs) assertQaOrg(org);
+// Every organization FK child, ordered deepest-first. This is intentionally
+// exhaustive against the information_schema FK scan so new fixture data cannot
+// survive cleanup unnoticed. Keep this list in sync when adding org FKs.
+const orgDeletes = [
+  ["battery_inventory_ledger", "org_id"],
+  ["battery_install_photo_overrides", "org_id"],
+  ["battery_install_photos", "org_id"],
+  ["battery_sales", "org_id"],
+  ["battery_warranties", "org_id"],
+  ["battery_inventory", "org_id"],
+  ["battery_products", "org_id"],
+  ["battery_install_types", "org_id"],
+  ["battery_compatibility", "org_id"],
+  ["payout_records", "org_id"],
+  ["pay_periods", "org_id"],
+  ["completion_tips", "org_id"],
+  ["job_completions", "org_id"],
+  ["job_photos", "org_id"],
+  ["status_events", "org_id"],
+  ["audit_log", "org_id"],
+  ["dispatch_jobs", "org_id"],
+  ["ai_dispatcher_runs", "org_id"],
+  ["contractor_doc_selfies", "org_id"],
+  ["contractor_documents", "org_id"],
+  ["contractor_form_docs", "org_id"],
+  ["contractor_form_submissions", "org_id"],
+  ["contractor_profiles", "org_id"],
+  ["contractor_schedules", "org_id"],
+  ["damage_claims", "org_id"],
+  ["dispatch_contractors", "org_id"],
+  ["dispatch_zones", "org_id"],
+  ["driver_availability_log", "org_id"],
+  ["driver_issues", "org_id"],
+  ["driver_locations", "org_id"],
+  ["driver_region_preferences", "org_id"],
+  ["job_feedback", "org_id"],
+  ["motor_club_cards", "org_id"],
+  ["org_settings", "org_id"],
+  ["organization_memberships", "org_id"],
+  ["outbound_write_ledger", "org_id"],
+  ["owner_notifications", "org_id"],
+  ["payment_transactions", "org_id"],
+  ["payout_methods", "org_id"],
+  ["push_subscriptions", "org_id"],
+  ["service_time_goals", "org_id"],
+  ["sessions", "active_org_id"],
+  ["tip_cashouts", "org_id"],
+  ["tire_plug_transactions", "org_id"],
+  ["towbook_report_snapshots", "org_id"],
+  ["towbook_sessions", "org_id"],
+];
+for (const org of qaOrgs) {
+  for (const [table, column] of orgDeletes) {
+    await del(`${table}.${column}`, q.query(`DELETE FROM ${table} WHERE ${column} = $1 RETURNING *`, [org]));
+  }
+}
+for (const u of allQaUsers) await deleteUserChildren(u);
+for (const u of allQaUsers) await del("users", q`DELETE FROM users WHERE id=${u} RETURNING *`);
+for (const org of qaOrgs) { assertQaOrg(org); await del("organizations", q`DELETE FROM organizations WHERE id=${org} RETURNING id`); }
 const leftover = await q`SELECT
-  (SELECT COUNT(*)::int FROM job_photos p JOIN organizations o ON o.id=p.org_id WHERE o.name='qa driver-photos') AS photos,
-  (SELECT COUNT(*)::int FROM job_completions jc JOIN organizations o ON o.id=jc.org_id WHERE o.name='qa driver-photos') AS completions,
-  (SELECT COUNT(*)::int FROM dispatch_jobs j JOIN organizations o ON o.id=j.org_id WHERE o.name='qa driver-photos') AS jobs,
-  (SELECT COUNT(*)::int FROM status_events e JOIN organizations o ON o.id=e.org_id WHERE o.name='qa driver-photos') AS events,
-  (SELECT COUNT(*)::int FROM audit_log a JOIN organizations o ON o.id=a.org_id WHERE o.name='qa driver-photos') AS audit,
-  (SELECT COUNT(*)::int FROM towbook_sessions s JOIN organizations o ON o.id=s.org_id WHERE o.name='qa driver-photos') AS sessions,
-  (SELECT COUNT(*)::int FROM ai_dispatcher_decisions d JOIN organizations o ON o.id=d.org_id WHERE o.name='qa driver-photos') AS decisions,
-  (SELECT COUNT(*)::int FROM org_settings s JOIN organizations o ON o.id=s.org_id WHERE o.name='qa driver-photos') AS settings,
-  (SELECT COUNT(*)::int FROM organization_memberships m JOIN organizations o ON o.id=m.org_id WHERE o.name='qa driver-photos') AS members,
-  (SELECT COUNT(*)::int FROM users u WHERE u.id IN (${OWNER}, ${OWNER2}, ${OWNER3}, ${OWNER4}, ${DRIVER}, ${DRIVER2}, ${DRIVER3}, ${DRIVER4}, ${OTHER})) AS users`;
+  (SELECT COUNT(*)::int FROM completion_tips WHERE org_id LIKE 'qa-photos%') AS tips,
+  (SELECT COUNT(*)::int FROM job_completions WHERE org_id LIKE 'qa-photos%') AS completions,
+  (SELECT COUNT(*)::int FROM job_photos WHERE org_id LIKE 'qa-photos%') AS photos,
+  (SELECT COUNT(*)::int FROM dispatch_jobs WHERE org_id LIKE 'qa-photos%') AS jobs,
+  (SELECT COUNT(*)::int FROM status_events WHERE org_id LIKE 'qa-photos%') AS events,
+  (SELECT COUNT(*)::int FROM audit_log WHERE org_id LIKE 'qa-photos%') AS audit,
+  (SELECT COUNT(*)::int FROM towbook_sessions WHERE org_id LIKE 'qa-photos%') AS sessions,
+  (SELECT COUNT(*)::int FROM org_settings WHERE org_id LIKE 'qa-photos%') AS settings,
+  (SELECT COUNT(*)::int FROM organization_memberships WHERE org_id LIKE 'qa-photos%') AS members,
+  (SELECT COUNT(*)::int FROM ai_dispatcher_runs WHERE org_id LIKE 'qa-photos%') AS ai_runs,
+  (SELECT COUNT(*)::int FROM battery_compatibility WHERE org_id LIKE 'qa-photos%') AS battery_compatibility,
+  (SELECT COUNT(*)::int FROM battery_install_photo_overrides WHERE org_id LIKE 'qa-photos%') AS battery_install_photo_overrides,
+  (SELECT COUNT(*)::int FROM battery_install_photos WHERE org_id LIKE 'qa-photos%') AS battery_install_photos,
+  (SELECT COUNT(*)::int FROM battery_install_types WHERE org_id LIKE 'qa-photos%') AS battery_install_types,
+  (SELECT COUNT(*)::int FROM battery_inventory WHERE org_id LIKE 'qa-photos%') AS battery_inventory,
+  (SELECT COUNT(*)::int FROM battery_inventory_ledger WHERE org_id LIKE 'qa-photos%') AS battery_inventory_ledger,
+  (SELECT COUNT(*)::int FROM battery_products WHERE org_id LIKE 'qa-photos%') AS battery_products,
+  (SELECT COUNT(*)::int FROM battery_sales WHERE org_id LIKE 'qa-photos%') AS battery_sales,
+  (SELECT COUNT(*)::int FROM battery_warranties WHERE org_id LIKE 'qa-photos%') AS battery_warranties,
+  (SELECT COUNT(*)::int FROM contractor_doc_selfies WHERE org_id LIKE 'qa-photos%') AS contractor_doc_selfies,
+  (SELECT COUNT(*)::int FROM contractor_doc_types WHERE org_id LIKE 'qa-photos%') AS contractor_doc_types,
+  (SELECT COUNT(*)::int FROM contractor_documents WHERE org_id LIKE 'qa-photos%') AS contractor_documents,
+  (SELECT COUNT(*)::int FROM contractor_form_docs WHERE org_id LIKE 'qa-photos%') AS contractor_form_docs,
+  (SELECT COUNT(*)::int FROM contractor_form_submissions WHERE org_id LIKE 'qa-photos%') AS contractor_form_submissions,
+  (SELECT COUNT(*)::int FROM contractor_profiles WHERE org_id LIKE 'qa-photos%') AS contractor_profiles,
+  (SELECT COUNT(*)::int FROM contractor_schedules WHERE org_id LIKE 'qa-photos%') AS contractor_schedules,
+  (SELECT COUNT(*)::int FROM damage_claims WHERE org_id LIKE 'qa-photos%') AS damage_claims,
+  (SELECT COUNT(*)::int FROM dispatch_contractors WHERE org_id LIKE 'qa-photos%') AS dispatch_contractors,
+  (SELECT COUNT(*)::int FROM dispatch_zones WHERE org_id LIKE 'qa-photos%') AS dispatch_zones,
+  (SELECT COUNT(*)::int FROM driver_availability_log WHERE org_id LIKE 'qa-photos%') AS driver_availability_log,
+  (SELECT COUNT(*)::int FROM driver_issues WHERE org_id LIKE 'qa-photos%') AS driver_issues,
+  (SELECT COUNT(*)::int FROM driver_locations WHERE org_id LIKE 'qa-photos%') AS driver_locations,
+  (SELECT COUNT(*)::int FROM driver_region_preferences WHERE org_id LIKE 'qa-photos%') AS driver_region_preferences,
+  (SELECT COUNT(*)::int FROM job_feedback WHERE org_id LIKE 'qa-photos%') AS job_feedback,
+  (SELECT COUNT(*)::int FROM motor_club_cards WHERE org_id LIKE 'qa-photos%') AS motor_club_cards,
+  (SELECT COUNT(*)::int FROM outbound_write_ledger WHERE org_id LIKE 'qa-photos%') AS outbound_write_ledger,
+  (SELECT COUNT(*)::int FROM owner_notifications WHERE org_id LIKE 'qa-photos%') AS owner_notifications,
+  (SELECT COUNT(*)::int FROM pay_periods WHERE org_id LIKE 'qa-photos%') AS pay_periods,
+  (SELECT COUNT(*)::int FROM payment_transactions WHERE org_id LIKE 'qa-photos%') AS payment_transactions,
+  (SELECT COUNT(*)::int FROM payout_methods WHERE org_id LIKE 'qa-photos%') AS payout_methods,
+  (SELECT COUNT(*)::int FROM payout_records WHERE org_id LIKE 'qa-photos%') AS payout_records,
+  (SELECT COUNT(*)::int FROM push_subscriptions WHERE org_id LIKE 'qa-photos%') AS push_subscriptions,
+  (SELECT COUNT(*)::int FROM service_time_goals WHERE org_id LIKE 'qa-photos%') AS service_time_goals,
+  (SELECT COUNT(*)::int FROM sessions WHERE active_org_id LIKE 'qa-photos%') AS active_sessions,
+  (SELECT COUNT(*)::int FROM tip_cashouts WHERE org_id LIKE 'qa-photos%') AS tip_cashouts,
+  (SELECT COUNT(*)::int FROM tire_plug_transactions WHERE org_id LIKE 'qa-photos%') AS tire_plug_transactions,
+  (SELECT COUNT(*)::int FROM towbook_report_snapshots WHERE org_id LIKE 'qa-photos%') AS towbook_report_snapshots,
+  (SELECT COUNT(*)::int FROM users WHERE id LIKE 'qa-photos%') AS users,
+  (SELECT COUNT(*)::int FROM organizations WHERE id LIKE 'qa-photos%') AS orgs`;
 const z = Object.values(leftover[0]).every((n) => Number(n) === 0);
 console.log(`cleanup: ${JSON.stringify(leftover[0])}`);
 if (!z) { console.error("FAIL: QA cleanup left rows behind"); process.exit(1); }
 console.log("driver-photos.test.mjs: cleanup verified — zero QA rows left");
 if (runError) { console.error(runError.stack ?? String(runError)); process.exit(1); }
-if (failed.length) { console.error(failed.map(([n, , e]) => `  ${n} ${e}`).join("\n")); process.exit(1); }
+if (failed.length) process.exit(1);
