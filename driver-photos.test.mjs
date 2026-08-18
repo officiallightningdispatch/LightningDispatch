@@ -56,19 +56,21 @@ const DRIVER2 = `qa-photos-driver2-${randomUUID()}`;
 const DRIVER3 = `qa-photos-driver3-${randomUUID()}`;
 const DRIVER4 = `qa-photos-driver4-${randomUUID()}`;
 const OTHER = `qa-photos-other-${randomUUID()}`;  // not assigned to any job
-// Per-run Towbook driver ids — fixed ids (11-14/15) collide with leftover QA
-// rows from crashed runs (the LD users_towbook_driver_id index is global).
+// Per-run Towbook driver/user ids — fixed ids (11-14/15, 111-114) collide
+// with leftover QA rows from crashed runs (both LD ids' unique indexes are global).
 const tb = (seed) => String(BigInt("0x" + seed.slice(-36).replace(/-/g, "").slice(0, 10)) % 900_000_000n);
+const tbu = (seed) => String(900_000_000n + BigInt("0x" + seed.slice(-36).replace(/-/g, "").slice(0, 10)) % 100_000_000n);
 const TB1 = tb(DRIVER), TB2 = tb(DRIVER2), TB3 = tb(DRIVER3), TB4 = tb(DRIVER4), TBO = tb(OTHER);
+const TBU1 = tbu(DRIVER), TBU2 = tbu(DRIVER2), TBU3 = tbu(DRIVER3), TBU4 = tbu(DRIVER4);
 // Per-run Towbook call ids (9-digit) — job ids (`tb-<call>`) and towbook_job_id
 // both derive from the org's own UUID so crashed runs can never collide on
 // dispatch_jobs_pkey or the call-id resolution.
 const cid = (seed) => String(100_000_000n + BigInt("0x" + seed.slice(-36).replace(/-/g, "").slice(0, 10)) % 90_000_000n);
 const CONF = {
-  [ORG]: { userId: DRIVER, owner: OWNER, tbDriver: TB1, tbUser: "111", job: `tb-${cid(ORG)}`, call: cid(ORG), status: "en_route" },
-  [ORG2]: { userId: DRIVER2, owner: OWNER2, tbDriver: TB2, tbUser: "112", job: `tb-${cid(ORG2)}`, call: cid(ORG2), status: "arrived" },
-  [ORG3]: { userId: DRIVER3, owner: OWNER3, tbDriver: TB3, tbUser: "113", job: `tb-${cid(ORG3)}`, call: cid(ORG3), status: "arrived" },
-  [ORG4]: { userId: DRIVER4, owner: OWNER4, tbDriver: TB4, tbUser: "114", job: `tb-${cid(ORG4)}`, call: cid(ORG4), status: "arrived" },
+  [ORG]: { userId: DRIVER, owner: OWNER, tbDriver: TB1, tbUser: TBU1, job: `tb-${cid(ORG)}`, call: cid(ORG), status: "en_route" },
+  [ORG2]: { userId: DRIVER2, owner: OWNER2, tbDriver: TB2, tbUser: TBU2, job: `tb-${cid(ORG2)}`, call: cid(ORG2), status: "arrived" },
+  [ORG3]: { userId: DRIVER3, owner: OWNER3, tbDriver: TB3, tbUser: TBU3, job: `tb-${cid(ORG3)}`, call: cid(ORG3), status: "arrived" },
+  [ORG4]: { userId: DRIVER4, owner: OWNER4, tbDriver: TB4, tbUser: TBU4, job: `tb-${cid(ORG4)}`, call: cid(ORG4), status: "arrived" },
 };
 const PICKUP = { lat: 41.2, lng: -73.2 };
 const northMeters = (m) => PICKUP.lat + m / 111190;
