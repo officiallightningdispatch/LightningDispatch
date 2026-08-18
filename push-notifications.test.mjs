@@ -68,11 +68,13 @@ const endpoint = (n) => `https://push.example.test/endpoint-${n}-${TAG}`;
 // sender "posted" to the push service (mirror of encryptPush).
 import { createDecipheriv, createECDH, hkdfSync } from "node:crypto";
 function decryptPushBody(subPrivB64, authB64, body) {
-  const salt = body.subarray(0, 16);
-  const rs = body.readUInt32BE(16);
-  const asPubLen = body[20];
-  const asPub = body.subarray(21, 21 + asPubLen);
-  const ct = body.subarray(21 + asPubLen);
+  // fetch/crypto implementations may return Uint8Array; normalize before Buffer APIs.
+  const bytes = Buffer.from(body);
+  const salt = bytes.subarray(0, 16);
+  const rs = bytes.readUInt32BE(16);
+  const asPubLen = bytes[20];
+  const asPub = bytes.subarray(21, 21 + asPubLen);
+  const ct = bytes.subarray(21 + asPubLen);
   const auth = Buffer.from(authB64, "base64url");
   const ecdh = createECDH("prime256v1");
   ecdh.setPrivateKey(Buffer.from(subPrivB64, "base64url"));
