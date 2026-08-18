@@ -1545,6 +1545,15 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
   [71, async (q) => {
     await q`CREATE UNIQUE INDEX IF NOT EXISTS owner_notifications_org_kind_source_uidx ON owner_notifications(org_id, kind, (payload->>'sourceId')) WHERE (payload->>'sourceId') IS NOT NULL`;
   }],
+  [72, async (q) => {
+    await q`CREATE TABLE IF NOT EXISTS towbook_report_snapshots (
+      id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      report_type TEXT NOT NULL, period_start DATE NOT NULL, period_end DATE NOT NULL,
+      data JSONB NOT NULL, source TEXT NOT NULL DEFAULT 'server' CHECK (source IN ('server','manual-paste')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    await q`CREATE INDEX IF NOT EXISTS towbook_report_snapshots_period_idx ON towbook_report_snapshots(org_id,report_type,period_start,period_end,created_at DESC)`;
+  }],
  ];
 export async function ensureSchema() {
   const q = sql();
