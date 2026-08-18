@@ -71,8 +71,9 @@ export function reconcileCallWorkflow(rows: CallWorkflowRow[], jobs: Array<Recor
   for (const r of rows) {
     const key = String(r.id ?? r.callNumber ?? r.dispatchEntryId ?? ""); const job = byKey.get(key);
     const status = s(r.status); const finalCancelled = status.includes("cancel") || status === "255";
-    const reassigned = status.includes("reassign") || s(job?.reassigned).trim() === "true";
-    const invoiceItems = job?.raw_json && typeof job.raw_json === "object" ? (job.raw_json as Record<string, unknown>).invoiceItems : undefined;
+    const raw = job?.raw_json && typeof job.raw_json === "object" ? job.raw_json as Record<string, unknown> : undefined;
+    const reassigned = status.includes("reassign") || job?.manually_reassigned_at != null || s(raw?.reassigned).trim() === "true";
+    const invoiceItems = raw?.invoiceItems;
     const goa = Array.isArray(invoiceItems) && invoiceItems.some(x => s(typeof x === "object" && x ? (x as Record<string, unknown>).name ?? (x as Record<string, unknown>).description : x).includes("goa"));
     let classification: Classification = "unclassifiable", cents = 0, reason = "";
     if (finalCancelled) { classification = "cancelled"; reason = "final cancelled; $0"; }
@@ -92,7 +93,7 @@ export async function saveTowbookSnapshot(orgId: string, window: ReportWindow, r
 }
 export async function getReconciliationCore(orgId: string, window: ReportWindow, rows?: CallWorkflowRow[]) {
   const report = rows ? { rows, raw: rows } : await fetchCallWorkflow(window);
-  const q = sql(); const jobs = await q`SELECT towbook_job_id,id,raw_json,reassigned FROM dispatch_jobs WHERE org_id=${orgId} AND (towbook_job_id IS NOT NULL OR id IS NOT NULL)`;
+  const q = sql(); const jobs = await q`SELECT towbook_job_id,id,raw_json,manually_reassigned_at FROM dispatch_jobs WHERE org_id=${orgId} AND (towbook_job_id IS NOT NULL OR id IS NOT NULL)`;
   await saveTowbookSnapshot(orgId, window, report.raw);
   return reconcileCallWorkflow(report.rows, jobs as Array<Record<string, unknown>>);
 }

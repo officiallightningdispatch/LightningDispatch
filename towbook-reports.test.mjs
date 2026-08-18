@@ -32,7 +32,13 @@ try {
   // 217 authoritative report rows: 187 matched DB jobs + a mixed 30-row delta.
   const names = [["Antone jerret",67],["Ai Dispatch GB",52],["Jayden Fountain",47],["Levi C Martin",40],["Brittani Simms",4],["24hourbattery",4],["George Boyd",3]];
   const rows = []; for (const [name, count] of names) for (let i=0;i<count;i++) rows.push({ id: rows.length+1, driverName:name, completed:"2026-08-12T12:00:00" });
-  const jobs = rows.slice(0,187).map((r,i) => ({ towbook_job_id:r.id, raw_json: i < 4 ? { invoiceItems:[{ name:"GOA" }] } : {}, reassigned:false }));
+  const jobs = rows.slice(0,187).map((r,i) => ({ towbook_job_id:r.id, raw_json: i < 4 ? { invoiceItems:[{ name:"GOA" }] } : {}, manually_reassigned_at:null }));
+  const markerChecks = reconcileCallWorkflow(
+    [{ id: 900, driverName: "Marker", completed: "2026-08-12T12:00:00" }, { id: 901, driverName: "Legacy", completed: "2026-08-12T12:00:00" }],
+    [{ towbook_job_id: 900, manually_reassigned_at: "2026-08-12T13:00:00Z", raw_json: {} }, { towbook_job_id: 901, raw_json: { reassigned: "true" }, manually_reassigned_at: null }]
+  );
+  check("DB reassignment marker", () => assert.equal(markerChecks.rows[0].classification, "reassigned"));
+  check("legacy raw reassignment marker", () => assert.equal(markerChecks.rows[1].classification, "reassigned"));
   for (let i=187;i<217;i++) { rows[i].completed = null; rows[i].completionTime = null; if (i === 187) rows[i].status = "cancelled"; else if (i === 188 || i === 189) rows[i].status = "reassigned"; }
   const result = reconcileCallWorkflow(rows, jobs);
   check("fixture report total", () => assert.equal(result.reportCount, 217));
