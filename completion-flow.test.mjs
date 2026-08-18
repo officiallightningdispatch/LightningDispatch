@@ -54,13 +54,17 @@ const DRIVER = `qa-cf-driver-${randomUUID()}`;
 const DRIVER2 = `qa-cf2-driver-${randomUUID()}`;
 const DRIVER3 = `qa-cf3-driver-${randomUUID()}`;
 const OTHER = `qa-cf-other-${TAG}`;     // in ORG, not assigned to the job
+// Per-run Towbook driver ids (the LD users_towbook_driver_id index is globally
+// unique — fixed ids collide with leftover rows from crashed runs).
+const tb = (seed) => String(BigInt("0x" + seed.slice(-36).replace(/-/g, "").slice(0, 10)) % 900_000_000n);
 // Per-run Towbook user ids prevent crashed-run collisions on the global unique index.
 const tbu = (seed) => String(900_000_000n + BigInt("0x" + seed.slice(-36).replace(/-/g, "").slice(0, 10)) % 100_000_000n);
+const TB1 = tb(DRIVER), TB2 = tb(DRIVER2), TB3 = tb(DRIVER3);
 const TBU1 = tbu(DRIVER), TBU2 = tbu(DRIVER2), TBU3 = tbu(DRIVER3);
 const CONF = {
-  [ORG]: { userId: DRIVER, tbDriver: "35", tbUser: TBU1, job: "tb-447011", call: "447011" },
-  [ORG2]: { userId: DRIVER2, tbDriver: "36", tbUser: TBU2, job: "tb-447012", call: "447012" },
-  [ORG3]: { userId: DRIVER3, tbDriver: "37", tbUser: TBU3, job: "tb-447013", call: "447013" },
+  [ORG]: { userId: DRIVER, tbDriver: TB1, tbUser: TBU1, job: "tb-447011", call: "447011" },
+  [ORG2]: { userId: DRIVER2, tbDriver: TB2, tbUser: TBU2, job: "tb-447012", call: "447012" },
+  [ORG3]: { userId: DRIVER3, tbDriver: TB3, tbUser: TBU3, job: "tb-447013", call: "447013" },
 };
 const PICKUP = { lat: 41.2, lng: -73.2 };
 
