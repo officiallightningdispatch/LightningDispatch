@@ -1775,6 +1775,15 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
         await q`CREATE INDEX IF NOT EXISTS battery_warranties_org_install_job_idx ON battery_warranties(org_id, install_job_id)`;
         await q`CREATE INDEX IF NOT EXISTS battery_warranties_org_product_idx ON battery_warranties(org_id, product_id)`;
   }],
+  [83, async (q) => {
+    await q`ALTER TABLE battery_products ADD COLUMN IF NOT EXISTS reorder_required BOOLEAN NOT NULL DEFAULT FALSE`;
+    await q`ALTER TABLE battery_sales ADD COLUMN IF NOT EXISTS battery_photo_override_at TIMESTAMPTZ`;
+    await q`ALTER TABLE battery_sales ADD COLUMN IF NOT EXISTS battery_photo_override_by TEXT REFERENCES users(id) ON DELETE SET NULL`;
+    await q`ALTER TABLE battery_sales ADD COLUMN IF NOT EXISTS battery_photo_override_reason TEXT`;
+    await q`CREATE TABLE IF NOT EXISTS battery_install_photo_overrides (id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, sale_id TEXT NOT NULL REFERENCES battery_sales(id) ON DELETE CASCADE, install_job_id TEXT NOT NULL REFERENCES dispatch_jobs(id) ON DELETE CASCADE, actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT, reason TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(org_id, sale_id))`;
+    await q`CREATE INDEX IF NOT EXISTS battery_install_photo_overrides_org_idx ON battery_install_photo_overrides(org_id, created_at)`;
+  }],
+
 ];
 export async function ensureSchema() {
   const q = sql();

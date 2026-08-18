@@ -28,6 +28,7 @@ import { z } from "zod";
 import { loadB2Config, authorizeAccount, putObject, getObject } from "./b2-client";
 import { loadDriverSession, callHasDriver, tbFetch } from "./driver-gps-core";
 import type { DriverSession } from "./driver-auth";
+import { batteryInstallPhotoGate, decrementBatteryInventory, createBatteryWarranty } from "./battery-lifecycle-core";
 
 /* ----------------------------------- domain ----------------------------------- */
 
@@ -512,6 +513,11 @@ export async function completeJobCore(user: PhotoUser, data: unknown, opts: { fe
       return { ok: false, code: "completion_capture_required", message: "Get the customer's signature and rating before completing the job." };
     }
 
+    // Battery installs have their own four-photo gate; generic jobs never read it.
+    const batteryGate = await batteryInstallPhotoGate(q, user.orgId, job.id);
+    if (batteryGate.required && batteryGate.missing.length) {
+      return { ok: false, code: "photos_incomplete", message: `Battery install photos required: ${batteryGate.missing.join(", ")}.` };
+    }
     // Gate: all three phases complete.
     const photos = await jobPhotoRows(user.orgId, job.id);
     const { counts, complete } = summarizePhotos(photos);
@@ -617,6 +623,17 @@ export async function completeJobCore(user: PhotoUser, data: unknown, opts: { fe
     }
 
     await markPlatformCompleted(user, job, { towbook: "verified status 5", photosUploaded: uploaded, attempts });
+    // Inventory decrement, payout snapshot, and warranty are tied to the
+    // verified install completion. All operations are idempotent by sale key.
+    if (batteryGate.required && batteryGate.saleId) {
+      const saleRows = await q`SELECT product_id, vin, battery_group_size, warranty_years_snapshot FROM battery_sales WHERE org_id=${user.orgId} AND id=${batteryGate.saleId} LIMIT 1`;
+      const sale = saleRows[0] as Record<string, unknown> | undefined;
+      if (sale?.product_id) {
+        await decrementBatteryInventory(q, { orgId:user.orgId, saleId:batteryGate.saleId, productId:String(sale.product_id), jobId:job.id, actorUserId:user.id });
+        await createBatteryWarranty(q, { orgId:user.orgId, saleId:batteryGate.saleId, productId:String(sale.product_id), installJobId:job.id, vin:sale.vin ? String(sale.vin) : null, groupSize:String(sale.battery_group_size ?? "unknown"), warrantyYears:Number(sale.warranty_years_snapshot ?? 0) });
+        await q`UPDATE battery_sales SET completed_at=NOW() WHERE org_id=${user.orgId} AND id=${batteryGate.saleId}`;
+      }
+    }
     return { ok: true, photosUploaded: uploaded, towbookCompleted: true, changed: true };
   } catch (err) {
     return { ok: false, code: "invalid_state", message: err instanceof Error ? err.message : "Unable to complete the job. Try again." };

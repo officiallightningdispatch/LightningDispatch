@@ -39,6 +39,7 @@ import { z } from "zod";
 import { loadSquareConfig, createCardPayment, squareIdempotencyKey } from "./square-client";
 import { resolveJob, isAssignedDriver } from "./driver-photos-core";
 import type { PhotoUser } from "./driver-photos-core";
+import { holdBatteryInventory, reserveBatteryInventory } from "./battery-lifecycle-core";
 import { canonicalizeNullableVehicleField } from "./battery-compatibility-canonical";
 
 const configured = () => Boolean(process.env.DATABASE_URL);
@@ -221,6 +222,7 @@ type BatterySaleRowInternal = {
   declinedReason: string | null;
   installJobId: string | null;
   paidAt: string | null;
+  productId: string | null;
 };
 
 export type BatteryAgentState = {
@@ -275,6 +277,7 @@ function mapSaleRow(r: Record<string, unknown>): BatterySaleRowInternal {
     declinedReason: r.declined_reason != null ? String(r.declined_reason) : null,
     installJobId: r.install_job_id != null ? String(r.install_job_id) : null,
     paidAt: r.paid_at != null ? new Date(String(r.paid_at)).toISOString() : null,
+    productId: r.product_id != null ? String(r.product_id) : null,
   };
 }
 
@@ -716,6 +719,11 @@ export async function chargeBatterySaleCore(
     const installJobId = await createInstallJob(q, user, job, sale, driverName);
     await q`UPDATE battery_sales SET status='paid', square_charge_id=${payment.paymentId}, install_job_id=${installJobId}, paid_at=NOW()
       WHERE id=${sale.id} AND org_id=${user.orgId}`;
+    const paidProductId = (sale as BatterySaleRowInternal & { productId?: string | null }).productId;
+    if (paidProductId) {
+      const held = await holdBatteryInventory(q, { orgId:user.orgId, saleId:sale.id, productId:paidProductId, jobId:installJobId, actorUserId:user.id });
+      if (!held.ok) return { ok:false, code:"invalid_state", message:"Battery payment succeeded, but inventory could not be held. Ops must reconcile this sale." };
+    }
     await audit(q, user, job, "battery_paid", { saleId: sale.id, paymentId: payment.paymentId, totalCents: sale.totalCents, installJobId });
     const rates = await batteryRatesCore(user.orgId);
     const facts = await loadJobFacts(q, user.orgId, job.id);

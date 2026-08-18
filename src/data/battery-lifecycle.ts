@@ -1,0 +1,4 @@
+import { createServerFn } from "@tanstack/react-start";
+const pass=(x:unknown)=>x;
+export const overrideBatteryInstallPhotos=createServerFn({method:"POST"}).validator(pass).handler(async({data})=>{const {currentUser}=await import("./auth-server");const u=await currentUser();if(!u||!["owner","admin"].includes(u.role))return {ok:false as const,reason:"unauthorized"};return (await import("./battery-lifecycle-core")).overrideBatteryInstallPhotosCore({orgId:u.orgId,id:u.id,role:u.role},data)});
+export const listBatteryPhotoBlocks=createServerFn({method:"GET"}).handler(async()=>{const {currentUser}=await import("./auth-server");const u=await currentUser();if(!u||!["owner","admin"].includes(u.role))return {ok:false as const,reason:"unauthorized",blocks:[],overrides:[]};return (await import("./battery-lifecycle-core")).listBatteryPhotoBlocksCore({orgId:u.orgId,role:u.role})});
