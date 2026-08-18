@@ -606,8 +606,8 @@ async function upsertQuote(
   jobId: string,
   vehicle: { vin: string; make: string; model: string; year: string; manual: boolean; confirmed: boolean; compatibilityId?: string | null; batteryGroupSize?: string | null; },
 ): Promise<BatterySaleRowInternal> {
-  const rows = await q`INSERT INTO battery_sales(id, org_id, job_id, contractor_user_id, vin, vehicle_make, vehicle_model, vehicle_year, vehicle_manual, vehicle_confirmed, product_id, install_type_id, battery_price_cents, install_type, install_fee_cents, sales_tax_cents, admin_fee_cents, total_cents, currency, status)
-    VALUES(gen_random_uuid()::text, ${user.orgId}, ${jobId}, ${user.id}, ${vehicle.vin}, ${vehicle.make}, ${vehicle.model}, ${vehicle.year}, ${vehicle.manual}, ${vehicle.confirmed}, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'USD', 'quote')
+  const rows = await q`INSERT INTO battery_sales(id, org_id, job_id, contractor_user_id, vin, vehicle_make, vehicle_model, vehicle_year, vehicle_manual, vehicle_confirmed, compatibility_id, battery_group_size, product_id, install_type_id, battery_price_cents, install_type, install_fee_cents, sales_tax_cents, admin_fee_cents, total_cents, currency, status)
+    VALUES(gen_random_uuid()::text, ${user.orgId}, ${jobId}, ${user.id}, ${vehicle.vin}, ${vehicle.make}, ${vehicle.model}, ${vehicle.year}, ${vehicle.manual}, ${vehicle.confirmed}, ${vehicle.compatibilityId ?? null}, ${vehicle.batteryGroupSize ?? null}, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'USD', 'quote')
     ON CONFLICT (org_id, job_id) WHERE status IN ('quote','approved')
     DO UPDATE SET vin=EXCLUDED.vin, vehicle_make=EXCLUDED.vehicle_make, vehicle_model=EXCLUDED.vehicle_model,
     vehicle_year=EXCLUDED.vehicle_year, vehicle_manual=EXCLUDED.vehicle_manual, vehicle_confirmed=EXCLUDED.vehicle_confirmed, compatibility_id=${vehicle.compatibilityId ?? null}, battery_group_size=${vehicle.batteryGroupSize ?? null},
