@@ -110,44 +110,17 @@ function EarningsView() {
   );
   const busyRangeTotal = useMemo(() => filteredBusyHours.reduce((s, h) => s + h.bonusCents, 0), [filteredBusyHours]);
 
-  /* Feature batch 8 (owner-directed 2026-08-12): per-PAY-PERIOD totals.
-   * Pay periods run Mon 00:00 → Sun 23:59; the "current" period is open, the
-   * "last" one is the immediately previous closed week. Earnings = editable
-   * per-job payrate × completed jobs + tips, computed from the existing
-   * completed/tips tables (the same numbers the owner's payday math uses). */
-  const payPeriods = useMemo(() => {
-    const monday = new Date(now);
-    monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
-    monday.setHours(0, 0, 0, 0);
-    const lastStart = new Date(monday.getTime() - 7 * 86400000);
-    const rateCents = state?.ok && state.profile.payrateCents != null ? state.profile.payrateCents : 0;
-    const period = (start: Date, end: Date) => {
-      let jobs = 0;
-      let tips = 0;
-      let battery = 0;
-      if (state?.ok) {
-        for (const c of state.completed) {
-          const t = c.completedAtIso ? new Date(c.completedAtIso).getTime() : Number.NaN;
-          if (Number.isFinite(t) && t >= start.getTime() && t < end.getTime()) jobs += 1;
-        }
-        for (const tip of state.tips) {
-          const t = tip.createdAtIso ? new Date(tip.createdAtIso).getTime() : Number.NaN;
-          if (Number.isFinite(t) && t >= start.getTime() && t < end.getTime()) tips += tip.amountCents;
-        }
-        for (const install of state.batteryInstalls) {
-          const t = install.createdAtIso ? new Date(install.createdAtIso).getTime() : Number.NaN;
-          if (Number.isFinite(t) && t >= start.getTime() && t < end.getTime()) battery += install.amountCents;
-        }
-      }
-      return { jobs, tips, battery, earnings: rateCents * jobs + tips + battery };
-    };
-    const current = period(monday, new Date(monday.getTime() + 7 * 86400000));
-    const last = period(lastStart, monday);
-    return { current, last, monday };
-  }, [state, now]);
-
-  const fmtPeriod = (monday: Date, offsetWeeks: number) =>
-    new Date(monday.getTime() + offsetWeeks * 7 * 86400000).toLocaleDateString([], { month: "short", day: "numeric" });
+  /* Payday is calculated on the server from Towbook completionTime and the
+   * same source used by owner Money. The client only formats the returned ET
+   * half-open boundaries; it never derives job counts or money. */
+  const payPeriods = state?.ok ? state.payPeriods : null;
+  const fmtPeriod = (startsAt: string, endsAt: string) => {
+    const start = new Date(startsAt);
+    const end = new Date(new Date(endsAt).getTime() - 1);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return "—";
+    const opts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", timeZone: "America/New_York" };
+    return `${start.toLocaleDateString([], opts)} – ${end.toLocaleDateString([], opts)}`;
+  };
 
   return (
     <AppShell portal="driver" title="Earnings" description="Completed jobs and tips on your account — updated live.">
@@ -201,20 +174,21 @@ function EarningsView() {
 
           {/* Pay periods (feature batch 8): current open week + last closed
               week — earnings = rate × completed + tips, Mon→Sun. */}
-          <div className="grid grid-cols-2 gap-3">
+          {payPeriods && <div className="grid grid-cols-2 gap-3">
             <Card className="p-4">
               <p className="text-[11px] font-bold uppercase tracking-wide text-brand-600">This pay period</p>
-              <p className="mt-0.5 text-xs text-ink-400">{fmtPeriod(payPeriods.monday, 0)} – {fmtPeriod(payPeriods.monday, 1)}</p>
-              <p className="mt-1 text-2xl font-bold tabular-nums text-ink-900">{money(payPeriods.current.earnings)}</p>
-              <p className="text-xs text-ink-500">{payPeriods.current.jobs} job{payPeriods.current.jobs === 1 ? "" : "s"} · {money(payPeriods.current.tips)} tips · {money(payPeriods.current.battery)} battery installs</p>
+              <p className="mt-0.5 text-xs text-ink-400">{fmtPeriod(payPeriods.current.startsAt, payPeriods.current.endsAt)}</p>
+              <p className="mt-1 text-2xl font-bold tabular-nums text-ink-900">{money(payPeriods.current.totalCents)}</p>
+              <p className="text-xs text-ink-500">{payPeriods.current.jobCount} job{payPeriods.current.jobCount === 1 ? "" : "s"} · {money(payPeriods.current.tipsCents)} tips · {money(payPeriods.current.batteryPayoutCents)} battery · {money(payPeriods.current.busyBonusCents)} bonus</p>
             </Card>
             <Card className="p-4">
               <p className="text-[11px] font-bold uppercase tracking-wide text-ink-400">Last pay period</p>
-              <p className="mt-0.5 text-xs text-ink-400">{fmtPeriod(payPeriods.monday, -1)} – {fmtPeriod(payPeriods.monday, 0)}</p>
-              <p className="mt-1 text-2xl font-bold tabular-nums text-ink-900">{money(payPeriods.last.earnings)}</p>
-              <p className="text-xs text-ink-500">{payPeriods.last.jobs} job{payPeriods.last.jobs === 1 ? "" : "s"} · {money(payPeriods.last.tips)} tips · {money(payPeriods.last.battery)} battery installs</p>
+              <p className="mt-0.5 text-xs text-ink-400">{fmtPeriod(payPeriods.previous.startsAt, payPeriods.previous.endsAt)}</p>
+              <p className="mt-1 text-2xl font-bold tabular-nums text-ink-900">{money(payPeriods.previous.totalCents)}</p>
+              <p className="text-xs text-ink-500">{payPeriods.previous.jobCount} job{payPeriods.previous.jobCount === 1 ? "" : "s"} · {money(payPeriods.previous.tipsCents)} tips · {money(payPeriods.previous.batteryPayoutCents)} battery · {money(payPeriods.previous.busyBonusCents)} bonus</p>
             </Card>
-          </div>
+          </div>}
+          {payPeriods?.diagnostics.unknownCompletionTimeRows ? <p role="status" className="text-xs text-amber-700">Some completed Towbook rows have no parseable completion time and were held out of payday totals; owner review is required.</p> : null}
 
           <Link
             to="/driver/payout"

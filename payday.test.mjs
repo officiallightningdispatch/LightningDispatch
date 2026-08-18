@@ -1,6 +1,6 @@
 // DB safety (2026-08-12): org deletes guarded by assertQaOrg — see src/data/db-guard.ts.
 // Hermetic tests for PAYDAY (build order #8, owner-directed 2026-08-11):
-//   period window math in America/New_York (Mon 00:00 → Sun 23:59:59.999,
+//   period window math in America/New_York (Mon 00:00 → next Mon 00:00 exclusive,
 //   payout Wednesday after, DST-safe), compute payday from completed jobs +
 //   paid tips (rate snapshot, tips separate line, out-of-window excluded),
 //   blocked contractors (no method / unverified method — amount still
@@ -71,17 +71,20 @@ try {
 {
   const b = periodBoundariesFor(new Date("2026-03-10T15:00:00Z")); // Tue Mar 10 2026 (spring-forward was Mar 8)
   check("math: starts Monday 00:00 ET (Mar 9 04:00Z, EDT)", b.startsAt.toISOString() === "2026-03-09T04:00:00.000Z", b.startsAt.toISOString());
-  check("math: ends Sunday 23:59:59.999 ET (Mar 16 03:59:59.999Z, EDT)", b.endsAt.toISOString() === "2026-03-16T03:59:59.999Z", b.endsAt.toISOString());
+  check("math: ends Monday 00:00 ET exclusive (Mar 16 04:00Z, EDT)", b.endsAt.toISOString() === "2026-03-16T04:00:00.000Z", b.endsAt.toISOString());
   check("math: payout due = Wed after close (Mar 18)", b.payoutDueOn === "2026-03-18", b.payoutDueOn);
   const b2 = periodBoundariesFor(new Date("2026-11-03T12:00:00Z")); // Tue Nov 3 2026 (fall-back Nov 1)
   check("math: fall-back week starts Nov 2 05:00Z (EST)", b2.startsAt.toISOString() === "2026-11-02T05:00:00.000Z", b2.startsAt.toISOString());
-  check("math: fall-back week ends Nov 9 04:59:59.999Z", b2.endsAt.toISOString() === "2026-11-09T04:59:59.999Z", b2.endsAt.toISOString());
+  check("math: fall-back week ends Nov 9 05:00:00Z exclusive", b2.endsAt.toISOString() === "2026-11-09T05:00:00.000Z", b2.endsAt.toISOString());
   const b3 = periodBoundariesFor(new Date("2026-08-03T01:00:00Z")); // Mon Aug 3 2026 01:00Z = Sun Aug 2 21:00 ET — still the PREVIOUS week
   check("math: Mon 01:00Z (Sun 21:00 ET) belongs to the week ending Aug 2", b3.endsAt.toISOString().startsWith("2026-08-03"), b3.endsAt.toISOString());
   const b4 = periodBoundariesFor(new Date("2026-08-03T04:00:00Z")); // Mon Aug 3 04:00Z = Mon 00:00 ET exactly
   check("math: Mon 00:00 ET starts the new week", b4.startsAt.toISOString() === "2026-08-03T04:00:00.000Z", b4.startsAt.toISOString());
-  const span = (b4.endsAt.getTime() - b4.startsAt.getTime() + 1);
-  check("math: window is exactly 7 days (168h) for a non-DST week", span === 7 * 86400000, String(span));
+  const aug = periodBoundariesFor(new Date("2026-08-12T18:00:00Z"));
+  check("math: affected payday is Aug 10–16 ET", aug.startsAt.toISOString() === "2026-08-10T04:00:00.000Z" && aug.endsAt.toISOString() === "2026-08-17T04:00:00.000Z", `${aug.startsAt.toISOString()}..${aug.endsAt.toISOString()}`);
+  check("math: Aug 16 23:59:59.999 ET is included, Aug 17 00:00 ET is excluded", new Date("2026-08-17T03:59:59.999Z") >= aug.startsAt && new Date("2026-08-17T03:59:59.999Z") < aug.endsAt && !(new Date("2026-08-17T04:00:00.000Z") < aug.endsAt));
+  const span = b4.endsAt.getTime() - b4.startsAt.getTime();
+  check("math: half-open window is exactly 7 days (168h) for a non-DST week", span === 7 * 86400000, String(span));
 }
 /* ------------------------- fixtures ------------------------- */
 await q`INSERT INTO organizations(id, name) VALUES(${ORG}, ${"qa payday"}), (${ORG2}, ${"qa payday 2"})`;

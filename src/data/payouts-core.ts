@@ -489,15 +489,31 @@ function etMidnight(year: number, month: number, day: number): Date {
   return new Date(Date.UTC(year, month - 1, day, 4)); // fallback: EDT
 }
 export type PeriodBoundaries = { startsAt: Date; endsAt: Date; payoutDueOn: string };
-/** Monday 00:00 ET → Sunday 23:59:59.999 ET containing `now`, plus the
- *  Wednesday-after payout date (ET calendar). Pure — hermetic-test friendly. */
+/** One server-authoritative driver payday card. `endsAt` is exclusive. */
+export type DriverPayPeriodCard = {
+  startsAt: string;
+  endsAt: string;
+  jobCount: number;
+  grossCents: number;
+  tipsCents: number;
+  batteryPayoutCents: number;
+  busyBonusCents: number;
+  totalCents: number;
+};
+export type DriverPayPeriodSummary = {
+  current: DriverPayPeriodCard;
+  previous: DriverPayPeriodCard;
+  diagnostics: { unknownCompletionTimeRows: number };
+};
+/** Monday 00:00 ET → next Monday 00:00 ET (exclusive), containing `now`,
+ *  plus the Wednesday-after payout date (ET calendar). Pure — hermetic-test friendly. */
 export function periodBoundariesFor(now: Date): PeriodBoundaries {
   const p = etDateParts(now);
   const dowUtc = new Date(Date.UTC(p.year, p.month - 1, p.day)).getUTCDay();
   const weekDay = (dowUtc + 6) % 7; // Monday = 0
   const monday = etMidnight(p.year, p.month, p.day - weekDay);
   const nextMonday = etMidnight(p.year, p.month, p.day - weekDay + 7);
-  const endsAt = new Date(nextMonday.getTime() - 1);
+  const endsAt = nextMonday;
   const due = etDateParts(new Date(monday.getTime() + 9 * 86_400_000)); // Mon + 9 = next Wed
   const payoutDueOn = `${due.year}-${String(due.month).padStart(2, "0")}-${String(due.day).padStart(2, "0")}`;
   return { startsAt: monday, endsAt, payoutDueOn };
@@ -541,12 +557,89 @@ const toPeriod = (r: Record<string, unknown>, currentPeriodId: string): PayPerio
  *  follow-up read is BY BOUNDARIES, never by our generated id, so a row that
  *  already exists under any id is found. */
 async function ensurePeriodCore(orgId: string, b: PeriodBoundaries, q: Awaited<ReturnType<typeof db>>): Promise<Record<string, unknown>> {
-  const id = `pay-${orgId}-${iso(b.startsAt).slice(0, 10)}`;
-  await q`INSERT INTO pay_periods(id, org_id, starts_at, ends_at, payout_due_on)
-    VALUES(${id}, ${orgId}, ${iso(b.startsAt)}, ${iso(b.endsAt)}, ${b.payoutDueOn})
-    ON CONFLICT (org_id, starts_at, ends_at) DO NOTHING`;
-  const rows = await q`SELECT * FROM pay_periods WHERE org_id=${orgId} AND starts_at=${iso(b.startsAt)} AND ends_at=${iso(b.endsAt)} LIMIT 1`;
+  const startIso = iso(b.startsAt);
+  const endIso = iso(b.endsAt);
+  const existing = await q`SELECT id FROM pay_periods WHERE org_id=${orgId} AND starts_at=${startIso} ORDER BY ends_at DESC LIMIT 1`;
+  if (existing.length) {
+    await q`UPDATE pay_periods SET ends_at=${endIso}, payout_due_on=${b.payoutDueOn}, updated_at=NOW()
+      WHERE org_id=${orgId} AND id=${String((existing[0] as Record<string, unknown>).id)}`;
+  } else {
+    const id = `pay-${orgId}-${startIso.slice(0, 10)}`;
+    await q`INSERT INTO pay_periods(id, org_id, starts_at, ends_at, payout_due_on)
+      VALUES(${id}, ${orgId}, ${startIso}, ${endIso}, ${b.payoutDueOn})
+      ON CONFLICT DO NOTHING`;
+  }
+  const rows = await q`SELECT * FROM pay_periods WHERE org_id=${orgId} AND starts_at=${startIso} ORDER BY ends_at DESC LIMIT 1`;
   return (rows[0] ?? {}) as Record<string, unknown>;
+}
+
+function rawObject(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+  if (typeof value === "string") { try { const parsed = JSON.parse(value); return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null; } catch { return null; } }
+  return null;
+}
+function authoritativeCompletionMs(value: unknown): number | null {
+  const raw = rawObject(value);
+  const text = raw?.completionTime;
+  if (typeof text !== "string" || !/^\d{4}-\d{2}-\d{2}(T| )\d{2}:\d{2}:\d{2}/.test(text)) return null;
+  const ms = Date.parse(text);
+  return Number.isFinite(ms) ? ms : null;
+}
+function hasPaydayReassignmentEvidence(value: unknown): boolean {
+  const raw = rawObject(value);
+  if (!raw) return false;
+  return Object.entries(raw).some(([key, child]) => (/reassign/i.test(key) && child != null && child !== false && child !== "" && child !== 0) || hasPaydayReassignmentEvidence(child));
+}
+function isGoaInvoice(value: unknown): boolean {
+  const raw = rawObject(value);
+  const items = raw?.invoiceItems;
+  return Array.isArray(items) && items.some((item) => /\bGOA\b/i.test(typeof item === "string" ? item : JSON.stringify(item ?? "")));
+}
+
+/** Driver-facing payday cards use the exact same Towbook completionTime,
+ * final-status, reassignment, GOA, and ET-window rules as owner computation.
+ * This is intentionally server-only: the client never derives payday totals. */
+export async function getDriverPayPeriodSummaryCore(actor: PayoutActor, towbookDriverId: string): Promise<PayoutResult<DriverPayPeriodSummary>> {
+  try {
+    await ensure();
+    const q = await db();
+    const profileRows = await q`SELECT cp.payrate_cents FROM users u LEFT JOIN contractor_profiles cp ON cp.org_id=${actor.orgId} AND cp.user_id=u.id WHERE u.id=${actor.id} LIMIT 1`;
+    const payrateCents = profileRows.length && profileRows[0].payrate_cents != null ? Number(profileRows[0].payrate_cents) : 0;
+    const currentB = periodBoundariesFor(new Date());
+    const previousB = periodBoundariesFor(new Date(currentB.startsAt.getTime() - 86_400_000));
+    const allRows = await q`SELECT id, status, assigned_at, completed_at, created_at, raw_json, manually_reassigned_at
+      FROM dispatch_jobs WHERE org_id=${actor.orgId} AND assigned_driver_towbook_id=${towbookDriverId}`;
+    const tipRows = await q`SELECT created_at, amount_cents FROM completion_tips WHERE org_id=${actor.orgId} AND driver_id=${actor.id} AND driver_towbook_id=${towbookDriverId} AND status='paid'`;
+    const batteryRows = await q`SELECT amount_cents, earned_at FROM battery_payouts WHERE org_id=${actor.orgId} AND contractor_user_id=${actor.id} AND earned_at IS NOT NULL`;
+    const { computeBusyBonus, jobAssignmentMs, jobCompletedMs, BUSY_BONUS_PER_JOB_CENTS } = await import("./busy-bonus-core");
+    const makeCard = (b: PeriodBoundaries): DriverPayPeriodCard => {
+      const start = b.startsAt.getTime(), end = b.endsAt.getTime();
+      let jobCount = 0, goaCount = 0, unknown = 0;
+      const assignments: Array<number | null> = [], completions: Array<number | null> = [];
+      for (const row of allRows as Record<string, unknown>[]) {
+        if (String(row.status) !== "completed") continue;
+        const raw = rawObject(row.raw_json);
+        const completionMs = authoritativeCompletionMs(row.raw_json);
+        if (completionMs == null) { unknown++; continue; }
+        if (row.manually_reassigned_at != null || hasPaydayReassignmentEvidence(row.raw_json)) continue;
+        if (String(raw?.statusId ?? raw?.status ?? "") === "255" || /cancel+ed/i.test(String(raw?.status ?? ""))) continue;
+        if (completionMs >= start && completionMs < end) { jobCount++; if (isGoaInvoice(row.raw_json)) goaCount++; }
+        const a = jobAssignmentMs(row); if (a != null && a >= start && a < end) assignments.push(a);
+        const c = jobCompletedMs(row); if (c != null && c >= start && c < end) completions.push(c);
+      }
+      const busy = computeBusyBonus(assignments, completions);
+      const tipsCents = (tipRows as Record<string, unknown>[]).reduce((sum, row) => { const t = new Date(String(row.created_at)).getTime(); return t >= start && t < end ? sum + Number(row.amount_cents ?? 0) : sum; }, 0);
+      const batteryPayoutCents = (batteryRows as Record<string, unknown>[]).reduce((sum, row) => { const t = new Date(String(row.earned_at)).getTime(); return t >= start && t < end ? sum + Number(row.amount_cents ?? 0) : sum; }, 0);
+      const grossCents = goaCount * 1000 + Math.max(0, jobCount - goaCount) * payrateCents;
+      const busyBonusCents = busy.bonusJobs * BUSY_BONUS_PER_JOB_CENTS;
+      return { startsAt: iso(b.startsAt), endsAt: iso(b.endsAt), jobCount, grossCents, tipsCents, batteryPayoutCents, busyBonusCents, totalCents: grossCents + tipsCents + batteryPayoutCents + busyBonusCents };
+    };
+    const current = makeCard(currentB), previous = makeCard(previousB);
+    const diagnostics = { unknownCompletionTimeRows: Number((allRows as Record<string, unknown>[]).filter((r) => String(r.status) === "completed" && authoritativeCompletionMs(r.raw_json) == null).length) };
+    return ok({ current, previous, diagnostics });
+  } catch (e) {
+    return err("database_error", e instanceof Error ? e.message : "Unable to load authoritative payday totals.");
+  }
 }
 
 /** Owner/admin: list pay periods (ensures the current open + just-closed

@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 
 const gps = await readFile(new URL("./src/data/driver-gps-core.ts", import.meta.url), "utf8");
 const photos = await readFile(new URL("./src/data/driver-photos-core.ts", import.meta.url), "utf8");
+const push = await readFile(new URL("./src/data/push-core.ts", import.meta.url), "utf8");
 const checks = [];
 const check = (name, fn) => { fn(); checks.push(name); };
 const RADIUS = 160.9344;
@@ -36,7 +37,17 @@ check("Agero Bridgeport placeholder is fail-closed", () => {
   assert.match(gps, /if \(Math\.abs\(job\.lat - 41\.214889\)[\s\S]*continue;/);
 });
 
-check("already-arrived is idempotent", () => {
+check("auto-arrive emits one truthful, role-scoped, sound-enabled notification", () => {
+  assert.match(gps, /notifyAutoArrivedDriver\(orgId, opts\.towbookDriverId, job\.id\)/);
+  assert.match(push, /action='auto_arrive_driver_notification'/);
+  assert.match(push, /title: \"Arrived at pickup — Lightning Dispatch\"/);
+  assert.match(push, /message: `Lightning Dispatch auto-arrived you at pickup/);
+  assert.match(push, /tag: `auto-arrived-/);
+  assert.match(push, /sound: \"\/sounds\/alert\.mp3\"/);
+});
+
+check("auto-arrive notification is idempotent", () => {
+  assert.match(push, /reason: \"already_notified\"/);
   assert.match(gps, /UPDATE dispatch_jobs SET status='arrived'/);
   assert.match(gps, /WHERE id=\$\{job\.id\} AND org_id=\$\{orgId\} AND status='en_route'/);
   assert.match(gps, /WITH changed AS \([\s\S]*INSERT INTO status_events/);

@@ -299,6 +299,8 @@ export type AssignmentPushPayload = {
   etaMinutes: number | null;
   /** In-app route the notification opens ("/driver"). */
   jobUrl: string;
+  /** Optional title for truthful non-assignment events. */
+  title?: string;
   /** Optional exact message for non-assignment nudges. */
   message?: string;
   /** Notification tag override (self-test 2026-08-13: "self-test-<ts>").
@@ -320,7 +322,7 @@ export function buildPushNotificationJson(p: AssignmentPushPayload): Record<stri
   const eta = p.etaMinutes != null ? `ETA ~${Math.max(1, p.etaMinutes)} min` : "ETA pending";
   const location = p.location && p.location.trim() !== "" ? p.location.trim() : `Call #${p.callId ?? "—"}`;
   return {
-    title: "New job — Lightning Dispatch",
+    title: p.title ?? "New job — Lightning Dispatch",
     body: p.message ?? `${p.jobType || "Tow job"} · ${location} · ${eta}`,
     tag: p.tag ?? `job-${p.callId ?? p.callRequestId ?? "unknown"}`,
     data: { url: p.jobUrl || "/driver" },
@@ -534,6 +536,45 @@ export async function notifyAssignedDriver(
     jobUrl: "/driver",
   };
   return sendAssignmentPush(orgId, contractorUserId, payload, opts);
+}
+
+/** Notify the assigned contractor when Lightning Dispatch performs a geofence
+ * auto-arrival. The guarded en_route→arrived transition is the source event;
+ * this audit marker makes retries idempotent and keeps the event contractor-only.
+ * Default web-push sound is retained by buildPushNotificationJson. */
+export async function notifyAutoArrivedDriver(
+  orgId: string,
+  towbookDriverId: string | number,
+  jobId: string,
+  opts: SendDeps = {},
+): Promise<PushSendOutcome> {
+  const q = await db();
+  const rows = await q`SELECT u.id, d.towbook_job_id, d.service_type, d.pickup, d.area
+    FROM dispatch_jobs d
+    JOIN users u ON u.towbook_driver_id=${String(towbookDriverId)} AND u.deactivated_at IS NULL
+    JOIN organization_memberships m ON m.org_id=${orgId} AND m.user_id=u.id AND m.role='contractor'
+    WHERE d.org_id=${orgId} AND d.id=${jobId}
+    LIMIT 1`;
+  if (!rows.length) return { attempted: 0, sent: 0, failed: 0, staleRemoved: 0, skipped: true, reason: "auto_arrive_driver_or_job_not_found" };
+  const row = rows[0] as Record<string, unknown>;
+  const marker = await q`SELECT 1 FROM audit_log WHERE org_id=${orgId} AND action='auto_arrive_driver_notification' AND entity_type='job' AND entity_id=${jobId} LIMIT 1`;
+  if (marker.length) return { attempted: 0, sent: 0, failed: 0, staleRemoved: 0, skipped: true, reason: "already_notified" };
+  await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
+    VALUES(gen_random_uuid()::text, ${orgId}, ${String(row.id)}, 'contractor', 'auto_arrive_driver_notification', 'job', ${jobId}, ${JSON.stringify({ towbookJobId: row.towbook_job_id ?? null })}::jsonb, 'driver-gps')`;
+  const callId = row.towbook_job_id != null ? String(row.towbook_job_id) : null;
+  const label = String(row.service_type ?? "Tow job").replace(/_/g, " ");
+  const location = [String(row.pickup ?? ""), String(row.area ?? "")].filter(Boolean).join(", ");
+  return sendAssignmentPush(String(orgId), String(row.id), {
+    callId,
+    callRequestId: null,
+    jobType: label,
+    location,
+    etaMinutes: null,
+    jobUrl: "/driver",
+    title: "Arrived at pickup — Lightning Dispatch",
+    message: `Lightning Dispatch auto-arrived you at pickup${callId ? ` · Call #${callId}` : ""}.`,
+    tag: `auto-arrived-${callId ?? jobId}`,
+  }, opts);
 }
 
 /** Back-compat alias — the manual assign path (assignJob in server.ts) and the

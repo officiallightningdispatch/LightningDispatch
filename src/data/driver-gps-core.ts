@@ -7,6 +7,7 @@
  */
 import { z } from "zod";
 import { driverCheckin, type DriverSession } from "./driver-auth";
+import { notifyAutoArrivedDriver } from "./push-core";
 
 /* ----------------- Towbook session/HTTP helpers (server-only) ----------------- */
 /* These four helpers live HERE (server-only), NOT in driver-auth.ts: driver-auth
@@ -395,6 +396,10 @@ export async function autoArrive(opts: {
   // "Needs attention" banner surfaces it. Fixed key per call: the SAME failure
   // never spams (ON CONFLICT DO NOTHING); the sync reconciles the DB status and
   // the next in-radius ping retries.
+  try {
+    await notifyAutoArrivedDriver(orgId, opts.towbookDriverId, job.id);
+  } catch { /* notification is best-effort; the arrival transition already landed */ }
+
   if (!towbookOk && job.towbookJobId) {
     try {
       const names = await q`SELECT name FROM users WHERE id=${userId} LIMIT 1`;

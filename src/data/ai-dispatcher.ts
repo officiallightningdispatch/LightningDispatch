@@ -554,6 +554,18 @@ export async function loadLightningAvailableDrivers(orgId: string): Promise<Set<
   } catch { return new Set(); }
 }
 
+/** Tow qualification uses the same availability union as normal dispatch:
+ * Towbook check-in OR a live Lightning GO session. The Towbook payload is the
+ * authoritative check-in signal; Lightning GO is the durable app-side signal.
+ * This must not depend on the heartbeat table alone because a Towbook-only
+ * contractor is valid even when Lightning heartbeats are unavailable. */
+export function isDriverAvailableForTowQualification(driver: unknown, lightningAvailable: Set<string>): boolean {
+  if (!driver || typeof driver !== "object" || Array.isArray(driver)) return false;
+  const row = driver as Record<string, unknown>;
+  const driverId = String(row.driverId ?? "");
+  return row.isCheckedIn === true || lightningAvailable.has(driverId);
+}
+
 export async function loadOrgDriverQueues(orgId: string): Promise<Map<string, DriverQueue>> {
   const rows = await sql()`SELECT assigned_driver_towbook_id AS did, status, pickup_lat, pickup_lng, created_at
     FROM dispatch_jobs
@@ -3007,7 +3019,7 @@ async function runAutoDispatchInternal(
           WHERE u.towbook_driver_id = ANY(${ids})`;
         const byId = new Map(gateRows.map((r) => [String(r.towbook_driver_id), r as Record<string, unknown>]));
         const towJob = /(?:tow|heavy|flatbed|wheel[- ]?lift)/i.test(serviceType?.toLowerCase() || "");
-        const onlineRows = towJob ? await sql() `SELECT u.towbook_driver_id, (l.heartbeat_at > NOW() - INTERVAL '90 seconds') AS online, COALESCE((SELECT COUNT(*) FROM dispatch_jobs j WHERE j.org_id=${orgId} AND j.assigned_driver_towbook_id=u.towbook_driver_id AND j.status NOT IN ('completed','cancelled')),0)::int AS active_count FROM users u LEFT JOIN driver_availability_log l ON l.user_id=u.id AND l.org_id=${orgId} AND l.session_started_at IS NOT NULL ORDER BY l.heartbeat_at DESC NULLS LAST` : [];
+        const onlineRows = towJob ? await sql() `SELECT u.towbook_driver_id, COALESCE((SELECT COUNT(*) FROM dispatch_jobs j WHERE j.org_id=${orgId} AND j.assigned_driver_towbook_id=u.towbook_driver_id AND j.status NOT IN ('completed','cancelled')),0)::int AS active_count FROM users u WHERE u.towbook_driver_id IS NOT NULL ORDER BY u.towbook_driver_id` : [];
         const onlineById = new Map(onlineRows.map((r) => [String(r.towbook_driver_id), r as Record<string, unknown>]));
         const qualified = candidates.filter((d) => {
           const id = String((d as Record<string, unknown>).driverId), r = byId.get(id);
@@ -3016,7 +3028,8 @@ async function runAutoDispatchInternal(
           const towJob = /(?:tow|heavy|flatbed|wheel[- ]?lift)/i.test(wanted);
           const towCapable = /(?:tow truck|tow|heavy|flatbed|wheel[- ]?lift)/i.test(vehicle);
           const capabilityMismatch = towJob && !towCapable;
-          const reason = !r ? "org-inactive" : r.deactivated_at != null ? "deactivated" : r.member_id == null ? "org-inactive" : Number(r.required_docs) > Number(r.approved_docs) ? "missing-compliance" : capabilityMismatch ? "capability-mismatch" : towJob && onlineById.get(id)?.online !== true ? "offline" : towJob && Number(onlineById.get(id)?.active_count ?? 0) > 0 ? "unavailable" : null;
+          const towOnline = isDriverAvailableForTowQualification(d, lightningAvailable);
+          const reason = !r ? "org-inactive" : r.deactivated_at != null ? "deactivated" : r.member_id == null ? "org-inactive" : Number(r.required_docs) > Number(r.approved_docs) ? "missing-compliance" : capabilityMismatch ? "capability-mismatch" : towJob && !towOnline ? "offline" : towJob && Number(onlineById.get(id)?.active_count ?? 0) > 0 ? "unavailable" : null;
           if (reason) serviceQualification.excluded.push({ driverId: Number(id), reason });
           return !reason;
         });

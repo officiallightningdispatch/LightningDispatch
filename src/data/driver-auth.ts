@@ -1178,7 +1178,7 @@ export type DriverBusyBonus = {
 };
 export type DriverCompletedCounts = { day: number; week: number; month: number; year: number };
 export type DriverEarningsResult =
-  | { ok: true; profile: { name: string; email: string; towbookDriverId: string; payrateCents: number | null }; completed: DriverCall[]; tips: DriverEarningsTip[]; tirePlugs: DriverEarningsTirePlug[]; batteryInstalls: DriverEarningsBatteryInstall[]; busyBonus: DriverBusyBonus; completedCounts: DriverCompletedCounts; totals: { completedJobs: number; tipsTotalCents: number; tipCount: number } }
+  | { ok: true; profile: { name: string; email: string; towbookDriverId: string; payrateCents: number | null }; completed: DriverCall[]; tips: DriverEarningsTip[]; tirePlugs: DriverEarningsTirePlug[]; batteryInstalls: DriverEarningsBatteryInstall[]; busyBonus: DriverBusyBonus; completedCounts: DriverCompletedCounts; payPeriods: { current: { startsAt: string; endsAt: string; jobCount: number; grossCents: number; tipsCents: number; batteryPayoutCents: number; busyBonusCents: number; totalCents: number }; previous: { startsAt: string; endsAt: string; jobCount: number; grossCents: number; tipsCents: number; batteryPayoutCents: number; busyBonusCents: number; totalCents: number }; diagnostics: { unknownCompletionTimeRows: number } }; totals: { completedJobs: number; tipsTotalCents: number; tipCount: number } }
   | { ok: false; expired: boolean; message: string };
 /** The driver-facing email: real addresses are shown; derived @towbook.driver
  *  placeholders are internal-only and must never reach a driver's screen
@@ -1209,7 +1209,7 @@ export const driverEarnings = createServerFn({ method: "GET" }).handler(async ()
     if (!driverId) return { ok: false as const, expired: true, message: "Your account isn't linked to a driver yet — reconnect." };
     const queue = await fetchDriverQueue({ orgId: ctx.u.orgId, towbookDriverId: driverId });
     if (!queue.ok) return queue;
-    const completed = queue.calls.filter((c) => c.statusId === 5 || c.statusId === 6);
+    const completed = queue.calls.filter((c) => c.statusId === 5 || c.statusId === 6 || c.statusId === 252);
     // Canonical completed-work counters: a job_completions row is the evidence
     // of completion. Boundaries are evaluated in ET by Postgres, then converted
     // back to instants for the half-open comparisons. Attribution follows the
@@ -1302,6 +1302,13 @@ export const driverEarnings = createServerFn({ method: "GET" }).handler(async ()
         bonusCents: h.completedJobs * BUSY_BONUS_PER_JOB_CENTS,
       }));
     } catch { /* busy bonus never fails the earnings screen — zero on error */ }
+    const { getDriverPayPeriodSummaryCore } = await import("./payouts-core");
+    const payday = await getDriverPayPeriodSummaryCore({ orgId: ctx.u.orgId, id: ctx.identity.userRowId, role: "contractor" }, driverId);
+    const payPeriods = payday.ok ? payday.data : {
+      current: { startsAt: new Date(0).toISOString(), endsAt: new Date(0).toISOString(), jobCount: 0, grossCents: 0, tipsCents: 0, batteryPayoutCents: 0, busyBonusCents: 0, totalCents: 0 },
+      previous: { startsAt: new Date(0).toISOString(), endsAt: new Date(0).toISOString(), jobCount: 0, grossCents: 0, tipsCents: 0, batteryPayoutCents: 0, busyBonusCents: 0, totalCents: 0 },
+      diagnostics: { unknownCompletionTimeRows: 0 },
+    };
     return {
       ok: true as const,
       profile: {
@@ -1316,6 +1323,7 @@ export const driverEarnings = createServerFn({ method: "GET" }).handler(async ()
       batteryInstalls,
       busyBonus,
       completedCounts,
+      payPeriods,
       totals: { completedJobs: completed.length, tipsTotalCents: tipsTotalCents + tirePlugTotalCents, tipCount: tips.length + tirePlugs.length },
     };
   } catch {

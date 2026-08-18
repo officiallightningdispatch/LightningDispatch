@@ -2090,7 +2090,11 @@ try {
     // also requires not-busy (active_count=0). Complete it so the companion case
     // exercises capability+availability, not an 'unavailable' rejection.
     await q`UPDATE dispatch_jobs SET status='completed', pickup='123 MAIN ST, BRIDGEPORT CT 06606' WHERE org_id=${ORG7} AND assigned_driver_towbook_id=${String(QUAL_TB[4])} AND status NOT IN ('completed','cancelled')`;
-    const {r: towCapable,m: towCapableM,rows: towCapableRows}=await runQ(92014,[driver(QUAL_TB[4],'tow-capable online',{etaSec:600})],{offer:{serviceType:'heavy tow'}});
+    // Towbook check-in is sufficient for the availability union. Remove the
+    // Lightning GO heartbeat row so this regression fails if tow qualification
+    // incorrectly requires the LD heartbeat table.
+    await q`DELETE FROM driver_availability_log WHERE org_id=${ORG7} AND user_id=${QUAL_USERS[4]}`;
+    const {r: towCapable,m: towCapableM,rows: towCapableRows}=await runQ(92014,[driver(QUAL_TB[4],'tow-capable Towbook-only',{etaSec:600})],{offer:{serviceType:'heavy tow'}});
     check('tow capability companion: online tow-capable driver assigned',towCapable.decisions[0]?.decision==='auto_accept_with_driver'&&posts(towCapableM.calls)[0]?.body?.driverId===QUAL_TB[4]&&!String(towCapableRows[0]?.reason||'').includes('capability-mismatch'),JSON.stringify({r:towCapable,rows:towCapableRows}));
     const {r: sole,m: sm}=await runQ(92013,[driver(QUAL_TB[1],'sole unqualified')]);
     check('qualification sole-unqualified: zero POSTs, no-driver fallback hard blocked',sole.decisions[0]?.decision==='escalated_qualification_failed'&&posts(sm.calls).length===0&&!sm.calls.some(c=>c.method==='POST'));
