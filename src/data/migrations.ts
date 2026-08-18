@@ -1618,8 +1618,8 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE INDEX IF NOT EXISTS battery_products_aliases_gin_idx ON battery_products USING GIN (alternate_group_sizes)`;
     await q`UPDATE battery_products SET display_name='LIGHTNING GOLD BATTERY', core_charge_cents=0 WHERE display_name IS NULL OR display_name <> 'LIGHTNING GOLD BATTERY' OR core_charge_cents IS NULL`;
   }],
-   [81, async (q) => {
-    // Certified battery B1-B4 schema; prod is at 80, so B5 must follow 81.
+   [82, async (q) => {
+    // Certified battery B1-B4 schema; prod max was 81; append above it.
     // Battery B1 core catalog and inventory model. This migration is additive:
         // Phase 1 battery_sales remains intact and is extended in migration 71.
         await q`CREATE TABLE IF NOT EXISTS battery_products (

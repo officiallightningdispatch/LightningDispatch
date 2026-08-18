@@ -35,7 +35,7 @@ const JOB = `qa-batt-job-${randomUUID().slice(0, 8)}`;
 const ACTOR = { orgId: ORG, id: OWNER, role: "owner" };
 const DRIVER = { orgId: ORG, id: D1, role: "contractor", towbookDriverId: TB1 };
 const VIN = "1HGCM82633A004352";
-const VEHICLE = { Make: "HONDA", Model: "Accord", ModelYear: "2019", ErrorCode: "0" };
+const VEHICLE = { Make: "HONDA", Model: "Accord", ModelYear: "2019", EngineModel: "2.5L I4", ErrorCode: "0" };
 
 /* ---- cleanup (guarded, ALWAYS runs) ---- */
 const cleanup = async () => {
@@ -82,7 +82,7 @@ await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, ar
   VALUES(${JOB}, ${ORG}, 'Test Customer', '(860) 555-0111', 41.76, -72.67, 'Hartford', 'jump_start', 'arrived', NOW(), '2019 Honda Accord; dead battery.', 'call-123456', '(860) 555-0111', '2019 HONDA ACCORD', '1 Main St, Hartford', ${TB1}, 'QA Driver')`;
 // B3 fixtures: approved fitment plus active, org-scoped product. Price is server-authoritative.
 await q`INSERT INTO battery_products(id, org_id, group_size, display_name, retail_cents, installation_cents, warranty_years, free_replacement_years, core_charge_cents, availability, active) VALUES(gen_random_uuid()::text, ${ORG}, '47', 'LIGHTNING GOLD BATTERY', 14999, 4500, 3, 3, 0, 'in_stock', true)`;
-await q`INSERT INTO battery_compatibility(id, org_id, make, model, year_from, year_to, trim, engine, battery_group_size, status, source_reference_internal) VALUES(gen_random_uuid()::text, ${ORG}, 'HONDA', 'ACCORD', 2018, 2020, null, null, '47', 'approved', 'qa-battery-sales-fitment')`;
+await q`INSERT INTO battery_compatibility(id, org_id, make, model, year_from, year_to, trim, engine, battery_group_size, status, source_reference_internal) VALUES(gen_random_uuid()::text, ${ORG}, 'HONDA', 'ACCORD', 2018, 2020, null, '2.5L I4', '47', 'approved', 'qa-battery-sales-fitment')`;
 await q`INSERT INTO battery_compatibility(id, org_id, make, model, year_from, year_to, trim, engine, battery_group_size, status, source_reference_internal) VALUES(gen_random_uuid()::text, ${ORG}, 'FORD', 'F-150', 2017, 2019, null, null, '47', 'approved', 'qa-battery-sales-fitment')`;
 
 /* ===================== 1) PURE PRICING — the owner-corrected formula ===================== */
