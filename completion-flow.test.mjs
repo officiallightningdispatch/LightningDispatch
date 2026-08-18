@@ -53,18 +53,21 @@ const OWNER3 = `qa-cf3-owner-${TAG}`;
 const DRIVER = `qa-cf-driver-${randomUUID()}`;
 const DRIVER2 = `qa-cf2-driver-${randomUUID()}`;
 const DRIVER3 = `qa-cf3-driver-${randomUUID()}`;
-const OTHER = `qa-cf-other-${TAG}`;     // in ORG, not assigned to the job
+const OTHER = `qa-cf-other-${TAG}`;
+// in ORG, not assigned to the job
 // Per-run Towbook driver ids (the LD users_towbook_driver_id index is globally
 // unique — fixed ids collide with leftover rows from crashed runs).
-const tb = (seed) => String(BigInt("0x" + seed.slice(-36).replace(/-/g, "").slice(0, 10)) % 900_000_000n);
+const tb = (seed) => String(BigInt("0x" + seed.replace(/[^0-9a-f]/gi, "").slice(-10)) % 900_000_000n);
 // Per-run Towbook user ids prevent crashed-run collisions on the global unique index.
-const tbu = (seed) => String(900_000_000n + BigInt("0x" + seed.slice(-36).replace(/-/g, "").slice(0, 10)) % 100_000_000n);
+const tbu = (seed) => String(900_000_000n + BigInt("0x" + seed.replace(/[^0-9a-f]/gi, "").slice(-10)) % 100_000_000n);
+const cid = (seed) => String(100_000_000n + BigInt("0x" + seed.replace(/[^0-9a-f]/gi, "").slice(-10)) % 90_000_000n);
 const TB1 = tb(DRIVER), TB2 = tb(DRIVER2), TB3 = tb(DRIVER3);
 const TBU1 = tbu(DRIVER), TBU2 = tbu(DRIVER2), TBU3 = tbu(DRIVER3);
+const OTHER_TB = tb(OTHER);
 const CONF = {
-  [ORG]: { userId: DRIVER, tbDriver: TB1, tbUser: TBU1, job: "tb-447011", call: "447011" },
-  [ORG2]: { userId: DRIVER2, tbDriver: TB2, tbUser: TBU2, job: "tb-447012", call: "447012" },
-  [ORG3]: { userId: DRIVER3, tbDriver: TB3, tbUser: TBU3, job: "tb-447013", call: "447013" },
+  [ORG]: { userId: DRIVER, tbDriver: TB1, tbUser: TBU1, job: `tb-${cid(DRIVER)}`, call: cid(DRIVER) },
+  [ORG2]: { userId: DRIVER2, tbDriver: TB2, tbUser: TBU2, job: `tb-${cid(DRIVER2)}`, call: cid(DRIVER2) },
+  [ORG3]: { userId: DRIVER3, tbDriver: TB3, tbUser: TBU3, job: `tb-${cid(DRIVER3)}`, call: cid(DRIVER3) },
 };
 const PICKUP = { lat: 41.2, lng: -73.2 };
 
@@ -157,9 +160,9 @@ async function uploadAllPhotos(orgId, fetchImpl, marker) {
 async function setup() {
   await ensureSchema();
   for (const [org, owner, driver, tbDriver, tbUser, job, callId] of [
-    [ORG, OWNER, DRIVER, CONF[ORG].tbDriver, CONF[ORG].tbUser, "tb-447011", "447011"],
-    [ORG2, OWNER2, DRIVER2, CONF[ORG2].tbDriver, CONF[ORG2].tbUser, "tb-447012", "447012"],
-    [ORG3, OWNER3, DRIVER3, CONF[ORG3].tbDriver, CONF[ORG3].tbUser, "tb-447013", "447013"],
+    [ORG, OWNER, DRIVER, CONF[ORG].tbDriver, CONF[ORG].tbUser, CONF[ORG].job, CONF[ORG].call],
+    [ORG2, OWNER2, DRIVER2, CONF[ORG2].tbDriver, CONF[ORG2].tbUser, CONF[ORG2].job, CONF[ORG2].call],
+    [ORG3, OWNER3, DRIVER3, CONF[ORG3].tbDriver, CONF[ORG3].tbUser, CONF[ORG3].job, CONF[ORG3].call],
   ]) {
     await q`INSERT INTO organizations(id, name) VALUES(${org}, 'qa completion-flow wp')`;
     await q`INSERT INTO users(id, name, email, password_hash) VALUES(${owner}, 'QA CF Owner', ${`qa-cf-owner-${randomUUID()}@lightning.test`}, 'x')`;
@@ -173,7 +176,7 @@ async function setup() {
     await q`INSERT INTO org_settings(org_id, geofence_radius_meters, photos_required) VALUES(${org}, 150, FALSE)`;
   }
   // An unassigned driver in ORG (wrong-driver rails).
-  await q`INSERT INTO users(id, name, email, password_hash, towbook_driver_id) VALUES(${OTHER}, 'QA CF Other', ${`qa-cf-other-${randomUUID()}@lightning.test`}, 'x', '99')`;
+  await q`INSERT INTO users(id, name, email, password_hash, towbook_driver_id) VALUES(${OTHER}, 'QA CF Other', ${`qa-cf-other-${randomUUID()}@lightning.test`}, 'x', ${OTHER_TB})`;
   await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${ORG}, ${OTHER}, 'contractor')`;
 }
 
@@ -243,14 +246,14 @@ let firstPaymentId = null;
   firstPaymentId = t.paymentId;
   check("one Square /v2/payments POST with Bearer token", squareCalls.length === 1 && String(squareCalls[0].headers?.authorization) === "Bearer test-square-token", JSON.stringify(squareCalls.map((x) => x.headers)));
   const body = squareCalls[0].body;
-  check("idempotency key = deterministic tip-<sha1(job,driver,attempt)> ≤45 chars (Square limit)", body.idempotency_key === squareIdempotencyKey("tip-", c.job, "35", 1) && body.idempotency_key.startsWith("tip-") && body.idempotency_key.length <= 45, JSON.stringify(body.idempotency_key));
+  check("idempotency key = deterministic tip-<sha1(job,driver,attempt)> ≤45 chars (Square limit)", body.idempotency_key === squareIdempotencyKey("tip-", c.job, c.tbDriver, 1) && body.idempotency_key.startsWith("tip-") && body.idempotency_key.length <= 45, JSON.stringify(body.idempotency_key));
   check("source_id is the client token", body.source_id === "cnonce-card-0001", JSON.stringify(body.source_id));
   check("amount_money + location id in the payment request", body.amount_money?.amount === 500 && body.amount_money?.currency === "USD" && body.location_id === "loc_test", JSON.stringify(body));
-  check("note carries driver attribution", String(body.note ?? "").includes("QA CF Driver") && String(body.note ?? "").includes("job 447011"), JSON.stringify(body.note));
+  check("note carries driver attribution", String(body.note ?? "").includes("QA CF Driver") && String(body.note ?? "").includes(`job ${c.call}`), JSON.stringify(body.note));
   const rows = await q`SELECT org_id, job_id, driver_id, driver_towbook_id, amount_cents, currency, square_payment_id, status, attempt, idempotency_key FROM completion_tips WHERE org_id=${ORG} AND job_id=${c.job} AND status='paid'`;
   check("attribution row recorded (org/job/driver/amount/square payment id)",
-    rows.length === 1 && rows[0].driver_id === DRIVER && rows[0].driver_towbook_id === "35" && Number(rows[0].amount_cents) === 500
-    && rows[0].currency === "USD" && String(rows[0].square_payment_id).startsWith("pymt_") && Number(rows[0].attempt) === 1 && rows[0].idempotency_key === squareIdempotencyKey("tip-", c.job, "35", 1),
+    rows.length === 1 && rows[0].driver_id === DRIVER && rows[0].driver_towbook_id === c.tbDriver && Number(rows[0].amount_cents) === 500
+    && rows[0].currency === "USD" && String(rows[0].square_payment_id).startsWith("pymt_") && Number(rows[0].attempt) === 1 && rows[0].idempotency_key === squareIdempotencyKey("tip-", c.job, c.tbDriver, 1),
     JSON.stringify(rows));
   const jc = await q`SELECT tip FROM job_completions WHERE org_id=${ORG} AND job_id=${c.job}`;
   check("job_completions.tip reflects paid + payment id", jc[0].tip?.status === "paid" && jc[0].tip?.amount_cents === 500 && typeof jc[0].tip?.square_payment_id === "string", JSON.stringify(jc[0].tip));
@@ -268,12 +271,12 @@ let firstPaymentId = null;
   const before = squareCalls.length;
   const replay = await chargeTipCore(user, { jobId: c.call, token: "cnonce-card-0001", amountCents: 500, attempt: 1 }, { fetchImpl });
   check("replay of attempt 1 → Square returns the SAME payment (no second charge)", replay.ok === true && replay.paymentId === firstPaymentId, JSON.stringify(replay));
-  check("replayed attempt reuses the same idempotency key", squareCalls[before].body.idempotency_key === squareIdempotencyKey("tip-", c.job, "35", 1), JSON.stringify(squareCalls[before].body.idempotency_key));
+  check("replayed attempt reuses the same idempotency key", squareCalls[before].body.idempotency_key === squareIdempotencyKey("tip-", c.job, c.tbDriver, 1), JSON.stringify(squareCalls[before].body.idempotency_key));
   const rows = await q`SELECT COUNT(*)::int AS n FROM completion_tips WHERE org_id=${ORG} AND job_id=${c.job} AND status='paid'`;
   check("replayed attempt → still exactly ONE paid attribution row", Number(rows[0].n) === 1, JSON.stringify(rows));
   // A NEW attempt uses a NEW idempotency key (the retry path after a failure).
   const t2 = await chargeTipCore(user, { jobId: c.call, token: "cnonce-card-0002", amountCents: 750, attempt: 2 }, { fetchImpl });
-  check("attempt 2 → new idempotency key (sha1 of job|driver|2)", t2.ok === true && squareCalls.at(-1).body.idempotency_key === squareIdempotencyKey("tip-", c.job, "35", 2), JSON.stringify(squareCalls.at(-1).body.idempotency_key));
+  check("attempt 2 → new idempotency key (sha1 of job|driver|2)", t2.ok === true && squareCalls.at(-1).body.idempotency_key === squareIdempotencyKey("tip-", c.job, c.tbDriver, 2), JSON.stringify(squareCalls.at(-1).body.idempotency_key));
   const rows2 = await q`SELECT COUNT(*)::int AS n FROM completion_tips WHERE org_id=${ORG} AND job_id=${c.job} AND status='paid'`;
   check("attempt 2 records its own attribution row (paid)", Number(rows2[0].n) === 2, JSON.stringify(rows2));
 }
@@ -282,7 +285,7 @@ let firstPaymentId = null;
 {
   const c = CONF[ORG];
   const { fetchImpl } = orgFetch;
-  const other = { orgId: ORG, id: OTHER, role: "contractor", towbookDriverId: "99" };
+  const other = { orgId: ORG, id: OTHER, role: "contractor", towbookDriverId: OTHER_TB };
   const deniedCharge = await chargeTipCore(other, { jobId: c.call, token: "cnonce-card-0003", amountCents: 500, attempt: 1 }, { fetchImpl });
   check("wrong driver tip charge → unauthorized", deniedCharge.ok === false && deniedCharge.code === "unauthorized", JSON.stringify(deniedCharge));
   const deniedComplete = await completeJobCore(other, { jobId: c.call }, { fetchImpl });
@@ -352,7 +355,7 @@ const org2Fetch = makeFetch({ callId: CONF[ORG2].call });
   check("Square 400 surfaced (CARD_DECLINED)", String(bad.message).includes("CARD_DECLINED"), bad.message);
   const frow = await q`SELECT status, error, attempt, idempotency_key FROM completion_tips WHERE org_id=${ORG3} AND job_id=${c.job} AND status='failed'`;
   check("failed attempt recorded in completion_tips (attempt 1 + key + error)",
-    frow.length === 1 && Number(frow[0].attempt) === 1 && frow[0].idempotency_key === squareIdempotencyKey("tip-", c.job, "37", 1) && String(frow[0].error).includes("CARD_DECLINED"), JSON.stringify(frow));
+    frow.length === 1 && Number(frow[0].attempt) === 1 && frow[0].idempotency_key === squareIdempotencyKey("tip-", c.job, c.tbDriver, 1) && String(frow[0].error).includes("CARD_DECLINED"), JSON.stringify(frow));
   const jc = await q`SELECT tip FROM job_completions WHERE org_id=${ORG3} AND job_id=${c.job}`;
   check("no tip recorded after failure", jc[0].tip == null, JSON.stringify(jc));
 
@@ -360,7 +363,7 @@ const org2Fetch = makeFetch({ callId: CONF[ORG2].call });
   const okFetch = makeFetch({ callId: c.call, payments: "ok" });
   const { fetchImpl: f2, squareCalls: sq2 } = okFetch;
   const retry = await chargeTipCore(user, { jobId: c.call, token: "cnonce-card-0010", amountCents: 500, attempt: 2 }, { fetchImpl: f2 });
-  check("retry (attempt 2) succeeds with a fresh key", retry.ok === true && sq2[0].body.idempotency_key === squareIdempotencyKey("tip-", c.job, "37", 2), JSON.stringify(retry));
+  check("retry (attempt 2) succeeds with a fresh key", retry.ok === true && sq2[0].body.idempotency_key === squareIdempotencyKey("tip-", c.job, c.tbDriver, 2), JSON.stringify(retry));
   const paid = await q`SELECT COUNT(*)::int AS n FROM completion_tips WHERE org_id=${ORG3} AND job_id=${c.job} AND status='paid'`;
   check("retry records one paid row", Number(paid[0].n) === 1, JSON.stringify(paid));
 
@@ -389,9 +392,40 @@ const org2Fetch = makeFetch({ callId: CONF[ORG2].call });
 const failed = checks.filter(([, ok]) => !ok);
 console.log(`completion-flow.test.mjs: ${checks.length - failed.length}/${checks.length} passed`);
 if (failed.length) { console.error(failed.map(([n, , e]) => `  ${n} ${e}`).join("\n")); process.exit(1); }
-// Prove cleanup: deleting the QA orgs cascades every row they created.
-for (const org of [ORG, ORG2, ORG3]) { assertQaOrg(org); await q`DELETE FROM organizations WHERE id=${org}`.catch(() => {}); }
-for (const u of [OWNER, OWNER2, OWNER3, DRIVER, DRIVER2, DRIVER3, OTHER]) await q`DELETE FROM users WHERE id=${u}`.catch(() => {});
+// Prove cleanup explicitly in FK-safe order. Do not swallow FK errors: a green
+// suite must prove that every QA row was actually deleted.
+const qaUsers = [OWNER, OWNER2, OWNER3, DRIVER, DRIVER2, DRIVER3, OTHER];
+const del = async (label, result) => {
+  const rows = await result;
+  if (!Array.isArray(rows)) throw new Error(`cleanup ${label}: delete did not return rows`);
+  return rows.length;
+};
+for (const org of [ORG, ORG2, ORG3]) assertQaOrg(org);
+for (const org of [ORG, ORG2, ORG3]) {
+  await del("status_events", q`DELETE FROM status_events WHERE org_id=${org} RETURNING *`);
+  await del("job_completions", q`DELETE FROM job_completions WHERE org_id=${org} RETURNING *`);
+  await del("completion_tips", q`DELETE FROM completion_tips WHERE org_id=${org} RETURNING *`);
+  await del("job_photos", q`DELETE FROM job_photos WHERE org_id=${org} RETURNING *`);
+  await del("dispatch_jobs", q`DELETE FROM dispatch_jobs WHERE org_id=${org} RETURNING *`);
+  await del("audit_log", q`DELETE FROM audit_log WHERE org_id=${org} RETURNING *`);
+  await del("org_settings", q`DELETE FROM org_settings WHERE org_id=${org} RETURNING *`);
+  await del("towbook_sessions", q`DELETE FROM towbook_sessions WHERE org_id=${org} RETURNING *`);
+  await del("organization_memberships", q`DELETE FROM organization_memberships WHERE org_id=${org} RETURNING *`);
+}
+// User-scoped FK children (including actor/audit references) must be gone before users.
+for (const u of qaUsers) {
+  await del("driver_availability_log", q`DELETE FROM driver_availability_log WHERE user_id=${u} RETURNING *`);
+  await del("push_subscriptions", q`DELETE FROM push_subscriptions WHERE user_id=${u} RETURNING *`);
+  await del("academy_progress", q`DELETE FROM academy_progress WHERE user_id=${u} RETURNING *`);
+  await del("contractor_profiles", q`DELETE FROM contractor_profiles WHERE user_id=${u} RETURNING *`);
+  await del("contractor_schedules", q`DELETE FROM contractor_schedules WHERE user_id=${u} OR updated_by_user_id=${u} RETURNING *`);
+  await del("audit_log actors", q`DELETE FROM audit_log WHERE actor_user_id=${u} RETURNING *`);
+  await del("users linked drivers", q`UPDATE users SET linked_driver_user_id=NULL WHERE linked_driver_user_id=${u} RETURNING *`);
+}
+for (const u of qaUsers) await del("users", q`DELETE FROM users WHERE id=${u} RETURNING *`);
+for (const org of [ORG, ORG2, ORG3]) {
+  await del("organizations", q`DELETE FROM organizations WHERE id=${org} RETURNING id`);
+}
 const leftover = await q`SELECT
   (SELECT COUNT(*)::int FROM completion_tips t JOIN organizations o ON o.id=t.org_id WHERE o.name='qa completion-flow wp') AS tips,
   (SELECT COUNT(*)::int FROM job_completions jc JOIN organizations o ON o.id=jc.org_id WHERE o.name='qa completion-flow wp') AS completions,
