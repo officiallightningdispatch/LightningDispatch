@@ -47,11 +47,14 @@ const DRIVER3 = `qa-gps-driver3-${randomUUID()}`;
 // Per-run Towbook driver ids (the LD users_towbook_driver_id index is globally
 // unique — fixed ids like 7/8/9 collide with leftover rows from crashed runs).
 const tb = (seed) => String(BigInt("0x" + seed.slice(-36).replace(/-/g, "").slice(0, 10)) % 900_000_000n);
+// Per-run Towbook user ids prevent crashed-run collisions on the global unique index.
+const tbu = (seed) => String(900_000_000n + BigInt("0x" + seed.slice(-36).replace(/-/g, "").slice(0, 10)) % 100_000_000n);
 const TB1 = tb(DRIVER), TB2 = tb(DRIVER2), TB3 = tb(DRIVER3);
+const TBU1 = tbu(DRIVER), TBU2 = tbu(DRIVER2), TBU3 = tbu(DRIVER3);
 const CONF = {
-  [ORG]: { userId: DRIVER, tbDriver: TB1, tbUser: "42", job: "tb-321001", call: "321001" },
-  [ORG2]: { userId: DRIVER2, tbDriver: TB2, tbUser: "52", job: "tb-321002", call: "321002" },
-  [ORG3]: { userId: DRIVER3, tbDriver: TB3, tbUser: "62", job: "tb-321003", call: "321003" },
+  [ORG]: { userId: DRIVER, tbDriver: TB1, tbUser: TBU1, job: "tb-321001", call: "321001" },
+  [ORG2]: { userId: DRIVER2, tbDriver: TB2, tbUser: TBU2, job: "tb-321002", call: "321002" },
+  [ORG3]: { userId: DRIVER3, tbDriver: TB3, tbUser: TBU3, job: "tb-321003", call: "321003" },
 };
 const PICKUP = { lat: 41.2, lng: -73.2 };
 /** 0.001° lat ≈ 111.19 m — the standard approximation for asserting haversine. */
@@ -101,9 +104,9 @@ function makeFetch({ callId, putStatus = 200, getStatusId = 3 } = {}) {
 async function setup() {
   await ensureSchema();
   for (const [org, owner, driver, tbDriver, tbUser, job, callId] of [
-    [ORG, OWNER, DRIVER, TB1, "42", "tb-321001", "321001"],
-    [ORG2, OWNER2, DRIVER2, TB2, "52", "tb-321002", "321002"],
-    [ORG3, OWNER3, DRIVER3, TB3, "62", "tb-321003", "321003"],
+    [ORG, OWNER, DRIVER, CONF[ORG].tbDriver, CONF[ORG].tbUser, "tb-321001", "321001"],
+    [ORG2, OWNER2, DRIVER2, CONF[ORG2].tbDriver, CONF[ORG2].tbUser, "tb-321002", "321002"],
+    [ORG3, OWNER3, DRIVER3, CONF[ORG3].tbDriver, CONF[ORG3].tbUser, "tb-321003", "321003"],
   ]) {
     await q`INSERT INTO organizations(id, name) VALUES(${org}, 'qa driver-gps')`;
     await q`INSERT INTO users(id, name, email, password_hash) VALUES(${owner}, 'QA GPS Owner', ${`gps-owner-${randomUUID()}@qa.local`}, 'x')`;

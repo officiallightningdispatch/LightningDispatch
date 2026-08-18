@@ -54,10 +54,13 @@ const DRIVER = `qa-cf-driver-${TAG}`;
 const DRIVER2 = `qa-cf2-driver-${TAG}`;
 const DRIVER3 = `qa-cf3-driver-${TAG}`;
 const OTHER = `qa-cf-other-${TAG}`;     // in ORG, not assigned to the job
+// Per-run Towbook user ids prevent crashed-run collisions on the global unique index.
+const tbu = (seed) => String(900_000_000n + BigInt("0x" + seed.slice(-36).replace(/-/g, "").slice(0, 10)) % 100_000_000n);
+const TBU1 = tbu(DRIVER), TBU2 = tbu(DRIVER2), TBU3 = tbu(DRIVER3);
 const CONF = {
-  [ORG]: { userId: DRIVER, tbDriver: "35", tbUser: "135", job: "tb-447011", call: "447011" },
-  [ORG2]: { userId: DRIVER2, tbDriver: "36", tbUser: "136", job: "tb-447012", call: "447012" },
-  [ORG3]: { userId: DRIVER3, tbDriver: "37", tbUser: "137", job: "tb-447013", call: "447013" },
+  [ORG]: { userId: DRIVER, tbDriver: "35", tbUser: TBU1, job: "tb-447011", call: "447011" },
+  [ORG2]: { userId: DRIVER2, tbDriver: "36", tbUser: TBU2, job: "tb-447012", call: "447012" },
+  [ORG3]: { userId: DRIVER3, tbDriver: "37", tbUser: TBU3, job: "tb-447013", call: "447013" },
 };
 const PICKUP = { lat: 41.2, lng: -73.2 };
 
@@ -150,9 +153,9 @@ async function uploadAllPhotos(orgId, fetchImpl, marker) {
 async function setup() {
   await ensureSchema();
   for (const [org, owner, driver, tbDriver, tbUser, job, callId] of [
-    [ORG, OWNER, DRIVER, "35", "135", "tb-447011", "447011"],
-    [ORG2, OWNER2, DRIVER2, "36", "136", "tb-447012", "447012"],
-    [ORG3, OWNER3, DRIVER3, "37", "137", "tb-447013", "447013"],
+    [ORG, OWNER, DRIVER, CONF[ORG].tbDriver, CONF[ORG].tbUser, "tb-447011", "447011"],
+    [ORG2, OWNER2, DRIVER2, CONF[ORG2].tbDriver, CONF[ORG2].tbUser, "tb-447012", "447012"],
+    [ORG3, OWNER3, DRIVER3, CONF[ORG3].tbDriver, CONF[ORG3].tbUser, "tb-447013", "447013"],
   ]) {
     await q`INSERT INTO organizations(id, name) VALUES(${org}, 'qa completion-flow wp')`;
     await q`INSERT INTO users(id, name, email, password_hash) VALUES(${owner}, 'QA CF Owner', ${`qa-cf-owner-${randomUUID()}@lightning.test`}, 'x')`;
