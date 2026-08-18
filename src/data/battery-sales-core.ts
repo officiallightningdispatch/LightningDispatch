@@ -39,7 +39,7 @@ import { z } from "zod";
 import { loadSquareConfig, createCardPayment, squareIdempotencyKey } from "./square-client";
 import { resolveJob, isAssignedDriver } from "./driver-photos-core";
 import type { PhotoUser } from "./driver-photos-core";
-import { holdBatteryInventory, reserveBatteryInventory } from "./battery-lifecycle-core";
+import { holdBatteryInventory } from "./battery-lifecycle-core";
 import { canonicalizeNullableVehicleField } from "./battery-compatibility-canonical";
 
 const configured = () => Boolean(process.env.DATABASE_URL);
