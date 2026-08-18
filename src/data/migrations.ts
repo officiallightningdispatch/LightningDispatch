@@ -1545,7 +1545,9 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
   [71, async (q) => {
     await q`CREATE UNIQUE INDEX IF NOT EXISTS owner_notifications_org_kind_source_uidx ON owner_notifications(org_id, kind, (payload->>'sourceId')) WHERE (payload->>'sourceId') IS NOT NULL`;
   }],
-  [72, async (q) => {
+  // 80: per-call CallWorkflow report snapshots for payday reconciliation. Numbered 80
+  // (NOT 72): prod schema_migrations already consumed 72-79 from the pre-fork lineage.
+  [80, async (q) => {
     await q`CREATE TABLE IF NOT EXISTS towbook_report_snapshots (
       id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
       report_type TEXT NOT NULL, period_start DATE NOT NULL, period_end DATE NOT NULL,
