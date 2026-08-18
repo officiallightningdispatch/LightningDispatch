@@ -11,6 +11,7 @@ export type CallWorkflowRow = Record<string, unknown> & {
 };
 export type ReportWindow = { start: string; end: string; companyId?: number[] };
 let tokenCache: { token: string; expiresAt: number } | null = null;
+export function resetTowbookReportTokenCacheForTests() { tokenCache = null; }
 const endpoint = "https://app.towbook.com/api";
 const responseRows = (body: unknown): CallWorkflowRow[] => {
   if (Array.isArray(body)) return body as CallWorkflowRow[];
@@ -47,7 +48,13 @@ export async function fetchCallWorkflow(window: ReportWindow): Promise<{ rows: C
 }
 export type Classification = "completed" | "goa" | "cancelled" | "reassigned" | "unclassifiable";
 export type ReconciliationRow = { key: string; driver: string; classification: Classification; payableCents: number; reason?: string };
-export type ReconciliationResult = { reportCount: number; payableCount: number; payableCents: number; rows: ReconciliationRow[]; byDriver: Array<{ driver: string; reportCount: number; payableCount: number; payableCents: number }>; diagnostics: string[] };
+export type ReconciliationResult = { reportCount: number; payableCount: number; excludedCount: number; unclassifiableCount: number; payableCents: number; rows: ReconciliationRow[]; byDriver: Array<{ driver: string; reportCount: number; payableCount: number; excludedCount: number; unclassifiableCount: number; payableCents: number }>; diagnostics: string[] };
+export type DriverActivityAggregate = { name: string; callCount: number; totalInvoice?: number };
+export function reconcileDriverActivityCore(aggregates: DriverActivityAggregate[]): ReconciliationResult {
+  const rows: ReconciliationRow[] = aggregates.flatMap(a => Array.from({ length: a.callCount }, (_, i) => ({ key: `${a.name}-${i + 1}`, driver: a.name, classification: "unclassifiable" as const, payableCents: 0, reason: "Driver Activity aggregate has no itemized call evidence" })));
+  const byDriver = aggregates.map(a => ({ driver: a.name, reportCount: a.callCount, payableCount: 0, excludedCount: 0, unclassifiableCount: a.callCount, payableCents: 0 }));
+  return { reportCount: rows.length, payableCount: 0, excludedCount: 0, unclassifiableCount: rows.length, payableCents: 0, rows, byDriver, diagnostics: rows.map(r => `${r.key}: ${r.reason}`) };
+}
 const s = (v: unknown) => String(v ?? "").toLowerCase();
 export function reconcileCallWorkflow(rows: CallWorkflowRow[], jobs: Array<Record<string, unknown>> = []): ReconciliationResult {
   const byKey = new Map(jobs.map(j => [String(j.towbook_job_id ?? j.id ?? ""), j]));
@@ -67,9 +74,9 @@ export function reconcileCallWorkflow(rows: CallWorkflowRow[], jobs: Array<Recor
     if (classification === "unclassifiable") diagnostics.push(`${key}: ${reason}`);
     out.push({ key, driver: String(r.driverName ?? r.driver ?? r.ownerUserName ?? "Unknown"), classification, payableCents: cents, ...(reason ? { reason } : {}) });
   }
-  const dm = new Map<string, { reportCount: number; payableCount: number; payableCents: number }>();
-  for (const x of out) { const d = dm.get(x.driver) ?? { reportCount: 0, payableCount: 0, payableCents: 0 }; d.reportCount++; if (x.payableCents > 0) { d.payableCount++; d.payableCents += x.payableCents; } dm.set(x.driver, d); }
-  return { reportCount: out.length, payableCount: out.filter(x => x.payableCents > 0).length, payableCents: out.reduce((n,x) => n+x.payableCents,0), rows: out, byDriver: [...dm].map(([driver,v]) => ({ driver, ...v })), diagnostics };
+  const dm = new Map<string, { reportCount: number; payableCount: number; excludedCount: number; unclassifiableCount: number; payableCents: number }>();
+  for (const x of out) { const d = dm.get(x.driver) ?? { reportCount: 0, payableCount: 0, excludedCount: 0, unclassifiableCount: 0, payableCents: 0 }; d.reportCount++; if (x.classification === "completed" || x.classification === "goa") { d.payableCount++; d.payableCents += x.payableCents; } else if (x.classification === "unclassifiable") d.unclassifiableCount++; else d.excludedCount++; dm.set(x.driver, d); }
+  return { reportCount: out.length, payableCount: out.filter(x => x.classification === "completed" || x.classification === "goa").length, excludedCount: out.filter(x => x.classification === "cancelled" || x.classification === "reassigned").length, unclassifiableCount: out.filter(x => x.classification === "unclassifiable").length, payableCents: out.reduce((n,x) => n+x.payableCents,0), rows: out, byDriver: [...dm].map(([driver,v]) => ({ driver, ...v })), diagnostics };
 }
 export async function saveTowbookSnapshot(orgId: string, window: ReportWindow, raw: unknown, source: "server" | "manual-paste" = "server") {
   const q = sql(); const id = randomUUID(); await q`INSERT INTO towbook_report_snapshots(id,org_id,report_type,period_start,period_end,data,source) VALUES(${id},${orgId},'CallWorkflow',${window.start.slice(0,10)},${window.end.slice(0,10)},${raw},${source})`; return id;
