@@ -37,10 +37,12 @@ async function bearer(): Promise<string> {
   try { r = await fetch(`${endpoint}/authentication`, { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, body: JSON.stringify({ username, password }) }); }
   catch { throw new TowbookReportError("authentication_failed", "Towbook authentication could not be reached."); }
   if (!r.ok) throw new TowbookReportError("authentication_failed", `Towbook authentication failed (${r.status}).`);
-  const b = await r.json().catch(() => null) as Record<string, unknown> | null;
-  const token = typeof b?.token === "string" ? b.token : "";
+  // Towbook's SPA contract is a plain-text 64-character token body. The JSON
+  // report client must not interpret the successful auth response as an object.
+  const token = (await r.text().catch(() => "")).trim();
   if (!/^[A-Za-z0-9]{64}$/.test(token)) throw new TowbookReportError("authentication_failed", "Towbook authentication returned no valid token.");
-  const exp = b?.expiresAt ? Date.parse(String(b.expiresAt)) : Date.now() + 50 * 60_000;
+  const expHeader = r.headers.get("x-towbook-token-expires-utc");
+  const exp = expHeader ? Date.parse(expHeader) : Date.now() + 50 * 60_000;
   tokenCache = { token, expiresAt: Number.isFinite(exp) ? exp : Date.now() + 50 * 60_000 };
   return token;
 }
