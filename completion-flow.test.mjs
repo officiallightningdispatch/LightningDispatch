@@ -438,36 +438,119 @@ const deleteUserChildren = async (u) => {
   await del("users linked drivers", q`UPDATE users SET linked_driver_user_id=NULL WHERE linked_driver_user_id=${u} RETURNING *`);
 };
 // Include failed-run fixtures, but never broaden beyond the qa-cf-* namespace.
-const qaOrgs = (await q`SELECT id FROM organizations WHERE id LIKE 'qa-cf-%'`).map(({ id }) => id);
-const qaUserRows = await q`SELECT id FROM users WHERE id LIKE 'qa-cf-%'`;
+const qaOrgs = (await q`SELECT id FROM organizations WHERE id LIKE 'qa-cf%'`).map(({ id }) => id);
+const qaUserRows = await q`SELECT id FROM users WHERE id LIKE 'qa-cf%'`;
 const allQaUsers = [...new Set([...qaUsers, ...qaUserRows.map(({ id }) => id)])];
 for (const org of qaOrgs) assertQaOrg(org);
+// Every organization FK child, ordered deepest-first. This is intentionally
+// exhaustive against the information_schema FK scan so new fixture data cannot
+// survive cleanup unnoticed. Keep this list in sync when adding org FKs.
+const orgDeletes = [
+  ["battery_inventory_ledger", "org_id"],
+  ["battery_install_photo_overrides", "org_id"],
+  ["battery_install_photos", "org_id"],
+  ["battery_sales", "org_id"],
+  ["battery_warranties", "org_id"],
+  ["battery_inventory", "org_id"],
+  ["battery_products", "org_id"],
+  ["battery_install_types", "org_id"],
+  ["battery_compatibility", "org_id"],
+  ["payout_records", "org_id"],
+  ["pay_periods", "org_id"],
+  ["completion_tips", "org_id"],
+  ["job_completions", "org_id"],
+  ["job_photos", "org_id"],
+  ["status_events", "org_id"],
+  ["audit_log", "org_id"],
+  ["dispatch_jobs", "org_id"],
+  ["ai_dispatcher_runs", "org_id"],
+  ["contractor_doc_selfies", "org_id"],
+  ["contractor_documents", "org_id"],
+  ["contractor_form_docs", "org_id"],
+  ["contractor_form_submissions", "org_id"],
+  ["contractor_profiles", "org_id"],
+  ["contractor_schedules", "org_id"],
+  ["damage_claims", "org_id"],
+  ["dispatch_contractors", "org_id"],
+  ["dispatch_zones", "org_id"],
+  ["driver_availability_log", "org_id"],
+  ["driver_issues", "org_id"],
+  ["driver_locations", "org_id"],
+  ["driver_region_preferences", "org_id"],
+  ["job_feedback", "org_id"],
+  ["motor_club_cards", "org_id"],
+  ["org_settings", "org_id"],
+  ["organization_memberships", "org_id"],
+  ["outbound_write_ledger", "org_id"],
+  ["owner_notifications", "org_id"],
+  ["payment_transactions", "org_id"],
+  ["payout_methods", "org_id"],
+  ["push_subscriptions", "org_id"],
+  ["service_time_goals", "org_id"],
+  ["sessions", "active_org_id"],
+  ["tip_cashouts", "org_id"],
+  ["tire_plug_transactions", "org_id"],
+  ["towbook_report_snapshots", "org_id"],
+  ["towbook_sessions", "org_id"],
+];
 for (const org of qaOrgs) {
-  await del("status_events", q`DELETE FROM status_events WHERE org_id=${org} RETURNING *`);
-  await del("job_completions", q`DELETE FROM job_completions WHERE org_id=${org} RETURNING *`);
-  await del("completion_tips", q`DELETE FROM completion_tips WHERE org_id=${org} RETURNING *`);
-  await del("job_photos", q`DELETE FROM job_photos WHERE org_id=${org} RETURNING *`);
-  await del("dispatch_jobs", q`DELETE FROM dispatch_jobs WHERE org_id=${org} RETURNING *`);
-  await del("audit_log", q`DELETE FROM audit_log WHERE org_id=${org} RETURNING *`);
-  await del("org_settings", q`DELETE FROM org_settings WHERE org_id=${org} RETURNING *`);
-  await del("towbook_sessions", q`DELETE FROM towbook_sessions WHERE org_id=${org} RETURNING *`);
-  await del("organization_memberships", q`DELETE FROM organization_memberships WHERE org_id=${org} RETURNING *`);
+  for (const [table, column] of orgDeletes) {
+    await del(`${table}.${column}`, q.query(`DELETE FROM ${table} WHERE ${column} = $1 RETURNING *`, [org]));
+  }
 }
 for (const u of allQaUsers) await deleteUserChildren(u);
 for (const u of allQaUsers) await del("users", q`DELETE FROM users WHERE id=${u} RETURNING *`);
 for (const org of qaOrgs) await del("organizations", q`DELETE FROM organizations WHERE id=${org} RETURNING id`);
 const leftover = await q`SELECT
-  (SELECT COUNT(*)::int FROM completion_tips t JOIN organizations o ON o.id=t.org_id WHERE o.id LIKE 'qa-cf-%') AS tips,
-  (SELECT COUNT(*)::int FROM job_completions jc JOIN organizations o ON o.id=jc.org_id WHERE o.id LIKE 'qa-cf-%') AS completions,
-  (SELECT COUNT(*)::int FROM job_photos p JOIN organizations o ON o.id=p.org_id WHERE o.id LIKE 'qa-cf-%') AS photos,
-  (SELECT COUNT(*)::int FROM dispatch_jobs j JOIN organizations o ON o.id=j.org_id WHERE o.id LIKE 'qa-cf-%') AS jobs,
-  (SELECT COUNT(*)::int FROM status_events e JOIN organizations o ON o.id=e.org_id WHERE o.id LIKE 'qa-cf-%') AS events,
-  (SELECT COUNT(*)::int FROM audit_log a JOIN organizations o ON o.id=a.org_id WHERE o.id LIKE 'qa-cf-%') AS audit,
-  (SELECT COUNT(*)::int FROM towbook_sessions s JOIN organizations o ON o.id=s.org_id WHERE o.id LIKE 'qa-cf-%') AS sessions,
-  (SELECT COUNT(*)::int FROM org_settings s JOIN organizations o ON o.id=s.org_id WHERE o.id LIKE 'qa-cf-%') AS settings,
-  (SELECT COUNT(*)::int FROM organization_memberships m JOIN organizations o ON o.id=m.org_id WHERE o.id LIKE 'qa-cf-%') AS members,
-  (SELECT COUNT(*)::int FROM users u WHERE u.id LIKE 'qa-cf-%') AS users,
-  (SELECT COUNT(*)::int FROM organizations o WHERE o.id LIKE 'qa-cf-%') AS orgs`;
+  (SELECT COUNT(*)::int FROM completion_tips WHERE org_id LIKE 'qa-cf%') AS tips,
+  (SELECT COUNT(*)::int FROM job_completions WHERE org_id LIKE 'qa-cf%') AS completions,
+  (SELECT COUNT(*)::int FROM job_photos WHERE org_id LIKE 'qa-cf%') AS photos,
+  (SELECT COUNT(*)::int FROM dispatch_jobs WHERE org_id LIKE 'qa-cf%') AS jobs,
+  (SELECT COUNT(*)::int FROM status_events WHERE org_id LIKE 'qa-cf%') AS events,
+  (SELECT COUNT(*)::int FROM audit_log WHERE org_id LIKE 'qa-cf%') AS audit,
+  (SELECT COUNT(*)::int FROM towbook_sessions WHERE org_id LIKE 'qa-cf%') AS sessions,
+  (SELECT COUNT(*)::int FROM org_settings WHERE org_id LIKE 'qa-cf%') AS settings,
+  (SELECT COUNT(*)::int FROM organization_memberships WHERE org_id LIKE 'qa-cf%') AS members,
+  (SELECT COUNT(*)::int FROM ai_dispatcher_runs WHERE org_id LIKE 'qa-cf%') AS ai_runs,
+  (SELECT COUNT(*)::int FROM battery_compatibility WHERE org_id LIKE 'qa-cf%') AS battery_compatibility,
+  (SELECT COUNT(*)::int FROM battery_install_photo_overrides WHERE org_id LIKE 'qa-cf%') AS battery_install_photo_overrides,
+  (SELECT COUNT(*)::int FROM battery_install_photos WHERE org_id LIKE 'qa-cf%') AS battery_install_photos,
+  (SELECT COUNT(*)::int FROM battery_install_types WHERE org_id LIKE 'qa-cf%') AS battery_install_types,
+  (SELECT COUNT(*)::int FROM battery_inventory WHERE org_id LIKE 'qa-cf%') AS battery_inventory,
+  (SELECT COUNT(*)::int FROM battery_inventory_ledger WHERE org_id LIKE 'qa-cf%') AS battery_inventory_ledger,
+  (SELECT COUNT(*)::int FROM battery_products WHERE org_id LIKE 'qa-cf%') AS battery_products,
+  (SELECT COUNT(*)::int FROM battery_sales WHERE org_id LIKE 'qa-cf%') AS battery_sales,
+  (SELECT COUNT(*)::int FROM battery_warranties WHERE org_id LIKE 'qa-cf%') AS battery_warranties,
+  (SELECT COUNT(*)::int FROM contractor_doc_selfies WHERE org_id LIKE 'qa-cf%') AS contractor_doc_selfies,
+  (SELECT COUNT(*)::int FROM contractor_doc_types WHERE org_id LIKE 'qa-cf%') AS contractor_doc_types,
+  (SELECT COUNT(*)::int FROM contractor_documents WHERE org_id LIKE 'qa-cf%') AS contractor_documents,
+  (SELECT COUNT(*)::int FROM contractor_form_docs WHERE org_id LIKE 'qa-cf%') AS contractor_form_docs,
+  (SELECT COUNT(*)::int FROM contractor_form_submissions WHERE org_id LIKE 'qa-cf%') AS contractor_form_submissions,
+  (SELECT COUNT(*)::int FROM contractor_profiles WHERE org_id LIKE 'qa-cf%') AS contractor_profiles,
+  (SELECT COUNT(*)::int FROM contractor_schedules WHERE org_id LIKE 'qa-cf%') AS contractor_schedules,
+  (SELECT COUNT(*)::int FROM damage_claims WHERE org_id LIKE 'qa-cf%') AS damage_claims,
+  (SELECT COUNT(*)::int FROM dispatch_contractors WHERE org_id LIKE 'qa-cf%') AS dispatch_contractors,
+  (SELECT COUNT(*)::int FROM dispatch_zones WHERE org_id LIKE 'qa-cf%') AS dispatch_zones,
+  (SELECT COUNT(*)::int FROM driver_availability_log WHERE org_id LIKE 'qa-cf%') AS driver_availability_log,
+  (SELECT COUNT(*)::int FROM driver_issues WHERE org_id LIKE 'qa-cf%') AS driver_issues,
+  (SELECT COUNT(*)::int FROM driver_locations WHERE org_id LIKE 'qa-cf%') AS driver_locations,
+  (SELECT COUNT(*)::int FROM driver_region_preferences WHERE org_id LIKE 'qa-cf%') AS driver_region_preferences,
+  (SELECT COUNT(*)::int FROM job_feedback WHERE org_id LIKE 'qa-cf%') AS job_feedback,
+  (SELECT COUNT(*)::int FROM motor_club_cards WHERE org_id LIKE 'qa-cf%') AS motor_club_cards,
+  (SELECT COUNT(*)::int FROM outbound_write_ledger WHERE org_id LIKE 'qa-cf%') AS outbound_write_ledger,
+  (SELECT COUNT(*)::int FROM owner_notifications WHERE org_id LIKE 'qa-cf%') AS owner_notifications,
+  (SELECT COUNT(*)::int FROM pay_periods WHERE org_id LIKE 'qa-cf%') AS pay_periods,
+  (SELECT COUNT(*)::int FROM payment_transactions WHERE org_id LIKE 'qa-cf%') AS payment_transactions,
+  (SELECT COUNT(*)::int FROM payout_methods WHERE org_id LIKE 'qa-cf%') AS payout_methods,
+  (SELECT COUNT(*)::int FROM payout_records WHERE org_id LIKE 'qa-cf%') AS payout_records,
+  (SELECT COUNT(*)::int FROM push_subscriptions WHERE org_id LIKE 'qa-cf%') AS push_subscriptions,
+  (SELECT COUNT(*)::int FROM service_time_goals WHERE org_id LIKE 'qa-cf%') AS service_time_goals,
+  (SELECT COUNT(*)::int FROM sessions WHERE active_org_id LIKE 'qa-cf%') AS active_sessions,
+  (SELECT COUNT(*)::int FROM tip_cashouts WHERE org_id LIKE 'qa-cf%') AS tip_cashouts,
+  (SELECT COUNT(*)::int FROM tire_plug_transactions WHERE org_id LIKE 'qa-cf%') AS tire_plug_transactions,
+  (SELECT COUNT(*)::int FROM towbook_report_snapshots WHERE org_id LIKE 'qa-cf%') AS towbook_report_snapshots,
+  (SELECT COUNT(*)::int FROM users WHERE id LIKE 'qa-cf%') AS users,
+  (SELECT COUNT(*)::int FROM organizations WHERE id LIKE 'qa-cf%') AS orgs`;
 const z = Object.values(leftover[0]).every((n) => Number(n) === 0);
 console.log(`cleanup: ${JSON.stringify(leftover[0])}`);
 if (!z) { console.error("FAIL: QA cleanup left rows behind"); process.exit(1); }
