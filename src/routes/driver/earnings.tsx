@@ -80,6 +80,10 @@ function EarningsView() {
     () => (state?.ok ? state.tirePlugs.filter((t) => inRange(t.createdAtIso, range, now)) : []),
     [state, range, now],
   );
+  const filteredBatteryInstalls = useMemo(
+    () => (state?.ok ? state.batteryInstalls.filter((b) => inRange(b.createdAtIso, range, now)) : []),
+    [state, range, now],
+  );
   const filteredTips = useMemo(
     () => (state?.ok ? state.tips.filter((t) => inRange(t.createdAtIso, range, now)) : []),
     [state, range, now],
@@ -120,6 +124,7 @@ function EarningsView() {
     const period = (start: Date, end: Date) => {
       let jobs = 0;
       let tips = 0;
+      let battery = 0;
       if (state?.ok) {
         for (const c of state.completed) {
           const t = c.completedAtIso ? new Date(c.completedAtIso).getTime() : Number.NaN;
@@ -129,8 +134,12 @@ function EarningsView() {
           const t = tip.createdAtIso ? new Date(tip.createdAtIso).getTime() : Number.NaN;
           if (Number.isFinite(t) && t >= start.getTime() && t < end.getTime()) tips += tip.amountCents;
         }
+        for (const install of state.batteryInstalls) {
+          const t = install.createdAtIso ? new Date(install.createdAtIso).getTime() : Number.NaN;
+          if (Number.isFinite(t) && t >= start.getTime() && t < end.getTime()) battery += install.amountCents;
+        }
       }
-      return { jobs, tips, earnings: rateCents * jobs + tips };
+      return { jobs, tips, battery, earnings: rateCents * jobs + tips + battery };
     };
     const current = period(monday, new Date(monday.getTime() + 7 * 86400000));
     const last = period(lastStart, monday);
@@ -184,6 +193,7 @@ function EarningsView() {
           </div>
 
           {filteredTirePlugs.length > 0 && <Card className="p-4"><p className="text-sm font-bold text-ink-800">Tire-plug earnings</p><div className="mt-2 space-y-2">{filteredTirePlugs.map((plug) => <div key={plug.jobId} className="flex justify-between text-sm"><span>Tire plug{plug.callNumber ? ` · Call #${plug.callNumber}` : ""}</span><span className="font-bold text-brand-700">+{money(plug.amountCents)}</span></div>)}</div></Card>}
+          {filteredBatteryInstalls.length > 0 && <Card className="p-4"><p className="text-sm font-bold text-ink-800">Battery install earnings</p><div className="mt-2 space-y-2">{filteredBatteryInstalls.map((install) => <div key={install.saleId} className="flex justify-between text-sm"><span>Battery install{install.callNumber ? ` · Call #${install.callNumber}` : ""}</span><span className="font-bold text-brand-700">+{money(install.amountCents)}</span></div>)}</div></Card>}
 
           {/* Immediate tip cash-out (owner-directed 2026-08-12) — ONE TAP.
               Server-computed amount; states handled in the shared panel. */}
@@ -196,13 +206,13 @@ function EarningsView() {
               <p className="text-[11px] font-bold uppercase tracking-wide text-brand-600">This pay period</p>
               <p className="mt-0.5 text-xs text-ink-400">{fmtPeriod(payPeriods.monday, 0)} – {fmtPeriod(payPeriods.monday, 1)}</p>
               <p className="mt-1 text-2xl font-bold tabular-nums text-ink-900">{money(payPeriods.current.earnings)}</p>
-              <p className="text-xs text-ink-500">{payPeriods.current.jobs} job{payPeriods.current.jobs === 1 ? "" : "s"} · {money(payPeriods.current.tips)} tips</p>
+              <p className="text-xs text-ink-500">{payPeriods.current.jobs} job{payPeriods.current.jobs === 1 ? "" : "s"} · {money(payPeriods.current.tips)} tips · {money(payPeriods.current.battery)} battery installs</p>
             </Card>
             <Card className="p-4">
               <p className="text-[11px] font-bold uppercase tracking-wide text-ink-400">Last pay period</p>
               <p className="mt-0.5 text-xs text-ink-400">{fmtPeriod(payPeriods.monday, -1)} – {fmtPeriod(payPeriods.monday, 0)}</p>
               <p className="mt-1 text-2xl font-bold tabular-nums text-ink-900">{money(payPeriods.last.earnings)}</p>
-              <p className="text-xs text-ink-500">{payPeriods.last.jobs} job{payPeriods.last.jobs === 1 ? "" : "s"} · {money(payPeriods.last.tips)} tips</p>
+              <p className="text-xs text-ink-500">{payPeriods.last.jobs} job{payPeriods.last.jobs === 1 ? "" : "s"} · {money(payPeriods.last.tips)} tips · {money(payPeriods.last.battery)} battery installs</p>
             </Card>
           </div>
 

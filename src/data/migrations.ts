@@ -1783,6 +1783,25 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE TABLE IF NOT EXISTS battery_install_photo_overrides (id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, sale_id TEXT NOT NULL REFERENCES battery_sales(id) ON DELETE CASCADE, install_job_id TEXT NOT NULL REFERENCES dispatch_jobs(id) ON DELETE CASCADE, actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT, reason TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(org_id, sale_id))`;
     await q`CREATE INDEX IF NOT EXISTS battery_install_photo_overrides_org_idx ON battery_install_photo_overrides(org_id, created_at)`;
   }],
+  // 84: immutable earned-on-completion battery-install payout ledger. A sale
+  // can be completed/replayed only once; payday aggregates these snapshots and
+  // keeps paid manifests immutable. Voided sales are excluded at read time.
+  [84, async (q) => {
+    await q`CREATE TABLE IF NOT EXISTS battery_payouts (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      sale_id TEXT NOT NULL REFERENCES battery_sales(id) ON DELETE CASCADE,
+      job_id TEXT NOT NULL REFERENCES dispatch_jobs(id) ON DELETE CASCADE,
+      contractor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      amount_cents INTEGER NOT NULL CHECK (amount_cents >= 0),
+      earned_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(org_id, sale_id)
+    )`;
+    await q`CREATE INDEX IF NOT EXISTS battery_payouts_org_earned_idx ON battery_payouts(org_id, earned_at)`;
+    await q`CREATE INDEX IF NOT EXISTS battery_payouts_org_contractor_idx ON battery_payouts(org_id, contractor_user_id, earned_at)`;
+    await q`ALTER TABLE payout_records ADD COLUMN IF NOT EXISTS battery_payout_cents INTEGER NOT NULL DEFAULT 0`;
+  }],
 
 ];
 export async function ensureSchema() {

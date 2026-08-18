@@ -626,11 +626,18 @@ export async function completeJobCore(user: PhotoUser, data: unknown, opts: { fe
     // Inventory decrement, payout snapshot, and warranty are tied to the
     // verified install completion. All operations are idempotent by sale key.
     if (batteryGate.required && batteryGate.saleId) {
-      const saleRows = await q`SELECT product_id, vin, battery_group_size, warranty_years_snapshot FROM battery_sales WHERE org_id=${user.orgId} AND id=${batteryGate.saleId} LIMIT 1`;
+      const saleRows = await q`SELECT product_id, vin, battery_group_size, warranty_years_snapshot, driver_payout_snapshot_cents FROM battery_sales WHERE org_id=${user.orgId} AND id=${batteryGate.saleId} LIMIT 1`;
       const sale = saleRows[0] as Record<string, unknown> | undefined;
       if (sale?.product_id) {
         await decrementBatteryInventory(q, { orgId:user.orgId, saleId:batteryGate.saleId, productId:String(sale.product_id), jobId:job.id, actorUserId:user.id });
         await createBatteryWarranty(q, { orgId:user.orgId, saleId:batteryGate.saleId, productId:String(sale.product_id), installJobId:job.id, vin:sale.vin ? String(sale.vin) : null, groupSize:String(sale.battery_group_size ?? "unknown"), warrantyYears:Number(sale.warranty_years_snapshot ?? 0) });
+        // The payout snapshot is earned at the verified install completion, not
+        // at quote/payment time. UNIQUE(org_id,sale_id) + DO NOTHING makes a
+        // completion replay harmless and preserves the assigned driver at the
+        // moment of service.
+        await q`INSERT INTO battery_payouts(id, org_id, sale_id, job_id, contractor_user_id, amount_cents, earned_at)
+          VALUES(${`bp-${user.orgId}-${batteryGate.saleId}`}, ${user.orgId}, ${batteryGate.saleId}, ${job.id}, ${user.id}, ${Number(sale.driver_payout_snapshot_cents ?? 0)}, NOW())
+          ON CONFLICT (org_id, sale_id) DO NOTHING`;
         await q`UPDATE battery_sales SET completed_at=NOW() WHERE org_id=${user.orgId} AND id=${batteryGate.saleId}`;
       }
     }

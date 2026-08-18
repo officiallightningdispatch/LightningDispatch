@@ -406,6 +406,7 @@ export type PayoutRecord = {
   grossCents: number;
   tipsCents: number;
   tirePlugCents: number;
+  batteryPayoutCents: number;
   /** Busy-time bonus (owner-locked 2026-08-13): +$1 per job completed in a
    *  busy hour (3+ assigned calls in one clock hour) — derived from
    *  dispatch_jobs at compute time, snapshot here (part of the paid amount). */
@@ -427,6 +428,7 @@ export type PayPeriodDetail = {
     grossCents: number;
     tipsCents: number;
     tirePlugCents: number;
+    batteryPayoutCents: number;
     busyBonusCents: number;
     totalCents: number;
     contractorCount: number;
@@ -605,6 +607,7 @@ export async function getPayPeriodDetailCore(actor: PayoutActor, periodId: strin
       grossCents: r.gross_cents != null ? Number(r.gross_cents) : 0,
       tipsCents: r.tips_cents != null ? Number(r.tips_cents) : 0,
       tirePlugCents: r.tire_plug_cents != null ? Number(r.tire_plug_cents) : 0,
+      batteryPayoutCents: r.battery_payout_cents != null ? Number(r.battery_payout_cents) : 0,
       busyBonusCents: r.busy_bonus_cents != null ? Number(r.busy_bonus_cents) : 0,
       busyBonusJobs: r.busy_bonus_jobs != null ? Number(r.busy_bonus_jobs) : 0,
       busyBonusHours: Array.isArray(r.busy_bonus_hours)
@@ -629,6 +632,7 @@ export async function getPayPeriodDetailCore(actor: PayoutActor, periodId: strin
       grossCents: rows.reduce((s, r) => s + r.grossCents, 0),
       tipsCents: rows.reduce((s, r) => s + r.tipsCents, 0),
       tirePlugCents: rows.reduce((s, r) => s + r.tirePlugCents, 0),
+      batteryPayoutCents: rows.reduce((s, r) => s + r.batteryPayoutCents, 0),
       busyBonusCents: rows.reduce((s, r) => s + r.busyBonusCents, 0),
       totalCents: rows.reduce((s, r) => s + r.totalCents, 0),
       unknownTimestampCount: 0,
@@ -696,7 +700,14 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
           OR COALESCE(dj.raw_json->>'statusId', dj.raw_json->>'status') NOT IN ('255','cancelled','canceled'))
         AND CASE WHEN dj.raw_json->>'completionTime' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}(T| )[0-9]{2}:[0-9]{2}:[0-9]{2}' THEN (dj.raw_json->>'completionTime')::timestamptz END >= ${iso(startsAt)}
         AND CASE WHEN dj.raw_json->>'completionTime' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}(T| )[0-9]{2}:[0-9]{2}:[0-9]{2}' THEN (dj.raw_json->>'completionTime')::timestamptz END < ${iso(endsAt)}
-        AND dj.assigned_driver_towbook_id IS NOT NULL`;
+        AND dj.assigned_driver_towbook_id IS NOT NULL
+        -- Battery installs are paid from the immutable battery component below,
+        -- never both as a generic job and a battery install.
+        AND NOT EXISTS (
+          SELECT 1 FROM battery_sales bs
+          WHERE bs.org_id=dj.org_id AND bs.install_job_id=dj.id
+            AND bs.status='paid' AND bs.completed_at IS NOT NULL
+        )`;
     const hasReassignmentEvidence = (value: unknown): boolean => {
       if (!value || typeof value !== "object") return false;
       if (Array.isArray(value)) return value.some(hasReassignmentEvidence);
@@ -790,6 +801,19 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
       WHERE org_id=${actor.orgId} AND status='paid' AND paid_at >= ${iso(startsAt)} AND paid_at < ${iso(endsAt)} GROUP BY contractor_user_id`;
     const tireCentsByUser = new Map<string, number>();
     for (const r of tireRows as Record<string, unknown>[]) tireCentsByUser.set(String(r.contractor_user_id), Number(r.cents ?? 0));
+    // Battery payouts are earned only by a completed, non-voided sale. The
+    // completion hook records one immutable row per sale; aggregating that
+    // ledger is replay-stable and keeps reassigned work on the completing
+    // driver's identity captured at completion.
+    const batteryRows = await q`
+      SELECT bp.contractor_user_id, COALESCE(SUM(bp.amount_cents), 0)::int AS cents
+      FROM battery_payouts bp
+      JOIN battery_sales bs ON bs.org_id=bp.org_id AND bs.id=bp.sale_id
+      WHERE bp.org_id=${actor.orgId} AND bp.earned_at >= ${iso(startsAt)} AND bp.earned_at < ${iso(endsAt)}
+        AND bs.status='paid' AND bs.completed_at IS NOT NULL
+      GROUP BY bp.contractor_user_id`;
+    const batteryCentsByUser = new Map<string, number>();
+    for (const r of batteryRows as Record<string, unknown>[]) batteryCentsByUser.set(String(r.contractor_user_id), Number(r.cents ?? 0));
     const userRows = await q`
       SELECT u.id AS user_id, u.name, u.towbook_driver_id, cp.payrate_cents
       FROM users u
@@ -807,26 +831,35 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
     const tipCentsByUser = new Map<string, number>();
     for (const r of tipRows as Record<string, unknown>[]) tipCentsByUser.set(String(r.driver_id), Number(r.tip_cents ?? 0));
 
-    // contractor → { jobCount, payrateCents, tipsCents, tirePlugCents } keyed by user id
-    const earnByUser = new Map<string, { jobCount: number; payrateCents: number | null; tipsCents: number; tirePlugCents: number }>();
+    // contractor → all payout components keyed by user id. Battery installs are
+    // separate from generic job count so one install can never double-pay.
+    const earnByUser = new Map<string, { jobCount: number; payrateCents: number | null; tipsCents: number; tirePlugCents: number; batteryPayoutCents: number }>();
     for (const [uid, cents] of tireCentsByUser) {
       const u = [...userByTb.values()].find((v) => v.userId === uid);
       if (!u) continue;
-      const e = { jobCount: 0, payrateCents: u.payrateCents, tipsCents: 0, tirePlugCents: cents };
+      const e = { jobCount: 0, payrateCents: u.payrateCents, tipsCents: 0, tirePlugCents: cents, batteryPayoutCents: 0 };
       earnByUser.set(uid, e);
     }
     for (const r of jobRows as Record<string, unknown>[]) {
       const tb = String(r.tb_id);
       const u = userByTb.get(tb);
       if (!u) continue; // no LD user for this Towbook driver → cannot attribute pay
-      const e = earnByUser.get(u.userId) ?? { jobCount: 0, payrateCents: u.payrateCents, tipsCents: 0, tirePlugCents: 0 };
+      const e = earnByUser.get(u.userId) ?? { jobCount: 0, payrateCents: u.payrateCents, tipsCents: 0, tirePlugCents: 0, batteryPayoutCents: 0 };
       e.jobCount += Number(r.job_count ?? 0);
       earnByUser.set(u.userId, e);
+    }
+    for (const [uid, cents] of batteryCentsByUser) {
+      const existing = earnByUser.get(uid);
+      if (existing) existing.batteryPayoutCents = cents;
+      else {
+        const u = [...userByTb.values()].find((v) => v.userId === uid);
+        earnByUser.set(uid, { jobCount: 0, payrateCents: u?.payrateCents ?? null, tipsCents: 0, tirePlugCents: 0, batteryPayoutCents: cents });
+      }
     }
     for (const [uid, cents] of tipCentsByUser) {
       if (!earnByUser.has(uid)) {
         const u = userByTb.get([...userByTb.entries()].find(([, v]) => v.userId === uid)?.[0] ?? "");
-        earnByUser.set(uid, { jobCount: 0, payrateCents: u?.payrateCents ?? null, tipsCents: cents, tirePlugCents: 0 });
+        earnByUser.set(uid, { jobCount: 0, payrateCents: u?.payrateCents ?? null, tipsCents: cents, tirePlugCents: 0, batteryPayoutCents: 0 });
       } else {
         earnByUser.get(uid)!.tipsCents = cents;
       }
@@ -863,14 +896,15 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
       const grossCents = (goaCount * 1000) + (e.payrateCents != null ? e.payrateCents * normalJobCount : 0);
       const tipsCents = e.tipsCents;
       const tirePlugCents = e.tirePlugCents;
+      const batteryPayoutCents = e.batteryPayoutCents;
       const busy = busyByUser.get(uid) ?? { bonusCents: 0, bonusJobs: 0, hours: null as { startsAtIso: string; completedJobs: number }[] | null };
       const busyHoursJson = busy.hours && busy.hours.length ? busy.hours : null;
-      const totalCents = grossCents + tipsCents + tirePlugCents + busy.bonusCents;
+      const totalCents = grossCents + tipsCents + tirePlugCents + batteryPayoutCents + busy.bonusCents;
       const recordId = `pr-${periodId}-${uid}`;
       const inserted = await q`INSERT INTO payout_records(id, org_id, period_id, contractor_id, method_id, rail, handle_full, handle_masked,
-          job_count, payrate_cents, gross_cents, tips_cents, tire_plug_cents, busy_bonus_cents, busy_bonus_jobs, busy_bonus_hours, total_cents, method_status, status, updated_at)
+          job_count, payrate_cents, gross_cents, tips_cents, tire_plug_cents, battery_payout_cents, busy_bonus_cents, busy_bonus_jobs, busy_bonus_hours, total_cents, method_status, status, updated_at)
         VALUES(${recordId}, ${actor.orgId}, ${periodId}, ${uid}, ${method ? String(method.id) : null}, ${rail}, ${handleFull}, ${handleMasked},
-          ${e.jobCount}, ${e.payrateCents}, ${grossCents}, ${tipsCents}, ${tirePlugCents}, ${busy.bonusCents}, ${busy.bonusJobs}, ${busyHoursJson ? JSON.stringify(busyHoursJson) : null}, ${totalCents}, ${methodStatus}, ${verified ? "computed" : "blocked"}, NOW())
+          ${e.jobCount}, ${e.payrateCents}, ${grossCents}, ${tipsCents}, ${tirePlugCents}, ${batteryPayoutCents}, ${busy.bonusCents}, ${busy.bonusJobs}, ${busyHoursJson ? JSON.stringify(busyHoursJson) : null}, ${totalCents}, ${methodStatus}, ${verified ? "computed" : "blocked"}, NOW())
         ON CONFLICT (org_id, period_id, contractor_id) DO NOTHING
         RETURNING id`;
       const recordInserted = Array.isArray(inserted) && inserted.length > 0;
@@ -900,6 +934,7 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
         grossCents,
         tipsCents,
         tirePlugCents,
+        batteryPayoutCents,
         busyBonusCents: busy.bonusCents,
         busyBonusJobs: busy.bonusJobs,
         busyBonusHours: busyHoursJson,
@@ -948,6 +983,7 @@ async function buildDetailFallback(actor: PayoutActor, periodId: string, records
     tipsCents: records.reduce((s, r) => s + r.tipsCents, 0),
     busyBonusCents: records.reduce((s, r) => s + r.busyBonusCents, 0),
     tirePlugCents: records.reduce((s, r) => s + r.tirePlugCents, 0),
+    batteryPayoutCents: records.reduce((s, r) => s + r.batteryPayoutCents, 0),
     totalCents: records.reduce((s, r) => s + r.totalCents, 0),
     unknownTimestampCount: 0,
     contractorCount: records.length,

@@ -1152,6 +1152,9 @@ export const driverSetAvailability = createServerFn({ method: "POST" }).validato
 export type DriverEarningsTirePlug = {
   jobId: string; callNumber: string | null; amountCents: number; status: string; createdAtIso: string | null;
 };
+export type DriverEarningsBatteryInstall = {
+  saleId: string; jobId: string; callNumber: string | null; amountCents: number; createdAtIso: string | null;
+};
 export type DriverEarningsTip = {
   jobId: string;
   callNumber: string | null;
@@ -1175,7 +1178,7 @@ export type DriverBusyBonus = {
 };
 export type DriverCompletedCounts = { day: number; week: number; month: number; year: number };
 export type DriverEarningsResult =
-  | { ok: true; profile: { name: string; email: string; towbookDriverId: string; payrateCents: number | null }; completed: DriverCall[]; tips: DriverEarningsTip[]; tirePlugs: DriverEarningsTirePlug[]; busyBonus: DriverBusyBonus; completedCounts: DriverCompletedCounts; totals: { completedJobs: number; tipsTotalCents: number; tipCount: number } }
+  | { ok: true; profile: { name: string; email: string; towbookDriverId: string; payrateCents: number | null }; completed: DriverCall[]; tips: DriverEarningsTip[]; tirePlugs: DriverEarningsTirePlug[]; batteryInstalls: DriverEarningsBatteryInstall[]; busyBonus: DriverBusyBonus; completedCounts: DriverCompletedCounts; totals: { completedJobs: number; tipsTotalCents: number; tipCount: number } }
   | { ok: false; expired: boolean; message: string };
 /** The driver-facing email: real addresses are shown; derived @towbook.driver
  *  placeholders are internal-only and must never reach a driver's screen
@@ -1246,6 +1249,15 @@ export const driverEarnings = createServerFn({ method: "GET" }).handler(async ()
       WHERE t.org_id=${ctx.u.orgId} AND t.contractor_user_id=${ctx.identity.userRowId} AND t.status='paid' ORDER BY t.paid_at DESC`;
     const tirePlugs: DriverEarningsTirePlug[] = (tirePlugRows as Record<string, unknown>[]).map((r) => ({ jobId: String(r.job_id), callNumber: r.towbook_job_id != null ? String(r.towbook_job_id) : null, amountCents: Number(r.amount_cents ?? 0), status: String(r.status), createdAtIso: r.paid_at != null ? new Date(String(r.paid_at)).toISOString() : null }));
     const tirePlugTotalCents = tirePlugs.reduce((sum, row) => sum + row.amountCents, 0);
+    const batteryRows = await q`SELECT bp.sale_id, bp.job_id, bp.amount_cents, bp.earned_at, d.towbook_job_id
+      FROM battery_payouts bp JOIN battery_sales bs ON bs.org_id=bp.org_id AND bs.id=bp.sale_id
+      LEFT JOIN dispatch_jobs d ON d.org_id=bp.org_id AND d.id=bp.job_id
+      WHERE bp.org_id=${ctx.u.orgId} AND bp.contractor_user_id=${ctx.identity.userRowId}
+        AND bs.status='paid' AND bs.completed_at IS NOT NULL ORDER BY bp.earned_at DESC`;
+    const batteryInstalls: DriverEarningsBatteryInstall[] = (batteryRows as Record<string, unknown>[]).map((r) => ({
+      saleId: String(r.sale_id), jobId: String(r.job_id), callNumber: r.towbook_job_id != null ? String(r.towbook_job_id) : null,
+      amountCents: Number(r.amount_cents ?? 0), createdAtIso: r.earned_at != null ? new Date(String(r.earned_at)).toISOString() : null,
+    }));
     const tips: DriverEarningsTip[] = [];
     for (const r of tipRows as Record<string, unknown>[]) {
       const amountCents = Number(r.amount_cents ?? 0);
@@ -1301,6 +1313,7 @@ export const driverEarnings = createServerFn({ method: "GET" }).handler(async ()
       completed,
       tips,
       tirePlugs,
+      batteryInstalls,
       busyBonus,
       completedCounts,
       totals: { completedJobs: completed.length, tipsTotalCents: tipsTotalCents + tirePlugTotalCents, tipCount: tips.length + tirePlugs.length },

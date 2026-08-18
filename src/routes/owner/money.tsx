@@ -576,6 +576,7 @@ function MoneyView() {
                           {rec.payrateCents == null ? " · rate not set" : ` · ${money(rec.grossCents)}`}
                           {rec.tipsCents > 0 && <span className="text-success-600"> + {money(rec.tipsCents)} tips</span>}
                           {rec.busyBonusCents > 0 && <span className="text-brand-700"> + {money(rec.busyBonusCents)} busy-time bonus</span>}
+                          {rec.batteryPayoutCents > 0 && <span className="text-brand-700"> + {money(rec.batteryPayoutCents)} battery install</span>}
                           {cashedOutNote(rec)}
                         </p>
                       </div>
@@ -624,6 +625,7 @@ function MoneyView() {
                       {rec.jobCount} job{rec.jobCount === 1 ? "" : "s"} · {money(rec.totalCents)}
                       {rec.tipsCents > 0 && <span className="text-success-600"> + {money(rec.tipsCents)} tips</span>}
                       {rec.busyBonusCents > 0 && <span className="text-brand-700"> + {money(rec.busyBonusCents)} busy-time bonus</span>}
+                          {rec.batteryPayoutCents > 0 && <span className="text-brand-700"> + {money(rec.batteryPayoutCents)} battery install</span>}
                       {cashedOutNote(rec)}
                     </p>
                   </div>
@@ -661,6 +663,7 @@ function MoneyView() {
                         {rec.payrateCents == null ? " · rate not set" : ` · ${money(rec.grossCents)}`}
                         {rec.tipsCents > 0 && <span className="text-success-600"> + {money(rec.tipsCents)} tips</span>}
                         {rec.busyBonusCents > 0 && <span className="text-brand-700"> + {money(rec.busyBonusCents)} busy-time bonus</span>}
+                          {rec.batteryPayoutCents > 0 && <span className="text-brand-700"> + {money(rec.batteryPayoutCents)} battery install</span>}
                         {cashedOutNote(rec)}
                       </p>
                     </div>
@@ -743,6 +746,7 @@ function MoneyView() {
                 {detail.totals.contractorCount} contractor{detail.totals.contractorCount === 1 ? "" : "s"} · {detail.totals.jobCount} job{detail.totals.jobCount === 1 ? "" : "s"}
                 {detail.totals.tipsCents > 0 && <span className="text-success-600"> · {money(detail.totals.tipsCents)} in tips</span>}
                 {detail.totals.busyBonusCents > 0 && <span className="text-brand-700"> · {money(detail.totals.busyBonusCents)} busy-time bonus</span>}
+                {detail.totals.batteryPayoutCents > 0 && <span className="text-brand-700"> · {money(detail.totals.batteryPayoutCents)} battery installs</span>}
                 {cashedOutTotalCents > 0 && <span className="text-info-600"> · {money(cashedOutTotalCents)} cashed out directly to contractors</span>}
                 {detail.totals.blockedCount > 0 && <span className="text-danger-600"> · {detail.totals.blockedCount} blocked</span>}
               </p>
