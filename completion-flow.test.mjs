@@ -400,8 +400,49 @@ const del = async (label, result) => {
   if (!Array.isArray(rows)) throw new Error(`cleanup ${label}: delete did not return rows`);
   return rows.length;
 };
-for (const org of [ORG, ORG2, ORG3]) assertQaOrg(org);
-for (const org of [ORG, ORG2, ORG3]) {
+// Every FK to users must be cleared before deleting a fixture user. Keep this
+// exhaustive list in sync with the information_schema FK scan (the query used
+// during the B6 gate); both directions are intentionally covered.
+const deleteUserChildren = async (u) => {
+  await del("academy_progress.user_id", q`DELETE FROM academy_progress WHERE user_id=${u} RETURNING *`);
+  await del("audit_log.actor_user_id", q`DELETE FROM audit_log WHERE actor_user_id=${u} RETURNING *`);
+  await del("battery_install_photo_overrides.actor_user_id", q`DELETE FROM battery_install_photo_overrides WHERE actor_user_id=${u} RETURNING *`);
+  await del("battery_install_photos.uploaded_by", q`DELETE FROM battery_install_photos WHERE uploaded_by=${u} RETURNING *`);
+  await del("battery_inventory_ledger.actor_user_id", q`DELETE FROM battery_inventory_ledger WHERE actor_user_id=${u} RETURNING *`);
+  await del("battery_sales.battery_photo_override_by", q`DELETE FROM battery_sales WHERE battery_photo_override_by=${u} RETURNING *`);
+  await del("battery_sales.contractor_user_id", q`DELETE FROM battery_sales WHERE contractor_user_id=${u} RETURNING *`);
+  await del("battery_warranties.voided_by", q`DELETE FROM battery_warranties WHERE voided_by=${u} RETURNING *`);
+  await del("contractor_doc_selfies.contractor_id", q`DELETE FROM contractor_doc_selfies WHERE contractor_id=${u} RETURNING *`);
+  await del("contractor_doc_selfies.uploaded_by_user_id", q`DELETE FROM contractor_doc_selfies WHERE uploaded_by_user_id=${u} RETURNING *`);
+  await del("contractor_documents.contractor_id", q`DELETE FROM contractor_documents WHERE contractor_id=${u} RETURNING *`);
+  await del("contractor_documents.uploaded_by_user_id", q`DELETE FROM contractor_documents WHERE uploaded_by_user_id=${u} RETURNING *`);
+  await del("contractor_form_docs.contractor_id", q`DELETE FROM contractor_form_docs WHERE contractor_id=${u} RETURNING *`);
+  await del("contractor_form_submissions.contractor_id", q`DELETE FROM contractor_form_submissions WHERE contractor_id=${u} RETURNING *`);
+  await del("contractor_form_submissions.section2_approved_by", q`DELETE FROM contractor_form_submissions WHERE section2_approved_by=${u} RETURNING *`);
+  await del("contractor_profiles.user_id", q`DELETE FROM contractor_profiles WHERE user_id=${u} RETURNING *`);
+  await del("contractor_schedules.updated_by_user_id", q`DELETE FROM contractor_schedules WHERE updated_by_user_id=${u} RETURNING *`);
+  await del("contractor_schedules.user_id", q`DELETE FROM contractor_schedules WHERE user_id=${u} RETURNING *`);
+  await del("driver_availability_log.user_id", q`DELETE FROM driver_availability_log WHERE user_id=${u} RETURNING *`);
+  await del("driver_locations.driver_id", q`DELETE FROM driver_locations WHERE driver_id=${u} RETURNING *`);
+  await del("job_photos.uploaded_by_user_id", q`DELETE FROM job_photos WHERE uploaded_by_user_id=${u} RETURNING *`);
+  await del("organization_memberships.user_id", q`DELETE FROM organization_memberships WHERE user_id=${u} RETURNING *`);
+  await del("payout_methods.contractor_id", q`DELETE FROM payout_methods WHERE contractor_id=${u} RETURNING *`);
+  await del("payout_records.contractor_id", q`DELETE FROM payout_records WHERE contractor_id=${u} RETURNING *`);
+  await del("payout_records.paid_by_user_id", q`DELETE FROM payout_records WHERE paid_by_user_id=${u} RETURNING *`);
+  await del("push_subscriptions.user_id", q`DELETE FROM push_subscriptions WHERE user_id=${u} RETURNING *`);
+  await del("sessions.user_id", q`DELETE FROM sessions WHERE user_id=${u} RETURNING *`);
+  await del("status_events.actor_user_id", q`DELETE FROM status_events WHERE actor_user_id=${u} RETURNING *`);
+  await del("tip_cashouts.contractor_id", q`DELETE FROM tip_cashouts WHERE contractor_id=${u} RETURNING *`);
+  await del("tip_cashouts.paid_by_user_id", q`DELETE FROM tip_cashouts WHERE paid_by_user_id=${u} RETURNING *`);
+  await del("tire_plug_transactions.contractor_user_id", q`DELETE FROM tire_plug_transactions WHERE contractor_user_id=${u} RETURNING *`);
+  await del("users linked drivers", q`UPDATE users SET linked_driver_user_id=NULL WHERE linked_driver_user_id=${u} RETURNING *`);
+};
+// Include failed-run fixtures, but never broaden beyond the qa-cf-* namespace.
+const qaOrgs = (await q`SELECT id FROM organizations WHERE id LIKE 'qa-cf-%'`).map(({ id }) => id);
+const qaUserRows = await q`SELECT id FROM users WHERE id LIKE 'qa-cf-%'`;
+const allQaUsers = [...new Set([...qaUsers, ...qaUserRows.map(({ id }) => id)])];
+for (const org of qaOrgs) assertQaOrg(org);
+for (const org of qaOrgs) {
   await del("status_events", q`DELETE FROM status_events WHERE org_id=${org} RETURNING *`);
   await del("job_completions", q`DELETE FROM job_completions WHERE org_id=${org} RETURNING *`);
   await del("completion_tips", q`DELETE FROM completion_tips WHERE org_id=${org} RETURNING *`);
@@ -412,31 +453,21 @@ for (const org of [ORG, ORG2, ORG3]) {
   await del("towbook_sessions", q`DELETE FROM towbook_sessions WHERE org_id=${org} RETURNING *`);
   await del("organization_memberships", q`DELETE FROM organization_memberships WHERE org_id=${org} RETURNING *`);
 }
-// User-scoped FK children (including actor/audit references) must be gone before users.
-for (const u of qaUsers) {
-  await del("driver_availability_log", q`DELETE FROM driver_availability_log WHERE user_id=${u} RETURNING *`);
-  await del("push_subscriptions", q`DELETE FROM push_subscriptions WHERE user_id=${u} RETURNING *`);
-  await del("academy_progress", q`DELETE FROM academy_progress WHERE user_id=${u} RETURNING *`);
-  await del("contractor_profiles", q`DELETE FROM contractor_profiles WHERE user_id=${u} RETURNING *`);
-  await del("contractor_schedules", q`DELETE FROM contractor_schedules WHERE user_id=${u} OR updated_by_user_id=${u} RETURNING *`);
-  await del("audit_log actors", q`DELETE FROM audit_log WHERE actor_user_id=${u} RETURNING *`);
-  await del("users linked drivers", q`UPDATE users SET linked_driver_user_id=NULL WHERE linked_driver_user_id=${u} RETURNING *`);
-}
-for (const u of qaUsers) await del("users", q`DELETE FROM users WHERE id=${u} RETURNING *`);
-for (const org of [ORG, ORG2, ORG3]) {
-  await del("organizations", q`DELETE FROM organizations WHERE id=${org} RETURNING id`);
-}
+for (const u of allQaUsers) await deleteUserChildren(u);
+for (const u of allQaUsers) await del("users", q`DELETE FROM users WHERE id=${u} RETURNING *`);
+for (const org of qaOrgs) await del("organizations", q`DELETE FROM organizations WHERE id=${org} RETURNING id`);
 const leftover = await q`SELECT
-  (SELECT COUNT(*)::int FROM completion_tips t JOIN organizations o ON o.id=t.org_id WHERE o.name='qa completion-flow wp') AS tips,
-  (SELECT COUNT(*)::int FROM job_completions jc JOIN organizations o ON o.id=jc.org_id WHERE o.name='qa completion-flow wp') AS completions,
-  (SELECT COUNT(*)::int FROM job_photos p JOIN organizations o ON o.id=p.org_id WHERE o.name='qa completion-flow wp') AS photos,
-  (SELECT COUNT(*)::int FROM dispatch_jobs j JOIN organizations o ON o.id=j.org_id WHERE o.name='qa completion-flow wp') AS jobs,
-  (SELECT COUNT(*)::int FROM status_events e JOIN organizations o ON o.id=e.org_id WHERE o.name='qa completion-flow wp') AS events,
-  (SELECT COUNT(*)::int FROM audit_log a JOIN organizations o ON o.id=a.org_id WHERE o.name='qa completion-flow wp') AS audit,
-  (SELECT COUNT(*)::int FROM towbook_sessions s JOIN organizations o ON o.id=s.org_id WHERE o.name='qa completion-flow wp') AS sessions,
-  (SELECT COUNT(*)::int FROM org_settings s JOIN organizations o ON o.id=s.org_id WHERE o.name='qa completion-flow wp') AS settings,
-  (SELECT COUNT(*)::int FROM organization_memberships m JOIN organizations o ON o.id=m.org_id WHERE o.name='qa completion-flow wp') AS members,
-  (SELECT COUNT(*)::int FROM users u WHERE u.id IN (${OWNER}, ${OWNER2}, ${OWNER3}, ${DRIVER}, ${DRIVER2}, ${DRIVER3}, ${OTHER})) AS users`;
+  (SELECT COUNT(*)::int FROM completion_tips t JOIN organizations o ON o.id=t.org_id WHERE o.id LIKE 'qa-cf-%') AS tips,
+  (SELECT COUNT(*)::int FROM job_completions jc JOIN organizations o ON o.id=jc.org_id WHERE o.id LIKE 'qa-cf-%') AS completions,
+  (SELECT COUNT(*)::int FROM job_photos p JOIN organizations o ON o.id=p.org_id WHERE o.id LIKE 'qa-cf-%') AS photos,
+  (SELECT COUNT(*)::int FROM dispatch_jobs j JOIN organizations o ON o.id=j.org_id WHERE o.id LIKE 'qa-cf-%') AS jobs,
+  (SELECT COUNT(*)::int FROM status_events e JOIN organizations o ON o.id=e.org_id WHERE o.id LIKE 'qa-cf-%') AS events,
+  (SELECT COUNT(*)::int FROM audit_log a JOIN organizations o ON o.id=a.org_id WHERE o.id LIKE 'qa-cf-%') AS audit,
+  (SELECT COUNT(*)::int FROM towbook_sessions s JOIN organizations o ON o.id=s.org_id WHERE o.id LIKE 'qa-cf-%') AS sessions,
+  (SELECT COUNT(*)::int FROM org_settings s JOIN organizations o ON o.id=s.org_id WHERE o.id LIKE 'qa-cf-%') AS settings,
+  (SELECT COUNT(*)::int FROM organization_memberships m JOIN organizations o ON o.id=m.org_id WHERE o.id LIKE 'qa-cf-%') AS members,
+  (SELECT COUNT(*)::int FROM users u WHERE u.id LIKE 'qa-cf-%') AS users,
+  (SELECT COUNT(*)::int FROM organizations o WHERE o.id LIKE 'qa-cf-%') AS orgs`;
 const z = Object.values(leftover[0]).every((n) => Number(n) === 0);
 console.log(`cleanup: ${JSON.stringify(leftover[0])}`);
 if (!z) { console.error("FAIL: QA cleanup left rows behind"); process.exit(1); }
