@@ -66,10 +66,24 @@ export function reconcileDriverActivityCore(aggregates: DriverActivityAggregate[
 }
 const s = (v: unknown) => String(v ?? "").toLowerCase();
 export function reconcileCallWorkflow(rows: CallWorkflowRow[], jobs: Array<Record<string, unknown>> = []): ReconciliationResult {
-  const byKey = new Map(jobs.map(j => [String(j.towbook_job_id ?? j.id ?? ""), j]));
+  // CallWorkflow's dispatchEntryId is the Towbook global call id, which is
+  // stored in dispatch_jobs.towbook_job_id. Keep id as a compatibility key,
+  // then use the legacy callNumber marker only as a final fallback.
+  const byKey = new Map<string, Record<string, unknown>>();
+  const byCallNumber = new Map<string, Record<string, unknown>>();
+  for (const j of jobs) {
+    if (j.towbook_job_id != null) byKey.set(String(j.towbook_job_id), j);
+    if (j.id != null) byKey.set(String(j.id), j);
+    const raw = j.raw_json && typeof j.raw_json === "object" ? j.raw_json as Record<string, unknown> : undefined;
+    if (raw?.callNumber != null) byCallNumber.set(String(raw.callNumber), j);
+  }
   const out: ReconciliationRow[] = [], diagnostics: string[] = [];
   for (const r of rows) {
-    const key = String(r.id ?? r.callNumber ?? r.dispatchEntryId ?? ""); const job = byKey.get(key);
+    const dispatchEntryKey = r.dispatchEntryId == null ? "" : String(r.dispatchEntryId);
+    const idKey = r.id == null ? "" : String(r.id);
+    const callNumberKey = r.callNumber == null ? "" : String(r.callNumber);
+    const key = dispatchEntryKey || idKey || callNumberKey;
+    const job = byKey.get(dispatchEntryKey) ?? byKey.get(idKey) ?? byCallNumber.get(callNumberKey);
     const status = s(r.status); const finalCancelled = status.includes("cancel") || status === "255";
     const raw = job?.raw_json && typeof job.raw_json === "object" ? job.raw_json as Record<string, unknown> : undefined;
     const reassigned = status.includes("reassign") || job?.manually_reassigned_at != null || s(raw?.reassigned).trim() === "true";

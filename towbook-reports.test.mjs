@@ -37,6 +37,11 @@ try {
     [{ id: 900, driverName: "Marker", completed: "2026-08-12T12:00:00" }, { id: 901, driverName: "Legacy", completed: "2026-08-12T12:00:00" }],
     [{ towbook_job_id: 900, manually_reassigned_at: "2026-08-12T13:00:00Z", raw_json: {} }, { towbook_job_id: 901, raw_json: { reassigned: "true" }, manually_reassigned_at: null }]
   );
+  const joinRegression = reconcileCallWorkflow(
+    [{ id: null, callNumber: 24580, dispatchEntryId: 279705803, driver: "Dispatch driver", completed: "2026-08-12T12:00:00" }],
+    [{ towbook_job_id: "279705803", id: "tb-279705803", raw_json: { callNumber: "24580" }, manually_reassigned_at: null }]
+  );
+  check("dispatchEntryId joins towbook_job_id", () => { assert.equal(joinRegression.rows[0].classification, "completed"); assert.equal(joinRegression.diagnostics.length, 0); });
   check("DB reassignment marker", () => assert.equal(markerChecks.rows[0].classification, "reassigned"));
   check("legacy raw reassignment marker", () => assert.equal(markerChecks.rows[1].classification, "reassigned"));
   for (let i=187;i<217;i++) { rows[i].completed = null; rows[i].completionTime = null; if (i === 187) rows[i].status = "cancelled"; else if (i === 188 || i === 189) rows[i].status = "reassigned"; }
