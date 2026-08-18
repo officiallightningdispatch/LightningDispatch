@@ -1,116 +1,20 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
-import { ClipboardCheck } from "lucide-react";
+import { ClipboardCheck, Camera, ShieldCheck } from "lucide-react";
 import { AppShell } from "~/components/app-shell";
 import { Button, Card, EmptyState } from "~/components/ui";
-import {
-  decideBatteryCompatibilityReview,
-  listBatteryCompatibilityReviewRows,
-} from "~/data/battery-compat";
+import { decideBatteryCompatibilityReview, listBatteryCompatibilityReviewRows } from "~/data/battery-compat";
+import { listBatteryPhotoBlocks, overrideBatteryInstallPhotos } from "~/data/battery-lifecycle";
 
-type ReviewRow = {
-  id: string;
-  make: string;
-  model: string;
-  yearFrom: number;
-  yearTo: number;
-  trim: string | null;
-  engine: string | null;
-  batteryGroupSize: string;
-  sourceReferenceInternal: string | null;
-};
-
-export const Route = createFileRoute("/owner/batteries")({
-  component: BatteryCompatibilityReviews,
-});
-
+type ReviewRow = { id:string; make:string; model:string; yearFrom:number; yearTo:number; trim:string|null; engine:string|null; batteryGroupSize:string; sourceReferenceInternal:string|null };
+type PhotoData = { saleId:string; installJobId:string|null; jobId:string|null };
+type OverrideData = { saleId:string; installJobId:string|null; reason:string; actorUserId:string; createdAt:string };
+export const Route = createFileRoute("/owner/batteries")({ component: BatteryCompatibilityReviews });
 function BatteryCompatibilityReviews() {
-  const [rows, setRows] = useState<ReviewRow[]>([]);
-  const [error, setError] = useState("");
-  const [reasons, setReasons] = useState<Record<string, string>>({});
-
-  const load = useCallback(async () => {
-    try {
-      const result = await listBatteryCompatibilityReviewRows();
-      if (result.ok) {
-        setRows(result.rows);
-        setError("");
-      } else {
-        setError("Owner or admin access is required.");
-      }
-    } catch {
-      setError("Could not load compatibility reviews.");
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  const decide = async (id: string, decision: "approve" | "reject") => {
-    const reason = reasons[id]?.trim();
-    if (decision === "reject" && !reason) {
-      setError("A reason is required to reject a compatibility mapping.");
-      return;
-    }
-    try {
-      const result = await decideBatteryCompatibilityReview({
-        data: { compatibilityId: id, decision, reason },
-      });
-      if (result.ok) {
-        setRows((current) => current.filter((row) => row.id !== id));
-        setError("");
-      } else {
-        setError(result.reason === "reason_required" ? "A reason is required to reject a compatibility mapping." : `Decision failed: ${result.reason}.`);
-      }
-    } catch {
-      setError("Decision failed. Please try again.");
-    }
-  };
-
-  return (
-    <AppShell
-      portal="owner"
-      title="Battery compatibility reviews"
-      description="Review fitment mappings before they can drive a battery recommendation."
-    >
-      {error && <p className="mb-4 rounded-xl bg-danger-50 p-3 text-sm text-danger-700">{error}</p>}
-      {!rows.length ? (
-        <EmptyState
-          icon={ClipboardCheck}
-          title="No pending reviews"
-          body="Approved compatibility mappings are used only when their vehicle identity is an exact safe match."
-        />
-      ) : (
-        <div className="space-y-3">
-          {rows.map((row) => (
-            <Card key={row.id} className="space-y-3 p-4">
-              <div>
-                <p className="font-bold">{row.yearFrom}–{row.yearTo} {row.make} {row.model}</p>
-                <p className="text-sm text-ink-500">
-                  Engine: {row.engine ?? "not specified"} · Battery group: {row.batteryGroupSize}
-                </p>
-                <p className="text-xs text-ink-400">
-                  Source: {row.sourceReferenceInternal ?? "missing provenance"}
-                </p>
-              </div>
-              <label className="block text-sm font-medium">
-                Rejection reason
-                <input
-                  placeholder="Required when rejecting"
-                  value={reasons[row.id] ?? ""}
-                  onChange={(event) => setReasons((current) => ({ ...current, [row.id]: event.target.value }))}
-                  className="mt-1 h-10 w-full rounded-lg border border-ink-200 px-3 text-sm"
-                />
-              </label>
-              <div className="flex flex-wrap gap-2">
-                <Button onClick={() => void decide(row.id, "approve")}>Approve</Button>
-                <Button variant="danger-ghost" onClick={() => void decide(row.id, "reject")}>Reject</Button>
-              </div>
-            </Card>
-          ))}
-        </div>
-      )}
-    </AppShell>
-  );
+ const [rows,setRows]=useState<ReviewRow[]>([]); const [blocks,setBlocks]=useState<PhotoData[]>([]); const [overrides,setOverrides]=useState<OverrideData[]>([]); const [error,setError]=useState(""); const [reasons,setReasons]=useState<Record<string,string>>({}); const [overrideReasons,setOverrideReasons]=useState<Record<string,string>>({});
+ const load=useCallback(async()=>{try { const [r,p]=await Promise.all([listBatteryCompatibilityReviewRows(),listBatteryPhotoBlocks()]); if(r.ok)setRows(r.rows); if(p.ok){setBlocks(p.blocks);setOverrides(p.overrides);} setError(""); } catch {setError("Could not load battery reviews.");}},[]);
+ useEffect(()=>{void load()},[load]);
+ const decide=async(id:string,decision:"approve"|"reject")=>{const reason=reasons[id]?.trim();if(decision==="reject"&&!reason){setError("A reason is required to reject a compatibility mapping.");return;}try{const r=await decideBatteryCompatibilityReview({data:{compatibilityId:id,decision,reason}});if(r.ok){setRows(x=>x.filter(y=>y.id!==id));setError("")}else setError("Decision failed.")}catch{setError("Decision failed. Please try again.")}};
+ const override=async(saleId:string)=>{const reason=overrideReasons[saleId]?.trim();if(!reason){setError("A reason is required for every photo override.");return;}try{const r=await overrideBatteryInstallPhotos({data:{saleId,reason}});if(r.ok){setBlocks(x=>x.filter(y=>y.saleId!==saleId));await load()}else setError(r.reason==="reason_required"?"A reason is required for every photo override.":"Override failed.")}catch{setError("Override failed. Please try again.")}};
+ return <AppShell portal="owner" title="Battery management" description="Review fitment mappings and installation photo exceptions.">{error&&<p className="mb-4 rounded-xl bg-danger-50 p-3 text-sm text-danger-700">{error}</p>}<section className="mb-8"><h2 className="mb-3 flex items-center gap-2 text-lg font-bold"><ClipboardCheck size={19}/>Compatibility reviews</h2>{!rows.length?<EmptyState icon={ClipboardCheck} title="No pending reviews" body="Approved mappings are used only for exact safe matches."/>:<div className="space-y-3">{rows.map(row=><Card key={row.id} className="space-y-3 p-4"><p className="font-bold">{row.yearFrom}–{row.yearTo} {row.make} {row.model}</p><p className="text-sm text-ink-500">Engine: {row.engine??"not specified"} · Battery group: {row.batteryGroupSize}</p><p className="text-xs text-ink-400">Source: {row.sourceReferenceInternal??"missing provenance"}</p><input placeholder="Required when rejecting" value={reasons[row.id]??""} onChange={e=>setReasons(x=>({...x,[row.id]:e.target.value}))} className="h-10 w-full rounded-lg border border-ink-200 px-3 text-sm"/><div className="flex gap-2"><Button onClick={()=>void decide(row.id,"approve")}>Approve</Button><Button variant="danger-ghost" onClick={()=>void decide(row.id,"reject")}>Reject</Button></div></Card>)}</div>}</section><section><h2 className="mb-3 flex items-center gap-2 text-lg font-bold"><Camera size={19}/>Pending installation photo blocks</h2>{!blocks.length?<EmptyState icon={Camera} title="No photo blocks" body="Paid battery installs waiting for required photos appear here."/>:<div className="space-y-3">{blocks.map(b=><Card key={b.saleId} className="space-y-3 p-4"><p className="font-bold">Sale {b.saleId}</p><p className="text-sm text-ink-500">Install job: {b.installJobId??"—"}</p><input placeholder="Override reason (required)" value={overrideReasons[b.saleId]??""} onChange={e=>setOverrideReasons(x=>({...x,[b.saleId]:e.target.value}))} className="h-10 w-full rounded-lg border border-ink-200 px-3 text-sm"/><Button onClick={()=>void override(b.saleId)}>Record owner override</Button></Card>)}</div>}</section><section className="mt-8"><h2 className="mb-3 flex items-center gap-2 text-lg font-bold"><ShieldCheck size={19}/>Photo overrides</h2>{!overrides.length?<p className="text-sm text-ink-500">No overrides recorded.</p>:<div className="space-y-2">{overrides.map((o,i)=><Card key={`${o.saleId}-${i}`} className="p-4"><p className="font-semibold">Sale {o.saleId}</p><p className="text-sm text-ink-500">{o.reason}</p><p className="text-xs text-ink-400">Recorded {new Date(o.createdAt).toLocaleString()}</p></Card>)}</div>}</section></AppShell>;
 }

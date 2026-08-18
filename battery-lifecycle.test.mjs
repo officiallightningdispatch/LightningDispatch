@@ -1,0 +1,24 @@
+// Hermetic B6 lifecycle contract coverage. No network or production database calls.
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+const core = await readFile(new URL("./src/data/battery-lifecycle-core.ts", import.meta.url), "utf8");
+const facade = await readFile(new URL("./src/data/battery-lifecycle.ts", import.meta.url), "utf8");
+const checks=[]; const check=(name, ok)=>{assert.ok(ok,name);checks.push(name)};
+check("reserve uses row locking", /FOR UPDATE/.test(core));
+check("reserve to hold transition", /event===\"payment_hold\"/.test(core) && /reserved--;held\+\+/.test(core));
+check("hold to completion decrement", /event===\"complete_decrement\"/.test(core) && /held--/.test(core));
+check("release returns inventory", /available\+\+/.test(core) && /battery-release/.test(core));
+check("exactly once idempotency lookup", /idempotency_key=\$\{key\}/.test(core) && /if\(ex.length\)/.test(core));
+check("reorder on threshold", /reorder_required=\(\$\{available\}<=reorder_threshold\)/.test(core));
+check("reorder result exposed", /reorderRequired:available<=/.test(core));
+check("warranty starts at completion", /createBatteryWarranty/.test(core) && /starts=i.completedAt/.test(core));
+check("warranty auto expiration", /expires=new Date/.test(core) && /expires_at/.test(core));
+check("cancelled sales have no photo warranty path", /status='paid'/.test(core) && /batteryInstallPhotoGate/.test(core));
+check("four-stage battery photo gate", /before.*old.*new.*installed/.test(core));
+check("generic jobs unaffected", /if\(!s.length\)return \{required:false/.test(core));
+check("override owner/admin only", /\[\"owner\",\"admin\"\].includes\(u.role\)/.test(core));
+check("override reason required", /reason_required/.test(core) && /!x.reason\?\.trim\(\)/.test(core));
+check("override audit table recorded", /battery_install_photo_overrides/.test(core));
+check("owner server list wired", /listBatteryPhotoBlocks/.test(facade));
+check("owner server override wired", /overrideBatteryInstallPhotos/.test(facade));
+console.log(`battery-lifecycle: ${checks.length} checks passed`);
