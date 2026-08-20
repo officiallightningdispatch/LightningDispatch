@@ -6,7 +6,7 @@ import { DriverEmptyState, DriverToolbar, QueueSkeleton } from "~/components/dri
 import { JobFeedbackPanel } from "~/components/driver-issues";
 import { Button, Card, useToast } from "~/components/ui";
 import { driverEarnings, driverLogout, type DriverEarningsResult } from "~/data/driver-auth";
-import { getMyPayoutMethod, PAYOUT_RAIL_LABELS } from "~/data/payouts";
+import { formatEtDate, getMyPayoutMethod, PAYOUT_RAIL_LABELS } from "~/data/payouts";
 import { TipCashoutPanel } from "~/components/tip-cashout-ui";
 
 /**
@@ -99,11 +99,12 @@ function EarningsView() {
   // "Busy-time bonus — <day> <hour>" +$1 × jobs completed in that hour.
   // The server derives the hours from this driver's dispatch_jobs; the
   // Today/Week toggle filters by the hour start.
-  const fmtBusyHour = (isoStart: string) => {
-    const d = new Date(isoStart);
-    if (Number.isNaN(d.getTime())) return isoStart;
-    return `${d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })}, ${d.toLocaleTimeString([], { hour: "numeric" })}`;
-  };
+  const fmtBusyHour = (isoStart: string) => formatEtDate(isoStart, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+  });
   const filteredBusyHours = useMemo(
     () => (state?.ok ? state.busyBonus.hours.filter((h) => inRange(h.startsAtIso, range, now)) : []),
     [state, range, now],
@@ -115,11 +116,9 @@ function EarningsView() {
    * half-open boundaries; it never derives job counts or money. */
   const payPeriods = state?.ok ? state.payPeriods : null;
   const fmtPeriod = (startsAt: string, endsAt: string) => {
-    const start = new Date(startsAt);
-    const end = new Date(new Date(endsAt).getTime() - 1);
-    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return "—";
-    const opts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", timeZone: "America/New_York" };
-    return `${start.toLocaleDateString([], opts)} – ${end.toLocaleDateString([], opts)}`;
+    const end = new Date(endsAt);
+    if (Number.isNaN(new Date(startsAt).getTime()) || Number.isNaN(end.getTime())) return "—";
+    return `${formatEtDate(startsAt)} – ${formatEtDate(new Date(end.getTime() - 1).toISOString())}`;
   };
 
   return (

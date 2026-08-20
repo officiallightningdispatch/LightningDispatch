@@ -38,7 +38,7 @@ import { formatCents } from "~/components/contractor-admin";
 import { Alert, Avatar, BoardSkeleton, Button, Card, EmptyState, StatCard, StatusBadge, useToast } from "~/components/ui";
 import { OwnerPayoutMethodEditor } from "~/components/owner-payout-method";
 import {
-  computePayday, editPayoutMethod, getContractorPayoutMethod, getMoneyOverview, getPayPeriodDetail, listPayPeriods, markPayoutPaid,
+  computePayday, editPayoutMethod, formatEtDate, getContractorPayoutMethod, getMoneyOverview, getPayPeriodDetail, listPayPeriods, markPayoutPaid,
   payPeriodLabel, rejectPayoutMethod, setBankDeposit, verifyPayoutMethod,
   type PayPeriod, type PayPeriodDetail, type PayoutRail, type PayoutRecord, type OwnerPayoutMethod,
 } from "~/data/payouts";
@@ -503,7 +503,7 @@ function MoneyView() {
             >
               {periods.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.isCurrent ? "Open period" : `${new Date(p.startsAt).toLocaleDateString([], { month: "short", day: "numeric" })} – ${new Date(p.endsAt).toLocaleDateString([], { month: "short", day: "numeric" })}`}
+                  {p.isCurrent ? "Open period" : `${formatEtDate(p.startsAt)} – ${formatEtDate(new Date(new Date(p.endsAt).getTime() - 1).toISOString())}`}
                 </option>
               ))}
             </select>

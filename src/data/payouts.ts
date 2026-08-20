@@ -23,6 +23,19 @@ export const PAYOUT_RAIL_LABELS: Record<PayoutRail, string> = {
   bank: "Bank account",
 };
 
+const ET_TIME_ZONE = "America/New_York";
+export type EtDateFormatOptions = Omit<Intl.DateTimeFormatOptions, "timeZone">;
+
+/** Format an absolute instant as an Eastern Time display date. Pay-period
+ * boundaries and busy-hour starts are ET concepts; never let the browser's
+ * local timezone roll their calendar day backward or forward. */
+export function formatEtDate(isoStr: string, options: EtDateFormatOptions = { month: "short", day: "numeric" }): string {
+  const d = new Date(isoStr);
+  return Number.isNaN(d.getTime())
+    ? "…"
+    : new Intl.DateTimeFormat("en-US", { ...options, timeZone: ET_TIME_ZONE }).format(d);
+}
+
 const passthrough = (x: unknown) => x;
 
 /** The acting contractor's payout method (masked). null = no method on file. */
@@ -205,12 +218,10 @@ export const getMoneyOverview = createServerFn({ method: "GET" }).handler(async 
 /** Period label helper (client-safe, pure): "Oct 6 – Oct 12 · pays Wed Oct 15".
  *  The open period renders "Open period — pays Wed Oct 15". */
 export function payPeriodLabel(startsAtIso: string, endsAtIso: string, payoutDueOn: string, isCurrent: boolean): string {
-  const fmt = (isoStr: string) => {
-    const d = new Date(isoStr);
-    return Number.isNaN(d.getTime()) ? "…" : d.toLocaleDateString([], { month: "short", day: "numeric" });
-  };
+  const end = new Date(endsAtIso);
+  const endInclusive = Number.isNaN(end.getTime()) ? endsAtIso : new Date(end.getTime() - 1).toISOString();
   const due = payoutDueOn ? new Date(`${payoutDueOn}T00:00:00`) : null;
   const dueLabel = due && !Number.isNaN(due.getTime()) ? due.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) : "";
   if (isCurrent) return `Open period — pays ${dueLabel}`;
-  return `${fmt(startsAtIso)} – ${fmt(endsAtIso)} · pays ${dueLabel}`;
+  return `${formatEtDate(startsAtIso)} – ${formatEtDate(endInclusive)} · pays ${dueLabel}`;
 }
