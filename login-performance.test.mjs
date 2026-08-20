@@ -43,12 +43,12 @@ check(
 );
 
 const storeEffect = store.slice(store.indexOf("useEffect(() => {"), store.indexOf("/** Run a mutation"));
-const storePublicGuard = storeEffect.indexOf('if (publicPath) { setLoading(false); return');
+const storePublicGuard = storeEffect.indexOf('if (publicPath || driverPath) { setLoading(false); return');
 const dispatchSnapshotCall = storeEffect.indexOf("getDispatchData()");
 check(
-  "dispatch store skips public/auth screens before its snapshot request",
-  storePublicGuard >= 0 && storePublicGuard < dispatchSnapshotCall,
-  "getDispatchData must not run on /login",
+  "dispatch store skips public/auth and driver screens before its snapshot request",
+  storePublicGuard >= 0 && storePublicGuard < dispatchSnapshotCall && storeEffect.includes('const driverPath = location.pathname === "/driver"'),
+  "getDispatchData must not run during driver login/landing",
 );
 check(
   "dispatch store still snapshots protected routes once",

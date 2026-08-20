@@ -59,6 +59,20 @@ for (let attempt = 1; ; attempt++) {
 
 console.log(`team-site serving on http://${HOST}:${String(PORT)}`);
 
+// Warm the auth/migration promises before the first browser request. The old
+// first-request safety net ran the schema DDL on the login hot path, making the
+// initial authStatus call pay the full cold-start cost and competing with the
+// first login/driver requests. This is best-effort: handlers retain their own
+// safety nets for fresh databases and upgrade-path recovery.
+try {
+  const { ensureAuthSchema } = await import("./src/data/auth-server.ts");
+  const { ensureSchema } = await import("./src/data/migrations.ts");
+  await ensureAuthSchema();
+  await ensureSchema();
+} catch {
+  /* the request handlers retry schema preparation when boot warmup fails */
+}
+
 // Owner-directed 2026-08-12 (resilience): start the 3s Towbook sync +
 // auto-dispatch loop at server boot so a restart never leaves the dispatcher
 // dead (it used to start only on the first authenticated request). Best-effort:

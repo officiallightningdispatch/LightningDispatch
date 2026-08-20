@@ -124,10 +124,14 @@ export function DispatchStoreProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const publicPath = location.pathname === "/" || location.pathname === "/login" || location.pathname === "/403" || location.pathname === "/logout";
-    // The dispatch store is not needed by public/auth screens. Avoid a full
-    // dispatch snapshot request while the user is signing in; protected routes
-    // still initialize on their first visit after authentication.
-    if (publicPath) { setLoading(false); return; }
+    const driverPath = location.pathname === "/driver" || location.pathname.startsWith("/driver/");
+    // The dispatch store is not needed by public/auth screens or the contractor
+    // portal (which has its own Towbook queue/data loaders). Avoid a full
+    // dispatch snapshot during sign-in and after a driver lands: getDispatchData
+    // performs a second auth/schema/database read while the driver portal is
+    // already loading its queue, earnings, compliance, and zone state. That
+    // redundant burst was the source of the live post-login load-fail storm.
+    if (publicPath || driverPath) { setLoading(false); return; }
     if (loadedOnce.current) return;
     loadedOnce.current = true;
     if (typeof window === "undefined") return; // SSR first paint — client effect hydrates
