@@ -342,6 +342,19 @@ try {
   await q`INSERT INTO organization_memberships(org_id,user_id,role) VALUES(${ORG7},${QUAL_USERS[4]},'contractor')`;
   await q`INSERT INTO organization_memberships(org_id,user_id,role) VALUES(${ORG7},${QUAL_USERS[5]},'contractor')`;
   await q`INSERT INTO contractor_profiles(org_id,user_id,vehicle_type) VALUES(${ORG7},${QUAL_USERS[0]},'car'),(${ORG7},${QUAL_USERS[1]},'car'),(${ORG7},${QUAL_USERS[2]},'car'),(${ORG7},${QUAL_USERS[3]},'car'),(${ORG7},${QUAL_USERS[4]},'tow truck'),(${ORG7},${QUAL_USERS[5]},'car')`;
+  // Positive service qualification fixtures: the gate now evaluates service
+  // selection before vehicle capability, so every contractor must explicitly
+  // carry the service needed to reach its intended assertion branch.
+  await q`INSERT INTO contractor_services(id,org_id,contractor_id,service_type,updated_by) VALUES
+    (${randomUUID()},${ORG7},${QUAL_USERS[0]},'jump_start','seed'),
+    (${randomUUID()},${ORG7},${QUAL_USERS[1]},'jump_start','seed'),
+    (${randomUUID()},${ORG7},${QUAL_USERS[2]},'jump_start','seed'),
+    (${randomUUID()},${ORG7},${QUAL_USERS[3]},'jump_start','seed'),
+    (${randomUUID()},${ORG7},${QUAL_USERS[4]},'jump_start','seed'),
+    (${randomUUID()},${ORG7},${QUAL_USERS[4]},'heavy_tow','seed'),
+    (${randomUUID()},${ORG7},${QUAL_USERS[5]},'jump_start','seed'),
+    (${randomUUID()},${ORG7},${QUAL_USERS[5]},'heavy_tow','seed')
+    ON CONFLICT (org_id,contractor_id,service_type) DO NOTHING`;
   // Idempotent after an interrupted run: stable fixture IDs must not collide.
   await q`INSERT INTO contractor_doc_types(id,org_id,name) VALUES('qual-doc-a',${ORG7},'License A'),('qual-doc-b',${ORG7},'License B') ON CONFLICT (id) DO UPDATE SET org_id=EXCLUDED.org_id, name=EXCLUDED.name, active=TRUE`;
   await q`INSERT INTO contractor_documents(id,org_id,contractor_id,doc_type_id,storage_key,status,uploaded_by_user_id) VALUES('qual-doc-one',${ORG7},${QUAL_USERS[4]},'qual-doc-a','x','verified',${USER}),('qual-doc-two',${ORG7},${QUAL_USERS[4]},'qual-doc-b','x','verified',${USER}) ON CONFLICT (id) DO UPDATE SET org_id=EXCLUDED.org_id, contractor_id=EXCLUDED.contractor_id, doc_type_id=EXCLUDED.doc_type_id, storage_key=EXCLUDED.storage_key, status=EXCLUDED.status, uploaded_by_user_id=EXCLUDED.uploaded_by_user_id`;
@@ -2067,7 +2080,7 @@ try {
     await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES
       (${'qual-gps-' + QUAL_TB[1] + '-' + FIXTURE_TAG}, ${ORG7}, ${USER}, ${String(QUAL_TB[1])}, 41.19, -73.15, ${new Date().toISOString()}),
       (${'qual-gps-' + QUAL_TB[4] + '-' + FIXTURE_TAG}, ${ORG7}, ${USER}, ${String(QUAL_TB[4])}, 41.19, -73.15, ${new Date().toISOString()})`;
-    const runQ = async (id, ds, extra={}) => { const m=makeFetch({offers:[offer(id,{ drivers: ds.map((d)=>d.driverId), ...(extra.offer||{}) })],drivers:ds}); const {deps}=makeDeps(m.fetchImpl); const r=await runAutoDispatch(ORG7,deps); return {r,m,rows:await q`SELECT * FROM ai_dispatcher_decisions WHERE org_id=${ORG7} AND call_request_id=${String(id)}`}; };
+    const runQ = async (id, ds, extra={}) => { const m=makeFetch({offers:[offer(id,{ drivers: ds.map((d)=>d.driverId), serviceType:'jump start', ...(extra.offer||{}) })],drivers:ds}); const {deps}=makeDeps(m.fetchImpl); const r=await runAutoDispatch(ORG7,deps); return {r,m,rows:await q`SELECT * FROM ai_dispatcher_decisions WHERE org_id=${ORG7} AND call_request_id=${String(id)}`}; };
     const cases = [
       ['deactivated', QUAL_TB[0], 'deactivated'], ['org-inactive', QUAL_TB[6], 'org-inactive'],
       ['missing-compliance', QUAL_TB[1], 'missing-compliance'], ['expired-compliance', QUAL_TB[2], 'missing-compliance'],

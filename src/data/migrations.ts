@@ -1,4 +1,5 @@
 import { sql } from "~/db";
+import { normalizeServiceSelectionType } from "./service-time-core";
 
 /** Append-only, idempotent database migrations. Each step is recorded once. */
 export type RegionalCtInput = { id:string; name:string; zone_type?:string; zip_codes?:unknown; active?:boolean; };
@@ -64,6 +65,31 @@ export function computeRegionalCtPlan(existing: RegionalCtInput[], counties: Reg
   return {regions, duplicates, gaps};
 }
 
+/** Seed positive contractor services from completed real dispatch history. */
+export async function seedContractorServicesFromHistory(q: ReturnType<typeof sql>) {
+  await q`INSERT INTO contractor_services(id,org_id,contractor_id,service_type,updated_by)
+    SELECT gen_random_uuid()::text, dj.org_id, u.id,
+      CASE
+        WHEN LOWER(COALESCE(dj.service_type,'')) LIKE '%heavy%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%flatbed%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%wheel%lift%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%tow%' THEN 'heavy_tow'
+        WHEN LOWER(COALESCE(dj.service_type,'')) LIKE '%battery%' AND LOWER(COALESCE(dj.service_type,'')) LIKE '%advanced%' THEN 'battery_advanced'
+        WHEN LOWER(COALESCE(dj.service_type,'')) LIKE '%battery%' THEN 'battery_standard'
+        WHEN LOWER(COALESCE(dj.service_type,'')) LIKE '%jump%' THEN 'jump_start'
+        WHEN LOWER(COALESCE(dj.service_type,'')) LIKE '%tire%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%tyre%' THEN 'tire_change'
+        WHEN LOWER(COALESCE(dj.service_type,'')) LIKE '%fuel%' THEN 'fuel_delivery'
+        WHEN LOWER(COALESCE(dj.service_type,'')) LIKE '%lock%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%unlock%' THEN 'lockout'
+        ELSE NULL
+      END, 'seed'
+    FROM dispatch_jobs dj JOIN users u ON u.towbook_driver_id=dj.assigned_driver_towbook_id AND u.deactivated_at IS NULL
+    JOIN organization_memberships m ON m.org_id=dj.org_id AND m.user_id=u.id AND m.role='contractor'
+    WHERE dj.assigned_driver_towbook_id IS NOT NULL AND (dj.status='completed' OR dj.towbook_status='252')
+      AND (LOWER(COALESCE(dj.service_type,'')) LIKE '%tow%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%heavy%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%flatbed%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%wheel%lift%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%battery%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%jump%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%tire%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%tyre%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%fuel%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%lock%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%unlock%')
+    ON CONFLICT (org_id, contractor_id, service_type) DO NOTHING`;
+  await q`DELETE FROM contractor_services WHERE service_type IS NULL`;
+}
+export function serviceSelectionMatchesJob(serviceType: string | null | undefined, selectedServices: readonly string[]): boolean {
+  const wanted = normalizeServiceSelectionType(serviceType);
+  return Boolean(wanted && selectedServices.includes(wanted));
+}
 const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>]> = [
   [1, async (q) => {
     await q`CREATE TABLE IF NOT EXISTS dispatch_contractors (id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL, lat DOUBLE PRECISION NOT NULL, lng DOUBLE PRECISION NOT NULL, area TEXT NOT NULL, vehicle_types JSONB NOT NULL DEFAULT '[]', rating DOUBLE PRECISION NOT NULL, completed_job_count INTEGER NOT NULL DEFAULT 0, response_time_history_minutes JSONB NOT NULL DEFAULT '[]')`;
@@ -1820,24 +1846,7 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     )`;
     await q`CREATE INDEX IF NOT EXISTS contractor_services_org_contractor_idx ON contractor_services(org_id, contractor_id)`;
     await q`CREATE INDEX IF NOT EXISTS contractor_services_org_service_idx ON contractor_services(org_id, service_type)`;
-    await q`INSERT INTO contractor_services(id,org_id,contractor_id,service_type,updated_by)
-      SELECT gen_random_uuid()::text, dj.org_id, u.id,
-        CASE
-          WHEN LOWER(COALESCE(dj.service_type,'')) LIKE '%heavy%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%flatbed%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%wheel%lift%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%tow%' THEN 'heavy_tow'
-          WHEN LOWER(COALESCE(dj.service_type,'')) LIKE '%battery%' AND LOWER(COALESCE(dj.service_type,'')) LIKE '%advanced%' THEN 'battery_advanced'
-          WHEN LOWER(COALESCE(dj.service_type,'')) LIKE '%battery%' THEN 'battery_standard'
-          WHEN LOWER(COALESCE(dj.service_type,'')) LIKE '%jump%' THEN 'jump_start'
-          WHEN LOWER(COALESCE(dj.service_type,'')) LIKE '%tire%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%tyre%' THEN 'tire_change'
-          WHEN LOWER(COALESCE(dj.service_type,'')) LIKE '%fuel%' THEN 'fuel_delivery'
-          WHEN LOWER(COALESCE(dj.service_type,'')) LIKE '%lock%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%unlock%' THEN 'lockout'
-          ELSE NULL
-        END, 'seed'
-      FROM dispatch_jobs dj JOIN users u ON u.towbook_driver_id=dj.assigned_driver_towbook_id AND u.deactivated_at IS NULL
-      JOIN organization_memberships m ON m.org_id=dj.org_id AND m.user_id=u.id AND m.role='contractor'
-      WHERE dj.assigned_driver_towbook_id IS NOT NULL AND (dj.status='completed' OR dj.towbook_status='252')
-        AND (LOWER(COALESCE(dj.service_type,'')) LIKE '%tow%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%heavy%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%flatbed%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%wheel%lift%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%battery%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%jump%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%tire%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%tyre%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%fuel%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%lock%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%unlock%')
-      ON CONFLICT (org_id, contractor_id, service_type) DO NOTHING`;
-    await q`DELETE FROM contractor_services WHERE service_type IS NULL`;
+    await seedContractorServicesFromHistory(q);
   }],
 ];
 export async function ensureSchema() {
