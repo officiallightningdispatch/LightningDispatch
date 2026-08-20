@@ -7,6 +7,9 @@ import { readFileSync } from "node:fs";
 const root = readFileSync("./src/routes/__root.tsx", "utf8");
 const login = readFileSync("./src/routes/login.tsx", "utf8");
 const store = readFileSync("./src/lib/store.tsx", "utf8");
+const authServer = readFileSync("./src/data/auth-server.ts", "utf8");
+const auth = readFileSync("./src/data/auth.ts", "utf8");
+const authStatusBody = auth.slice(auth.indexOf("export const authStatus"), auth.indexOf("const credentials"));
 const checks = [];
 const check = (name, condition, extra = "") => {
   checks.push([name, Boolean(condition), extra]);
@@ -18,6 +21,16 @@ const gateBody = root.slice(root.indexOf("function AuthGate"), root.indexOf("fun
 const publicGuard = gateBody.indexOf('if (publicPath) { setReady(true); return');
 const firstAuthStatus = gateBody.indexOf("authStatus()");
 
+check(
+  "auth schema readiness is process-global across boot and bundled handlers",
+  authServer.includes('Symbol.for("lightning-dispatch.auth-schema-ready-v1")') && authServer.includes("globalThis") && authServer.includes("delete authSchemaPromises"),
+  "ensureAuthSchema must share one reusable promise and clear only rejected state",
+);
+check(
+  "authStatus performs one reusable schema check through currentUser",
+  !authStatusBody.includes("ensureAuthSchema") && authStatusBody.includes("const user=await s.currentUser()"),
+  "authStatus must not issue a second schema preparation call",
+);
 check(
   "root auth gate returns before authStatus on public routes",
   publicGuard >= 0 && publicGuard < firstAuthStatus,
