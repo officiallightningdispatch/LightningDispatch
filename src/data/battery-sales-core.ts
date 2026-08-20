@@ -165,7 +165,7 @@ export type UpdateBatteryRatesResult =
 
 /** Owner/admin-only rates update (owner Settings — Battery sales card). */
 export async function updateBatteryRatesCore(
-  user: { orgId: string; role: string },
+  user: { orgId: string; id?: string; role: string },
   data: unknown,
 ): Promise<UpdateBatteryRatesResult> {
   const v = z.object({
@@ -182,13 +182,18 @@ export async function updateBatteryRatesCore(
   try {
     await ensure();
     const q = await db();
-    await q`INSERT INTO org_settings(org_id) VALUES(${user.orgId}) ON CONFLICT(org_id) DO NOTHING`;
-    await q`UPDATE org_settings SET battery_tax_rate_bps=${v.data.taxRateBps},
-      battery_admin_fee_bps=${v.data.adminFeeBps},
-      battery_install_standard_cents=${v.data.installStandardCents},
-      battery_install_advanced_cents=${v.data.installAdvancedCents},
-      warehouse_address=${v.data.warehouseAddress},
-      updated_at=NOW() WHERE org_id=${user.orgId}`;
+    const actorId = user.id ?? "system";
+    await q.transaction([
+      q`INSERT INTO org_settings(org_id) VALUES(${user.orgId}) ON CONFLICT(org_id) DO NOTHING`,
+      q`UPDATE org_settings SET battery_tax_rate_bps=${v.data.taxRateBps},
+        battery_admin_fee_bps=${v.data.adminFeeBps},
+        battery_install_standard_cents=${v.data.installStandardCents},
+        battery_install_advanced_cents=${v.data.installAdvancedCents},
+        warehouse_address=${v.data.warehouseAddress},
+        updated_at=NOW() WHERE org_id=${user.orgId}`,
+      q`INSERT INTO audit_log(id,org_id,actor_user_id,actor_role,action,entity_type,entity_id,detail,request_id)
+        VALUES(gen_random_uuid()::text,${user.orgId},${actorId},${user.role},'battery_rates_update','org_settings',${user.orgId},${JSON.stringify({taxRateBps:v.data.taxRateBps,adminFeeBps:v.data.adminFeeBps,installStandardCents:v.data.installStandardCents,installAdvancedCents:v.data.installAdvancedCents})}::jsonb,'battery-owner')`,
+    ]);
     return { ok: true, rates: await batteryRatesCore(user.orgId) };
   } catch {
     return { ok: false, code: "invalid_state", message: "Couldn't save the rates — try again." };
@@ -860,5 +865,5 @@ export async function updateBatteryRatesHandler(data: unknown) {
   const { currentUser } = await import("./auth-server");
   const u = await currentUser();
   if (!u) return { ok: false as const, code: "unauthorized" as const, message: "Sign in first." };
-  return updateBatteryRatesCore({ orgId: u.orgId, role: u.role }, data);
+  return updateBatteryRatesCore({ orgId: u.orgId, id: u.id, role: u.role }, data);
 }
