@@ -1,11 +1,10 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { AlertTriangle, ChevronRight, CloudDownload, FileText, Loader2, Pencil, Plus, Trash2, UserCog, Users, X } from "lucide-react";
-import { useEffect, useCallback, useState, type FormEvent } from "react";
+import { AlertTriangle, ChevronDown, ChevronRight, CloudDownload, FileText, Loader2, Pencil, Plus, Trash2, UserCog, Users, X } from "lucide-react";
+import { useEffect, useState, type FormEvent } from "react";
 import { AppShell } from "~/components/app-shell";
 import { ComplianceBadge, DocumentTypeEditorRow, PayRateField, formatCents } from "~/components/contractor-admin";
 import { ContractorProfileEditor, type EditorSection } from "~/components/contractor-profile-editor";
 import { InlineError } from "~/components/mutation-status";
-import { OwnerPayoutMethodStrip } from "~/components/owner-payout-method";
 import { Avatar, Button, Card, EmptyState, StatusBadge, useToast } from "~/components/ui";
 import {
   addContractor,
@@ -28,7 +27,6 @@ import {
   type DocTypeRow,
 } from "~/data/contractor-admin";
 import { timeAgo } from "~/lib/job-ui";
-import { listPayoutMethods, type OwnerPayoutMethod } from "~/data/payouts";
 import { OwnerServiceSelection } from "~/components/service-selection";
 
 export const Route = createFileRoute("/owner/contractors/")({ component: OwnerContractors });
@@ -48,6 +46,7 @@ function OwnerContractors() {
   const [editing, setEditing] = useState<{ id: string; section: EditorSection } | null>(null);
   /** Roster compliance filter pills: All / Missing docs / Expiring soon. */
   const [rosterFilter, setRosterFilter] = useState<"all" | "missing" | "expiring">("all");
+  const [servicesOpen, setServicesOpen] = useState(false);
 
   /* ---- roster ---- */
   const [rows, setRows] = useState<ContractorRow[] | null>(null);
@@ -80,14 +79,6 @@ function OwnerContractors() {
     if (r.ok) { setRows(r.data); setListError(""); } else setListError(r.message);
   };
   useEffect(() => { void refresh(); }, [includeRemoved]);
-
-  /* ---- payout methods (owner verify/reject/edit — Phase A 2026-08-13) ---- */
-  const [payoutMethods, setPayoutMethods] = useState<Record<string, OwnerPayoutMethod> | null>(null);
-  const loadPayoutMethods = useCallback(async () => {
-    const r = await listPayoutMethods();
-    if (r.ok) setPayoutMethods(Object.fromEntries(r.data.map((m) => [m.contractorId, m])));
-  }, []);
-  useEffect(() => { void loadPayoutMethods(); }, [loadPayoutMethods]);
 
   const loadDocTypes = async () => {
     const r = await listRequiredDocTypes();
@@ -248,7 +239,26 @@ function OwnerContractors() {
 
         {segment === "roster" ? (
           <>
-            <OwnerServiceSelection />
+            <Card className="overflow-hidden">
+              <button
+                type="button"
+                aria-expanded={servicesOpen}
+                aria-controls="owner-roster-contractor-services"
+                onClick={() => setServicesOpen((open) => !open)}
+                className="flex min-h-14 w-full items-center justify-between gap-3 px-5 py-4 text-left transition-colors hover:bg-ink-50 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-brand-500"
+              >
+                <span className="min-w-0">
+                  <span className="block text-sm font-bold text-ink-900">Contractor services</span>
+                  <span className="mt-0.5 block text-xs text-ink-500">Set the capabilities used for dispatch qualification.</span>
+                </span>
+                {servicesOpen ? <ChevronDown className="size-5 shrink-0 text-ink-400" aria-hidden="true" /> : <ChevronRight className="size-5 shrink-0 text-ink-400" aria-hidden="true" />}
+              </button>
+              {servicesOpen && (
+                <div id="owner-roster-contractor-services" className="border-t border-ink-100 p-3 sm:p-4">
+                  <OwnerServiceSelection />
+                </div>
+              )}
+            </Card>
             {/* ---- compliance strip ---- */}
             {missingDocs > 0 && (
               <Card className="border-danger-200 bg-danger-50/60 p-4">
@@ -478,8 +488,6 @@ function OwnerContractors() {
                         onChanged={() => void refresh()}
                         onPayrate={(cents) => savePayrate(c, cents)}
                         onEdit={() => setEditing({ id: c.id, section: "profile" })}
-                        payoutMethod={payoutMethods ? (payoutMethods[c.id] ?? null) : undefined}
-                        onPayoutMethodChanged={() => void loadPayoutMethods()}
                       />
                     ))
                   )}
@@ -528,16 +536,12 @@ function OwnerContractors() {
 
 /* ------------------------------ roster row ------------------------------ */
 
-function ContractorRowView({ c, last, onChanged, onPayrate, onEdit, payoutMethod, onPayoutMethodChanged }: {
+function ContractorRowView({ c, last, onChanged, onPayrate, onEdit }: {
   c: ContractorRow;
   last: boolean;
   onChanged: () => void;
   onPayrate: (cents: number | null) => Promise<void>;
   onEdit: () => void;
-  /** The contractor's payout method (owner-only FULL handle) — undefined while
-   *  the method list is still loading, null when they have none on file. */
-  payoutMethod?: OwnerPayoutMethod | null;
-  onPayoutMethodChanged: () => void;
 }) {
   const removed = Boolean(c.removedAt);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
@@ -660,12 +664,6 @@ function ContractorRowView({ c, last, onChanged, onPayrate, onEdit, payoutMethod
           )}
         </div>
       </div>
-
-      {payoutMethod && (
-        <div className="mt-2.5 border-t border-ink-100 pt-2.5">
-          <OwnerPayoutMethodStrip method={payoutMethod} onChanged={onPayoutMethodChanged} compact />
-        </div>
-      )}
 
       {error && <div className="mt-3"><InlineError message={error} /></div>}
       {notice && (

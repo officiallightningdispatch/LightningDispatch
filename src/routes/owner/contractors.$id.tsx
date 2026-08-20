@@ -20,6 +20,7 @@ import {
   type EditorSection,
 } from "~/components/contractor-profile-editor";
 import { InlineError } from "~/components/mutation-status";
+import { OwnerPayoutMethodStrip } from "~/components/owner-payout-method";
 import { Alert, Avatar, Button, Card, EmptyState, StatusBadge, useToast } from "~/components/ui";
 import {
   removeContractor,
@@ -42,6 +43,7 @@ import {
   type DocFilePayload,
   type FormSubmissionView,
 } from "~/data/contractor-admin";
+import { getContractorPayoutMethod, type OwnerPayoutMethod } from "~/data/payouts";
 import { timeAgo } from "~/lib/job-ui";
 export const Route = createFileRoute("/owner/contractors/$id")({ component: OwnerContractorDetail });
 const DAY_LABELS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
@@ -60,6 +62,9 @@ function OwnerContractorDetail() {
   const [detailError, setDetailError] = useState("");
   const [docs, setDocs] = useState<ContractorDocumentRow[] | null>(null);
   const [docsError, setDocsError] = useState("");
+  const [payoutMethod, setPayoutMethod] = useState<OwnerPayoutMethod | null>(null);
+  const [payoutLoading, setPayoutLoading] = useState(true);
+  const [payoutError, setPayoutError] = useState("");
   const [loaded, setLoaded] = useState(false);
   /* Contractor Management v2: the profile editor + compare sheet */
   const [editing, setEditing] = useState<EditorSection | null>(null);
@@ -75,12 +80,16 @@ function OwnerContractorDetail() {
   /* document viewer */
   const [viewer, setViewer] = useState<{ doc: ContractorDocumentRow; file: DocFilePayload | null; loading: boolean; error?: string; titleOverride?: string } | null>(null);
   const refresh = async () => {
-    const [d, dc] = await Promise.all([
+    setPayoutLoading(true);
+    const [d, dc, pm] = await Promise.all([
       getContractorDetail({ data: { contractorId: id } }),
       listContractorDocuments({ data: { contractorId: id } }),
+      getContractorPayoutMethod({ data: { contractorId: id } }),
     ]);
     if (d.ok) { setDetail(d.data); setDetailError(""); } else setDetailError(d.message);
     if (dc.ok) { setDocs(dc.data); setDocsError(""); } else setDocsError(dc.message);
+    if (pm.ok) { setPayoutMethod(pm.data); setPayoutError(""); } else { setPayoutMethod(null); setPayoutError(pm.message); }
+    setPayoutLoading(false);
     setLoaded(true);
   };
   useEffect(() => { void refresh(); }, [id]);
@@ -370,6 +379,30 @@ function OwnerContractorDetail() {
               )}
             </Card>
             {!removed && <OwnerServiceSelection contractorId={id} />}
+            {!removed && (
+              <Card className="p-5">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-bold">Payment method</p>
+                    <p className="mt-1 text-xs text-ink-500">Review and approve this contractor&apos;s payout destination before payday.</p>
+                  </div>
+                  {payoutMethod && <StatusBadge className="bg-ink-100 text-ink-600">Owner review</StatusBadge>}
+                </div>
+                {payoutError ? (
+                  <div className="mt-3"><InlineError message={payoutError} /></div>
+                ) : payoutLoading ? (
+                  <div className="mt-3 flex items-center gap-2 text-sm text-ink-400">
+                    <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> Loading payment method…
+                  </div>
+                ) : payoutMethod ? (
+                  <div className="mt-3">
+                    <OwnerPayoutMethodStrip method={payoutMethod} onChanged={() => void refresh()} />
+                  </div>
+                ) : (
+                  <p className="mt-3 rounded-xl border border-ink-100 bg-ink-50/60 px-3 py-2.5 text-sm text-ink-500">No payout method on file yet.</p>
+                )}
+              </Card>
+            )}
             {/* ------------------------------ danger zone ------------------------------ */}
             {!removed && (
               <Card className="border-danger-200 p-5">
