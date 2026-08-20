@@ -30,9 +30,12 @@ const ORG = `qa-service-selection-${randomUUID()}`;
 const OWNER = `qa-service-owner-${randomUUID()}`;
 const CONTRACTOR = `qa-service-contractor-${randomUUID()}`;
 const CONTRACTOR2 = `qa-service-contractor-${randomUUID()}`;
+const OWNER_DRIVER = `qa-service-owner-driver-${randomUUID()}`;
+const PURE_ADMIN = `qa-service-pure-admin-${randomUUID()}`;
 const NON_OWNER = `qa-service-non-owner-${randomUUID()}`;
 const TB1 = String(8_000_000 + Math.floor(Math.random() * 999_999));
 const TB2 = String(Number(TB1) + 1);
+const TB_OWNER_DRIVER = String(Number(TB2) + 1);
 let created = false;
 
 const ownerActor = { orgId: ORG, id: OWNER, role: "owner" };
@@ -47,10 +50,15 @@ try {
     (${OWNER},'QA Service Owner',${`${OWNER}@qa.local`},'x',NULL),
     (${CONTRACTOR},'QA Service Contractor',${`${CONTRACTOR}@qa.local`},'x',${TB1}),
     (${CONTRACTOR2},'QA Service Contractor 2',${`${CONTRACTOR2}@qa.local`},'x',${TB2}),
+    (${OWNER_DRIVER},'QA Owner Driver Identity',${`${OWNER_DRIVER}@qa.local`},'x',${TB_OWNER_DRIVER}),
+    (${PURE_ADMIN},'QA Pure Admin',${`${PURE_ADMIN}@qa.local`},'x',NULL),
     (${NON_OWNER},'QA Service Dispatcher',${`${NON_OWNER}@qa.local`},'x',NULL)`;
   await q`INSERT INTO organization_memberships(org_id,user_id,role) VALUES
     (${ORG},${OWNER},'owner'),(${ORG},${CONTRACTOR},'contractor'),
-    (${ORG},${CONTRACTOR2},'contractor'),(${ORG},${NON_OWNER},'dispatcher')`;
+    (${ORG},${CONTRACTOR2},'contractor'),(${ORG},${OWNER_DRIVER},'owner'),
+    (${ORG},${PURE_ADMIN},'admin'),(${ORG},${NON_OWNER},'dispatcher')`;
+  await q`INSERT INTO towbook_sessions(org_id,encrypted_session,status,session_kind,towbook_driver_id)
+    VALUES(${ORG},'qa-owner-driver-session','connected','driver',${TB_OWNER_DRIVER})`;
   created = true;
 
   check(
@@ -85,6 +93,38 @@ try {
     ownRead.ok &&
       ownRead.data.services.contractorId === CONTRACTOR &&
       ownRead.data.services.selectedServices.includes("jump_start"),
+  );
+
+  const ownerIdentityMembership = await q`SELECT role FROM organization_memberships WHERE org_id=${ORG} AND user_id=${OWNER_DRIVER}`;
+  const ownerRoster = await listContractorServicesCore(ownerActor);
+  const ownerIdentityEdit = await setContractorServicesCore(ownerActor, {
+    contractorId: OWNER_DRIVER,
+    services: ["Battery Standard"],
+  });
+  const pureAdminEdit = await setContractorServicesCore(ownerActor, {
+    contractorId: PURE_ADMIN,
+    services: ["fuel"],
+  });
+  check(
+    "owner identity driver is an owner member, not a contractor member",
+    ownerIdentityMembership.length === 1 && ownerIdentityMembership[0].role === "owner",
+  );
+  check(
+    "owner identity driver appears in owner service roster",
+    ownerRoster.ok &&
+      ownerRoster.data.some((row) => row.contractorId === OWNER_DRIVER) &&
+      !ownerRoster.data.some((row) => row.contractorId === PURE_ADMIN),
+  );
+  check(
+    "owner identity driver can be edited by owner",
+    ownerIdentityEdit.ok &&
+      ownerIdentityEdit.data.contractorId === OWNER_DRIVER &&
+      JSON.stringify(ownerIdentityEdit.data.selectedServices) ===
+        JSON.stringify(["battery_standard"]),
+  );
+  check(
+    "pure admin without driver identity is not a contractor",
+    !pureAdminEdit.ok && pureAdminEdit.code === "not_found",
   );
 
   const nonOwnerList = await listContractorServicesCore(nonOwnerActor);
@@ -223,7 +263,7 @@ try {
   if (created) {
     assertQaOrg(ORG);
     await q`DELETE FROM organizations WHERE id=${ORG}`.catch(() => {});
-    await q`DELETE FROM users WHERE id=${OWNER} OR id=${CONTRACTOR} OR id=${CONTRACTOR2} OR id=${NON_OWNER}`.catch(
+    await q`DELETE FROM users WHERE id=${OWNER} OR id=${CONTRACTOR} OR id=${CONTRACTOR2} OR id=${OWNER_DRIVER} OR id=${PURE_ADMIN} OR id=${NON_OWNER}`.catch(
       () => {},
     );
   }
