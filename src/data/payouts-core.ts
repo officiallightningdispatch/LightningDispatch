@@ -35,7 +35,7 @@ import {
   saveTowbookSnapshot,
   type ReconciliationResult,
   type CallWorkflowRow,
-} from "./towbook-reports-core";
+} from "./towbook-reports-core.ts";
 
 /* --------------------------------- helpers --------------------------------- */
 const configured = () => Boolean(process.env.DATABASE_URL);
