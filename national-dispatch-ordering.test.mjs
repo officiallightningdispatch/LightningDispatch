@@ -47,11 +47,11 @@ try {
     // manual/last-resort selection; this test proves the guard itself never weakens.
     assert.equal(String((await pick([driver(201,28.5,-81.4)])).driver.driverId), "201");
   });
-  await check("AVAILABILITY: offline and capped drivers are excluded before ranking", async () => {
+  await check("LOCATION-ONLY: capped driver is excluded but fresh-GPS unchecked-in driver remains selectable", async () => {
     const capped = driver(301,30.2,-97.7,{calls:[{status:"assigned"},{status:"en_route"},{status:"arrived"}]});
-    const offline = driver(302,30.2,-97.7,{isCheckedIn:false});
-    const available = driver(303,30.2,-97.7);
-    assert.equal(String((await pick([capped,offline,available])).driver.driverId), "303");
+    const uncheckedIn = driver(302,30.2,-97.7,{isCheckedIn:false});
+    const checkedIn = driver(303,30.2,-97.7);
+    assert.equal(String((await pick([capped,uncheckedIn,checkedIn])).driver.driverId), "302");
   });
   await check("ETA then distance: road ETA wins at equal distance; distance wins at equal ETA", async () => {
     const sameDistance = [driver(402,30.2672,-97.7431,{estimatedTimeSeconds:900}), driver(401,30.2672,-97.7431,{estimatedTimeSeconds:300})];

@@ -31,7 +31,7 @@ import { recordOwnerNotification } from "./owner-notifications-core";
  * never above the ceiling (org max_eta_minutes, lowered by the offer's own
  * maxEta when smaller). Every decision reason records WHICH provider produced
  * the ETA (tomtom-traffic / osrm / factor fallback).
- * Choice is BY ROAD ETA: each candidate (checked in && has GPS && fewer than
+ * Choice is BY ROAD ETA: each candidate with a fresh app GPS fix and fewer than
  * MAX_DRIVER_QUEUE active jobs — queue-aware capacity, owner-directed
  * 2026-08-11; active = new/offered/accepted/en_route/arrived, counted from
  * the org's dispatch_jobs cross-checked against the payload's `calls`) is
@@ -52,7 +52,7 @@ import { recordOwnerNotification } from "./owner-notifications-core";
  *   3. Resolve coordinates/zone/driver data when available; uncertainty falls
  *      through to the universal driverId 0 SLA-ceiling accept
  *   4. GET /api/nearestDrivers?latitude=<pickup>&longitude=<pickup>&checkInForAllDrivers=true
- *      → choose best driver: checked in && has GPS && < MAX_DRIVER_QUEUE active
+ *      → choose best driver: fresh app GPS fix && < MAX_DRIVER_QUEUE active
  *        jobs (queue-aware), minimizing ROAD drive time (OSRM per candidate;
  *        fallback model on routing failure); all-loaded → queue-inclusive
  *        arrival model
@@ -546,7 +546,11 @@ export type DriverQueue = {
  *  selection path (owner-directed: use what's already stored). Terminal
  *  statuses are excluded by the WHERE clause; rows are ordered oldest-first
  *  (the queue order the driver will work). */
-/** Towbook check-in and Lightning GO are a UNION: either source makes a driver available. */
+/**
+ * Load the legacy Towbook-check-in/Lightning-GO union for audit visibility only.
+ * Owner decision 2026-08-20: this status is informational and MUST NOT gate
+ * location-based dispatch selection.
+ */
 export async function loadLightningAvailableDrivers(orgId: string): Promise<Set<string>> {
   try {
     const rows = await sql() `SELECT u.towbook_driver_id FROM driver_availability_log l JOIN users u ON u.id=l.user_id WHERE l.org_id=${orgId} AND l.session_started_at IS NOT NULL AND l.heartbeat_at > NOW() - INTERVAL '90 seconds'` as Array<Record<string, unknown>>;
@@ -554,11 +558,11 @@ export async function loadLightningAvailableDrivers(orgId: string): Promise<Set<
   } catch { return new Set(); }
 }
 
-/** Tow qualification uses the same availability union as normal dispatch:
- * Towbook check-in OR a live Lightning GO session. The Towbook payload is the
- * authoritative check-in signal; Lightning GO is the durable app-side signal.
- * This must not depend on the heartbeat table alone because a Towbook-only
- * contractor is valid even when Lightning heartbeats are unavailable. */
+/**
+ * Legacy availability status for audit/observability. It is no longer a
+ * qualification or selection gate: a fresh real GPS fix is the dispatch
+ * eligibility signal (owner decision 2026-08-20).
+ */
 export function isDriverAvailableForTowQualification(driver: unknown, lightningAvailable: Set<string>): boolean {
   if (!driver || typeof driver !== "object" || Array.isArray(driver)) return false;
   const row = driver as Record<string, unknown>;
@@ -1567,8 +1571,8 @@ export type StateGuardOutcome = {
   blocked: boolean;
   /** "job_state_unknown" | "no_in_state_driver" | null. */
   blockedReason: string | null;
-  /** Selection tier: online in-state or offline in-state; no cross-state tier exists. */
-  assignmentTier?: "online_in_state" | "offline_in_state";
+  /** Selection tier: location-only in-state; no cross-state tier exists. */
+  assignmentTier?: "location_only_in_state";
   checked: number;
   inState: number;
   excluded: Array<{ driverId: number; state: string | null; reason: string }>;
@@ -1596,6 +1600,7 @@ export type AreaContext = {
   serviceQualification?: ServiceQualificationOutcome;
   zoneMatches?: Map<string, boolean>;
   regionalPreference?: Map<string, number>;
+  /** Legacy availability status, informational only; never a selection gate. */
   lightningAvailable?: Set<string>;
 };
 
@@ -1718,14 +1723,13 @@ export async function workloadAwareArrivalMinutes(
 
 /** Road-aware driver choice (owner-directed 2026-08-11, queue-aware; area +
  *  fresh-GPS ETA origin owner-directed 2026-08-13):
- *  rails = checked in && real GPS (lat/lng nonzero AND finite) && finite
+ *  rails = real GPS (lat/lng nonzero AND finite) && finite
  *  estimatedTimeSeconds && active-job-count < MAX_DRIVER_QUEUE (active =
  *  dispatch_jobs lifecycle statuses new/offered/accepted/en_route/arrived,
  *  cross-checked against the payload `calls` — a driver at the 3-job cap is
  *  NOT eligible). Each ELIGIBLE candidate is routed from its ETA ORIGIN (the
- *  freshest app GPS fix when ≤ STALE_GPS_FIX_MINUTES old, else the driver's
- *  area-anchor center when they have one — stale fix, else the payload
- *  lat/lng — the pre-geography default) to the pickup, and the minimum ROAD
+ *  freshest app GPS fix when ≤ STALE_GPS_FIX_MINUTES old; stale/missing fixes
+ *  are excluded fail-closed — to the pickup, and the minimum ROAD
  *  ETA wins — a driver with a better real drive time beats one with a better
  *  straight-line time. Routing failures fall back to the factor model per
  *  candidate, so a driver is never dropped for a router hiccup.
@@ -1733,7 +1737,7 @@ export async function workloadAwareArrivalMinutes(
  *  of the day set their anchor is a candidate only when the job falls inside
  *  their anchor circle (ANCHOR_RADIUS_MILES); drivers with NO anchor are
  *  flexible candidates for any job. When NO in-area candidate exists, fall
- *  back to the global closest-by-ETA among ALL available drivers
+ *  back to the global closest-by-ETA among ALL location-eligible drivers
  *  (areaFallback flagged on the choice). The manual-reassign path never
  *  passes anchors (the human's choice is authoritative — the caller narrows
  *  the pool).
@@ -1758,10 +1762,9 @@ export async function chooseBestDriverByRoad(
   const baseEligible = drivers.filter((d): d is NearestDriver => {
     if (!d || typeof d !== "object" || Array.isArray(d)) return false;
     const o = d as NearestDriver;
-    // Offline candidates are admitted only when the state-tiered guard is
-    // active; the unguarded pure selector retains its historical online-only
-    // contract while dispatch can explicitly waive it for in-state fallback.
-    if (!area?.stateGuard && o.isCheckedIn !== true && !area?.lightningAvailable?.has(String(o.driverId))) return false;
+    // Towbook check-in and Lightning GO/session status are intentionally not
+    // consulted here. Location (fresh app GPS, enforced below) is the sole
+    // dispatch availability signal (owner decision 2026-08-20).
     return (
       typeof o.latitude === "number" && Number.isFinite(o.latitude) && o.latitude !== 0 &&
       typeof o.longitude === "number" && Number.isFinite(o.longitude) && o.longitude !== 0 &&
@@ -1820,10 +1823,9 @@ export async function chooseBestDriverByRoad(
     return { lat: fix.lat, lng: fix.lng, basis: "gps", fixAgeMinutes: fixAge };
   };
 
-  // --- STATE-TIERED GUARD (owner directive 2026-08-15). Resolve state from
-  // the ETA origin (fresh GPS, then anchor, then Towbook last-known payload).
-  // Online is only a priority signal; offline candidates remain eligible when
-  // no online driver is proven in-state. Unknown state always fails closed.
+  // --- SAME-STATE GUARD (owner directive 2026-08-15). Resolve state from
+  // the real app GPS evidence. Availability/status is not a priority or gate;
+  // every in-state candidate with a fresh GPS fix remains in the pool.
   let statePool = pool;
   const guardOut = out?.stateGuard;
   if (guardOut && area?.stateGuard && statePool.length > 0) {
@@ -1833,7 +1835,6 @@ export async function chooseBestDriverByRoad(
       guardOut.blocked = true; guardOut.blockedReason = "job_state_unknown"; return null;
     }
     const inState: NearestDriver[] = [];
-    const onlineInState: NearestDriver[] = [];
     const excluded: StateGuardOutcome["excluded"] = [];
     for (const d of statePool) {
       const did = Number(d.driverId);
@@ -1848,7 +1849,6 @@ export async function chooseBestDriverByRoad(
       const st = await area.stateGuard.resolveDriverState(did, stateOrigin.lat, stateOrigin.lng);
       if (st && st.toUpperCase() === area.stateGuard.jobState.toUpperCase()) {
         inState.push(d);
-        if (d.isCheckedIn === true || area.lightningAvailable?.has(String(d.driverId))) onlineInState.push(d);
         guardOut.inState++;
       } else {
         excluded.push({ driverId: did, state: st ? st.toUpperCase() : null,
@@ -1856,10 +1856,8 @@ export async function chooseBestDriverByRoad(
       }
     }
     guardOut.excluded = excluded;
-    if (onlineInState.length) {
-      statePool = onlineInState; guardOut.assignmentTier = "online_in_state";
-    } else if (inState.length) {
-      statePool = inState; guardOut.assignmentTier = "offline_in_state";
+    if (inState.length) {
+      statePool = inState; guardOut.assignmentTier = "location_only_in_state";
     } else {
       // Never dispatch across state lines. With no in-state candidate, the
       // caller performs the universal driverId=0 accept-and-escalate hold;
@@ -1983,6 +1981,7 @@ export async function chooseBestDriverByRoad(
     (a.distanceBasis === "gps" ? 0 : 1) - (b.distanceBasis === "gps" ? 0 : 1) ||
     (a.distanceMiles - b.distanceMiles > 0.01 ? 1 : b.distanceMiles - a.distanceMiles > 0.01 ? -1 : 0) ||
     a.baseMinutes - b.baseMinutes ||
+    (area?.zoneMatches?.get(String(b.driver.driverId)) ? 1 : 0) - (area?.zoneMatches?.get(String(a.driver.driverId)) ? 1 : 0) ||
     (area?.regionalPreference?.get(String(b.driver.driverId)) ?? 0) - (area?.regionalPreference?.get(String(a.driver.driverId)) ?? 0) ||
     String(a.driver.driverId ?? "").localeCompare(String(b.driver.driverId ?? ""));
 
@@ -3018,9 +3017,6 @@ async function runAutoDispatchInternal(
           LEFT JOIN contractor_profiles cp ON cp.user_id=u.id AND cp.org_id=${orgId}
           WHERE u.towbook_driver_id = ANY(${ids})`;
         const byId = new Map(gateRows.map((r) => [String(r.towbook_driver_id), r as Record<string, unknown>]));
-        const towJob = /(?:tow|heavy|flatbed|wheel[- ]?lift)/i.test(serviceType?.toLowerCase() || "");
-        const onlineRows = towJob ? await sql() `SELECT u.towbook_driver_id, COALESCE((SELECT COUNT(*) FROM dispatch_jobs j WHERE j.org_id=${orgId} AND j.assigned_driver_towbook_id=u.towbook_driver_id AND j.status NOT IN ('completed','cancelled')),0)::int AS active_count FROM users u WHERE u.towbook_driver_id IS NOT NULL ORDER BY u.towbook_driver_id` : [];
-        const onlineById = new Map(onlineRows.map((r) => [String(r.towbook_driver_id), r as Record<string, unknown>]));
         const qualified = candidates.filter((d) => {
           const id = String((d as Record<string, unknown>).driverId), r = byId.get(id);
           const wanted = serviceType?.trim().toLowerCase() || "";
@@ -3028,8 +3024,11 @@ async function runAutoDispatchInternal(
           const towJob = /(?:tow|heavy|flatbed|wheel[- ]?lift)/i.test(wanted);
           const towCapable = /(?:tow truck|tow|heavy|flatbed|wheel[- ]?lift)/i.test(vehicle);
           const capabilityMismatch = towJob && !towCapable;
-          const towOnline = isDriverAvailableForTowQualification(d, lightningAvailable);
-          const reason = !r ? "org-inactive" : r.deactivated_at != null ? "deactivated" : r.member_id == null ? "org-inactive" : Number(r.required_docs) > Number(r.approved_docs) ? "missing-compliance" : capabilityMismatch ? "capability-mismatch" : towJob && !towOnline ? "offline" : towJob && Number(onlineById.get(id)?.active_count ?? 0) > 0 ? "unavailable" : null;
+          // Tow jobs retain the vehicle-capability rail. The former
+          // Towbook/Lightning online check is intentionally removed: under the
+          // owner decision 2026-08-20, fresh app GPS is the online/assignable
+          // signal, while queue capacity remains enforced by the selector.
+          const reason = !r ? "org-inactive" : r.deactivated_at != null ? "deactivated" : r.member_id == null ? "org-inactive" : Number(r.required_docs) > Number(r.approved_docs) ? "missing-compliance" : capabilityMismatch ? "capability-mismatch" : null;
           if (reason) serviceQualification.excluded.push({ driverId: Number(id), reason });
           return !reason;
         });
@@ -3061,11 +3060,10 @@ async function runAutoDispatchInternal(
       // anchors — the human's choice is authoritative and must never be
       // area-filtered ("do not touch the manual assign path"); the fresh-fix
       // origin still improves the ETA for the human-chosen driver.
-      // STATE-TIERED GUARD (owner policy 2026-08-15): prefer an online driver
-      // in-state, then an offline in-state driver; permit a cross-state driver
-      // only when the job state has no driver; use universal fallback last.
-      // Cross-state requires ACTUAL ROAD TIME (no factor fallback); routing
-      // failure fails closed. Offline cross-state drivers remain eligible.
+      // SAME-STATE GUARD (owner policy 2026-08-15): every driver with a fresh
+      // app GPS fix must remain eligible in-state regardless of Towbook check-in
+      // or Lightning GO/session status; use universal fallback when no in-state
+      // GPS candidate exists. Cross-state selection is never permitted.
       // Job state comes from the authoritative address (never
       // coordinates); driver states are reverse-geocoded from current origin,
       // cached per run. Unknown state fails closed (never guess assignment).
@@ -3150,6 +3148,12 @@ async function runAutoDispatchInternal(
         ceilingMinutes: effectiveMaxEta,
         driverLatitude: Number(chosen.driver.latitude),
         driverLongitude: Number(chosen.driver.longitude),
+        availability: {
+          towbookCheckedIn: chosen.driver.isCheckedIn === true,
+          lightningGo: lightningAvailable.has(String(chosen.driver.driverId ?? "")),
+          gate: "informational_only",
+          locationEligible: chosen.originBasis === "gps" && chosen.gpsFixAgeMinutes != null && chosen.gpsFixAgeMinutes <= STALE_GPS_FIX_MINUTES,
+        },
         // Workload-aware facts (owner-directed 2026-08-11): when the chosen
         // driver has active jobs, the ETA is the chain model (remaining on the
         // in-progress job + travel between consecutive job pickups + final leg
@@ -3181,8 +3185,8 @@ async function runAutoDispatchInternal(
               ? `human-chosen driver ${dispatchDriverName} (${manualDriverId}) is not in the live nearestDrivers payload (offline or no GPS) — accepted WITH that driver (their id IS the assignment; ETA goal ${effectiveMaxEta} min (no road ETA available; no ETA fabricated))${manualNote ? `; ${manualNote}` : ""}`
               : `human-chosen driver ${dispatchDriverName} (${manualDriverId}) is NOT in the offer's eligible list [${offer.drivers!.join(", ")}] — Towbook would silently drop their id, so the offer is accepted WITHOUT dispatch (never overwrite a human's choice with a different driver); assign manually on Towbook${manualNote ? `; ${manualNote}` : ""}`)
           : eligibleIds
-            ? `no ELIGIBLE checked-in driver with real GPS to quote an honest workload ETA (offer eligible list [${offer.drivers!.join(", ")}]${allLoadedNote ?? ""}; accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually, ETA goal ${effectiveMaxEta} min — no ETA recorded)`
-            : `no checked-in driver with real GPS to quote an honest workload ETA${allLoadedNote ?? ""} — accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually (ETA quoted at the SLA ceiling — no ETA recorded)`;
+            ? `no eligible driver with a fresh real GPS fix to quote an honest workload ETA (offer eligible list [${offer.drivers!.join(", ")}]${allLoadedNote ?? ""}; accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually, ETA goal ${effectiveMaxEta} min — no ETA recorded)`
+            : `no driver with a fresh real GPS fix to quote an honest workload ETA${allLoadedNote ?? ""} — accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually (ETA quoted at the SLA ceiling — no ETA recorded)`;
       // --- accept (the ONE state-changing call) — with a self-healing retry:
       // an expired session mid-offer (401/403/login-page on the POST) triggers
       // recovery, and the accept is retried once with the recovered session.
@@ -3359,7 +3363,7 @@ async function runAutoDispatchInternal(
             const waypointBase = chosen.baseMinutes;
             etaMinutes = finalEtaMinutes(waypointBase, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta);
           }
-          const reason = `accepted and dispatched to ${dispatchDriverName ?? dispatchDriverId} (driver ${dispatchDriverId}, VERIFIED on call ${verification.callId}); ETA source: authoritative call waypoint${authoritativeWaypoint ? ` (${authoritativeWaypoint.lat},${authoritativeWaypoint.lng})` : " unavailable"}${verificationRecoveryNote ? `; ${verificationRecoveryNote}` : ""}${recalculationNote ? `; ${recalculationNote}` : ""}${manualNote ? `; ${manualNote}` : ""}${guardOutcome.assignmentTier === "offline_in_state" ? "; no online driver in state; in-state offline assignment" : ""}${jobStateResolution.note ? `; ${jobStateResolution.note}` : ""}${qualificationNote}${etaLabel}${areaNote ?? ""}`;
+          const reason = `accepted and dispatched to ${dispatchDriverName ?? dispatchDriverId} (driver ${dispatchDriverId}, VERIFIED on call ${verification.callId}); ETA source: authoritative call waypoint${authoritativeWaypoint ? ` (${authoritativeWaypoint.lat},${authoritativeWaypoint.lng})` : " unavailable"}${verificationRecoveryNote ? `; ${verificationRecoveryNote}` : ""}${recalculationNote ? `; ${recalculationNote}` : ""}${manualNote ? `; ${manualNote}` : ""}${guardOutcome.assignmentTier === "location_only_in_state" ? "; same-state selection used fresh GPS only (Towbook/Lightning availability informational)" : ""}${jobStateResolution.note ? `; ${jobStateResolution.note}` : ""}${qualificationNote}${etaLabel}${areaNote ?? ""}`;
           if (verification.call) {
             try { await upsertVerifiedDispatchJob(orgId, offer, verification.call, verification.callId ?? offer.callRequestId, dispatchDriverId, dispatchDriverName); } catch { /* sync remains fallback; decision is still recorded */ }
           }

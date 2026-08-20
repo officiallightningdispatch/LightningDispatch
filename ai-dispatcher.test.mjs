@@ -350,9 +350,9 @@ try {
   // heavy-tow service type trips capability-mismatch — not missing-compliance.
   await q`INSERT INTO contractor_documents(id,org_id,contractor_id,doc_type_id,storage_key,status,uploaded_by_user_id) VALUES('qual-doc-capability',${ORG7},${QUAL_USERS[5]},'qual-doc-a','x','verified',${USER}),('qual-doc-capability-b',${ORG7},${QUAL_USERS[5]},'qual-doc-b','x','verified',${USER}) ON CONFLICT (id) DO UPDATE SET org_id=EXCLUDED.org_id, contractor_id=EXCLUDED.contractor_id, doc_type_id=EXCLUDED.doc_type_id, storage_key=EXCLUDED.storage_key, status=EXCLUDED.status, uploaded_by_user_id=EXCLUDED.uploaded_by_user_id`;
   await q`UPDATE contractor_profiles SET vehicle_type='van' WHERE user_id=${QUAL_USERS[5]} AND org_id=${ORG7}`;
-  // Tow-capability companion: the owner rule requires tow-capable AND ONLINE —
-  // seed the GO lease (fresh heartbeat) for the qualified tow-truck driver so the
-  // 92014 companion case exercises capability+availability, not an offline rejection.
+  // Tow-capability companion: tow jobs retain the tow-truck capability rail,
+  // while the former check-in/GO online gate is removed by owner decision
+  // 2026-08-20; fresh app GPS is the assignable location signal.
   await q`INSERT INTO driver_availability_log(org_id,user_id,day,online_minutes,ping_count,session_started_at,heartbeat_at,updated_at)
     VALUES(${ORG7},${QUAL_USERS[4]},CURRENT_DATE,0,1,NOW(),NOW(),NOW())
     ON CONFLICT (org_id,user_id,day) DO UPDATE SET session_started_at=NOW(),heartbeat_at=NOW(),updated_at=NOW()`;
@@ -436,7 +436,8 @@ try {
   const t6 = await chooseBestDriverByRoad([t6driver], 41.2, -73.2, makeRouter({ "41.20,-73.19": 300, "41.10,-73.00": 3600 }), undefined, { gpsFixes: new Map([["8601", t6fix]]) });
   check("T6 selected driver's GPS origin supplies distance/base/straight-line fields", t6?.driver.driverId === 8601 && t6.originBasis === "gps" && Math.abs(t6.originLat - t6fix.lat) < 1e-9 && t6.baseMinutes === 5 && t6.roadSeconds === 300 && t6.distanceMiles < 1, JSON.stringify(t6));
   check("T6 no eligible driver preserves null choice (driverId 0/SLA no-driver path)", (await chooseBestDriverByRoad([driver(8602, "T6 offline", { checkedIn: false })], 41.2, -73.2, makeRouter())) === null, "");
-  // Availability UNION regression: Towbook check-in and Lightning GO are independent proofs.
+  // Location-only dispatch regression (owner 2026-08-20): a fresh app GPS fix
+  // is sufficient even when Towbook check-in and Lightning GO are both absent.
   const unionStateGuard = { jobState: "CT", resolveDriverState: async () => "CT" };
   const antoneTowbookOnly = driver(603482, "Antone jerret", { checkedIn: true, etaSec: 600 });
   const antoneArea = { stateGuard: unionStateGuard, gpsFixes: new Map([["603482", { lat: 41.2, lng: -73.2, capturedAt: new Date().toISOString() }]]) };
@@ -445,13 +446,15 @@ try {
   check("availability union Antoine Towbook-only: eligible and selected", antoneInitial?.driver.driverId === 603482, JSON.stringify(antoneInitial));
   check("availability union Antoine survives verification recalc", antoneVerification?.driver.driverId === 603482 && antoneVerification?.driver.driverId !== 0, JSON.stringify(antoneVerification));
   const noProof = driver(96301, "No availability proof", { checkedIn: false, etaSec: 600 });
-  check("availability union fail-closed: no Towbook check-in and no Lightning lease", (await chooseBestDriverByRoad([noProof], 41.2, -73.2, makeRouter())) === null);
-  const lightningOnly = driver(96302, "Lightning-only driver", { checkedIn: false, etaSec: 600 });
-  const lightningPick = await chooseBestDriverByRoad([lightningOnly], 41.2, -73.2, makeRouter(), undefined, { lightningAvailable: new Set(["96302"]), gpsFixes: new Map([["96302", { lat: 41.2, lng: -73.2, capturedAt: new Date().toISOString() }]]) });
-  check("availability union Lightning-only: active GO lease qualifies", lightningPick?.driver.driverId === 96302, JSON.stringify(lightningPick));
-  // Nudge uses Towbook nearestDrivers check-in through this chooser; no separate
-  // Lightning state filter can exclude a checked-in driver.
-  check("nudge path union: Towbook-only driver remains selectable", antoneVerification?.driver.driverId === 603482);
+  const noProofFix = { lat: 41.2, lng: -73.2, capturedAt: new Date().toISOString() };
+  const noProofPick = await chooseBestDriverByRoad([noProof], 41.2, -73.2, makeRouter(), undefined, { gpsFixes: new Map([["96301", noProofFix]]) });
+  check("location-only regression: fresh GPS selects driver with no Towbook check-in and no Lightning GO", noProofPick?.driver.driverId === 96301 && noProofPick.originBasis === "gps", JSON.stringify(noProofPick));
+  const lightningOnly = driver(96302, "Lightning-status absent", { checkedIn: false, etaSec: 600 });
+  const lightningPick = await chooseBestDriverByRoad([lightningOnly], 41.2, -73.2, makeRouter(), undefined, { lightningAvailable: new Set(), gpsFixes: new Map([["96302", { lat: 41.2, lng: -73.2, capturedAt: new Date().toISOString() }]]) });
+  check("availability-union regression removed: no GO lease is not a selection gate", lightningPick?.driver.driverId === 96302, JSON.stringify(lightningPick));
+  // Nudge uses the same location-only chooser; Towbook/Lightning status remains
+  // informational and cannot exclude a driver with a fresh app fix.
+  check("nudge path location-only: Towbook-only driver remains selectable", antoneVerification?.driver.driverId === 603482);
   const serviceQualification = { serviceType: "tire", assessed: false, excluded: [] };
   const incompatible = { ...driver(8701, "T7 incompatible", { lat: 41.195, lng: -73.195 }), serviceExclusions: ["tire"] };
   const noCapability = driver(8703, "T7 no capability data", { lat: 41.19, lng: -73.19 });
@@ -472,10 +475,10 @@ try {
   const tieFixes = new Map([["8801", { lat: 41.2, lng: -73.19005, capturedAt: new Date().toISOString() }], ["8802", { lat: 41.2, lng: -73.19, capturedAt: new Date().toISOString() }]]);
   for (let i = 0; i < 4; i++) tiePicks.push((await chooseBestDriverByRoad(tieDrivers, 41.2, -73.2, tieRouter, undefined, { gpsFixes: tieFixes }))?.driver.driverId);
   check("P0 ETA-TIE deterministic driverId winner across repeated selections", tiePicks.length === 4 && tiePicks.every((id) => id === tiePicks[0]) && tiePicks[0] === 8801, JSON.stringify(tiePicks));
-  const offlineClosest = driver(8810, "Offline closest", { lat: 41.2, lng: -73.199, checkedIn: false });
-  const onlineNext = driver(8811, "Online next", { lat: 41.2, lng: -73.18 });
-  const offlinePick = await chooseBestDriverByRoad([offlineClosest, onlineNext], 41.2, -73.2, makeRouter(), undefined, { gpsFixes: new Map([["8811", { lat: 41.2, lng: -73.18, capturedAt: new Date().toISOString() }]]) });
-  check("P0 OFFLINE-CLOSEST selects next eligible driver and never offline", offlinePick?.driver.driverId === 8811 && offlinePick?.driver.driverId !== 8810, JSON.stringify(offlinePick));
+  const offlineClosest = driver(8810, "Location-only closest", { lat: 41.2, lng: -73.199, checkedIn: false });
+  const onlineNext = driver(8811, "Checked-in next", { lat: 41.2, lng: -73.18 });
+  const offlinePick = await chooseBestDriverByRoad([offlineClosest, onlineNext], 41.2, -73.2, makeRouter(), undefined, { gpsFixes: new Map([["8810", { lat: 41.2, lng: -73.199, capturedAt: new Date().toISOString() }], ["8811", { lat: 41.2, lng: -73.18, capturedAt: new Date().toISOString() }]]) });
+  check("P0 LOCATION-ONLY-CLOSEST selects fresh-GPS driver regardless of check-in status", offlinePick?.driver.driverId === 8810 && offlinePick?.driver.driverId !== 8811, JSON.stringify(offlinePick));
   // Recalculation contract: once the first choice is removed from the live
   // payload, the same chooser run over the remaining pool selects the next
   // eligible driver (the engine records the corresponding recalc reason).
@@ -1036,7 +1039,7 @@ try {
     check("eligibility: ineligible driver NOT dispatched (driverId 0) + auto_accept_no_driver escalated", r.decisions[0]?.decision === "auto_accept_no_driver" && r.decisions[0]?.escalated === true && p[0]?.body?.driverId === 0, JSON.stringify({ d: r.decisions[0], post: p[0]?.body }));
     const rows5 = await decisions();
     const v5 = rows5.find((x) => String(x.call_request_id) === "8015");
-    check("eligibility: reason names the eligible list + accepted without dispatch", v5 && String(v5.reason).includes("no ELIGIBLE") && String(v5.reason).includes("603482"), String(v5?.reason));
+    check("eligibility: reason names the eligible list + accepted without dispatch", v5 && String(v5.reason).toLowerCase().includes("no eligible") && String(v5.reason).includes("603482"), String(v5?.reason));
   }
   /* ============ 27) ETA v3: TomTom traffic layer (provider chain) ============ */
   // Hermetic: the TomTom/OSRM mocks are injected — no real routing calls ever.
@@ -1206,7 +1209,7 @@ try {
 
   /* ============ 28) queue-aware capacity + all-loaded arrival (owner 2026-08-11) ============ */
   // Rules: a driver may hold up to MAX_DRIVER_QUEUE (=3) active jobs; eligible
-  // = checked-in && GPS && active < 3 (active = dispatch_jobs lifecycle
+  // = fresh app GPS && active < 3 (availability/status is informational; active = dispatch_jobs lifecycle
   // statuses new/offered/accepted/en_route/arrived, cross-checked against the
   // payload calls). All candidates at the cap → queue-inclusive arrival model.
   {
@@ -1977,7 +1980,7 @@ try {
     check("tier 1 online in-state: assigned", a.r.decisions[0]?.decision === "auto_accept_with_driver" && Number(a.row?.driver_id) === 93001 && posts(a.m.calls)[0]?.body?.driverId === 93001 && !String(a.row?.reason).includes("waiver"), JSON.stringify(a.row));
 
     const b = await runTier(93002, [offline], { states: { 93002: "CT" } });
-    check("tier 2 offline in-state: assigned with waiver reason", b.r.decisions[0]?.decision === "auto_accept_with_driver" && Number(b.row?.driver_id) === 93002 && posts(b.m.calls)[0]?.body?.driverId === 93002 && String(b.row?.reason).includes("no online driver in state; in-state offline assignment"), JSON.stringify(b.row));
+    check("tier 2 unchecked-in in-state: assigned by fresh GPS with no availability waiver", b.r.decisions[0]?.decision === "auto_accept_with_driver" && Number(b.row?.driver_id) === 93002 && posts(b.m.calls)[0]?.body?.driverId === 93002 && !String(b.row?.reason).includes("no online driver"), JSON.stringify(b.row));
 
     const c = await runTier(93003, [cross], { states: { 93003: "NY" }, maxEta: 45 });
     check("tier 3 cross-state-only: universal fallback, never assigned", c.r.decisions[0]?.decision === "auto_accept_no_driver" && c.r.decisions[0]?.escalated === true && Number(c.row?.driver_id ?? 0) === 0 && posts(c.m.calls)[0]?.body?.driverId === 0 && (String(c.row?.reason).includes("no eligible same-state driver") || String(c.row?.reason).includes("using universal fallback")), JSON.stringify(c.row));
@@ -1997,7 +2000,7 @@ try {
     check("tier 4b cross-state routing failure: universal fallback, never assigned", fr.decisions[0]?.decision === "auto_accept_no_driver" && fr.decisions[0]?.escalated === true && Number(frow?.driver_id ?? 0) === 0 && posts(mf.calls)[0]?.body?.driverId === 0 && (String(frow?.reason).includes("no eligible same-state driver") || String(frow?.reason).includes("using universal fallback")), JSON.stringify(frow));
 
     const e = await runTier(93005, [cross, offline, online], { states: { 93001: "CT", 93002: "CT", 93003: "NY" } });
-    check("tier regression online same-state beats offline/cross-state", e.r.decisions[0]?.decision === "auto_accept_with_driver" && Number(e.row?.driver_id) === 93001 && posts(e.m.calls)[0]?.body?.driverId === 93001, JSON.stringify(e.row));
+    check("tier regression fresh-GPS in-state candidates beat cross-state regardless of availability status", e.r.decisions[0]?.decision === "auto_accept_with_driver" && Number(e.row?.driver_id) === 93002 && posts(e.m.calls)[0]?.body?.driverId === 93002, JSON.stringify(e.row));
   }
 
   /* ============ retry sweep hermetic regressions ============ */
@@ -2086,16 +2089,14 @@ try {
     await q`UPDATE org_settings SET qualification_gate_enabled=TRUE WHERE org_id=${ORG7}`;
     const {r: good,m: gm,rows: gr}=await runQ(92012,[driver(QUAL_TB[4],'qualified',{etaSec:600})]);
     check('qualification qualified: assigned with ordering rails and no exclusions',good.decisions[0]?.decision==='auto_accept_with_driver'&&posts(gm.calls)[0]?.body?.driverId===QUAL_TB[4]&&gr[0]?.raw_response?.serviceQualification?.excluded?.length===0);
-    // The 92012 auto-accept above left QUAL_TB[4] with an ACTIVE job — the tow rule
-    // also requires not-busy (active_count=0). Complete it so the companion case
-    // exercises capability+availability, not an 'unavailable' rejection.
+    // The 92012 auto-accept above left QUAL_TB[4] with an ACTIVE job. Complete
+    // it so the companion case exercises tow capability and queue rails cleanly.
     await q`UPDATE dispatch_jobs SET status='completed', pickup='123 MAIN ST, BRIDGEPORT CT 06606' WHERE org_id=${ORG7} AND assigned_driver_towbook_id=${String(QUAL_TB[4])} AND status NOT IN ('completed','cancelled')`;
-    // Towbook check-in is sufficient for the availability union. Remove the
-    // Lightning GO heartbeat row so this regression fails if tow qualification
-    // incorrectly requires the LD heartbeat table.
+    // Remove the GO heartbeat and use an unchecked-in candidate to prove tow
+    // qualification does not restore the former availability gate.
     await q`DELETE FROM driver_availability_log WHERE org_id=${ORG7} AND user_id=${QUAL_USERS[4]}`;
-    const {r: towCapable,m: towCapableM,rows: towCapableRows}=await runQ(92014,[driver(QUAL_TB[4],'tow-capable Towbook-only',{etaSec:600})],{offer:{serviceType:'heavy tow'}});
-    check('union availability: fresh-GPS Towbook-checked-in driver with NO Lightning GO assigned (no_driver→with_driver)',towCapable.decisions[0]?.decision==='auto_accept_with_driver'&&posts(towCapableM.calls)[0]?.body?.driverId===QUAL_TB[4]&&!String(towCapableRows[0]?.reason||'').includes('no eligible')&&!String(towCapableRows[0]?.reason||'').includes('capability-mismatch'),JSON.stringify({r:towCapable,rows:towCapableRows}));
+    const {r: towCapable,m: towCapableM,rows: towCapableRows}=await runQ(92014,[driver(QUAL_TB[4],'tow-capable location-only',{checkedIn:false,etaSec:600})],{offer:{serviceType:'heavy tow'}});
+    check('tow capability preserved with location-only availability: fresh-GPS tow truck with no check-in/GO is assigned',towCapable.decisions[0]?.decision==='auto_accept_with_driver'&&posts(towCapableM.calls)[0]?.body?.driverId===QUAL_TB[4]&&!String(towCapableRows[0]?.reason||'').includes('no eligible')&&!String(towCapableRows[0]?.reason||'').includes('capability-mismatch'),JSON.stringify({r:towCapable,rows:towCapableRows}));
     const {r: sole,m: sm}=await runQ(92013,[driver(QUAL_TB[1],'sole unqualified')]);
     check('qualification sole-unqualified: zero POSTs, no-driver fallback hard blocked',sole.decisions[0]?.decision==='escalated_qualification_failed'&&posts(sm.calls).length===0&&!sm.calls.some(c=>c.method==='POST'));
   }
