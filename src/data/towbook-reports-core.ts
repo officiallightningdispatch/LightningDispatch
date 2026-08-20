@@ -56,13 +56,52 @@ export async function fetchCallWorkflow(window: ReportWindow): Promise<{ rows: C
   const raw = await r.json().catch(() => null); return { rows: responseRows(raw), raw };
 }
 export type Classification = "completed" | "goa" | "cancelled" | "reassigned" | "unclassifiable";
-export type ReconciliationRow = { key: string; driver: string; classification: Classification; payableCents: number; reason?: string };
-export type ReconciliationResult = { reportCount: number; payableCount: number; excludedCount: number; unclassifiableCount: number; payableCents: number; rows: ReconciliationRow[]; byDriver: Array<{ driver: string; reportCount: number; payableCount: number; excludedCount: number; unclassifiableCount: number; payableCents: number }>; diagnostics: string[] };
+export type ReconciliationRow = {
+  key: string;
+  driver: string;
+  classification: Classification;
+  payableCents: number;
+  /** The matched LD dispatch job, when the report row can be itemized. */
+  jobId?: string;
+  towbookDriverId?: string;
+  reason?: string;
+};
+export type ReconciliationCounts = {
+  reportCount: number;
+  matchedCount: number;
+  matchedPayableCount: number;
+  reassignedCount: number;
+  unmatchedCount: number;
+  unitemizedCount: number;
+  /** Compatibility aliases retained for existing reconciliation consumers. */
+  payableCount: number;
+  excludedCount: number;
+  unclassifiableCount: number;
+  payableCents: number;
+};
+export type ReconciliationResult = ReconciliationCounts & {
+  rows: ReconciliationRow[];
+  byDriver: Array<ReconciliationCounts & { driver: string }>;
+  diagnostics: string[];
+};
 export type DriverActivityAggregate = { name: string; callCount: number; totalInvoice?: number };
+const emptyCounts = (): ReconciliationCounts => ({
+  reportCount: 0,
+  matchedCount: 0,
+  matchedPayableCount: 0,
+  reassignedCount: 0,
+  unmatchedCount: 0,
+  unitemizedCount: 0,
+  payableCount: 0,
+  excludedCount: 0,
+  unclassifiableCount: 0,
+  payableCents: 0,
+});
+
 export function reconcileDriverActivityCore(aggregates: DriverActivityAggregate[]): ReconciliationResult {
   const rows: ReconciliationRow[] = aggregates.flatMap(a => Array.from({ length: a.callCount }, (_, i) => ({ key: `${a.name}-${i + 1}`, driver: a.name, classification: "unclassifiable" as const, payableCents: 0, reason: "Driver Activity aggregate has no itemized call evidence" })));
-  const byDriver = aggregates.map(a => ({ driver: a.name, reportCount: a.callCount, payableCount: 0, excludedCount: 0, unclassifiableCount: a.callCount, payableCents: 0 }));
-  return { reportCount: rows.length, payableCount: 0, excludedCount: 0, unclassifiableCount: rows.length, payableCents: 0, rows, byDriver, diagnostics: rows.map(r => `${r.key}: ${r.reason}`) };
+  const byDriver = aggregates.map(a => ({ ...emptyCounts(), driver: a.name, reportCount: a.callCount, unmatchedCount: a.callCount, unitemizedCount: a.callCount, unclassifiableCount: a.callCount }));
+  return { ...emptyCounts(), reportCount: rows.length, unmatchedCount: rows.length, unitemizedCount: rows.length, unclassifiableCount: rows.length, rows, byDriver, diagnostics: rows.map(r => `${r.key}: ${r.reason}`) };
 }
 const s = (v: unknown) => String(v ?? "").toLowerCase();
 export function reconcileCallWorkflow(rows: CallWorkflowRow[], jobs: Array<Record<string, unknown>> = []): ReconciliationResult {
@@ -89,22 +128,86 @@ export function reconcileCallWorkflow(rows: CallWorkflowRow[], jobs: Array<Recor
     const reassigned = status.includes("reassign") || job?.manually_reassigned_at != null || s(raw?.reassigned).trim() === "true";
     const invoiceItems = raw?.invoiceItems;
     const goa = Array.isArray(invoiceItems) && invoiceItems.some(x => s(typeof x === "object" && x ? (x as Record<string, unknown>).name ?? (x as Record<string, unknown>).description : x).includes("goa"));
+    const driver = String(r.driverName ?? r.driver ?? r.ownerUserName ?? "Unknown");
+    const hasCompletion = Boolean(r.completed || r.completionTime);
     let classification: Classification = "unclassifiable", cents = 0, reason = "";
     if (finalCancelled) { classification = "cancelled"; reason = "final cancelled; $0"; }
     else if (reassigned) { classification = "reassigned"; reason = "reassigned away; $0"; }
-    else if (!r.completed && !r.completionTime) reason = "missing authoritative completion timestamp";
+    else if (!hasCompletion) reason = "missing authoritative completion timestamp";
+    else if (!job) { reason = "unmatched report call; no dispatch job to itemize"; diagnostics.push(`${key}: ${reason}`); }
     else if (goa) { classification = "goa"; cents = 1000; }
-    else if (r.completed || r.completionTime) { classification = "completed"; reason = job ? "matched dispatch job" : "unmatched report call; rate requires review"; if (!job) diagnostics.push(`${key}: report call not found in dispatch_jobs`); }
-    if (classification === "unclassifiable") diagnostics.push(`${key}: ${reason}`);
-    out.push({ key, driver: String(r.driverName ?? r.driver ?? r.ownerUserName ?? "Unknown"), classification, payableCents: cents, ...(reason ? { reason } : {}) });
+    else { classification = "completed"; reason = "matched dispatch job"; }
+    if (classification === "unclassifiable" && !diagnostics.some(d => d.startsWith(`${key}:`))) diagnostics.push(`${key}: ${reason}`);
+    out.push({
+      key,
+      driver,
+      classification,
+      payableCents: cents,
+      ...(job?.id != null ? { jobId: String(job.id) } : {}),
+      ...(job?.assigned_driver_towbook_id != null ? { towbookDriverId: String(job.assigned_driver_towbook_id) } : {}),
+      ...(reason ? { reason } : {}),
+    });
   }
-  const dm = new Map<string, { reportCount: number; payableCount: number; excludedCount: number; unclassifiableCount: number; payableCents: number }>();
-  for (const x of out) { const d = dm.get(x.driver) ?? { reportCount: 0, payableCount: 0, excludedCount: 0, unclassifiableCount: 0, payableCents: 0 }; d.reportCount++; if (x.classification === "completed" || x.classification === "goa") { d.payableCount++; d.payableCents += x.payableCents; } else if (x.classification === "unclassifiable") d.unclassifiableCount++; else d.excludedCount++; dm.set(x.driver, d); }
-  return { reportCount: out.length, payableCount: out.filter(x => x.classification === "completed" || x.classification === "goa").length, excludedCount: out.filter(x => x.classification === "cancelled" || x.classification === "reassigned").length, unclassifiableCount: out.filter(x => x.classification === "unclassifiable").length, payableCents: out.reduce((n,x) => n+x.payableCents,0), rows: out, byDriver: [...dm].map(([driver,v]) => ({ driver, ...v })), diagnostics };
+  const dm = new Map<string, ReconciliationCounts>();
+  for (const x of out) {
+    const d = dm.get(x.driver) ?? emptyCounts();
+    d.reportCount++;
+    if (x.jobId) d.matchedCount++;
+    if (x.classification === "completed" || x.classification === "goa") { d.matchedPayableCount++; d.payableCount++; d.payableCents += x.payableCents; }
+    else if (x.classification === "reassigned") { d.reassignedCount++; d.excludedCount++; }
+    else if (x.classification === "cancelled") d.excludedCount++;
+    else { d.unmatchedCount++; d.unitemizedCount++; d.unclassifiableCount++; }
+    dm.set(x.driver, d);
+  }
+  const matchedCount = out.filter(x => Boolean(x.jobId)).length;
+  const matchedPayableCount = out.filter(x => x.classification === "completed" || x.classification === "goa").length;
+  const reassignedCount = out.filter(x => x.classification === "reassigned").length;
+  const unmatchedCount = out.filter(x => x.classification === "unclassifiable").length;
+  const excludedCount = out.filter(x => x.classification === "cancelled" || x.classification === "reassigned").length;
+  return {
+    reportCount: out.length,
+    matchedCount,
+    matchedPayableCount,
+    reassignedCount,
+    unmatchedCount,
+    unitemizedCount: unmatchedCount,
+    payableCount: matchedPayableCount,
+    excludedCount,
+    unclassifiableCount: unmatchedCount,
+    payableCents: out.reduce((n, x) => n + x.payableCents, 0),
+    rows: out,
+    byDriver: [...dm].map(([driver, values]) => ({ driver, ...values })),
+    diagnostics,
+  };
 }
 export async function saveTowbookSnapshot(orgId: string, window: ReportWindow, raw: unknown, source: "server" | "manual-paste" = "server") {
   const q = sql(); const id = randomUUID(); await q`INSERT INTO towbook_report_snapshots(id,org_id,report_type,period_start,period_end,data,source) VALUES(${id},${orgId},'CallWorkflow',${window.start.slice(0,10)},${window.end.slice(0,10)},${raw},${source})`; return id;
 }
+
+/** The CallWorkflow endpoint accepts ET wall-clock dates for a closed payday.
+ * The report row set is authoritative; these values are only the request
+ * envelope and must never be re-applied as a local SQL membership filter. */
+export function callWorkflowWindowForPeriod(startsAt: Date, endsAt: Date): ReportWindow {
+  const formatEt = (d: Date) => new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(d);
+  return { start: `${formatEt(startsAt)}T00:00:00`, end: `${formatEt(new Date(endsAt.getTime() - 1))}T23:59:59` };
+}
+
+/** Load the most recent exact-period server snapshot. It is a fallback when a
+ * report rerun cannot be reached; computePaydayCore normally reruns and saves
+ * the report first so every payday has a fresh authoritative snapshot. */
+export async function loadTowbookSnapshot(orgId: string, window: ReportWindow): Promise<{ rows: CallWorkflowRow[]; raw: unknown } | null> {
+  const q = sql();
+  const snapshots = await q`SELECT data FROM towbook_report_snapshots
+    WHERE org_id=${orgId} AND report_type='CallWorkflow'
+      AND period_start=${window.start.slice(0, 10)} AND period_end=${window.end.slice(0, 10)}
+    ORDER BY created_at DESC LIMIT 1`;
+  if (!snapshots.length) return null;
+  const raw = (snapshots[0] as Record<string, unknown>).data;
+  try { return { rows: responseRows(raw), raw }; } catch { return null; }
+}
+
 export async function getReconciliationCore(orgId: string, window: ReportWindow, rows?: CallWorkflowRow[]) {
   const report = rows ? { rows, raw: rows } : await fetchCallWorkflow(window);
   const q = sql(); const jobs = await q`SELECT towbook_job_id,id,raw_json,manually_reassigned_at FROM dispatch_jobs WHERE org_id=${orgId} AND (towbook_job_id IS NOT NULL OR id IS NOT NULL)`;

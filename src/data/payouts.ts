@@ -220,8 +220,11 @@ export const getMoneyOverview = createServerFn({ method: "GET" }).handler(async 
 export function payPeriodLabel(startsAtIso: string, endsAtIso: string, payoutDueOn: string, isCurrent: boolean): string {
   const end = new Date(endsAtIso);
   const endInclusive = Number.isNaN(end.getTime()) ? endsAtIso : new Date(end.getTime() - 1).toISOString();
-  const due = payoutDueOn ? new Date(`${payoutDueOn}T00:00:00`) : null;
-  const dueLabel = due && !Number.isNaN(due.getTime()) ? due.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) : "";
+  // Parse the date in a timezone-neutral way, then format it in ET. Using a
+  // local-time midnight here made the due label vary by the owner's browser.
+  const dueLabel = payoutDueOn
+    ? formatEtDate(`${payoutDueOn}T12:00:00.000Z`, { weekday: "short", month: "short", day: "numeric" })
+    : "";
   if (isCurrent) return `Open period — pays ${dueLabel}`;
   return `${formatEtDate(startsAtIso)} – ${formatEtDate(endInclusive)} · pays ${dueLabel}`;
 }

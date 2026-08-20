@@ -42,6 +42,9 @@ try {
     [{ towbook_job_id: "279705803", id: "tb-279705803", raw_json: { callNumber: "24580" }, manually_reassigned_at: null }]
   );
   check("dispatchEntryId joins towbook_job_id", () => { assert.equal(joinRegression.rows[0].classification, "completed"); assert.equal(joinRegression.diagnostics.length, 0); });
+  const preLdRows = Array.from({ length: 33 }, (_, i) => ({ id: 24545 + i, callNumber: 24545 + i, driverName: i < 12 ? "Levi C Martin" : i < 21 ? "Jayden Fountain" : i < 30 ? "Antone jerret" : i < 32 ? "George Boyd" : "Brittani Simms", completed: "2026-08-10T03:45:00Z" }));
+  const preLd = reconcileCallWorkflow(preLdRows, []);
+  check("PRE-LD completed unmatched rows are not payable", () => { assert.equal(preLd.reportCount, 33); assert.equal(preLd.matchedCount, 0); assert.equal(preLd.matchedPayableCount, 0); assert.equal(preLd.unmatchedCount, 33); assert.equal(preLd.payableCount, 0); assert.equal(preLd.byDriver.reduce((sum, row) => sum + row.payableCount, 0), 0); });
   check("DB reassignment marker", () => assert.equal(markerChecks.rows[0].classification, "reassigned"));
   check("legacy raw reassignment marker", () => assert.equal(markerChecks.rows[1].classification, "reassigned"));
   for (let i=187;i<217;i++) { rows[i].completed = null; rows[i].completionTime = null; if (i === 187) rows[i].status = "cancelled"; else if (i === 188 || i === 189) rows[i].status = "reassigned"; }

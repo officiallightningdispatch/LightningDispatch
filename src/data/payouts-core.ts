@@ -27,6 +27,15 @@
  * bundle graph.
  */
 import { z } from "zod";
+import {
+  callWorkflowWindowForPeriod,
+  fetchCallWorkflow,
+  loadTowbookSnapshot,
+  reconcileCallWorkflow,
+  saveTowbookSnapshot,
+  type ReconciliationResult,
+  type CallWorkflowRow,
+} from "./towbook-reports-core";
 
 /* --------------------------------- helpers --------------------------------- */
 const configured = () => Boolean(process.env.DATABASE_URL);
@@ -443,9 +452,19 @@ export type PayPeriodDetail = {
     blockedCount: number;
     rails: { rail: PayoutRail; count: number; totalCents: number }[];
   };
-  /** Rows that cannot be placed in a payday window because Towbook did not
-   * provide a parseable authoritative completionTime. */
-  diagnostics?: { unknownCompletionTimeRows: number };
+  /** Authoritative CallWorkflow membership and reconciliation diagnostics.
+   * `jobCount` remains the itemized payable population; reportCount preserves
+   * the complete report headline so an unmatched report row can never vanish. */
+  diagnostics?: {
+    unknownCompletionTimeRows: number;
+    reportCount?: number;
+    matchedCount?: number;
+    matchedPayableCount?: number;
+    reassignedCount?: number;
+    unmatchedCount?: number;
+    unitemizedCount?: number;
+    reconciliationWarning?: string | null;
+  };
 };
 export type PayPeriodList = {
   periods: PayPeriod[]; // newest first
@@ -875,8 +894,11 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
     const wasPaid = String(periodRow.status) === "paid";
     const wasComputed = String(periodRow.status) === "computed";
 
-    // Towbook's completionTime is the authoritative payday instant. Keep the
-    // cast behind a shape guard: PostgreSQL timestamptz casts throw on garbage.
+    // Towbook's completionTime is the authoritative payday instant. The report
+    // request defines membership; once rows return, do not apply this period's
+    // local SQL half-open window to them. The local query remains a diagnostic
+    // only and is the safe fallback when a QA/local environment has no report
+    // credentials or exact-period snapshot.
     const unknownCompletionRows = await q`
       SELECT COUNT(*)::int AS count
       FROM dispatch_jobs dj
@@ -884,49 +906,104 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
         AND dj.assigned_driver_towbook_id IS NOT NULL
         AND (dj.raw_json->>'completionTime' IS NULL OR NOT (dj.raw_json->>'completionTime' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}(T| )[0-9]{2}:[0-9]{2}:[0-9]{2}'))`;
     const unknownCompletionTimeRows = Number((unknownCompletionRows[0] as Record<string, unknown> | undefined)?.count ?? 0);
-    // Keep each qualifying row: GOA is a per-job rate override and reassignment
-    // is a row-level attribution guard, so an aggregate SQL count cannot model
-    // either rule honestly. Final cancelled rows are never payable, including
-    // completed-then-cancelled Towbook records (status 255).
-    const candidateJobRows = await q`
-      SELECT dj.assigned_driver_towbook_id AS tb_id, dj.status, dj.raw_json, dj.manually_reassigned_at
-      FROM dispatch_jobs dj
-      WHERE dj.org_id=${actor.orgId} AND dj.status='completed'
-        AND (COALESCE(dj.raw_json->>'statusId', dj.raw_json->>'status') IS NULL
-          OR COALESCE(dj.raw_json->>'statusId', dj.raw_json->>'status') NOT IN ('255','cancelled','canceled'))
-        AND CASE WHEN dj.raw_json->>'completionTime' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}(T| )[0-9]{2}:[0-9]{2}:[0-9]{2}' THEN (dj.raw_json->>'completionTime')::timestamptz END >= ${iso(startsAt)}
-        AND CASE WHEN dj.raw_json->>'completionTime' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}(T| )[0-9]{2}:[0-9]{2}:[0-9]{2}' THEN (dj.raw_json->>'completionTime')::timestamptz END < ${iso(endsAt)}
-        AND dj.assigned_driver_towbook_id IS NOT NULL
-        -- Battery installs are paid from the immutable battery component below,
-        -- never both as a generic job and a battery install.
-        AND NOT EXISTS (
-          SELECT 1 FROM battery_sales bs
-          WHERE bs.org_id=dj.org_id AND bs.install_job_id=dj.id
-            AND bs.status='paid' AND bs.completed_at IS NOT NULL
-        )`;
+    const reportWindow = callWorkflowWindowForPeriod(startsAt, endsAt);
+    let authoritativeReport: ReconciliationResult | null = null;
+    let authoritativeRows: CallWorkflowRow[] = [];
+    let reportWarning: string | null = null;
+    const qaOrg = /^(qa-|test-)/i.test(actor.orgId);
+    if (!qaOrg) {
+      try {
+        const fetched = await fetchCallWorkflow(reportWindow);
+        authoritativeRows = fetched.rows;
+        try { await saveTowbookSnapshot(actor.orgId, reportWindow, fetched.raw); } catch { reportWarning = "CallWorkflow ran, but the report snapshot could not be saved; the current computation still used its rows."; }
+      } catch (reportError) {
+        try {
+          const snapshot = await loadTowbookSnapshot(actor.orgId, reportWindow);
+          if (snapshot) {
+            authoritativeRows = snapshot.rows;
+            reportWarning = `Towbook report rerun unavailable; using the latest exact-period snapshot (${reportError instanceof Error ? reportError.message : "report unavailable"}).`;
+          }
+        } catch { /* fall through to the local-only QA fallback */ }
+      }
+    }
+    if (authoritativeRows.length > 0 || !qaOrg) authoritativeReport = reconcileCallWorkflow(authoritativeRows, []);
+
     const hasReassignmentEvidence = (value: unknown): boolean => {
       if (!value || typeof value !== "object") return false;
       if (Array.isArray(value)) return value.some(hasReassignmentEvidence);
       return Object.entries(value as Record<string, unknown>).some(([key, child]) =>
         /reassign/i.test(key) && (child != null && child !== false && child !== "" && child !== 0) || hasReassignmentEvidence(child));
     };
-    const payableJobs = (candidateJobRows as Record<string, unknown>[]).filter((r) => {
-      if (r.manually_reassigned_at != null) return false;
-      let raw: unknown = r.raw_json;
-      if (typeof raw === "string") { try { raw = JSON.parse(raw); } catch { return false; } }
-      return !hasReassignmentEvidence(raw);
-    });
-    const jobRows = [...payableJobs.reduce((m, r) => {
-      const tb = String(r.tb_id);
-      const row = m.get(tb) ?? { tb_id: tb, job_count: 0, goa_count: 0 };
-      row.job_count += 1;
-      let raw: unknown = r.raw_json;
-      if (typeof raw === "string") { try { raw = JSON.parse(raw); } catch { raw = null; } }
-      const items = raw && typeof raw === "object" && Array.isArray((raw as Record<string, unknown>).invoiceItems)
-        ? (raw as Record<string, unknown>).invoiceItems as unknown[] : [];
-      if (items.some((item) => item && typeof item === "object" && /goa/i.test(String((item as Record<string, unknown>).name ?? "")))) row.goa_count += 1;
-      m.set(tb, row); return m;
-    }, new Map<string, { tb_id: string; job_count: number; goa_count: number }>()).values()];
+    let jobRows: Array<{ tb_id: string; job_count: number; goa_count: number }>;
+    if (authoritativeReport) {
+      // Reconcile against every dispatch row (not only locally completed rows),
+      // joining dispatchEntryId → towbook_job_id, then id/callNumber fallbacks.
+      // A report completion therefore itemizes even when raw_json completionTime
+      // is absent or outside the local ET boundary.
+      const allDispatchRows = await q`
+        SELECT dj.id, dj.towbook_job_id, dj.assigned_driver_towbook_id, dj.raw_json, dj.manually_reassigned_at
+        FROM dispatch_jobs dj
+        WHERE dj.org_id=${actor.orgId}`;
+      const reconciliation = reconcileCallWorkflow(authoritativeRows, allDispatchRows as Array<Record<string, unknown>>);
+      authoritativeReport = reconciliation;
+      const jobsById = new Map<string, Record<string, unknown>>();
+      for (const row of allDispatchRows as Record<string, unknown>[]) jobsById.set(String(row.id), row);
+      const paidBatteryJobs = await q`
+        SELECT install_job_id FROM battery_sales
+        WHERE org_id=${actor.orgId} AND status='paid' AND completed_at IS NOT NULL`;
+      const paidBatteryIds = new Set((paidBatteryJobs as Record<string, unknown>[]).map((row) => String(row.install_job_id)));
+      const grouped = new Map<string, { tb_id: string; job_count: number; goa_count: number }>();
+      for (const row of reconciliation.rows) {
+        if (row.classification !== "completed" && row.classification !== "goa") continue;
+        if (!row.jobId || paidBatteryIds.has(row.jobId)) continue;
+        const job = jobsById.get(row.jobId);
+        const tb = row.towbookDriverId ?? String(job?.assigned_driver_towbook_id ?? "");
+        if (!tb) continue;
+        const groupedRow = grouped.get(tb) ?? { tb_id: tb, job_count: 0, goa_count: 0 };
+        groupedRow.job_count += 1;
+        if (row.classification === "goa") groupedRow.goa_count += 1;
+        grouped.set(tb, groupedRow);
+      }
+      jobRows = [...grouped.values()];
+      if (reconciliation.unmatchedCount > 0) {
+        reportWarning = reportWarning ?? `CallWorkflow has ${reconciliation.unmatchedCount} unmatched/unitemized report rows; the authoritative report total is preserved in diagnostics and only matched rows are payable.`;
+      }
+    } else {
+      // Safe local fallback for hermetic QA environments without Towbook
+      // credentials. Production computes from the report path above whenever a
+      // report or exact-period snapshot is available.
+      const candidateJobRows = await q`
+        SELECT dj.assigned_driver_towbook_id AS tb_id, dj.status, dj.raw_json, dj.manually_reassigned_at
+        FROM dispatch_jobs dj
+        WHERE dj.org_id=${actor.orgId} AND dj.status='completed'
+          AND (COALESCE(dj.raw_json->>'statusId', dj.raw_json->>'status') IS NULL
+            OR COALESCE(dj.raw_json->>'statusId', dj.raw_json->>'status') NOT IN ('255','cancelled','canceled'))
+          AND CASE WHEN dj.raw_json->>'completionTime' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}(T| )[0-9]{2}:[0-9]{2}:[0-9]{2}' THEN (dj.raw_json->>'completionTime')::timestamptz END >= ${iso(startsAt)}
+          AND CASE WHEN dj.raw_json->>'completionTime' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}(T| )[0-9]{2}:[0-9]{2}:[0-9]{2}' THEN (dj.raw_json->>'completionTime')::timestamptz END < ${iso(endsAt)}
+          AND dj.assigned_driver_towbook_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM battery_sales bs
+            WHERE bs.org_id=dj.org_id AND bs.install_job_id=dj.id
+              AND bs.status='paid' AND bs.completed_at IS NOT NULL
+          )`;
+      const payableJobs = (candidateJobRows as Record<string, unknown>[]).filter((r) => {
+        if (r.manually_reassigned_at != null) return false;
+        let raw: unknown = r.raw_json;
+        if (typeof raw === "string") { try { raw = JSON.parse(raw); } catch { return false; } }
+        return !hasReassignmentEvidence(raw);
+      });
+      jobRows = [...payableJobs.reduce((m, r) => {
+        const tb = String(r.tb_id);
+        const row = m.get(tb) ?? { tb_id: tb, job_count: 0, goa_count: 0 };
+        row.job_count += 1;
+        let raw: unknown = r.raw_json;
+        if (typeof raw === "string") { try { raw = JSON.parse(raw); } catch { raw = null; } }
+        const items = raw && typeof raw === "object" && Array.isArray((raw as Record<string, unknown>).invoiceItems)
+          ? (raw as Record<string, unknown>).invoiceItems as unknown[] : [];
+        if (items.some((item) => item && typeof item === "object" && /goa/i.test(String((item as Record<string, unknown>).name ?? "")))) row.goa_count += 1;
+        m.set(tb, row); return m;
+      }, new Map<string, { tb_id: string; job_count: number; goa_count: number }>()).values()];
+    }
     // BUSY-TIME BONUS (owner-locked 2026-08-13): 3+ ASSIGNED calls per
     // contractor within one clock hour = busy hour; +$1 per job COMPLETED in
     // that busy hour. Derived here (pure busy-bonus-core math) from every
@@ -1030,6 +1107,18 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
     // contractor → all payout components keyed by user id. Battery installs are
     // separate from generic job count so one install can never double-pay.
     const earnByUser = new Map<string, { jobCount: number; goaJobCount: number; payrateCents: number | null; tipsCents: number; tirePlugCents: number; batteryPayoutCents: number }>();
+    // Seed users from the authoritative matched report population before adding
+    // job-level components. This prevents a matched report row with a missing
+    // local timestamp from disappearing simply because the old dispatch-only
+    // candidate query returned no row.
+    if (authoritativeReport) {
+      for (const row of authoritativeReport.rows) {
+        if (row.classification !== "completed" && row.classification !== "goa") continue;
+        const u = row.towbookDriverId ? userByTb.get(row.towbookDriverId) : undefined;
+        if (!u || earnByUser.has(u.userId)) continue;
+        earnByUser.set(u.userId, { jobCount: 0, goaJobCount: 0, payrateCents: u.payrateCents, tipsCents: 0, tirePlugCents: 0, batteryPayoutCents: 0 });
+      }
+    }
     for (const [uid, cents] of tireCentsByUser) {
       const u = [...userByTb.values()].find((v) => v.userId === uid);
       if (!u) continue;
@@ -1155,13 +1244,25 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
           jsonb_build_object('window', ${`${iso(startsAt)}..${iso(endsAt)}`}::text, 'summary', ${masked}::text), 'owner-money'`;
     } catch { /* best-effort audit */ }
 
+    const reconciliationDiagnostics = authoritativeReport ? {
+      reportCount: authoritativeReport.reportCount,
+      matchedCount: authoritativeReport.matchedCount,
+      matchedPayableCount: authoritativeReport.matchedPayableCount,
+      reassignedCount: authoritativeReport.reassignedCount,
+      unmatchedCount: authoritativeReport.unmatchedCount,
+      unitemizedCount: authoritativeReport.unitemizedCount,
+      reconciliationWarning: reportWarning,
+    } : {
+      reconciliationWarning: "No authoritative CallWorkflow report or exact-period snapshot was available; this computation used the local QA fallback.",
+    };
+    const diagnostics = { unknownCompletionTimeRows, ...reconciliationDiagnostics };
     const detail = await getPayPeriodDetailCore(actor, periodId);
     if (detail.ok && detail.data) {
-      detail.data.diagnostics = { unknownCompletionTimeRows };
+      detail.data.diagnostics = diagnostics;
       return detail;
     }
     const fallback = await buildDetailFallback(actor, periodId, records);
-    fallback.diagnostics = { unknownCompletionTimeRows };
+    fallback.diagnostics = diagnostics;
     return ok(fallback);
   } catch (e) {
     return err("database_error", e instanceof Error ? e.message : "Unable to compute payday.");

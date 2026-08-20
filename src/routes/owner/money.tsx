@@ -778,6 +778,23 @@ function MoneyView() {
             </Card>
           )}
 
+          {detail?.diagnostics?.reconciliationWarning && (
+            <Card className="border-warning-200 bg-warning-50 p-4">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="mt-0.5 size-5 shrink-0 text-warning-600" />
+                <div>
+                  <p className="font-semibold text-warning-900">Towbook reconciliation needs review</p>
+                  <p className="mt-1 text-sm text-warning-800">{detail.diagnostics.reconciliationWarning}</p>
+                  {detail.diagnostics.reportCount != null && (
+                    <p className="mt-1 text-xs text-warning-700">
+                      Report rows: {detail.diagnostics.reportCount} · matched: {detail.diagnostics.matchedCount ?? 0} · payable: {detail.diagnostics.matchedPayableCount ?? 0} · reassigned: {detail.diagnostics.reassignedCount ?? 0} · unitemized: {detail.diagnostics.unitemizedCount ?? 0}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </Card>
+          )}
+
           {/* summary */}
           {detail && detail.records.length > 0 && (
             <Card className="p-4">
