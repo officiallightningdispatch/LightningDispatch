@@ -317,19 +317,38 @@ function MoneyView() {
   );
 
 
+  // Inactive contractors are hidden from roster rows only. Keep money totals based
+  // on the complete payout_records-backed detail so a hidden row can never change
+  // what is due, paid, or otherwise recorded.
+  const groupTotalsByRail = useMemo(() => {
+    const totals = new Map<PayoutRail, number>();
+    for (const rec of detail?.records ?? []) {
+      if (rec.noActivityThisPeriod || rec.status !== "computed" || !rec.rail) continue;
+      totals.set(rec.rail, (totals.get(rec.rail) ?? 0) + rec.totalCents);
+    }
+    return totals;
+  }, [detail]);
+  const paidTotalCents = useMemo(
+    () => (detail?.records ?? []).reduce((sum, rec) => sum + (!rec.noActivityThisPeriod && rec.status === "paid" ? rec.totalCents : 0), 0),
+    [detail],
+  );
+  const blockedTotalCents = useMemo(
+    () => (detail?.records ?? []).reduce((sum, rec) => sum + (!rec.noActivityThisPeriod && rec.status === "blocked" ? rec.totalCents : 0), 0),
+    [detail],
+  );
   const groupByRail = useMemo(() => {
     const groups = new Map<PayoutRail, PayoutRecord[]>();
     for (const rec of detail?.records ?? []) {
-      if (rec.noActivityThisPeriod || rec.status !== "computed" || !rec.rail) continue;
+      if (rec.noActivityThisPeriod || rec.status !== "computed" || !rec.rail || rec.contractorActive === false) continue;
       const arr = groups.get(rec.rail) ?? [];
       arr.push(rec);
       groups.set(rec.rail, arr);
     }
-    return [...groups.entries()].sort((a, b) => b[1].reduce((s, r) => s + r.totalCents, 0) - a[1].reduce((s, r) => s + r.totalCents, 0));
-  }, [detail]);
-  const blocked = useMemo(() => (detail?.records ?? []).filter((r) => !r.noActivityThisPeriod && r.status === "blocked"), [detail]);
-  const paid = useMemo(() => (detail?.records ?? []).filter((r) => !r.noActivityThisPeriod && r.status === "paid"), [detail]);
-  const noActivity = useMemo(() => (detail?.records ?? []).filter((r) => r.noActivityThisPeriod), [detail]);
+    return [...groups.entries()].sort((a, b) => (groupTotalsByRail.get(b[0]) ?? 0) - (groupTotalsByRail.get(a[0]) ?? 0));
+  }, [detail, groupTotalsByRail]);
+  const blocked = useMemo(() => (detail?.records ?? []).filter((r) => !r.noActivityThisPeriod && r.status === "blocked" && r.contractorActive !== false), [detail]);
+  const paid = useMemo(() => (detail?.records ?? []).filter((r) => !r.noActivityThisPeriod && r.status === "paid" && r.contractorActive !== false), [detail]);
+  const noActivity = useMemo(() => (detail?.records ?? []).filter((r) => r.noActivityThisPeriod && r.contractorActive !== false), [detail]);
 
   if (!periods || !overview) {
     return (
@@ -592,7 +611,9 @@ function MoneyView() {
 
           {/* rail groups */}
           {groupByRail.map(([rail, recs]) => {
-            const groupTotal = recs.reduce((s, r) => s + r.totalCents, 0);
+            // This header remains based on all computed records, including hidden
+            // inactive contractors; only the roster rows are display-filtered.
+            const groupTotal = groupTotalsByRail.get(rail) ?? 0;
             const Icon = RAIL_ICONS[rail];
             return (
               <Card key={rail} className="overflow-hidden">
@@ -654,7 +675,7 @@ function MoneyView() {
             <Card className="overflow-hidden">
               <div className="flex items-center gap-2.5 border-b border-ink-100 bg-success-50/40 px-4 py-3">
                 <span className="text-sm font-bold text-ink-700">Paid this period</span>
-                <span className="ml-auto text-sm font-black tabular-nums text-success-600">{money(paid.reduce((s, r) => s + r.totalCents, 0))}</span>
+                <span className="ml-auto text-sm font-black tabular-nums text-success-600">{money(paidTotalCents)}</span>
               </div>
               {paid.map((rec) => (
                 <div key={rec.id} className="flex items-center gap-3 border-b border-ink-100 px-4 py-3.5 last:border-0">
@@ -674,7 +695,7 @@ function MoneyView() {
             <Card className="overflow-hidden border-danger-200">
               <div className="flex items-center gap-2.5 border-b border-danger-100 bg-danger-50/50 px-4 py-3">
                 <span className="text-sm font-bold text-danger-700">Blocked — no verified payout method</span>
-                <span className="ml-auto text-sm font-black tabular-nums text-danger-700">{money(blocked.reduce((s, r) => s + r.totalCents, 0))}</span>
+                <span className="ml-auto text-sm font-black tabular-nums text-danger-700">{money(blockedTotalCents)}</span>
               </div>
               {blocked.map((rec) => (
                 <div key={rec.id} className="border-b border-ink-100 px-4 py-3.5 last:border-0">
