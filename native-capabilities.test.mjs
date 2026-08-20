@@ -65,5 +65,5 @@ describe('native contractor bridge', () => {
 const statusSource = await Bun.file('./src/components/native-contractor-status.tsx').text();
 test('native status surface renders connected/offline, push, and location states', () => {
   expect(statusSource).toContain("if (!isNative()) return null");
-  for (const label of ['Connected', 'Offline', 'permission needed', 'sharing while online', 'off while offline']) expect(statusSource).toContain(label);
+  for (const label of ['Connected', 'Offline', 'permission needed', 'sharing while signed in', 'starting']) expect(statusSource).toContain(label);
 });

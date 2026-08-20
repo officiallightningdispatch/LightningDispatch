@@ -51,6 +51,15 @@ export async function watchLocation(callback: (position: Position | GeolocationP
   return String(id);
 }
 export async function stopLocation(watchId: string | null | undefined) { if (!watchId) return; if (isNative()) await Geolocation.clearWatch({ id: watchId }); else navigator.geolocation.clearWatch(Number(watchId)); }
+/** Observe native foreground transitions so a driver who returns from Towbook
+ * gets an immediate fresh app fix. The native location watch remains the
+ * background source; this is a resume safety capture, never a fallback
+ * coordinate. */
+export function onNativeAppState(callback: (isActive: boolean) => void) {
+  if (!isNative()) return { remove: async () => {} };
+  return App.addListener('appStateChange', ({ isActive }) => callback(isActive));
+}
+
 export async function startLocationUpdates(
   enabled: boolean,
   jobTowbookId?: string | null,

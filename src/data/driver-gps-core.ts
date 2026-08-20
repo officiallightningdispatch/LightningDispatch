@@ -187,10 +187,13 @@ export async function storePing(opts: {
   longitude: number;
   accuracy: number | null;
   speedMph?: number | null;
+  /** Timestamp supplied by the app's real geolocation fix. Retries preserve
+   * this value so a delayed upload cannot make an old fix look fresh. */
+  capturedAt?: Date | null;
 }): Promise<void> {
   const q = await db();
-  await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, job_id, latitude, longitude, accuracy, speed_mph)
-    VALUES(gen_random_uuid()::text, ${opts.orgId}, ${opts.userId}, ${opts.towbookDriverId}, ${opts.jobId}, ${opts.latitude}, ${opts.longitude}, ${opts.accuracy}, ${opts.speedMph ?? null})`;
+  await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, job_id, latitude, longitude, accuracy, speed_mph, captured_at)
+    VALUES(gen_random_uuid()::text, ${opts.orgId}, ${opts.userId}, ${opts.towbookDriverId}, ${opts.jobId}, ${opts.latitude}, ${opts.longitude}, ${opts.accuracy}, ${opts.speedMph ?? null}, COALESCE(${opts.capturedAt?.toISOString() ?? null}::timestamptz, NOW()))`;
   await q`DELETE FROM driver_locations WHERE org_id=${opts.orgId} AND captured_at < NOW() - INTERVAL '24 hours'`;
 }
 
@@ -430,9 +433,16 @@ export async function pingHandler(data: unknown): Promise<PingResult> {
     accuracy: z.number().min(0).max(100000).nullable().optional(),
     jobTowbookId: z.string().min(1).max(64).nullable().optional(),
     speedMph: z.number().min(0).max(250).nullable().optional(),
+    // Preserve the capture instant across transient upload retries. The client
+    // can only report a timestamp attached to the real geolocation fix; the
+    // freshness query still decides whether that fix is dispatchable.
+    capturedAt: z.number().int().positive().optional(),
   }).safeParse(data);
   if (!v.success) return { ok: false, reason: "Invalid location ping." };
   if (!configured()) return { ok: false, reason: "GPS pings require database mode." };
+  if (v.data.capturedAt != null && v.data.capturedAt > Date.now() + 5 * 60 * 1000) {
+    return { ok: false, reason: "Invalid location timestamp." };
+  }
   const { currentUser, effectiveDriverIdentity } = await import("./auth-server");
   const u = await currentUser();
   if (!u) return { ok: false, reason: "Sign in as a driver first." };
@@ -450,7 +460,17 @@ export async function pingHandler(data: unknown): Promise<PingResult> {
       ? await q`SELECT id FROM dispatch_jobs WHERE org_id=${u.orgId} AND towbook_job_id=${d.jobTowbookId} LIMIT 1`
       : [];
     const jobId = jobRow.length ? String(jobRow[0].id) : null;
-    await storePing({ orgId: u.orgId, userId: identity.userRowId, towbookDriverId, jobId, latitude: d.latitude, longitude: d.longitude, accuracy: d.accuracy ?? null, speedMph: d.speedMph ?? null });
+    await storePing({
+      orgId: u.orgId,
+      userId: identity.userRowId,
+      towbookDriverId,
+      jobId,
+      latitude: d.latitude,
+      longitude: d.longitude,
+      accuracy: d.accuracy ?? null,
+      speedMph: d.speedMph ?? null,
+      capturedAt: d.capturedAt ? new Date(d.capturedAt) : null,
+    });
     // Best-effort Towbook checkin so Towbook has live GPS. Failure must never
     // break the ping loop.
     let towbookCheckin: PingResult extends infer _ ? "ok" | "warning" | "failed" | "skipped" | "no-session" : never = "skipped";
