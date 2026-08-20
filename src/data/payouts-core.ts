@@ -397,6 +397,10 @@ export type PayoutRecord = {
   periodId: string;
   contractorId: string;
   contractorName: string;
+  /** Roster status is display-only; payday records remain earnings-only. */
+  contractorActive?: boolean;
+  /** Synthetic owner-roster row; never persisted to payout_records. */
+  noActivityThisPeriod?: boolean;
   methodId: string | null; // payout_methods row snapshot (owner verify/reject)
   rail: PayoutRail | null; // NULL when no method row at all (blocked)
   handleFull: string | null; // OWNER-ONLY (PII)
@@ -739,9 +743,82 @@ export async function getPayPeriodDetailCore(actor: PayoutActor, periodId: strin
       payNote: r.pay_note != null ? String(r.pay_note) : null,
       createdAt: toIso(r.created_at) ?? iso(new Date(0)),
     }));
+    // The payday manifest is intentionally earnings-only: computePaydayCore
+    // never writes a payout_records row for a contractor with no period
+    // components. The owner display, however, is a complete organization
+    // roster. Add synthetic zero-activity rows here, after reading the
+    // persisted manifest, so they cannot affect payout computation or rails.
+    const roster = await q`
+      SELECT u.id AS user_id, u.name, u.deactivated_at, cp.payrate_cents,
+        pm.id AS method_id, pm.rail, pm.handle, pm.bank_institution_name, pm.bank_last4, pm.status AS method_status
+      FROM users u
+      JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${actor.orgId}
+      LEFT JOIN contractor_profiles cp ON cp.org_id=${actor.orgId} AND cp.user_id=u.id
+      LEFT JOIN payout_methods pm ON pm.org_id=${actor.orgId} AND pm.contractor_id=u.id
+      WHERE m.role='contractor' OR u.towbook_driver_id IS NOT NULL
+      ORDER BY LOWER(u.name), u.id`;
+    const rosterById = new Map<string, Record<string, unknown>>();
+    for (const r of roster as Record<string, unknown>[]) rosterById.set(String(r.user_id), r);
+    for (const rec of rows) {
+      const member = rosterById.get(rec.contractorId);
+      if (member) rec.contractorActive = member.deactivated_at == null;
+    }
+    const displayedIds = new Set(rows.map((rec) => rec.contractorId));
+    for (const member of rosterById.values()) {
+      const contractorId = String(member.user_id);
+      if (displayedIds.has(contractorId)) continue;
+      const rail = member.rail != null ? String(member.rail) as PayoutRail : null;
+      const methodStatus = member.method_status != null
+        ? String(member.method_status) as PayoutMethodStatusOfRecord
+        : "none";
+      const handleFull = member.method_id == null
+        ? null
+        : rail === "bank"
+          ? `${String(member.bank_institution_name ?? "").trim() || "Bank"} ••${String(member.bank_last4 ?? "").trim()}`.trim()
+          : String(member.handle ?? "").trim() || null;
+      const handleMasked = member.method_id == null
+        ? ""
+        : maskHandle(
+            rail!,
+            member.handle != null ? String(member.handle) : null,
+            member.bank_institution_name != null ? String(member.bank_institution_name) : null,
+            member.bank_last4 != null ? String(member.bank_last4) : null,
+          );
+      rows.push({
+        id: `roster-${periodId}-${contractorId}`,
+        orgId: actor.orgId,
+        periodId,
+        contractorId,
+        contractorName: String(member.name ?? ""),
+        contractorActive: member.deactivated_at == null,
+        noActivityThisPeriod: true,
+        methodId: member.method_id != null ? String(member.method_id) : null,
+        rail,
+        handleFull,
+        handleMasked,
+        jobCount: 0,
+        goaJobCount: 0,
+        payrateCents: member.payrate_cents != null ? Number(member.payrate_cents) : null,
+        grossCents: 0,
+        tipsCents: 0,
+        tirePlugCents: 0,
+        batteryPayoutCents: 0,
+        busyBonusCents: 0,
+        busyBonusJobs: 0,
+        busyBonusHours: null,
+        totalCents: 0,
+        methodStatus,
+        status: "computed",
+        paidAt: null,
+        payNote: null,
+        createdAt: iso(new Date(0)),
+      });
+    }
+    rows.sort((a, b) => a.contractorName.localeCompare(b.contractorName));
+
     const railsMap = new Map<PayoutRail, { count: number; totalCents: number }>();
     for (const rec of rows) {
-      if (rec.status !== "computed" || !rec.rail) continue;
+      if (rec.noActivityThisPeriod || rec.status !== "computed" || !rec.rail) continue;
       const g = railsMap.get(rec.rail) ?? { count: 0, totalCents: 0 };
       g.count += 1;
       g.totalCents += rec.totalCents;
@@ -757,9 +834,9 @@ export async function getPayPeriodDetailCore(actor: PayoutActor, periodId: strin
       unknownTimestampCount: 0,
       contractorCount: rows.length,
       jobCount: rows.reduce((s, r) => s + r.jobCount, 0),
-      dueCount: rows.filter((r) => r.status === "computed").length,
-      paidCount: rows.filter((r) => r.status === "paid").length,
-      blockedCount: rows.filter((r) => r.status === "blocked").length,
+      dueCount: rows.filter((r) => !r.noActivityThisPeriod && r.status === "computed").length,
+      paidCount: rows.filter((r) => !r.noActivityThisPeriod && r.status === "paid").length,
+      blockedCount: rows.filter((r) => !r.noActivityThisPeriod && r.status === "blocked").length,
       rails: [...railsMap.entries()]
         .map(([rail, g]) => ({ rail, count: g.count, totalCents: g.totalCents }))
         .sort((a, b) => b.totalCents - a.totalCents),

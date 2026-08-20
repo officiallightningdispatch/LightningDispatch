@@ -26,7 +26,9 @@ const check = (name, condition, extra = "") => { checks.push([name, Boolean(cond
 const ORG = `qa-breakdown-${randomUUID()}`;
 const OWNER = `qa-bd-owner-${randomUUID()}`;
 const DRIVER = `qa-bd-driver-${randomUUID()}`;
+const ZERO_DRIVER = `qa-bd-zero-driver-${randomUUID()}`;
 const TB = String(BigInt("0x" + DRIVER.replace(/-/g, "").slice(-12)) % 900000000n);
+const TB_ZERO = String(BigInt("0x" + ZERO_DRIVER.replace(/-/g, "").slice(-12)) % 900000000n);
 const JOB = `qa-bd-job-${randomUUID()}`;
 const GOA = `qa-bd-goa-${randomUUID()}`;
 const TIP = `qa-bd-tip-${randomUUID()}`;
@@ -46,14 +48,15 @@ const cleanup = async () => {
   await q`DELETE FROM payout_methods WHERE org_id=${ORG}`;
   await q`DELETE FROM contractor_profiles WHERE org_id=${ORG}`;
   await q`DELETE FROM organization_memberships WHERE org_id=${ORG}`;
-  await q`DELETE FROM users WHERE id IN (${OWNER}, ${DRIVER})`;
+  await q`DELETE FROM users WHERE id IN (${OWNER}, ${DRIVER}, ${ZERO_DRIVER})`;
   await q`DELETE FROM organizations WHERE id=${ORG}`;
 };
 try {
   await q`INSERT INTO organizations(id,name) VALUES(${ORG},'QA payment breakdown')`;
-  await q`INSERT INTO users(id,name,email,password_hash,towbook_driver_id) VALUES(${OWNER},'QA Owner',${OWNER+'@qa.local'},'x',NULL),(${DRIVER},'QA Driver',${DRIVER+'@qa.local'},'x',${TB})`;
-  await q`INSERT INTO organization_memberships(org_id,user_id,role) VALUES(${ORG},${OWNER},'owner'),(${ORG},${DRIVER},'contractor')`;
+  await q`INSERT INTO users(id,name,email,password_hash,towbook_driver_id) VALUES(${OWNER},'QA Owner',${OWNER+'@qa.local'},'x',NULL),(${DRIVER},'QA Driver',${DRIVER+'@qa.local'},'x',${TB}),(${ZERO_DRIVER},'QA Zero Activity',${ZERO_DRIVER+'@qa.local'},'x',${TB_ZERO})`;
+  await q`INSERT INTO organization_memberships(org_id,user_id,role) VALUES(${ORG},${OWNER},'owner'),(${ORG},${DRIVER},'contractor'),(${ORG},${ZERO_DRIVER},'contractor')`;
   await q`INSERT INTO contractor_profiles(org_id,user_id,payrate_cents) VALUES(${ORG},${DRIVER},2500)`;
+  await q`UPDATE users SET deactivated_at=NOW() WHERE id=${ZERO_DRIVER}`;
   await q`INSERT INTO payout_methods(id,org_id,contractor_id,rail,handle,status,is_default) VALUES(${`qa-bd-method-${randomUUID()}`},${ORG},${DRIVER},'venmo','@qa-driver','verified',TRUE)`;
   const period = periodBoundariesFor(new Date(Date.now() - 8 * 86400000));
   const PERIOD = `pay-${ORG}-closed`;
@@ -66,8 +69,12 @@ try {
   await q`INSERT INTO completion_tips(id,org_id,job_id,driver_id,driver_towbook_id,amount_cents,currency,status,idempotency_key,created_at) VALUES(${TIP},${ORG},${JOB},${DRIVER},${TB},700,'USD','paid',${`bd-tip-${randomUUID()}`},${iso(goaTime)})`;
   await q`INSERT INTO tire_plug_transactions(id,org_id,job_id,contractor_user_id,amount_cents,status,created_at,paid_at) VALUES(${PLUG},${ORG},${JOB},${DRIVER},4500,'paid',${iso(goaTime)},${iso(goaTime)})`;
   const result = await computePaydayCore({orgId:ORG,id:OWNER,role:'owner'}, PERIOD);
-  check('computed period returns a manifest', result.ok && result.data?.records.length === 1, JSON.stringify(result));
-  const record = result.ok ? result.data.records[0] : null;
+  check('computed period returns earnings plus complete owner roster', result.ok && result.data?.records.length === 2, JSON.stringify(result));
+  const record = result.ok ? result.data.records.find((r) => r.contractorId === DRIVER) : null;
+  const zeroActivity = result.ok ? result.data.records.find((r) => r.contractorId === ZERO_DRIVER) : null;
+  check('zero-activity contractor appears as display-only roster row', zeroActivity?.noActivityThisPeriod === true && zeroActivity.jobCount === 0 && zeroActivity.totalCents === 0 && zeroActivity.tipsCents === 0 && zeroActivity.tirePlugCents === 0 && zeroActivity.batteryPayoutCents === 0 && zeroActivity.busyBonusCents === 0, JSON.stringify(zeroActivity));
+  const zeroRecords = await q`SELECT count(*)::int AS count FROM payout_records WHERE org_id=${ORG} AND period_id=${PERIOD} AND contractor_id=${ZERO_DRIVER}`;
+  check('zero-activity contractor creates no payout record', Number(zeroRecords[0].count) === 0, JSON.stringify(zeroRecords));
   const tips = await q`SELECT COALESCE(SUM(amount_cents),0)::int AS cents FROM completion_tips WHERE org_id=${ORG} AND driver_id=${DRIVER} AND status='paid' AND created_at >= ${iso(period.startsAt)} AND created_at < ${iso(period.endsAt)}`;
   const plugs = await q`SELECT COALESCE(SUM(amount_cents),0)::int AS cents FROM tire_plug_transactions WHERE org_id=${ORG} AND contractor_user_id=${DRIVER} AND status='paid' AND paid_at >= ${iso(period.startsAt)} AND paid_at < ${iso(period.endsAt)}`;
   const batteries = await q`SELECT COALESCE(SUM(amount_cents),0)::int AS cents FROM battery_payouts WHERE org_id=${ORG} AND contractor_user_id=${DRIVER} AND earned_at >= ${iso(period.startsAt)} AND earned_at < ${iso(period.endsAt)}`;

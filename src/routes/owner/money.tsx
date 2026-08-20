@@ -86,6 +86,7 @@ function PaymentBreakdown({ record }: { record: PayoutRecord }) {
   return (
     <div className="mt-3 rounded-xl border border-ink-100 bg-ink-50/40 p-3 text-xs">
       <p className="mb-2 font-bold uppercase tracking-wide text-ink-500">Complete payment breakdown</p>
+      {record.noActivityThisPeriod && <p className="mb-2 rounded-lg bg-ink-100/70 px-2.5 py-1.5 text-[11px] font-bold text-ink-600">No activity this period — this roster row is not a payout record.</p>}
       <div className="space-y-1.5 tabular-nums">
         <div className="flex justify-between gap-3"><span>Verified jobs ({record.jobCount}) × rate ({money(record.payrateCents ?? 0)})</span><span className="font-semibold">{money(standardGross)}</span></div>
         {record.goaJobCount > 0 ? <div className="flex justify-between gap-3"><span>GOA adjustment ({record.goaJobCount} × $10.00)</span><span className="font-semibold">{money(goa)}</span></div> : <div className="flex justify-between gap-3"><span>GOA adjustment</span><span>{money(0)}</span></div>}
@@ -319,15 +320,16 @@ function MoneyView() {
   const groupByRail = useMemo(() => {
     const groups = new Map<PayoutRail, PayoutRecord[]>();
     for (const rec of detail?.records ?? []) {
-      if (rec.status !== "computed" || !rec.rail) continue;
+      if (rec.noActivityThisPeriod || rec.status !== "computed" || !rec.rail) continue;
       const arr = groups.get(rec.rail) ?? [];
       arr.push(rec);
       groups.set(rec.rail, arr);
     }
     return [...groups.entries()].sort((a, b) => b[1].reduce((s, r) => s + r.totalCents, 0) - a[1].reduce((s, r) => s + r.totalCents, 0));
   }, [detail]);
-  const blocked = useMemo(() => (detail?.records ?? []).filter((r) => r.status === "blocked"), [detail]);
-  const paid = useMemo(() => (detail?.records ?? []).filter((r) => r.status === "paid"), [detail]);
+  const blocked = useMemo(() => (detail?.records ?? []).filter((r) => !r.noActivityThisPeriod && r.status === "blocked"), [detail]);
+  const paid = useMemo(() => (detail?.records ?? []).filter((r) => !r.noActivityThisPeriod && r.status === "paid"), [detail]);
+  const noActivity = useMemo(() => (detail?.records ?? []).filter((r) => r.noActivityThisPeriod), [detail]);
 
   if (!periods || !overview) {
     return (
@@ -565,6 +567,29 @@ function MoneyView() {
             />
           )}
 
+          {/* Complete roster rows with no earnings/components are display-only. */}
+          {noActivity.length > 0 && (
+            <Card className="overflow-hidden border-ink-200">
+              <div className="flex items-center gap-2.5 border-b border-ink-100 bg-ink-50/50 px-4 py-3">
+                <span className="text-sm font-bold text-ink-700">No activity this period</span>
+                <span className="ml-auto text-sm font-black tabular-nums text-ink-500">{noActivity.length}</span>
+              </div>
+              {noActivity.map((rec) => (
+                <div key={rec.id} className="border-b border-ink-100 px-4 py-3.5 last:border-0">
+                  <div className="flex items-center gap-3">
+                    <Avatar name={rec.contractorName} className="size-9" />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-ink-800">{rec.contractorName}{rec.contractorActive === false && <span className="ml-2 text-[11px] font-bold uppercase tracking-wide text-ink-400">Inactive</span>}</p>
+                      <p className="text-xs text-ink-400">0 jobs · display-only roster row</p>
+                    </div>
+                    <p className="text-sm font-bold tabular-nums text-ink-900">{money(0)}</p>
+                  </div>
+                  <PaymentBreakdown record={rec} />
+                </div>
+              ))}
+            </Card>
+          )}
+
           {/* rail groups */}
           {groupByRail.map(([rail, recs]) => {
             const groupTotal = recs.reduce((s, r) => s + r.totalCents, 0);
@@ -582,7 +607,7 @@ function MoneyView() {
                     <div className="flex items-center gap-3">
                       <Avatar name={rec.contractorName} className="size-9" />
                       <div className="min-w-0 flex-1">
-                        <p className="text-sm font-semibold text-ink-800">{rec.contractorName}</p>
+                        <p className="text-sm font-semibold text-ink-800">{rec.contractorName}{rec.contractorActive === false && <span className="ml-2 text-[11px] font-bold uppercase tracking-wide text-ink-400">Inactive</span>}</p>
                         <p className="text-xs text-ink-400">
                           {rec.rail && rec.handleFull ? (
                             <span className="font-mono">{rec.handleFull} — verified ✓</span>
