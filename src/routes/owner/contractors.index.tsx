@@ -29,6 +29,7 @@ import {
 } from "~/data/contractor-admin";
 import { timeAgo } from "~/lib/job-ui";
 import { listPayoutMethods, type OwnerPayoutMethod } from "~/data/payouts";
+import { OwnerServiceSelection } from "~/components/service-selection";
 
 export const Route = createFileRoute("/owner/contractors/")({ component: OwnerContractors });
 
@@ -247,6 +248,7 @@ function OwnerContractors() {
 
         {segment === "roster" ? (
           <>
+            <OwnerServiceSelection />
             {/* ---- compliance strip ---- */}
             {missingDocs > 0 && (
               <Card className="border-danger-200 bg-danger-50/60 p-4">

@@ -6,6 +6,7 @@ import { resolveTomtomKey } from "./tomtom-key";
 export { resolveTomtomKey } from "./tomtom-key";
 import type { RecoveryResult } from "./towbook-recovery";
 import { recordOwnerNotification } from "./owner-notifications-core";
+import { normalizeServiceSelectionType } from "./service-time-core";
 
 /* ============================ AI dispatcher engine ============================
  * Owner-directed: every pending, unexpired Towbook motor-club offer is claimed
@@ -3012,7 +3013,8 @@ async function runAutoDispatchInternal(
           (SELECT COUNT(DISTINCT t.id)::int FROM contractor_doc_types t WHERE t.org_id=${orgId} AND t.active) AS required_docs,
           /* Existing GO/compliance model: every active type needs a current verified doc.
            * DISTINCT prevents legacy re-uploads from satisfying a missing type. */
-          (SELECT COUNT(DISTINCT d.doc_type_id)::int FROM contractor_documents d JOIN contractor_doc_types t ON t.id=d.doc_type_id AND t.active WHERE d.org_id=${orgId} AND d.contractor_id=u.id AND d.status='verified' AND (d.expires_on IS NULL OR d.expires_on >= CURRENT_DATE)) AS approved_docs
+          (SELECT COUNT(DISTINCT d.doc_type_id)::int FROM contractor_documents d JOIN contractor_doc_types t ON t.id=d.doc_type_id AND t.active WHERE d.org_id=${orgId} AND d.contractor_id=u.id AND d.status='verified' AND (d.expires_on IS NULL OR d.expires_on >= CURRENT_DATE)) AS approved_docs,
+          (SELECT COALESCE(array_agg(cs.service_type ORDER BY cs.service_type),'{}') FROM contractor_services cs WHERE cs.org_id=${orgId} AND cs.contractor_id=u.id) AS selected_services
           FROM users u LEFT JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${orgId}
           LEFT JOIN contractor_profiles cp ON cp.user_id=u.id AND cp.org_id=${orgId}
           WHERE u.towbook_driver_id = ANY(${ids})`;
@@ -3024,11 +3026,12 @@ async function runAutoDispatchInternal(
           const towJob = /(?:tow|heavy|flatbed|wheel[- ]?lift)/i.test(wanted);
           const towCapable = /(?:tow truck|tow|heavy|flatbed|wheel[- ]?lift)/i.test(vehicle);
           const capabilityMismatch = towJob && !towCapable;
-          // Tow jobs retain the vehicle-capability rail. The former
-          // Towbook/Lightning online check is intentionally removed: under the
-          // owner decision 2026-08-20, fresh app GPS is the online/assignable
-          // signal, while queue capacity remains enforced by the selector.
-          const reason = !r ? "org-inactive" : r.deactivated_at != null ? "deactivated" : r.member_id == null ? "org-inactive" : Number(r.required_docs) > Number(r.approved_docs) ? "missing-compliance" : capabilityMismatch ? "capability-mismatch" : null;
+          const wantedCapability = normalizeServiceSelectionType(serviceType);
+          const selectedServices = Array.isArray(r?.selected_services) ? r.selected_services.map(String) : [];
+          const serviceMismatch = !wantedCapability || !selectedServices.includes(wantedCapability);
+          // Positive capability is fail-closed: an empty list and a list that
+          // does not cover this job's canonical service both exclude the driver.
+          const reason = !r ? "org-inactive" : r.deactivated_at != null ? "deactivated" : r.member_id == null ? "org-inactive" : Number(r.required_docs) > Number(r.approved_docs) ? "missing-compliance" : serviceMismatch ? (wantedCapability ? `service-not-selected:${wantedCapability}` : "service-type-unrecognized") : capabilityMismatch ? "capability-mismatch" : null;
           if (reason) serviceQualification.excluded.push({ driverId: Number(id), reason });
           return !reason;
         });

@@ -35,6 +35,7 @@ import { Route as OwnerActiveRouteImport } from './routes/owner/active'
 import { Route as OpsHistoryRouteImport } from './routes/ops/history'
 import { Route as OpsContractorsRouteImport } from './routes/ops/contractors'
 import { Route as OpsActiveRouteImport } from './routes/ops/active'
+import { Route as DriverServicesRouteImport } from './routes/driver/services'
 import { Route as DriverScheduleRouteImport } from './routes/driver/schedule'
 import { Route as DriverProfileRouteImport } from './routes/driver/profile'
 import { Route as DriverPayoutRouteImport } from './routes/driver/payout'
@@ -182,6 +183,11 @@ const OpsActiveRoute = OpsActiveRouteImport.update({
   path: '/active',
   getParentRoute: () => OpsRoute,
 } as any)
+const DriverServicesRoute = DriverServicesRouteImport.update({
+  id: '/services',
+  path: '/services',
+  getParentRoute: () => DriverRoute,
+} as any)
 const DriverScheduleRoute = DriverScheduleRouteImport.update({
   id: '/schedule',
   path: '/schedule',
@@ -280,6 +286,7 @@ export interface FileRoutesByFullPath {
   '/driver/payout': typeof DriverPayoutRoute
   '/driver/profile': typeof DriverProfileRoute
   '/driver/schedule': typeof DriverScheduleRoute
+  '/driver/services': typeof DriverServicesRoute
   '/ops/active': typeof OpsActiveRoute
   '/ops/contractors': typeof OpsContractorsRoute
   '/ops/history': typeof OpsHistoryRoute
@@ -321,6 +328,7 @@ export interface FileRoutesByTo {
   '/driver/payout': typeof DriverPayoutRoute
   '/driver/profile': typeof DriverProfileRoute
   '/driver/schedule': typeof DriverScheduleRoute
+  '/driver/services': typeof DriverServicesRoute
   '/ops/active': typeof OpsActiveRoute
   '/ops/contractors': typeof OpsContractorsRoute
   '/ops/history': typeof OpsHistoryRoute
@@ -364,6 +372,7 @@ export interface FileRoutesById {
   '/driver/payout': typeof DriverPayoutRoute
   '/driver/profile': typeof DriverProfileRoute
   '/driver/schedule': typeof DriverScheduleRoute
+  '/driver/services': typeof DriverServicesRoute
   '/ops/active': typeof OpsActiveRoute
   '/ops/contractors': typeof OpsContractorsRoute
   '/ops/history': typeof OpsHistoryRoute
@@ -410,6 +419,7 @@ export interface FileRouteTypes {
     | '/driver/payout'
     | '/driver/profile'
     | '/driver/schedule'
+    | '/driver/services'
     | '/ops/active'
     | '/ops/contractors'
     | '/ops/history'
@@ -451,6 +461,7 @@ export interface FileRouteTypes {
     | '/driver/payout'
     | '/driver/profile'
     | '/driver/schedule'
+    | '/driver/services'
     | '/ops/active'
     | '/ops/contractors'
     | '/ops/history'
@@ -493,6 +504,7 @@ export interface FileRouteTypes {
     | '/driver/payout'
     | '/driver/profile'
     | '/driver/schedule'
+    | '/driver/services'
     | '/ops/active'
     | '/ops/contractors'
     | '/ops/history'
@@ -715,6 +727,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof OpsActiveRouteImport
       parentRoute: typeof OpsRoute
     }
+    '/driver/services': {
+      id: '/driver/services'
+      path: '/services'
+      fullPath: '/driver/services'
+      preLoaderRoute: typeof DriverServicesRouteImport
+      parentRoute: typeof DriverRoute
+    }
     '/driver/schedule': {
       id: '/driver/schedule'
       path: '/schedule'
@@ -840,6 +859,7 @@ interface DriverRouteChildren {
   DriverPayoutRoute: typeof DriverPayoutRoute
   DriverProfileRoute: typeof DriverProfileRoute
   DriverScheduleRoute: typeof DriverScheduleRoute
+  DriverServicesRoute: typeof DriverServicesRoute
   DriverIndexRoute: typeof DriverIndexRoute
   DriverAcademyIdRoute: typeof DriverAcademyIdRoute
   DriverClaimsIdRoute: typeof DriverClaimsIdRoute
@@ -855,6 +875,7 @@ const DriverRouteChildren: DriverRouteChildren = {
   DriverPayoutRoute: DriverPayoutRoute,
   DriverProfileRoute: DriverProfileRoute,
   DriverScheduleRoute: DriverScheduleRoute,
+  DriverServicesRoute: DriverServicesRoute,
   DriverIndexRoute: DriverIndexRoute,
   DriverAcademyIdRoute: DriverAcademyIdRoute,
   DriverClaimsIdRoute: DriverClaimsIdRoute,

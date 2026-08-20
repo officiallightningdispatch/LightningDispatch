@@ -1,4 +1,5 @@
 import { createFileRoute, Link, useParams } from "@tanstack/react-router";
+import { OwnerServiceSelection } from "~/components/service-selection";
 import { ArrowLeft, BarChart3, CalendarClock, ClipboardList, FileText, Loader2, Pencil, ShieldCheck, Trash2, X } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { AppShell } from "~/components/app-shell";
@@ -368,6 +369,7 @@ function OwnerContractorDetail() {
                 ))
               )}
             </Card>
+            {!removed && <OwnerServiceSelection contractorId={id} />}
             {/* ------------------------------ danger zone ------------------------------ */}
             {!removed && (
               <Card className="border-danger-200 p-5">

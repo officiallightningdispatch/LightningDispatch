@@ -41,7 +41,31 @@ export const SERVICE_TIME_LABELS: Readonly<Record<string, string>> = {
   fuel_delivery: "Fuel delivery",
   lockout: "Lockout",
   battery_install: "Battery install",
+  heavy_tow: "Heavy tow",
 };
+/** Positive contractor capability keys. These are the only values that can be
+ * selected or seeded; raw Towbook names are normalized into this set. */
+export const SERVICE_SELECTION_SERVICE_TYPES = [
+  "jump_start", "tire_change", "fuel_delivery", "lockout",
+  "battery_standard", "battery_advanced", "heavy_tow",
+] as const;
+export const SERVICE_SELECTION_LABELS: Readonly<Record<string, string>> = {
+  jump_start: "Jump start", tire_change: "Tire change", fuel_delivery: "Fuel delivery",
+  lockout: "Unlock / lockout", battery_standard: "Battery — standard",
+  battery_advanced: "Battery — advanced", heavy_tow: "Heavy tow",
+};
+export function normalizeServiceSelectionType(serviceType: string | null | undefined): string | null {
+  const raw = String(serviceType ?? "").trim().toLowerCase().replace(/[ -]+/g, "_");
+  if (!raw) return null;
+  if (raw.includes("heavy") || raw.includes("flatbed") || raw.includes("wheel_lift") || raw.includes("wheel_lift") || raw === "tow" || raw.includes("tow")) return "heavy_tow";
+  if (raw.includes("battery") && raw.includes("advanced")) return "battery_advanced";
+  if (raw.includes("battery") || raw === "battery_install") return "battery_standard";
+  if (raw.includes("jump") || raw === "jump_start") return "jump_start";
+  if (raw.includes("tire") || raw.includes("tyre") || raw === "tire_change") return "tire_change";
+  if (raw.includes("fuel") || raw === "fuel_delivery") return "fuel_delivery";
+  if (raw.includes("lock") || raw.includes("unlock") || raw === "lockout") return "lockout";
+  return null;
+}
 /** Map a raw service type (Towbook reason name or LD service_type) to a
  *  canonical goal key. Unknown services → null (no goal; the counter shows the
  *  elapsed time without a target). battery_install is exact (the Phase-1

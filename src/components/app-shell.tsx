@@ -1,5 +1,5 @@
 import { Link, useLocation } from "@tanstack/react-router";
-import { CarFront, Home, Inbox, Briefcase, DollarSign, LayoutDashboard, List, LogOut, MoreHorizontal, Settings, User, UserRound, Users, History, BarChart3, Wallet, Bot, Map, UserCog, Zap, FileWarning, Bell } from "lucide-react";
+import { CarFront, Home, Inbox, Briefcase, DollarSign, Wrench, LayoutDashboard, List, LogOut, MoreHorizontal, Settings, User, UserRound, Users, History, BarChart3, Wallet, Bot, Map, UserCog, Zap, FileWarning, Bell } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { authStatus, type AuthUser } from "~/data/auth";
 import { getMyProfilePhoto } from "~/data/driver-profile-photo";
@@ -104,6 +104,7 @@ const NAV: Record<Portal, PortalNav> = {
       { to: "/driver/earnings", label: "Earnings", icon: DollarSign },
       { to: "/driver/metrics", label: "Metrics", icon: BarChart3 },
       { to: "/driver/profile", label: "Profile", icon: User },
+      { to: "/driver/services", label: "Services", icon: Wrench },
     ],
     mobile: [
       { to: "/driver", label: "Home", icon: Home },
@@ -112,6 +113,7 @@ const NAV: Record<Portal, PortalNav> = {
       { to: "/driver/earnings", label: "Earnings", icon: DollarSign },
       { to: "/driver/metrics", label: "Metrics", icon: BarChart3 },
       { to: "/driver/profile", label: "Profile", icon: User },
+      { to: "/driver/services", label: "Services", icon: Wrench },
     ],
   },
 };

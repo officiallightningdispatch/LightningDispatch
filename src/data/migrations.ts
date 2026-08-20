@@ -1809,6 +1809,36 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`ALTER TABLE payout_records ADD COLUMN IF NOT EXISTS goa_job_count INTEGER NOT NULL DEFAULT 0`;
   }],
 
+  // 86: positive contractor service capabilities. Empty means fail-closed for dispatch.
+  [86, async (q) => {
+    await q`CREATE TABLE IF NOT EXISTS contractor_services (
+      id TEXT PRIMARY KEY, org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      contractor_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, service_type TEXT NOT NULL,
+      updated_by TEXT NOT NULL DEFAULT 'seed' CHECK (updated_by IN ('seed','contractor','owner')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(org_id, contractor_id, service_type)
+    )`;
+    await q`CREATE INDEX IF NOT EXISTS contractor_services_org_contractor_idx ON contractor_services(org_id, contractor_id)`;
+    await q`CREATE INDEX IF NOT EXISTS contractor_services_org_service_idx ON contractor_services(org_id, service_type)`;
+    await q`INSERT INTO contractor_services(id,org_id,contractor_id,service_type,updated_by)
+      SELECT gen_random_uuid()::text, dj.org_id, u.id,
+        CASE
+          WHEN LOWER(COALESCE(dj.service_type,'')) LIKE '%heavy%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%flatbed%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%wheel%lift%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%tow%' THEN 'heavy_tow'
+          WHEN LOWER(COALESCE(dj.service_type,'')) LIKE '%battery%' AND LOWER(COALESCE(dj.service_type,'')) LIKE '%advanced%' THEN 'battery_advanced'
+          WHEN LOWER(COALESCE(dj.service_type,'')) LIKE '%battery%' THEN 'battery_standard'
+          WHEN LOWER(COALESCE(dj.service_type,'')) LIKE '%jump%' THEN 'jump_start'
+          WHEN LOWER(COALESCE(dj.service_type,'')) LIKE '%tire%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%tyre%' THEN 'tire_change'
+          WHEN LOWER(COALESCE(dj.service_type,'')) LIKE '%fuel%' THEN 'fuel_delivery'
+          WHEN LOWER(COALESCE(dj.service_type,'')) LIKE '%lock%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%unlock%' THEN 'lockout'
+          ELSE NULL
+        END, 'seed'
+      FROM dispatch_jobs dj JOIN users u ON u.towbook_driver_id=dj.assigned_driver_towbook_id AND u.deactivated_at IS NULL
+      JOIN organization_memberships m ON m.org_id=dj.org_id AND m.user_id=u.id AND m.role='contractor'
+      WHERE dj.assigned_driver_towbook_id IS NOT NULL AND (dj.status='completed' OR dj.towbook_status='252')
+        AND (LOWER(COALESCE(dj.service_type,'')) LIKE '%tow%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%heavy%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%flatbed%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%wheel%lift%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%battery%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%jump%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%tire%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%tyre%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%fuel%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%lock%' OR LOWER(COALESCE(dj.service_type,'')) LIKE '%unlock%')
+      ON CONFLICT (org_id, contractor_id, service_type) DO NOTHING`;
+    await q`DELETE FROM contractor_services WHERE service_type IS NULL`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();
