@@ -1999,8 +1999,8 @@ try {
     const frow = (await q`SELECT decision, driver_id, reason FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='93007'`)[0];
     check("tier 4b cross-state routing failure: universal fallback, never assigned", fr.decisions[0]?.decision === "auto_accept_no_driver" && fr.decisions[0]?.escalated === true && Number(frow?.driver_id ?? 0) === 0 && posts(mf.calls)[0]?.body?.driverId === 0 && (String(frow?.reason).includes("no eligible same-state driver") || String(frow?.reason).includes("using universal fallback")), JSON.stringify(frow));
 
-    const e = await runTier(93005, [cross, offline], { states: { 93002: "CT", 93003: "NY" } });
-    check("tier regression fresh-GPS unchecked-in in-state candidate beats cross-state", e.r.decisions[0]?.decision === "auto_accept_with_driver" && Number(e.row?.driver_id) === 93002 && posts(e.m.calls)[0]?.body?.driverId === 93002, JSON.stringify(e.row));
+    const e = await runTier(93005, [cross, offline, online], { states: { 93001: "CT", 93002: "CT", 93003: "NY" } });
+    check("location-only regression: all fresh-GPS in-state candidates share one pool; deterministic proximity/ID tie-break selects 93001", e.r.decisions[0]?.decision === "auto_accept_with_driver" && Number(e.row?.driver_id) === 93001 && posts(e.m.calls)[0]?.body?.driverId === 93001 && !String(e.row?.reason).includes("no online driver"), JSON.stringify(e.row));
   }
 
   /* ============ retry sweep hermetic regressions ============ */
