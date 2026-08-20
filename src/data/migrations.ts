@@ -1848,10 +1848,10 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE INDEX IF NOT EXISTS contractor_services_org_service_idx ON contractor_services(org_id, service_type)`;
     await seedContractorServicesFromHistory(q);
   }],
-  // 87: durable five-minute retry attempt audit for accepted no-driver holds.
+  // 89: durable five-minute retry attempt audit for accepted no-driver holds.
   // The decision ledger is updated only when a hold resolves; this append-only
   // table preserves every sweep timestamp and outcome, including safe skips.
-  [87, async (q) => {
+    [89, async (q) => {
     await q`CREATE TABLE IF NOT EXISTS ai_dispatcher_retry_attempts (
       id TEXT PRIMARY KEY,
       org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,

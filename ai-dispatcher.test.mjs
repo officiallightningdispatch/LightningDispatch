@@ -2070,7 +2070,8 @@ try {
       VALUES(${'retry-gps-94012-' + FIXTURE_TAG}, ${ORG6}, ${USER}, '94012', 30.62, -97.65, ${new Date().toISOString()})`;
     const m = makeFetch({ offers: [], drivers: [driver(94012, "Offline TX Towbook driver", { checkedIn: false, lat: 30.62, lng: -97.65 })], liveCalls: [c] });
     const { deps } = makeDeps(m.fetchImpl, makeRouter(), { env: {}, stateResolver: async () => "TX" });
-    await runAutoDispatch(ORG6, deps);
+    const retryNow = Date.now; Date.now = () => retryNow() + 35 * 60 * 1000 + 2;
+    try { await runAutoDispatch(ORG6, deps); } finally { Date.now = retryNow; }
     const row = (await q`SELECT decision,driver_id FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='94002'`)[0];
     check("retry TX union: Towbook-only offline sole TX driver dispatched", row?.decision === "auto_accept_with_driver" && String(row?.driver_id) === "94012" && m.calls.some((p) => p.method === "PUT"), JSON.stringify({row,posts:posts(m.calls)}));
   }
@@ -2080,7 +2081,7 @@ try {
     await q`INSERT INTO ai_dispatcher_decisions(id,org_id,call_request_id,decision,escalated,driver_id,reason,raw_response) VALUES(${randomUUID()},${ORG6},'94003','auto_accept_no_driver',TRUE,'0','cross-state hold',${JSON.stringify({offer:o})}::jsonb)`;
     const m = makeFetch({ offers: [], drivers: [driver(94013, "NY driver", { checkedIn: true, lat: 41.2, lng: -73.2 })], liveCalls: [c] });
     const { deps } = makeDeps(m.fetchImpl, makeRouter(), { env: {}, stateResolver: async () => "NY" });
-    const originalNow = Date.now; Date.now = () => originalNow() + 5 * 60 * 1000 + 2;
+    const originalNow = Date.now; Date.now = () => originalNow() + 45 * 60 * 1000 + 2;
     try { await runAutoDispatch(ORG6, deps); } finally { Date.now = originalNow; }
     const row = (await q`SELECT decision,driver_id FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='94003'`)[0];
     check("retry no-cross-state: out-of-state-only remains parked", row?.decision === "auto_accept_no_driver" && String(row?.driver_id) === "0" && !m.calls.some((p) => p.method === "PUT"), JSON.stringify({row,posts:posts(m.calls)}));
@@ -2091,7 +2092,7 @@ try {
     await q`INSERT INTO ai_dispatcher_decisions(id,org_id,call_request_id,decision,escalated,driver_id,reason,raw_response) VALUES(${randomUUID()},${ORG6},'94004','auto_accept_no_driver',TRUE,'0','assigned skip',${JSON.stringify({offer:o})}::jsonb)`;
     const m = makeFetch({ offers: [], drivers: [driver(94015, "Other CT driver")], liveCalls: [c] });
     const { deps } = makeDeps(m.fetchImpl, makeRouter(), { env: {}, stateResolver: async () => "CT" });
-    const originalNow = Date.now; Date.now = () => originalNow() + 5 * 60 * 1000 + 3;
+    const originalNow = Date.now; Date.now = () => originalNow() + 55 * 60 * 1000 + 3;
     try { await runAutoDispatch(ORG6, deps); } finally { Date.now = originalNow; }
     const row = (await q`SELECT decision,driver_id FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='94004'`)[0];
     const count = await q`SELECT count(*)::int n FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='94004'`;
