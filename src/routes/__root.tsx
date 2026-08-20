@@ -62,13 +62,23 @@ function RootComponent() {
 function AuthGate({ children }: { children: ReactNode }) {
   const loc = useLocation(); const nav = useNavigate();
   const [ready, setReady] = useState(false);
-  useEffect(() => { let live = true; void authStatus().then((s) => {
-    if (!live) return;
+  useEffect(() => {
+    let live = true;
     const publicPath = loc.pathname === "/" || loc.pathname === "/login" || loc.pathname === "/403" || loc.pathname === "/logout";
-    if (!publicPath && s.mode !== "database") { void nav({ to: "/login", search: { next: loc.pathname } as any, replace: true }); return; }
-    if (!publicPath && !s.user) { void nav({ to: "/login", search: { next: loc.pathname } as any, replace: true }); return; }
-    setReady(true);
-  }).catch(() => { if (live && loc.pathname !== "/" && loc.pathname !== "/login") void nav({ to: "/login", replace: true }); }); return () => { live = false; }; }, [loc.pathname, nav]);
+    // Public routes own their auth work. In particular, /login needs one status
+    // check to decide whether to show first-run setup or redirect an existing
+    // session; calling authStatus here as well created two concurrent status
+    // requests before the form could render. Keep the gate entirely out of the
+    // public path so login latency is not doubled and logout remains immediate.
+    if (publicPath) { setReady(true); return () => { live = false; }; }
+    void authStatus().then((s) => {
+      if (!live) return;
+      if (s.mode !== "database") { void nav({ to: "/login", search: { next: loc.pathname } as any, replace: true }); return; }
+      if (!s.user) { void nav({ to: "/login", search: { next: loc.pathname } as any, replace: true }); return; }
+      setReady(true);
+    }).catch(() => { if (live) void nav({ to: "/login", replace: true }); });
+    return () => { live = false; };
+  }, [loc.pathname, nav]);
   if (!ready && loc.pathname !== "/" && loc.pathname !== "/login") return <GateSkeleton />;
   return <>{children}</>;
 }

@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import type { Contractor, Job, JobStatus } from "~/data/seed";
+import { useLocation } from "@tanstack/react-router";
 import {
   advanceJob as advanceJobServer,
   assignJob as assignJobServer,
@@ -98,6 +99,7 @@ export interface DispatchStoreValue {
 const DispatchStoreContext = createContext<DispatchStoreValue | null>(null);
 
 export function DispatchStoreProvider({ children }: { children: ReactNode }) {
+  const location = useLocation();
   const [state, dispatch] = useReducer(
     (current: DispatchState, action: { type: "hydrate"; payload: DispatchState }) =>
       action.type === "hydrate" ? action.payload : current,
@@ -121,6 +123,11 @@ export function DispatchStoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    const publicPath = location.pathname === "/" || location.pathname === "/login" || location.pathname === "/403" || location.pathname === "/logout";
+    // The dispatch store is not needed by public/auth screens. Avoid a full
+    // dispatch snapshot request while the user is signing in; protected routes
+    // still initialize on their first visit after authentication.
+    if (publicPath) { setLoading(false); return; }
     if (loadedOnce.current) return;
     loadedOnce.current = true;
     if (typeof window === "undefined") return; // SSR first paint — client effect hydrates
@@ -139,7 +146,7 @@ export function DispatchStoreProvider({ children }: { children: ReactNode }) {
       hydrateFromServer(response.data);
       setLoading(false);
     })();
-  }, [hydrateFromServer]);
+  }, [hydrateFromServer, location.pathname]);
 
   /** Run a mutation with pending/error bookkeeping; no-ops if already pending. */
   const run = useCallback(async (key: string, work: () => Promise<boolean>): Promise<boolean> => {
