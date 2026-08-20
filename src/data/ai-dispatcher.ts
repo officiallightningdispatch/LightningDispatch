@@ -3029,7 +3029,7 @@ async function runAutoDispatchInternal(
           const capabilityMismatch = towJob && !towCapable;
           const wantedCapability = normalizeServiceSelectionType(serviceType);
           const selectedServices = Array.isArray(r?.selected_services) ? r.selected_services.map(String) : [];
-          const serviceMismatch = !serviceSelectionMatchesJob(serviceType, selectedServices);
+          const serviceMismatch = Boolean(wantedCapability) && !serviceSelectionMatchesJob(serviceType, selectedServices);
           // Positive capability is fail-closed: an empty list and a list that
           // does not cover this job's canonical service both exclude the driver.
           const reason = !r ? "org-inactive" : r.deactivated_at != null ? "deactivated" : r.member_id == null ? "org-inactive" : Number(r.required_docs) > Number(r.approved_docs) ? "missing-compliance" : serviceMismatch ? (wantedCapability ? `service-not-selected:${wantedCapability}` : "service-type-unrecognized") : capabilityMismatch ? "capability-mismatch" : null;
