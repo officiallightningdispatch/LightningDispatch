@@ -30,7 +30,7 @@ const DRIVER = `qa-b8-driver-${tag}`;
 const actor = { orgId: ORG, id: OWNER, role: "owner" };
 const nonOwner = { orgId: ORG, id: DRIVER, role: "contractor" };
 const priceHeader = "group_size,alternate_group_sizes,brand,line,part_number,autozone_price,lightning_price,warranty_years,currency,core_charge_excluded";
-const priceRows = `${priceHeader}\n47,47;H6,Lightning,Gold,LG-47,100.00,149.99,3,USD,true\n35,35;35-1,Lightning,Gold,LG-35,100.00,159.99,3,USD,true`;
+const priceRows = `${priceHeader}\n47,H6,Lightning,Gold,LG-47,100.00,149.99,3,USD,true\n35,35-1,Lightning,Gold,LG-35,100.00,159.99,3,USD,true`;
 const compatHeader = "make,model,year_from,year_to,trim,engine,battery_group_size,source_reference_internal,status";
 const compatRows = `${compatHeader}\nHONDA,ACCORD,2018,2020,,2.5L I4,47,authoritative-fixture,approved`;
 const cleanup = async () => {
