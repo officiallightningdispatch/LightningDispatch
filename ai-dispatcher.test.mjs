@@ -2036,8 +2036,31 @@ try {
       await runAutoDispatch(ORG6, secondDeps);
       row = (await q`SELECT decision,driver_id,reason FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='94001'`)[0];
       const count = await q`SELECT count(*)::int n FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='94001'`;
-      check("retry re-select: eligible CT driver resolves SAME row", row?.decision === "auto_accept_with_driver" && String(row?.driver_id) === "94011" && Number(count[0].n) === 1 && second.calls.some((p) => p.method === "PUT" && p.url.includes("/api/calls/9400101")), JSON.stringify({row,posts:posts(second.calls)}));
+      const retryAudit = await q`SELECT outcome FROM ai_dispatcher_retry_attempts WHERE org_id=${ORG6} AND call_request_id='94001' ORDER BY attempted_at`;
+      check("retry re-select: eligible CT driver resolves SAME row", row?.decision === "auto_accept_with_driver" && String(row?.driver_id) === "94011" && Number(count[0].n) === 1 && second.calls.some((p) => p.method === "PUT" && p.url.includes("/api/calls/9400101")) && retryAudit.some((a) => a.outcome === "assigned"), JSON.stringify({row,posts:posts(second.calls),retryAudit}));
     } finally { Date.now = originalNow; }
+  }
+  {
+    // Regression for the production representation: auto_accept_no_driver may
+    // persist driver_id=NULL. It must receive the same five-minute retry rail
+    // and durable attempt audit as the legacy driver_id='0' representation.
+    const nullOffer = offer(94005, { startingLocation: "BRIDGEPORT CT", drivers: [] });
+    const nullCall = { id: 9400501, callRequestId: 94005, startLocationLatitude: nullOffer.startLocationLatitude, startLocationLongitude: nullOffer.startLocationLongitude, startingLocation: "BRIDGEPORT CT", status: { id: 0 }, assets: [{ id: 424242, driver: { id: 0, name: "" } }] };
+    await q`INSERT INTO ai_dispatcher_decisions(id,org_id,call_request_id,decision,escalated,driver_id,reason,raw_response) VALUES(${randomUUID()},${ORG6},'94005','auto_accept_no_driver',TRUE,NULL,'NULL no-driver hold',${JSON.stringify({offer: nullOffer})}::jsonb)`;
+    const nullFirst = makeFetch({ offers: [], drivers: [], liveCalls: [nullCall] });
+    const { deps: nullFirstDeps } = makeDeps(nullFirst.fetchImpl, makeRouter(), { env: {}, stateResolver: async () => "CT" });
+    const nullBase = Date.now; Date.now = () => nullBase() + 15 * 60 * 1000 + 4;
+    try { await runAutoDispatch(ORG6, nullFirstDeps); } finally { Date.now = nullBase; }
+    const nullAudit = await q`SELECT outcome FROM ai_dispatcher_retry_attempts WHERE org_id=${ORG6} AND call_request_id='94005' ORDER BY attempted_at`;
+    check("retry NULL hold: sweep picks it up and records no-candidate attempt", nullAudit.some((a) => a.outcome === "no_qualifying_driver") && !nullFirst.calls.some((p) => p.method === "PUT"), JSON.stringify({nullAudit, calls:nullFirst.calls}));
+    await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES(${'retry-gps-94016-' + FIXTURE_TAG}, ${ORG6}, ${USER}, '94016', 41.19, -73.15, ${new Date().toISOString()})`;
+    const nullSecond = makeFetch({ offers: [], drivers: [driver(94016, "Retry NULL CT driver")], liveCalls: [nullCall] });
+    const { deps: nullSecondDeps } = makeDeps(nullSecond.fetchImpl, makeRouter(), { env: {}, stateResolver: async () => "CT" });
+    const nullNext = Date.now; Date.now = () => nullNext() + 25 * 60 * 1000 + 5;
+    try { await runAutoDispatch(ORG6, nullSecondDeps); } finally { Date.now = nullNext; }
+    const nullRow = (await q`SELECT decision,driver_id FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='94005'`)[0];
+    const nullAssignedAudit = await q`SELECT outcome FROM ai_dispatcher_retry_attempts WHERE org_id=${ORG6} AND call_request_id='94005' ORDER BY attempted_at`;
+    check("retry NULL hold: fresh in-state GPS driver auto-assigns", nullRow?.decision === "auto_accept_with_driver" && String(nullRow?.driver_id) === "94016" && nullSecond.calls.some((p) => p.method === "PUT") && nullAssignedAudit.some((a) => a.outcome === "assigned"), JSON.stringify({nullRow,nullAssignedAudit,posts:posts(nullSecond.calls)}));
   }
   {
     const o = offer(94002, { startingLocation: "AUSTIN TX", lat: 30.62, lng: -97.65 });
@@ -2072,7 +2095,8 @@ try {
     try { await runAutoDispatch(ORG6, deps); } finally { Date.now = originalNow; }
     const row = (await q`SELECT decision,driver_id FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='94004'`)[0];
     const count = await q`SELECT count(*)::int n FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='94004'`;
-    check("retry assigned skip: existing driver leaves parked row unchanged", row?.decision === "auto_accept_no_driver" && String(row?.driver_id) === "0" && Number(count[0].n) === 1 && !m.calls.some((p) => p.method === "PUT"), JSON.stringify({row,posts:posts(m.calls)}));
+    const audit = await q`SELECT outcome, detail FROM ai_dispatcher_retry_attempts WHERE org_id=${ORG6} AND call_request_id='94004' ORDER BY attempted_at DESC LIMIT 1`;
+    check("retry assigned skip: existing driver leaves parked row unchanged", row?.decision === "auto_accept_no_driver" && String(row?.driver_id) === "0" && Number(count[0].n) === 1 && !m.calls.some((p) => p.method === "PUT") && audit[0]?.outcome === "already_resolved", JSON.stringify({row,posts:posts(m.calls),audit}));
   }
 
   /* ============ qualification gate (Phase B ③) ============ */

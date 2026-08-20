@@ -2558,6 +2558,22 @@ async function fireDispatchAssignmentPush(
 }
 
 
+type RetryAttemptOutcome = "assigned" | "already_resolved" | "no_qualifying_driver" | "call_unavailable" | "invalid_hold" | "verification_failed" | "expired";
+
+/** Append one durable audit row for every retry sweep decision. Audit writes are
+ * best-effort so a schema/read outage never strands the accepted hold or stops
+ * later holds from being retried. */
+async function recordRetryAttempt(
+  orgId: string, decisionId: string, callRequestId: string, callId: string | null,
+  outcome: RetryAttemptOutcome, detail: unknown,
+): Promise<void> {
+  try {
+    await sql()`INSERT INTO ai_dispatcher_retry_attempts
+      (id, org_id, decision_id, call_request_id, call_id, outcome, detail)
+      VALUES(gen_random_uuid()::text, ${orgId}, ${decisionId}, ${callRequestId}, ${callId}, ${outcome}, ${JSON.stringify(detail ?? {})}::jsonb)`;
+  } catch { /* audit must never stop the retry loop */ }
+}
+
 /** Re-select accepted calls that are still unassigned. Towbook removes these
  * from callRequests after the driverId=0 accept, so this sweep is deliberately
  * driven by our durable dispatch_jobs/decision rows. It uses the same state
@@ -2571,7 +2587,8 @@ async function retryPendingAssignments(
   retrySweepLastRun.set(orgId, Date.now());
   const rows = await sql() `SELECT id AS decision_id, call_request_id, call_id, raw_response
     FROM ai_dispatcher_decisions
-    WHERE org_id=${orgId} AND decision='auto_accept_no_driver' AND driver_id='0'
+    WHERE org_id=${orgId} AND decision='auto_accept_no_driver'
+      AND (driver_id='0' OR driver_id IS NULL)
     ORDER BY created_at ASC LIMIT 100`;
   if (!rows.length) return;
   const callsRes = await towbookFetch(fetchImpl, `${baseUrl}/api/calls`, cookies);
@@ -2584,7 +2601,18 @@ async function retryPendingAssignments(
     const callRequestId = String(row.call_request_id ?? '');
     const callId = row.call_id == null ? '' : String(row.call_id);
     const call = calls.find((c) => c && typeof c === 'object' && (String((c as Record<string, unknown>).callRequestId ?? '') === callRequestId || (callId !== '' && String((c as Record<string, unknown>).id ?? '') === callId))) as Record<string, unknown> | undefined;
-    if (!call || (firstDriverIdOnCall(call) ?? '0') !== '0') continue;
+    if (!call) {
+      await recordRetryAttempt(orgId, String(row.decision_id), callRequestId, callId || null, "call_unavailable", { reason: "Towbook call was not present in the current call snapshot; hold remains eligible for the next sweep" });
+      continue;
+    }
+    const callStatus = Number(call.status && typeof call.status === "object" ? (call.status as Record<string, unknown>).id : call.status);
+    const resolvedDriver = firstDriverIdOnCall(call);
+    // Re-read Towbook before every retry. A human/Towbook-side assignment or
+    // terminal resolution wins; never attach a second driver to a stale hold.
+    if ((resolvedDriver != null && resolvedDriver !== "0") || callStatus === 252 || callStatus === 255) {
+      await recordRetryAttempt(orgId, String(row.decision_id), callRequestId, callId || String(call.id ?? "") || null, "already_resolved", { statusId: Number.isFinite(callStatus) ? callStatus : null, assignedDriverId: resolvedDriver, reason: "Towbook call is already assigned or terminal; retry skipped" });
+      continue;
+    }
     const raw = row.raw_response && typeof row.raw_response === 'object' ? row.raw_response as Record<string, unknown> : {};
     const rawOffer = raw.offer && typeof raw.offer === 'object' ? raw.offer as Record<string, unknown> : raw;
     const callLat = Number(call.startLocationLatitude ?? call.latitude ?? call.pickupLatitude);
@@ -2595,28 +2623,62 @@ async function retryPendingAssignments(
     const rawOfferForShape: Record<string, unknown> = { ...rawOffer, callRequestId: callRequestId || String(rawOffer.callRequestId ?? ''), startLocationLatitude: lat, startLocationLongitude: lng,
       expirationDateUtc: String(rawOffer.expirationDateUtc ?? new Date(Date.now() + 86400000).toISOString()), status: Number(rawOffer.status ?? 2), maxEta: Number(rawOffer.maxEta ?? settings.maxEtaMinutes), purchaseOrderNumber: rawOffer.purchaseOrderNumber ?? null, drivers: Array.isArray(rawOffer.drivers) ? rawOffer.drivers : null };
     const shape = buildOfferShape(rawOfferForShape, lat, lng);
-    if (!shape.ok) continue;
+    if (!shape.ok) {
+      await recordRetryAttempt(orgId, String(row.decision_id), callRequestId, callId || String(call.id ?? "") || null, "invalid_hold", { missing: shape.missing });
+      continue;
+    }
     const offer = shape.offer;
     const nd = await towbookFetch(fetchImpl, `${baseUrl}/api/nearestDrivers?latitude=${lat}&longitude=${lng}&checkInForAllDrivers=true`, cookies);
     if (!nd.ok || !Array.isArray(nd.body)) continue;
-    const candidates = nd.body as unknown[];
+    let candidates = nd.body as unknown[];
     const jobState = (await resolveJobState(orgId, rawOfferForShape, String(call.startingLocation ?? call.pickup ?? ''), resolveTomtomKey(deps.env ?? process.env) ?? '', fetchImpl)).state;
-    const guard: StateGuardOutcome = { active:false, jobState:null, blocked:false, blockedReason:null, checked:0, inState:0, excluded:[] };
     const serviceQualification: ServiceQualificationOutcome = { serviceType: offer.serviceType ?? null, assessed:Boolean(offer.serviceType?.trim()), excluded:[] };
+    // Retry qualification is intentionally the same fail-closed gate as the
+    // initial offer path: deactivated/inactive, compliance, selected service,
+    // and tow-truck capability are re-read on every five-minute attempt.
+    if (settings.qualificationGateEnabled && candidates.length) {
+      const ids = candidates.map((d) => Number((d as Record<string, unknown>).driverId)).filter(Number.isFinite);
+      const gateRows = await sql()`SELECT u.towbook_driver_id, u.deactivated_at, m.user_id AS member_id, cp.vehicle_type,
+        (SELECT COUNT(DISTINCT t.id)::int FROM contractor_doc_types t WHERE t.org_id=${orgId} AND t.active) AS required_docs,
+        (SELECT COUNT(DISTINCT d.doc_type_id)::int FROM contractor_documents d JOIN contractor_doc_types t ON t.id=d.doc_type_id AND t.active WHERE d.org_id=${orgId} AND d.contractor_id=u.id AND d.status='verified' AND (d.expires_on IS NULL OR d.expires_on >= CURRENT_DATE)) AS approved_docs,
+        (SELECT COALESCE(array_agg(cs.service_type),'{}') FROM contractor_services cs WHERE cs.org_id=${orgId} AND cs.contractor_id=u.id) AS selected_services
+        FROM users u LEFT JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${orgId} LEFT JOIN contractor_profiles cp ON cp.user_id=u.id AND cp.org_id=${orgId}
+        WHERE u.towbook_driver_id = ANY(${ids})`;
+      const byId = new Map(gateRows.map((r) => [String(r.towbook_driver_id), r as Record<string, unknown>]));
+      candidates = candidates.filter((d) => {
+        const id = String((d as Record<string, unknown>).driverId), r = byId.get(id), service = offer.serviceType?.trim() ?? '';
+        const wanted = normalizeServiceSelectionType(service), selected = Array.isArray(r?.selected_services) ? r.selected_services.map(String) : [];
+        const tow = /(?:tow|heavy|flatbed|wheel[- ]?lift)/i.test(service), vehicle = String(r?.vehicle_type ?? '');
+        const reason = !r ? 'org-inactive' : r.deactivated_at != null ? 'deactivated' : r.member_id == null ? 'org-inactive' : Number(r.required_docs) > Number(r.approved_docs) ? 'missing-compliance' : wanted && !serviceSelectionMatchesJob(service, selected) ? `service-not-selected:${wanted}` : tow && !/(?:tow truck|tow|heavy|flatbed|wheel[- ]?lift)/i.test(vehicle) ? 'capability-mismatch' : null;
+        if (reason) serviceQualification.excluded.push({ driverId: Number(id), reason });
+        return !reason;
+      });
+    }
+    const guard: StateGuardOutcome = { active:false, jobState:null, blocked:false, blockedReason:null, checked:0, inState:0, excluded:[] };
     const chosen = await chooseBestDriverByRoad(candidates, lat, lng,
       (deps.routerOverride ?? resolveRouter(deps.env ?? process.env, fetchImpl)).router, queues,
       { anchors, gpsFixes: fixes, stateGuard: { jobState: jobState?.toUpperCase() ?? null, resolveDriverState: deps.stateGuardResolver ?? (async (_did, dlat, dlng) => {
         const key = driverStateCacheKey(_did, dlat, dlng); const cached = retryStateCache.get(key); if (cached !== undefined) return cached;
         const st = resolveTomtomKey(deps.env ?? process.env) ? await reverseGeocodeState(dlat, dlng, resolveTomtomKey(deps.env ?? process.env)!, fetchImpl) : null; retryStateCache.set(key, st); return st;
       }) }, serviceType: offer.serviceType ?? null, serviceQualification, lightningAvailable: lightning }, { stateGuard: guard });
-    if (!chosen || guard.blocked) continue; // universal hold remains until an in-state candidate exists
+    if (!chosen || guard.blocked) {
+      await recordRetryAttempt(orgId, String(row.decision_id), callRequestId, callId || String(call.id ?? "") || null, "no_qualifying_driver", { blocked: guard.blocked, blockedReason: guard.blockedReason, state: jobState?.toUpperCase() ?? null, serviceQualification });
+      continue; // universal hold remains until an in-state candidate exists
+    }
     const driverId = Number(chosen.driver.driverId);
-    if (!Number.isFinite(driverId) || driverId <= 0) continue;
+    if (!Number.isFinite(driverId) || driverId <= 0) {
+      await recordRetryAttempt(orgId, String(row.decision_id), callRequestId, callId || String(call.id ?? "") || null, "no_qualifying_driver", { reason: "selector returned an invalid driver id" });
+      continue;
+    }
     const verification = await verifyDispatch(fetchImpl, baseUrl, cookies, offer, callId || String(call.id ?? callRequestId), driverId, { retryDelayMs: deps.verifyRetryDelayMs ?? 10000, maxAttempts: deps.verifyMaxAttempts ?? 6, allowAssign: true });
-    if (!verification.ok) continue;
+    if (!verification.ok) {
+      await recordRetryAttempt(orgId, String(row.decision_id), callRequestId, callId || String(call.id ?? "") || null, "verification_failed", { error: verification.error, verification });
+      continue;
+    }
     if (verification.call) { try { await upsertVerifiedDispatchJob(orgId, offer, verification.call, verification.callId ?? (callId || String(call.id ?? callRequestId)), driverId, String(chosen.driver.driverName ?? driverId)); } catch { /* ledger remains authoritative */ } }
     const reason = `retry sweep (5-minute): accepted and dispatched to ${String(chosen.driver.driverName ?? driverId)} (driver ${driverId}, VERIFIED on call ${verification.callId ?? (callId || String(call.id ?? callRequestId))}); same-state selection; prior driverId 0 hold resolved`;
     await sql() `UPDATE ai_dispatcher_decisions SET decision='auto_accept_with_driver', escalated=FALSE, driver_id=${String(driverId)}, driver_name=${String(chosen.driver.driverName ?? driverId)}, call_id=${verification.callId ?? (callId || String(call.id ?? callRequestId))}, reason=${reason}, raw_response=raw_response || ${JSON.stringify({ retrySweep:true, verification })}::jsonb WHERE id=${String(row.decision_id)} AND org_id=${orgId}`;
+    await recordRetryAttempt(orgId, String(row.decision_id), callRequestId, verification.callId ?? (callId || String(call.id ?? callRequestId)), "assigned", { driverId, driverName: String(chosen.driver.driverName ?? driverId), verification });
     try { await deps.syncForOrg(orgId, 'sync:auto-accept-retry', actor ?? undefined); } catch { /* sweep is best effort */ }
     retrySweepLastRun.delete(orgId);
   }
