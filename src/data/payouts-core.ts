@@ -402,6 +402,7 @@ export type PayoutRecord = {
   handleFull: string | null; // OWNER-ONLY (PII)
   handleMasked: string;
   jobCount: number;
+  goaJobCount: number;
   payrateCents: number | null; // snapshot at compute; NULL = rate not set
   grossCents: number;
   tipsCents: number;
@@ -494,8 +495,11 @@ export type DriverPayPeriodCard = {
   startsAt: string;
   endsAt: string;
   jobCount: number;
+  goaJobCount: number;
+  payrateCents: number;
   grossCents: number;
   tipsCents: number;
+  tirePlugCents: number;
   batteryPayoutCents: number;
   busyBonusCents: number;
   totalCents: number;
@@ -610,6 +614,7 @@ export async function getDriverPayPeriodSummaryCore(actor: PayoutActor, towbookD
     const allRows = await q`SELECT id, status, assigned_at, completed_at, created_at, raw_json, manually_reassigned_at
       FROM dispatch_jobs WHERE org_id=${actor.orgId} AND assigned_driver_towbook_id=${towbookDriverId}`;
     const tipRows = await q`SELECT created_at, amount_cents FROM completion_tips WHERE org_id=${actor.orgId} AND driver_id=${actor.id} AND driver_towbook_id=${towbookDriverId} AND status='paid'`;
+    const tireRows = await q`SELECT amount_cents, paid_at FROM tire_plug_transactions WHERE org_id=${actor.orgId} AND contractor_user_id=${actor.id} AND status='paid'`;
     const batteryRows = await q`SELECT amount_cents, earned_at FROM battery_payouts WHERE org_id=${actor.orgId} AND contractor_user_id=${actor.id} AND earned_at IS NOT NULL`;
     const { computeBusyBonus, jobAssignmentMs, jobCompletedMs, BUSY_BONUS_PER_JOB_CENTS } = await import("./busy-bonus-core");
     const makeCard = (b: PeriodBoundaries): DriverPayPeriodCard => {
@@ -629,12 +634,32 @@ export async function getDriverPayPeriodSummaryCore(actor: PayoutActor, towbookD
       }
       const busy = computeBusyBonus(assignments, completions);
       const tipsCents = (tipRows as Record<string, unknown>[]).reduce((sum, row) => { const t = new Date(String(row.created_at)).getTime(); return t >= start && t < end ? sum + Number(row.amount_cents ?? 0) : sum; }, 0);
+      const tirePlugCents = (tireRows as Record<string, unknown>[]).reduce((sum, row) => { const t = new Date(String(row.paid_at)).getTime(); return t >= start && t < end ? sum + Number(row.amount_cents ?? 0) : sum; }, 0);
       const batteryPayoutCents = (batteryRows as Record<string, unknown>[]).reduce((sum, row) => { const t = new Date(String(row.earned_at)).getTime(); return t >= start && t < end ? sum + Number(row.amount_cents ?? 0) : sum; }, 0);
       const grossCents = goaCount * 1000 + Math.max(0, jobCount - goaCount) * payrateCents;
       const busyBonusCents = busy.bonusJobs * BUSY_BONUS_PER_JOB_CENTS;
-      return { startsAt: iso(b.startsAt), endsAt: iso(b.endsAt), jobCount, grossCents, tipsCents, batteryPayoutCents, busyBonusCents, totalCents: grossCents + tipsCents + batteryPayoutCents + busyBonusCents };
+      return { startsAt: iso(b.startsAt), endsAt: iso(b.endsAt), jobCount, goaJobCount: goaCount, payrateCents, grossCents, tipsCents, tirePlugCents, batteryPayoutCents, busyBonusCents, totalCents: grossCents + tipsCents + tirePlugCents + batteryPayoutCents + busyBonusCents };
     };
     const current = makeCard(currentB), previous = makeCard(previousB);
+    // Closed/computed manifests are the owner's authoritative snapshots. Use
+    // them for the contractor view too; open periods fall back to the same
+    // server-side formula above until a manifest is computed.
+    const manifestRows = await q`SELECT pp.starts_at, pr.job_count, pr.goa_job_count, pr.payrate_cents, pr.gross_cents, pr.tips_cents, pr.tire_plug_cents, pr.battery_payout_cents, pr.busy_bonus_cents, pr.total_cents
+      FROM payout_records pr JOIN pay_periods pp ON pp.org_id=pr.org_id AND pp.id=pr.period_id
+      WHERE pr.org_id=${actor.orgId} AND pr.contractor_id=${actor.id}
+        AND pp.starts_at IN (${iso(currentB.startsAt)}, ${iso(previousB.startsAt)})`;
+    for (const r of manifestRows as Record<string, unknown>[]) {
+      const target = new Date(String(r.starts_at)).getTime() === currentB.startsAt.getTime() ? current : previous;
+      target.jobCount = Number(r.job_count ?? target.jobCount);
+      target.goaJobCount = Number(r.goa_job_count ?? target.goaJobCount);
+      target.payrateCents = r.payrate_cents != null ? Number(r.payrate_cents) : 0;
+      target.grossCents = Number(r.gross_cents ?? target.grossCents);
+      target.tipsCents = Number(r.tips_cents ?? target.tipsCents);
+      target.tirePlugCents = Number(r.tire_plug_cents ?? target.tirePlugCents);
+      target.batteryPayoutCents = Number(r.battery_payout_cents ?? target.batteryPayoutCents);
+      target.busyBonusCents = Number(r.busy_bonus_cents ?? target.busyBonusCents);
+      target.totalCents = Number(r.total_cents ?? target.totalCents);
+    }
     const diagnostics = { unknownCompletionTimeRows: Number((allRows as Record<string, unknown>[]).filter((r) => String(r.status) === "completed" && authoritativeCompletionMs(r.raw_json) == null).length) };
     return ok({ current, previous, diagnostics });
   } catch (e) {
@@ -696,6 +721,7 @@ export async function getPayPeriodDetailCore(actor: PayoutActor, periodId: strin
       handleFull: r.handle_full != null ? String(r.handle_full) : null,
       handleMasked: String(r.handle_masked ?? ""),
       jobCount: r.job_count != null ? Number(r.job_count) : 0,
+      goaJobCount: r.goa_job_count != null ? Number(r.goa_job_count) : 0,
       payrateCents: r.payrate_cents != null ? Number(r.payrate_cents) : null,
       grossCents: r.gross_cents != null ? Number(r.gross_cents) : 0,
       tipsCents: r.tips_cents != null ? Number(r.tips_cents) : 0,
@@ -926,19 +952,20 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
 
     // contractor → all payout components keyed by user id. Battery installs are
     // separate from generic job count so one install can never double-pay.
-    const earnByUser = new Map<string, { jobCount: number; payrateCents: number | null; tipsCents: number; tirePlugCents: number; batteryPayoutCents: number }>();
+    const earnByUser = new Map<string, { jobCount: number; goaJobCount: number; payrateCents: number | null; tipsCents: number; tirePlugCents: number; batteryPayoutCents: number }>();
     for (const [uid, cents] of tireCentsByUser) {
       const u = [...userByTb.values()].find((v) => v.userId === uid);
       if (!u) continue;
-      const e = { jobCount: 0, payrateCents: u.payrateCents, tipsCents: 0, tirePlugCents: cents, batteryPayoutCents: 0 };
+      const e = { jobCount: 0, goaJobCount: 0, payrateCents: u.payrateCents, tipsCents: 0, tirePlugCents: cents, batteryPayoutCents: 0 };
       earnByUser.set(uid, e);
     }
     for (const r of jobRows as Record<string, unknown>[]) {
       const tb = String(r.tb_id);
       const u = userByTb.get(tb);
       if (!u) continue; // no LD user for this Towbook driver → cannot attribute pay
-      const e = earnByUser.get(u.userId) ?? { jobCount: 0, payrateCents: u.payrateCents, tipsCents: 0, tirePlugCents: 0, batteryPayoutCents: 0 };
+      const e = earnByUser.get(u.userId) ?? { jobCount: 0, goaJobCount: 0, payrateCents: u.payrateCents, tipsCents: 0, tirePlugCents: 0, batteryPayoutCents: 0 };
       e.jobCount += Number(r.job_count ?? 0);
+      e.goaJobCount += Number(r.goa_count ?? 0);
       earnByUser.set(u.userId, e);
     }
     for (const [uid, cents] of batteryCentsByUser) {
@@ -946,13 +973,13 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
       if (existing) existing.batteryPayoutCents = cents;
       else {
         const u = [...userByTb.values()].find((v) => v.userId === uid);
-        earnByUser.set(uid, { jobCount: 0, payrateCents: u?.payrateCents ?? null, tipsCents: 0, tirePlugCents: 0, batteryPayoutCents: cents });
+        earnByUser.set(uid, { jobCount: 0, goaJobCount: 0, payrateCents: u?.payrateCents ?? null, tipsCents: 0, tirePlugCents: 0, batteryPayoutCents: cents });
       }
     }
     for (const [uid, cents] of tipCentsByUser) {
       if (!earnByUser.has(uid)) {
         const u = userByTb.get([...userByTb.entries()].find(([, v]) => v.userId === uid)?.[0] ?? "");
-        earnByUser.set(uid, { jobCount: 0, payrateCents: u?.payrateCents ?? null, tipsCents: cents, tirePlugCents: 0, batteryPayoutCents: 0 });
+        earnByUser.set(uid, { jobCount: 0, goaJobCount: 0, payrateCents: u?.payrateCents ?? null, tipsCents: cents, tirePlugCents: 0, batteryPayoutCents: 0 });
       } else {
         earnByUser.get(uid)!.tipsCents = cents;
       }
@@ -995,9 +1022,9 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
       const totalCents = grossCents + tipsCents + tirePlugCents + batteryPayoutCents + busy.bonusCents;
       const recordId = `pr-${periodId}-${uid}`;
       const inserted = await q`INSERT INTO payout_records(id, org_id, period_id, contractor_id, method_id, rail, handle_full, handle_masked,
-          job_count, payrate_cents, gross_cents, tips_cents, tire_plug_cents, battery_payout_cents, busy_bonus_cents, busy_bonus_jobs, busy_bonus_hours, total_cents, method_status, status, updated_at)
+          job_count, goa_job_count, payrate_cents, gross_cents, tips_cents, tire_plug_cents, battery_payout_cents, busy_bonus_cents, busy_bonus_jobs, busy_bonus_hours, total_cents, method_status, status, updated_at)
         VALUES(${recordId}, ${actor.orgId}, ${periodId}, ${uid}, ${method ? String(method.id) : null}, ${rail}, ${handleFull}, ${handleMasked},
-          ${e.jobCount}, ${e.payrateCents}, ${grossCents}, ${tipsCents}, ${tirePlugCents}, ${batteryPayoutCents}, ${busy.bonusCents}, ${busy.bonusJobs}, ${busyHoursJson ? JSON.stringify(busyHoursJson) : null}, ${totalCents}, ${methodStatus}, ${verified ? "computed" : "blocked"}, NOW())
+          ${e.jobCount}, ${goaCount}, ${e.payrateCents}, ${grossCents}, ${tipsCents}, ${tirePlugCents}, ${batteryPayoutCents}, ${busy.bonusCents}, ${busy.bonusJobs}, ${busyHoursJson ? JSON.stringify(busyHoursJson) : null}, ${totalCents}, ${methodStatus}, ${verified ? "computed" : "blocked"}, NOW())
         ON CONFLICT (org_id, period_id, contractor_id) DO NOTHING
         RETURNING id`;
       const recordInserted = Array.isArray(inserted) && inserted.length > 0;
@@ -1023,6 +1050,7 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
         handleFull,
         handleMasked,
         jobCount: e.jobCount,
+        goaJobCount: goaCount,
         payrateCents: e.payrateCents,
         grossCents,
         tipsCents,

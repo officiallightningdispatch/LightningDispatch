@@ -47,6 +47,27 @@ const fmtTime = (iso: string | null): string => {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 };
 
+function DriverPaymentBreakdown({ title, card }: { title: string; card: NonNullable<Extract<DriverEarningsResult, { ok: true }>["payPeriods"]>["current"] }) {
+  const goa = card.goaJobCount * 1000;
+  const standardGross = Math.max(0, card.jobCount - card.goaJobCount) * card.payrateCents;
+  const lineTotal = standardGross + goa + card.tipsCents + card.tirePlugCents + card.batteryPayoutCents + card.busyBonusCents;
+  return <Card className="p-4">
+    <div className="flex items-start justify-between gap-3"><div><p className="text-[11px] font-bold uppercase tracking-wide text-brand-600">{title}</p><p className="mt-0.5 text-xs text-ink-400">{fmtPeriodLabel(card.startsAt, card.endsAt)}</p></div><p className="text-xl font-black tabular-nums text-ink-900">{money(card.totalCents)}</p></div>
+    <div className="mt-3 space-y-1.5 border-t border-ink-100 pt-3 text-xs tabular-nums">
+      <div className="flex justify-between gap-3"><span>Verified jobs ({card.jobCount}) × rate ({money(card.payrateCents)})</span><span className="font-semibold">{money(standardGross)}</span></div>
+      <div className="flex justify-between gap-3"><span>GOA adjustment ({card.goaJobCount})</span><span>{money(goa)}</span></div>
+      <div className="flex justify-between gap-3"><span>Tips</span><span className="text-success-600">+ {money(card.tipsCents)}</span></div>
+      <div className="flex justify-between gap-3"><span>Tire plugs</span><span>+ {money(card.tirePlugCents)}</span></div>
+      <div className="flex justify-between gap-3"><span>Battery sales</span><span>+ {money(card.batteryPayoutCents)}</span></div>
+      <div className="flex justify-between gap-3"><span>Busy-time bonus</span><span>+ {money(card.busyBonusCents)}</span></div>
+      <div className="flex justify-between gap-3 border-t border-ink-200 pt-1.5 text-sm font-black"><span>Total</span><span>{money(card.totalCents)}</span></div>
+    </div>
+    <p className={`mt-2 text-[11px] font-semibold ${lineTotal === card.totalCents ? "text-success-600" : "text-danger-600"}`}>{lineTotal === card.totalCents ? "✓ Line items reconcile exactly" : "⚠ Line-item mismatch — contact the owner"}</p>
+    {card.payrateCents === 0 ? <p className="mt-1 text-[11px] font-bold text-amber-700">Your configured rate is $0.00; the owner must resolve it. No rate was invented.</p> : null}
+  </Card>;
+}
+const fmtPeriodLabel = (startsAt: string, endsAt: string) => { const end = new Date(endsAt); return `${formatEtDate(startsAt)} – ${formatEtDate(new Date(end.getTime() - 1).toISOString())}`; };
+
 function EarningsView() {
   const nav = useNavigate();
   const toast = useToast();
@@ -115,11 +136,6 @@ function EarningsView() {
    * same source used by owner Money. The client only formats the returned ET
    * half-open boundaries; it never derives job counts or money. */
   const payPeriods = state?.ok ? state.payPeriods : null;
-  const fmtPeriod = (startsAt: string, endsAt: string) => {
-    const end = new Date(endsAt);
-    if (Number.isNaN(new Date(startsAt).getTime()) || Number.isNaN(end.getTime())) return "—";
-    return `${formatEtDate(startsAt)} – ${formatEtDate(new Date(end.getTime() - 1).toISOString())}`;
-  };
 
   return (
     <AppShell portal="driver" title="Earnings" description="Completed jobs and tips on your account — updated live.">
@@ -173,19 +189,9 @@ function EarningsView() {
 
           {/* Pay periods (feature batch 8): current open week + last closed
               week — earnings = rate × completed + tips, Mon→Sun. */}
-          {payPeriods && <div className="grid grid-cols-2 gap-3">
-            <Card className="p-4">
-              <p className="text-[11px] font-bold uppercase tracking-wide text-brand-600">This pay period</p>
-              <p className="mt-0.5 text-xs text-ink-400">{fmtPeriod(payPeriods.current.startsAt, payPeriods.current.endsAt)}</p>
-              <p className="mt-1 text-2xl font-bold tabular-nums text-ink-900">{money(payPeriods.current.totalCents)}</p>
-              <p className="text-xs text-ink-500">{payPeriods.current.jobCount} job{payPeriods.current.jobCount === 1 ? "" : "s"} · {money(payPeriods.current.tipsCents)} tips · {money(payPeriods.current.batteryPayoutCents)} battery · {money(payPeriods.current.busyBonusCents)} bonus</p>
-            </Card>
-            <Card className="p-4">
-              <p className="text-[11px] font-bold uppercase tracking-wide text-ink-400">Last pay period</p>
-              <p className="mt-0.5 text-xs text-ink-400">{fmtPeriod(payPeriods.previous.startsAt, payPeriods.previous.endsAt)}</p>
-              <p className="mt-1 text-2xl font-bold tabular-nums text-ink-900">{money(payPeriods.previous.totalCents)}</p>
-              <p className="text-xs text-ink-500">{payPeriods.previous.jobCount} job{payPeriods.previous.jobCount === 1 ? "" : "s"} · {money(payPeriods.previous.tipsCents)} tips · {money(payPeriods.previous.batteryPayoutCents)} battery · {money(payPeriods.previous.busyBonusCents)} bonus</p>
-            </Card>
+          {payPeriods && <div className="grid gap-3 md:grid-cols-2">
+            <DriverPaymentBreakdown title="This pay period" card={payPeriods.current} />
+            <DriverPaymentBreakdown title="Last pay period" card={payPeriods.previous} />
           </div>}
           {payPeriods?.diagnostics.unknownCompletionTimeRows ? <p role="status" className="text-xs text-amber-700">Some completed Towbook rows have no parseable completion time and were held out of payday totals; owner review is required.</p> : null}
 

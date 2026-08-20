@@ -1803,6 +1803,12 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`ALTER TABLE payout_records ADD COLUMN IF NOT EXISTS battery_payout_cents INTEGER NOT NULL DEFAULT 0`;
   }],
 
+  // 85: preserve GOA count separately so owner and contractor statements can
+  // show the exact $10 adjustment without reverse-engineering gross_cents.
+  [85, async (q) => {
+    await q`ALTER TABLE payout_records ADD COLUMN IF NOT EXISTS goa_job_count INTEGER NOT NULL DEFAULT 0`;
+  }],
+
 ];
 export async function ensureSchema() {
   const q = sql();

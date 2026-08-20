@@ -78,6 +78,31 @@ const timeLabel = (iso: string | null) => {
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 };
 
+function PaymentBreakdown({ record }: { record: PayoutRecord }) {
+  const goa = record.goaJobCount * 1000;
+  const standardJobs = Math.max(0, record.jobCount - record.goaJobCount);
+  const standardGross = standardJobs * (record.payrateCents ?? 0);
+  const lineTotal = standardGross + goa + record.tipsCents + record.tirePlugCents + record.batteryPayoutCents + record.busyBonusCents;
+  return (
+    <div className="mt-3 rounded-xl border border-ink-100 bg-ink-50/40 p-3 text-xs">
+      <p className="mb-2 font-bold uppercase tracking-wide text-ink-500">Complete payment breakdown</p>
+      <div className="space-y-1.5 tabular-nums">
+        <div className="flex justify-between gap-3"><span>Verified jobs ({record.jobCount}) × rate ({money(record.payrateCents ?? 0)})</span><span className="font-semibold">{money(standardGross)}</span></div>
+        {record.goaJobCount > 0 ? <div className="flex justify-between gap-3"><span>GOA adjustment ({record.goaJobCount} × $10.00)</span><span className="font-semibold">{money(goa)}</span></div> : <div className="flex justify-between gap-3"><span>GOA adjustment</span><span>{money(0)}</span></div>}
+        <div className="flex justify-between gap-3"><span>Tips</span><span className="font-semibold text-success-600">+ {money(record.tipsCents)}</span></div>
+        <div className="flex justify-between gap-3"><span>Tire plugs</span><span className="font-semibold">+ {money(record.tirePlugCents)}</span></div>
+        <div className="flex justify-between gap-3"><span>Battery payouts</span><span className="font-semibold">+ {money(record.batteryPayoutCents)}</span></div>
+        <div className="flex justify-between gap-3"><span>Busy-time bonus</span><span className="font-semibold">+ {money(record.busyBonusCents)}</span></div>
+        <div className="flex justify-between gap-3 border-t border-ink-200 pt-1.5 text-sm font-black text-ink-900"><span>Total</span><span>{money(record.totalCents)}</span></div>
+      </div>
+      <p className={`mt-2 text-[11px] font-semibold ${lineTotal === record.totalCents ? "text-success-600" : "text-danger-600"}`}>
+        {lineTotal === record.totalCents ? "✓ Line items reconcile exactly" : "⚠ Line-item mismatch — review manifest"}
+      </p>
+      {record.payrateCents == null || record.payrateCents === 0 ? <p className="mt-1 text-[11px] font-bold text-danger-600">Rate is $0.00 / not set — owner review required; no rate was invented.</p> : null}
+    </div>
+  );
+}
+
 function MoneyView() {
   const toast = useToast();
   const [overview, setOverview] = useState<{ revenueCents: number; revenueChargedCount: number; revenueStagedCount: number; tipsCents: number; tipsCount: number; weeklyTipsCents: number; weeklyTipCount: number; weeklyTipsByDriver: { driverId: string; driverName: string; tipsCents: number; tipCount: number }[]; payoutsDueCents: number; payoutsDueCount: number; payoutsDueOn: string | null; hasRealMoney: boolean } | null>(null);
@@ -289,13 +314,7 @@ function MoneyView() {
     () => [...cashedOutByContractor.values()].reduce((s, c) => s + c, 0),
     [cashedOutByContractor],
   );
-  /** Presentation-only "cashed out" note for a manifest line — the tips were
-   *  already excluded server-side; this explains why to the owner. */
-  const cashedOutNote = (rec: PayoutRecord) => {
-    const c = cashedOutByContractor.get(rec.contractorId) ?? 0;
-    if (c <= 0) return null;
-    return <span className="text-info-600"> · {money(c)} cashed out (paid outside payday)</span>;
-  };
+
 
   const groupByRail = useMemo(() => {
     const groups = new Map<PayoutRail, PayoutRecord[]>();
@@ -529,6 +548,9 @@ function MoneyView() {
           {detailError && (
             <Alert variant="danger">{detailError}</Alert>
           )}
+          {detail && detail.records.some((r) => r.payrateCents == null || r.payrateCents === 0) && (
+            <Alert variant="danger"><strong>Rate review required:</strong> one or more contractors have a $0.00 or unset rate. The manifest preserves that real rate and does not invent pay.</Alert>
+          )}
 
           {detail && detail.records.length === 0 && (
             <EmptyState
@@ -571,14 +593,7 @@ function MoneyView() {
                       </div>
                       <div className="text-right">
                         <p className="text-sm font-bold tabular-nums text-ink-900">{money(rec.totalCents)}</p>
-                        <p className="text-xs text-ink-400">
-                          {rec.jobCount} job{rec.jobCount === 1 ? "" : "s"}
-                          {rec.payrateCents == null ? " · rate not set" : ` · ${money(rec.grossCents)}`}
-                          {rec.tipsCents > 0 && <span className="text-success-600"> + {money(rec.tipsCents)} tips</span>}
-                          {rec.busyBonusCents > 0 && <span className="text-brand-700"> + {money(rec.busyBonusCents)} busy-time bonus</span>}
-                          {rec.batteryPayoutCents > 0 && <span className="text-brand-700"> + {money(rec.batteryPayoutCents)} battery install</span>}
-                          {cashedOutNote(rec)}
-                        </p>
+                        <PaymentBreakdown record={rec} />
                       </div>
                       <Button variant="primary" size="md" className="shrink-0" onClick={() => { setConfirmMarkId(rec.id); setMarkNote(""); }}>Mark paid</Button>
                     </div>
@@ -621,13 +636,7 @@ function MoneyView() {
                   <Avatar name={rec.contractorName} className="size-9" />
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-semibold text-ink-800">{rec.contractorName} ✓</p>
-                    <p className="text-xs text-ink-400">
-                      {rec.jobCount} job{rec.jobCount === 1 ? "" : "s"} · {money(rec.totalCents)}
-                      {rec.tipsCents > 0 && <span className="text-success-600"> + {money(rec.tipsCents)} tips</span>}
-                      {rec.busyBonusCents > 0 && <span className="text-brand-700"> + {money(rec.busyBonusCents)} busy-time bonus</span>}
-                          {rec.batteryPayoutCents > 0 && <span className="text-brand-700"> + {money(rec.batteryPayoutCents)} battery install</span>}
-                      {cashedOutNote(rec)}
-                    </p>
+                    <PaymentBreakdown record={rec} />
                   </div>
                   <p className="text-xs font-semibold text-success-600">Paid {timeLabel(rec.paidAt)}</p>
                 </div>
@@ -658,14 +667,7 @@ function MoneyView() {
                     </div>
                     <div className="text-right">
                       <p className="text-sm font-bold tabular-nums text-ink-900">{money(rec.totalCents)} due</p>
-                      <p className="text-xs text-ink-400">
-                        {rec.jobCount} job{rec.jobCount === 1 ? "" : "s"}
-                        {rec.payrateCents == null ? " · rate not set" : ` · ${money(rec.grossCents)}`}
-                        {rec.tipsCents > 0 && <span className="text-success-600"> + {money(rec.tipsCents)} tips</span>}
-                        {rec.busyBonusCents > 0 && <span className="text-brand-700"> + {money(rec.busyBonusCents)} busy-time bonus</span>}
-                          {rec.batteryPayoutCents > 0 && <span className="text-brand-700"> + {money(rec.batteryPayoutCents)} battery install</span>}
-                        {cashedOutNote(rec)}
-                      </p>
+                      <PaymentBreakdown record={rec} />
                     </div>
                   </div>
                   <div className="mt-2.5 flex flex-wrap items-center gap-2">

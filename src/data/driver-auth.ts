@@ -1178,7 +1178,7 @@ export type DriverBusyBonus = {
 };
 export type DriverCompletedCounts = { day: number; week: number; month: number; year: number };
 export type DriverEarningsResult =
-  | { ok: true; profile: { name: string; email: string; towbookDriverId: string; payrateCents: number | null }; completed: DriverCall[]; tips: DriverEarningsTip[]; tirePlugs: DriverEarningsTirePlug[]; batteryInstalls: DriverEarningsBatteryInstall[]; busyBonus: DriverBusyBonus; completedCounts: DriverCompletedCounts; payPeriods: { current: { startsAt: string; endsAt: string; jobCount: number; grossCents: number; tipsCents: number; batteryPayoutCents: number; busyBonusCents: number; totalCents: number }; previous: { startsAt: string; endsAt: string; jobCount: number; grossCents: number; tipsCents: number; batteryPayoutCents: number; busyBonusCents: number; totalCents: number }; diagnostics: { unknownCompletionTimeRows: number } }; totals: { completedJobs: number; tipsTotalCents: number; tipCount: number } }
+  | { ok: true; profile: { name: string; email: string; towbookDriverId: string; payrateCents: number | null }; completed: DriverCall[]; tips: DriverEarningsTip[]; tirePlugs: DriverEarningsTirePlug[]; batteryInstalls: DriverEarningsBatteryInstall[]; busyBonus: DriverBusyBonus; completedCounts: DriverCompletedCounts; payPeriods: { current: { startsAt: string; endsAt: string; jobCount: number; goaJobCount: number; payrateCents: number; grossCents: number; tipsCents: number; tirePlugCents: number; batteryPayoutCents: number; busyBonusCents: number; totalCents: number }; previous: { startsAt: string; endsAt: string; jobCount: number; goaJobCount: number; payrateCents: number; grossCents: number; tipsCents: number; tirePlugCents: number; batteryPayoutCents: number; busyBonusCents: number; totalCents: number }; diagnostics: { unknownCompletionTimeRows: number } }; totals: { completedJobs: number; tipsTotalCents: number; tipCount: number } }
   | { ok: false; expired: boolean; message: string };
 /** The driver-facing email: real addresses are shown; derived @towbook.driver
  *  placeholders are internal-only and must never reach a driver's screen
@@ -1305,8 +1305,8 @@ export const driverEarnings = createServerFn({ method: "GET" }).handler(async ()
     const { getDriverPayPeriodSummaryCore } = await import("./payouts-core");
     const payday = await getDriverPayPeriodSummaryCore({ orgId: ctx.u.orgId, id: ctx.identity.userRowId, role: "contractor" }, driverId);
     const payPeriods = payday.ok ? payday.data : {
-      current: { startsAt: new Date(0).toISOString(), endsAt: new Date(0).toISOString(), jobCount: 0, grossCents: 0, tipsCents: 0, batteryPayoutCents: 0, busyBonusCents: 0, totalCents: 0 },
-      previous: { startsAt: new Date(0).toISOString(), endsAt: new Date(0).toISOString(), jobCount: 0, grossCents: 0, tipsCents: 0, batteryPayoutCents: 0, busyBonusCents: 0, totalCents: 0 },
+      current: { startsAt: new Date(0).toISOString(), endsAt: new Date(0).toISOString(), jobCount: 0, goaJobCount: 0, payrateCents: 0, grossCents: 0, tipsCents: 0, tirePlugCents: 0, batteryPayoutCents: 0, busyBonusCents: 0, totalCents: 0 },
+      previous: { startsAt: new Date(0).toISOString(), endsAt: new Date(0).toISOString(), jobCount: 0, goaJobCount: 0, payrateCents: 0, grossCents: 0, tipsCents: 0, tirePlugCents: 0, batteryPayoutCents: 0, busyBonusCents: 0, totalCents: 0 },
       diagnostics: { unknownCompletionTimeRows: 0 },
     };
     return {
