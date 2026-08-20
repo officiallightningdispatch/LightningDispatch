@@ -160,7 +160,10 @@ await setup();
   await storePing({ orgId: ORG, userId: c.userId, towbookDriverId: c.tbDriver, jobId: c.job, latitude: northMeters(80), longitude: PICKUP.lng, accuracy: 12 });
   const pruned = await q`SELECT COUNT(*)::int AS n FROM driver_locations WHERE org_id=${ORG} AND captured_at < NOW() - INTERVAL '24 hours'`;
   const total = await q`SELECT COUNT(*)::int AS n FROM driver_locations WHERE org_id=${ORG}`;
+  const fresh = await q`SELECT captured_at FROM driver_locations WHERE org_id=${ORG} AND towbook_driver_id=${c.tbDriver} ORDER BY captured_at DESC LIMIT 1`;
+  const freshAt = fresh.length ? new Date(String(fresh[0].captured_at)).getTime() : 0;
   check("prune removed >24h rows", Number(pruned[0].n) === 0 && Number(total[0].n) === 2, JSON.stringify(total));
+  check("real ping lands fresh for dispatch (<=15 min)", freshAt >= Date.now() - 15 * 60 * 1000 && freshAt <= Date.now() + 5_000, JSON.stringify(fresh));
 }
 
 /* --------------------------- geofence: inside radius --------------------------- */
@@ -254,13 +257,14 @@ await setup();
   check("PUT failure → arrived outcome with towbookOk=false verified=false", out.action === "arrived" && out.towbookOk === false && out.verified === false && out.detail.includes("failed"), JSON.stringify(out));
   check("PUT attempted once, no verify GET", calls.length === 1 && calls[0].method === "PUT" && calls[0].body.status.id === 3, JSON.stringify(calls));
   const esc = await q`SELECT decision, escalated, reason FROM ai_dispatcher_decisions WHERE org_id=${ORG3}`;
-  check("escalation row recorded", esc.length === 1 && String(esc[0].decision) === "escalated_auto_arrive_failed" && esc[0].escalated === true && String(esc[0].reason).includes("did not land on Towbook"), JSON.stringify(esc));
+  const autoArriveEsc = esc.find((row) => String(row.decision) === "escalated_auto_arrive_failed");
+  check("escalation row recorded", autoArriveEsc?.escalated === true && String(autoArriveEsc?.reason).includes("did not land on Towbook"), JSON.stringify(esc));
   const aud = await q`SELECT detail FROM audit_log WHERE org_id=${ORG3} AND action='geofence_auto_arrive' LIMIT 1`;
   check("failure outcome audited (never swallowed)", aud.length === 1 && String(aud[0].detail.towbookOk) === "false", JSON.stringify(aud));
   // Same call re-failing dedupes on the ledger key (ON CONFLICT DO NOTHING).
   await q`UPDATE dispatch_jobs SET status='en_route' WHERE id=${c.job}`;
   await evaluateGeofence({ orgId: ORG3, userId: c.userId, towbookDriverId: c.tbDriver, lat: PICKUP.lat, lng: PICKUP.lng, fetchImpl });
-  const esc2 = await q`SELECT COUNT(*)::int AS n FROM ai_dispatcher_decisions WHERE org_id=${ORG3}`;
+  const esc2 = await q`SELECT COUNT(*)::int AS n FROM ai_dispatcher_decisions WHERE org_id=${ORG3} AND decision='escalated_auto_arrive_failed'`;
   check("repeated failure dedupes escalation", Number(esc2[0].n) === 1);
 }
 

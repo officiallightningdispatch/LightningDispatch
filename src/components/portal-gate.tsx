@@ -1,6 +1,7 @@
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, type ReactNode } from "react";
 import { authStatus, type AuthUser, type Role } from "~/data/auth";
+import { DriverGpsTracker } from "~/components/driver-gps-tracker";
 
 export function GateSkeleton() {
   return (
@@ -52,7 +53,11 @@ export function PortalGate({ children, roles, allowDriverIdentity }: { children:
   if (!ready) return <GateSkeleton />;
   return <>{children}</>;
 }
-export const DriverGate = ({ children }: { children: ReactNode }) => <PortalGate roles={["contractor"]} allowDriverIdentity>{children}</PortalGate>;
+export const DriverGate = ({ children }: { children: ReactNode }) => (
+  <PortalGate roles={["contractor"]} allowDriverIdentity>
+    <DriverGpsTracker>{children}</DriverGpsTracker>
+  </PortalGate>
+);
 // Owner is the boss: owner + admin have full access to the ops workspace too.
 // Contractors are still restricted to their own portal via DriverGate (never weakened).
 export const OpsGate = ({ children }: { children: ReactNode }) => <PortalGate roles={["owner", "admin", "dispatcher"]}>{children}</PortalGate>;

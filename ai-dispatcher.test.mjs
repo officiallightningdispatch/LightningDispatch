@@ -2095,7 +2095,7 @@ try {
     // incorrectly requires the LD heartbeat table.
     await q`DELETE FROM driver_availability_log WHERE org_id=${ORG7} AND user_id=${QUAL_USERS[4]}`;
     const {r: towCapable,m: towCapableM,rows: towCapableRows}=await runQ(92014,[driver(QUAL_TB[4],'tow-capable Towbook-only',{etaSec:600})],{offer:{serviceType:'heavy tow'}});
-    check('tow capability companion: online tow-capable driver assigned',towCapable.decisions[0]?.decision==='auto_accept_with_driver'&&posts(towCapableM.calls)[0]?.body?.driverId===QUAL_TB[4]&&!String(towCapableRows[0]?.reason||'').includes('capability-mismatch'),JSON.stringify({r:towCapable,rows:towCapableRows}));
+    check('union availability: fresh-GPS Towbook-checked-in driver with NO Lightning GO assigned (no_driver→with_driver)',towCapable.decisions[0]?.decision==='auto_accept_with_driver'&&posts(towCapableM.calls)[0]?.body?.driverId===QUAL_TB[4]&&!String(towCapableRows[0]?.reason||'').includes('no eligible')&&!String(towCapableRows[0]?.reason||'').includes('capability-mismatch'),JSON.stringify({r:towCapable,rows:towCapableRows}));
     const {r: sole,m: sm}=await runQ(92013,[driver(QUAL_TB[1],'sole unqualified')]);
     check('qualification sole-unqualified: zero POSTs, no-driver fallback hard blocked',sole.decisions[0]?.decision==='escalated_qualification_failed'&&posts(sm.calls).length===0&&!sm.calls.some(c=>c.method==='POST'));
   }

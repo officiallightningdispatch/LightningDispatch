@@ -38,4 +38,10 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Real driver GPS dispatch signal; background permission keeps the native
+         watch alive when the contractor switches to Towbook or locks the phone. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="true" />
 </manifest>

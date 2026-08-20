@@ -8,7 +8,7 @@
  */
 import { useNavigate } from "@tanstack/react-router";
 import { Check, LogOut, MapPin, Navigation, Radar, RefreshCw, ThumbsUp, Truck, Unplug, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { BatterySalesAgent, isJumpstartService } from "~/components/battery-agent-ui";
 import { TirePlugOffer } from "~/components/tire-plug-ui";
 import { JobDetailDisclosure } from "~/components/job-detail";
@@ -18,7 +18,7 @@ import { Button, Card, useToast } from "~/components/ui";
 import { driverJobAction, driverJobs, driverLogout, driverReconnect, driverReconnectContext, type DriverCall } from "~/data/driver-auth";
 import { orderDriverQueue } from "~/lib/driver-queue-core";
 import { PUSH_RECEIVED_MESSAGE_TYPE } from "~/lib/push-received";
-import { pingDriverLocation } from "~/data/driver-gps";
+import { useDriverGpsState, type DriverGpsState } from "~/components/driver-gps-tracker";
 
 export const STATUS_META: Record<number, { label: string; badge: string; dot: string }> = {
   0: { label: "New", badge: "bg-ink-100 text-ink-600", dot: "bg-ink-400" },
@@ -40,64 +40,15 @@ export const etaLabel = (iso: string | null): string => {
   return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 };
 
-export type GpsState = "idle" | "tracking" | "denied" | "unsupported" | "error";
-/** GPS ping loop (milestone #3): while the driver has a job in en_route or
- *  arrived, capture browser geolocation every ~20s and ping the platform
- *  (driver_locations + best-effort Towbook checkin + geofence auto-arrive).
- *  Never throws, never blocks the job queue. */
-export function useDriverGps(calls: DriverCall[] | null): GpsState {
-  const [state, setState] = useState<GpsState>("idle");
-  // Location is a driver signal, not a dispatch-job signal. Towbook-side
-  // assignments can be mirrored late (or not yet appear in this queue), so
-  // never gate capture on an en-route/on-scene call. The server accepts a
-  // nullable job id and still records the real fix in driver_locations.
-  const activeJobRef = useRef<string | null>(null);
-  useEffect(() => {
-    const active = calls?.find((c) => c.statusId === 2 || c.statusId === 3); // best-effort job association
-    activeJobRef.current = active ? active.id : null;
-  }, [calls]);
-  useEffect(() => {
-    if (typeof navigator === "undefined" || !navigator.geolocation) {
-      setState("unsupported");
-      return;
-    }
-    let stopped = false;
-    let lastFixAt = 0;
-    const tick = () => {
-      const jobId = activeJobRef.current;
-      // Capture while the contractor is in the portal even when Towbook has
-      // assigned the job outside Lightning or sync has not exposed it yet.
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          if (stopped) return;
-          lastFixAt = Date.now();
-          setState("tracking");
-          void pingDriverLocation({
-            data: {
-              latitude: pos.coords.latitude,
-              longitude: pos.coords.longitude,
-              accuracy: Number.isFinite(pos.coords.accuracy) ? Math.round(pos.coords.accuracy) : null,
-              jobTowbookId: jobId,
-            },
-          }).catch(() => { /* a failed ping never breaks the loop */ });
-        },
-        (err) => {
-          if (stopped) return;
-          if (err && err.code === err.PERMISSION_DENIED) setState("denied");
-          else if (Date.now() - lastFixAt > 60000) setState("error");
-        },
-        { enableHighAccuracy: true, timeout: 12000, maximumAge: 20000 },
-      );
-    };
-    tick();
-    const t = setInterval(tick, 20000);
-    return () => { stopped = true; clearInterval(t); };
-  }, []);
-  return state;
+export type GpsState = DriverGpsState;
+/** The GPS tracker is mounted once by DriverGate and is deliberately not tied
+ * to a queue call, Lightning GO state, or a foreground-only job screen. */
+export function useDriverGps(_calls: DriverCall[] | null): GpsState {
+  return useDriverGpsState();
 }
 const GPS_CHIP: Record<GpsState, { label: string; tone: string; icon: typeof Radar }> = {
-  tracking: { label: "Live tracking on — sending your position every 20 seconds", tone: "bg-success-50 text-success-700", icon: Radar },
-  idle: { label: "Location pings active once you're en route to a job", tone: "bg-ink-50 text-ink-500", icon: Radar },
+  tracking: { label: "Live tracking on — sending your real position", tone: "bg-success-50 text-success-700", icon: Radar },
+  idle: { label: "Location sharing starts while you're signed in", tone: "bg-ink-50 text-ink-500", icon: Radar },
   denied: { label: "Location access is off — allow location for live tracking and auto-arrival", tone: "bg-amber-50 text-amber-800", icon: MapPin },
   unsupported: { label: "This browser can't provide location — tracking unavailable", tone: "bg-ink-50 text-ink-500", icon: MapPin },
   error: { label: "Temporarily can't get your position — will keep retrying", tone: "bg-amber-50 text-amber-800", icon: MapPin },
