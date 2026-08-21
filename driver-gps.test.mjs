@@ -105,8 +105,29 @@ function makeFetch({ callId, putStatus = 200, getStatusId = 3 } = {}) {
   return { fetchImpl, calls };
 }
 
+async function cleanupQaGpsOrgs(orgIds) {
+  for (const orgId of orgIds) {
+    assertQaOrg(orgId);
+    // These two tables intentionally do not cascade through organizations in
+    // every schema lineage. Remove them first so a prior interrupted run
+    // cannot make the org delete fail and poison the shared QA database.
+    await q`DELETE FROM towbook_sessions WHERE org_id=${orgId}`;
+    await q`DELETE FROM organization_memberships WHERE org_id=${orgId}`;
+    await q`DELETE FROM organizations WHERE id=${orgId}`;
+  }
+}
+
+async function cleanupStaleQaGpsOrgs() {
+  const stale = await q`SELECT id FROM organizations WHERE name='qa driver-gps'`;
+  await cleanupQaGpsOrgs(stale.map((row) => String(row.id)));
+}
+
 async function setup() {
   await ensureSchema();
+  // A previous crashed run may have left only sessions/memberships behind.
+  // Restrict this defensive cleanup to organizations explicitly named by this
+  // QA fixture; never touch production or any other organization.
+  await cleanupStaleQaGpsOrgs();
   for (const [org, owner, driver, tbDriver, tbUser, job, callId] of [
     [ORG, OWNER, DRIVER, CONF[ORG].tbDriver, CONF[ORG].tbUser, CONF[ORG].job, CONF[ORG].call],
     [ORG2, OWNER2, DRIVER2, CONF[ORG2].tbDriver, CONF[ORG2].tbUser, CONF[ORG2].job, CONF[ORG2].call],
@@ -300,10 +321,8 @@ await setup();
 const failed = checks.filter(([, ok]) => !ok);
 console.log(`driver-gps.test.mjs: ${checks.length - failed.length}/${checks.length} passed`);
 if (failed.length) { console.error(failed.map(([n, , e]) => `  ${n} ${e}`).join("\n")); process.exit(1); }
-// Prove cleanup: deleting the QA orgs cascades every row they created.
-assertQaOrg(ORG); await q`DELETE FROM organizations WHERE id=${ORG}`.catch(() => {});
-assertQaOrg(ORG2); await q`DELETE FROM organizations WHERE id=${ORG2}`.catch(() => {});
-assertQaOrg(ORG3); await q`DELETE FROM organizations WHERE id=${ORG3}`.catch(() => {});
+// Prove cleanup: remove non-cascading org children before deleting the QA orgs.
+await cleanupQaGpsOrgs([ORG, ORG2, ORG3]);
 await q`DELETE FROM users WHERE id=${OWNER}`.catch(() => {});
 await q`DELETE FROM users WHERE id=${OWNER2}`.catch(() => {});
 await q`DELETE FROM users WHERE id=${OWNER3}`.catch(() => {});
