@@ -52,6 +52,58 @@ function ensure() {
 }
 const db = () => import("~/db").then((m) => m.sql());
 
+/** Names in CallWorkflow are display strings, not stable Towbook ids. */
+export const normalizeReportDriverName = (value: unknown): string => String(value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+export type ReportPaydayUser = { userId: string; name: string; towbookDriverId: string; payrateCents: number | null };
+export type ReportPaydayGroup = { tb_id: string; job_count: number; goa_count: number };
+
+/** Attribute authoritative report rows to LD users. Matched rows use the
+ * dispatch assignment id; unmatched rows use an exact normalized contractor
+ * name. Zero or multiple name matches are excluded and returned for review. */
+export function groupReportPayableRows(
+  rows: ReconciliationResult["rows"],
+  users: ReportPaydayUser[],
+  jobsById: Map<string, Record<string, unknown>>,
+  paidBatteryIds: Set<string>,
+): { groups: ReportPaydayGroup[]; unresolved: string[] } {
+  const userByTb = new Map(users.map((u) => [u.towbookDriverId, u]));
+  const userByReportName = new Map<string, ReportPaydayUser[]>();
+  for (const user of users) {
+    const key = normalizeReportDriverName(user.name);
+    if (!key) continue;
+    const existing = userByReportName.get(key) ?? [];
+    existing.push(user);
+    userByReportName.set(key, existing);
+  }
+  const grouped = new Map<string, ReportPaydayGroup>();
+  const unresolved: string[] = [];
+  for (const row of rows) {
+    if (row.classification !== "completed" && row.classification !== "goa") continue;
+    if (row.jobId && paidBatteryIds.has(row.jobId)) continue;
+    const job = row.jobId ? jobsById.get(row.jobId) : undefined;
+    const towbookId = row.towbookDriverId ?? String(job?.assigned_driver_towbook_id ?? "");
+    let user = towbookId ? userByTb.get(towbookId) : undefined;
+    if (!user && !row.jobId) {
+      const matches = userByReportName.get(normalizeReportDriverName(row.driver)) ?? [];
+      if (matches.length === 1) user = matches[0];
+      else {
+        const why = matches.length === 0 ? "no exact LD contractor name match" : `${matches.length} exact LD contractor name matches`;
+        unresolved.push(`${row.key} (${row.driver}): ${why}`);
+        continue;
+      }
+    }
+    if (!user) {
+      unresolved.push(`${row.key} (${row.driver}): no LD contractor for Towbook driver ${towbookId || "(missing)"}`);
+      continue;
+    }
+    const group = grouped.get(user.towbookDriverId) ?? { tb_id: user.towbookDriverId, job_count: 0, goa_count: 0 };
+    group.job_count++;
+    if (row.classification === "goa") group.goa_count++;
+    grouped.set(user.towbookDriverId, group);
+  }
+  return { groups: [...grouped.values()], unresolved };
+}
+
 /** The actor context every core takes (mirrors the AuthUser subset we need). */
 export type PayoutActor = { orgId: string; id: string; role: string };
 const OWNER_ROLES = ["owner", "admin"];
@@ -952,21 +1004,21 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
         SELECT install_job_id FROM battery_sales
         WHERE org_id=${actor.orgId} AND status='paid' AND completed_at IS NOT NULL`;
       const paidBatteryIds = new Set((paidBatteryJobs as Record<string, unknown>[]).map((row) => String(row.install_job_id)));
-      const grouped = new Map<string, { tb_id: string; job_count: number; goa_count: number }>();
-      for (const row of reconciliation.rows) {
-        if (row.classification !== "completed" && row.classification !== "goa") continue;
-        if (!row.jobId || paidBatteryIds.has(row.jobId)) continue;
-        const job = jobsById.get(row.jobId);
-        const tb = row.towbookDriverId ?? String(job?.assigned_driver_towbook_id ?? "");
-        if (!tb) continue;
-        const groupedRow = grouped.get(tb) ?? { tb_id: tb, job_count: 0, goa_count: 0 };
-        groupedRow.job_count += 1;
-        if (row.classification === "goa") groupedRow.goa_count += 1;
-        grouped.set(tb, groupedRow);
-      }
-      jobRows = [...grouped.values()];
-      if (reconciliation.unmatchedCount > 0) {
-        reportWarning = reportWarning ?? `CallWorkflow has ${reconciliation.unmatchedCount} unmatched/unitemized report rows; the authoritative report total is preserved in diagnostics and only matched rows are payable.`;
+      // The report is authoritative for membership. Matched rows use the
+      // dispatch assignment id; unmatched completed rows resolve by exact
+      // normalized LD contractor name, never by fuzzy guessing.
+      const reportUsers = (await q`SELECT u.id AS user_id, u.name, u.towbook_driver_id, cp.payrate_cents
+        FROM users u
+        JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${actor.orgId}
+        LEFT JOIN contractor_profiles cp ON cp.org_id=${actor.orgId} AND cp.user_id=u.id
+        WHERE u.towbook_driver_id IS NOT NULL` as Record<string, unknown>[]).map((r) => ({
+          userId: String(r.user_id), name: String(r.name ?? ""), towbookDriverId: String(r.towbook_driver_id),
+          payrateCents: r.payrate_cents != null ? Number(r.payrate_cents) : null,
+        }));
+      const reportAttribution = groupReportPayableRows(reconciliation.rows, reportUsers, jobsById, paidBatteryIds);
+      jobRows = reportAttribution.groups;
+      if (reportAttribution.unresolved.length > 0) {
+        reportWarning = reportWarning ?? `CallWorkflow has ${reportAttribution.unresolved.length} payable report rows that could not be resolved to exactly one LD contractor by name; they remain excluded: ${reportAttribution.unresolved.join("; ")}`;
       }
     } else {
       // Safe local fallback for hermetic QA environments without Towbook

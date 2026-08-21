@@ -127,14 +127,28 @@ export function reconcileCallWorkflow(rows: CallWorkflowRow[], jobs: Array<Recor
     const raw = job?.raw_json && typeof job.raw_json === "object" ? job.raw_json as Record<string, unknown> : undefined;
     const reassigned = status.includes("reassign") || job?.manually_reassigned_at != null || s(raw?.reassigned).trim() === "true";
     const invoiceItems = raw?.invoiceItems;
-    const goa = Array.isArray(invoiceItems) && invoiceItems.some(x => s(typeof x === "object" && x ? (x as Record<string, unknown>).name ?? (x as Record<string, unknown>).description : x).includes("goa"));
+    // An unmatched CallWorkflow row can still carry authoritative invoice
+    // detail. Prefer the dispatch row when present, but do not lose a GOA
+    // classification merely because this call predates LD's first capture.
+    const reportInvoiceItems = r.invoiceItems;
+    const hasGoaItem = (items: unknown) => Array.isArray(items) && items.some(x => s(typeof x === "object" && x ? (x as Record<string, unknown>).name ?? (x as Record<string, unknown>).description : x).includes("goa"));
+    const goa = hasGoaItem(invoiceItems) || hasGoaItem(reportInvoiceItems);
     const driver = String(r.driverName ?? r.driver ?? r.ownerUserName ?? "Unknown");
     const hasCompletion = Boolean(r.completed || r.completionTime);
     let classification: Classification = "unclassifiable", cents = 0, reason = "";
     if (finalCancelled) { classification = "cancelled"; reason = "final cancelled; $0"; }
     else if (reassigned) { classification = "reassigned"; reason = "reassigned away; $0"; }
     else if (!hasCompletion) reason = "missing authoritative completion timestamp";
-    else if (!job) { reason = "unmatched report call; no dispatch job to itemize"; diagnostics.push(`${key}: ${reason}`); }
+    else if (!job) {
+      // Report membership and completion are authoritative even when the
+      // local dispatch ledger has no itemized row (for example, pre-LD work).
+      // Keep the unmatched diagnostic, but do not make a real completed call
+      // non-payable solely because it cannot be joined to dispatch_jobs.
+      classification = goa ? "goa" : "completed";
+      cents = goa ? 1000 : 0;
+      reason = "unmatched report call; no dispatch job to itemize";
+      diagnostics.push(`${key}: ${reason}`);
+    }
     else if (goa) { classification = "goa"; cents = 1000; }
     else { classification = "completed"; reason = "matched dispatch job"; }
     if (classification === "unclassifiable" && !diagnostics.some(d => d.startsWith(`${key}:`))) diagnostics.push(`${key}: ${reason}`);
@@ -153,14 +167,18 @@ export function reconcileCallWorkflow(rows: CallWorkflowRow[], jobs: Array<Recor
     const d = dm.get(x.driver) ?? emptyCounts();
     d.reportCount++;
     if (x.jobId) d.matchedCount++;
-    if (x.classification === "completed" || x.classification === "goa") { d.matchedPayableCount++; d.payableCount++; d.payableCents += x.payableCents; }
+    if (x.classification === "completed" || x.classification === "goa") {
+      if (x.jobId) d.matchedPayableCount++;
+      d.payableCount++;
+      d.payableCents += x.payableCents;
+    }
     else if (x.classification === "reassigned") { d.reassignedCount++; d.excludedCount++; }
     else if (x.classification === "cancelled") d.excludedCount++;
     else { d.unmatchedCount++; d.unitemizedCount++; d.unclassifiableCount++; }
     dm.set(x.driver, d);
   }
   const matchedCount = out.filter(x => Boolean(x.jobId)).length;
-  const matchedPayableCount = out.filter(x => x.classification === "completed" || x.classification === "goa").length;
+  const matchedPayableCount = out.filter(x => Boolean(x.jobId) && (x.classification === "completed" || x.classification === "goa")).length;
   const reassignedCount = out.filter(x => x.classification === "reassigned").length;
   const unmatchedCount = out.filter(x => x.classification === "unclassifiable").length;
   const excludedCount = out.filter(x => x.classification === "cancelled" || x.classification === "reassigned").length;
@@ -171,7 +189,7 @@ export function reconcileCallWorkflow(rows: CallWorkflowRow[], jobs: Array<Recor
     reassignedCount,
     unmatchedCount,
     unitemizedCount: unmatchedCount,
-    payableCount: matchedPayableCount,
+    payableCount: out.filter(x => x.classification === "completed" || x.classification === "goa").length,
     excludedCount,
     unclassifiableCount: unmatchedCount,
     payableCents: out.reduce((n, x) => n + x.payableCents, 0),

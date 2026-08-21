@@ -24,12 +24,13 @@ if (!process.env.DATABASE_URL) {
 }
 const q = neon(process.env.DATABASE_URL);
 const {
-  periodBoundariesFor, listPayPeriodsCore, getPayPeriodDetailCore, computePaydayCore,
+  periodBoundariesFor, listPayPeriodsCore, getPayPeriodDetailCore, computePaydayCore, groupReportPayableRows,
   markPayoutPaidCore, markPaydayPeriodPaidCore, verifyPayoutMethodCore, rejectPayoutMethodCore,
   editPayoutMethodCore, getContractorPayoutMethodCore, getMyPayoutMethodCore, getMoneyOverviewCore, setMyPayoutMethodCore, maskHandle,
 } = await import("./src/data/payouts-core.ts");
 const { ensureSchema } = await import("./src/data/migrations.ts");
 const { assertQaOrg } = await import("./src/data/db-guard.ts");
+const { reconcileCallWorkflow } = await import("./src/data/towbook-reports-core.ts");
 await ensureSchema();
 const checks = [];
 const check = (name, cond, extra = "") => { checks.push([name, Boolean(cond), extra]); if (!cond) throw new Error(`FAIL: ${name} ${extra}`); };
@@ -148,6 +149,18 @@ await q`INSERT INTO completion_tips(id, org_id, job_id, driver_id, driver_towboo
   (${`qa-pd-t2-${randomUUID()}`}, ${ORG}, ${J_EDGE}, ${D3}, ${TB3}, 1000, 'USD', 'paid', ${`tip-pd-${randomUUID()}`}, ${iso(new Date(closed.startsAt.getTime() + 6000e3))}),
   (${`qa-pd-t3-${randomUUID()}`}, ${ORG}, ${J2}, ${D1}, ${TB1}, 500, 'USD', 'failed', ${`tip-pd-${randomUUID()}`}, ${iso(new Date(closed.startsAt.getTime() + 7000e3))}),
   (${`qa-pd-t4-${randomUUID()}`}, ${ORG}, ${J1}, ${D4}, NULL, 800, 'USD', 'paid', ${`tip-pd-${randomUUID()}`}, ${iso(new Date(closed.startsAt.getTime() + 8000e3))})`;
+
+/* ---------------- authoritative report attribution ---------------- */
+{
+  const report = reconcileCallWorkflow([{ id: 9901, driverName: "  jane   doe ", completed: "2026-08-12T12:00:00Z" }], []);
+  const users = [{ userId: D1, name: "Jane Doe", towbookDriverId: TB1, payrateCents: 10000 }];
+  const grouped = groupReportPayableRows(report.rows, users, new Map(), new Set());
+  check("report unmatched known contractor name counts as payable job", grouped.groups.length === 1 && grouped.groups[0].tb_id === TB1 && grouped.groups[0].job_count === 1 && grouped.unresolved.length === 0, JSON.stringify(grouped));
+  const unresolved = groupReportPayableRows(report.rows, [], new Map(), new Set());
+  check("report unmatched zero name match stays excluded", unresolved.groups.length === 0 && unresolved.unresolved.length === 1 && unresolved.unresolved[0].includes("no exact LD contractor name match"), JSON.stringify(unresolved));
+  const multiple = groupReportPayableRows(report.rows, [users[0], { userId: D2, name: "Jane Doe", towbookDriverId: TB2, payrateCents: 15000 }], new Map(), new Set());
+  check("report unmatched multiple name match stays excluded", multiple.groups.length === 0 && multiple.unresolved.length === 1 && multiple.unresolved[0].includes("2 exact LD contractor name matches"), JSON.stringify(multiple));
+}
 
 /* ------------------------- listPayPeriods + gates ------------------------- */
 {
