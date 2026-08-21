@@ -54,9 +54,12 @@ try {
     let waived=await loadRegionalPreferenceMatches(ORG,c,41.1792,-73.1894,loaded); assert.equal(waived.has("910001"),false); assert.equal(waived.get("910001"),undefined); assert.equal(String((await pick(c,41.1792,-73.1894,loaded,{regionalPreference:waived}))?.driver?.driverId),"910002");
     loaded=new Map([["910001",{activeCount:2,queuedJobs:[]}]]); const present=await loadRegionalPreferenceMatches(ORG,c,41.1792,-73.1894,loaded); assert.equal(present.get("910001"),1);
   });
-  await check("T5 RAILS NEVER WEAKENED", async () => {
+  await check("T5 NO-FRESH-GPS RAIL NEVER WEAKENED", async () => {
     const c=[offline("910001",41.2,-73.2),driver("910002",41.2,-73.2)]; const m=new Map([["910001",1],["910002",0]]);
-    assert.equal(String((await pick(c,41.1792,-73.1894,new Map(),{regionalPreference:m}))?.driver?.driverId),"910002");
+    // Strict-GPS dispatch does not use Towbook availability as a location
+    // source: the first candidate has no app fix, while the second does.
+    const gpsFixes=new Map([["910002",{lat:41.2,lng:-73.2,capturedAt:new Date().toISOString()}]]);
+    assert.equal(String((await pick(c,41.1792,-73.1894,new Map(),{regionalPreference:m,gpsFixes}))?.driver?.driverId),"910002");
   });
   await check("T6 ZONE OUTRANKS REGION + RECALC", async () => {
     const c=[driver("910001",41.2,-73.2),driver("910002",41.2,-73.2)]; const area={zoneMatches:new Map([["910002",true],["910001",false]]),regionalPreference:new Map([["910001",1],["910002",0]])};

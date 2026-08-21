@@ -72,12 +72,17 @@ check("5: verified calls are upserted before best-effort follow-up", () => {
   assert.ok(dispatcher.indexOf("syncForOrg(orgId, 'sync:auto-accept-pending'", pending) > pending, "recovery upsert precedes best-effort sync");
 });
 
-check("6: TX placeholder expansion includes GPS/anchor drivers and never parks driver zero", () => {
-  assert.match(dispatcher, /Agero placeholder coordinates can hide an in-state driver/);
-  assert.match(dispatcher, /driverGpsFixes\.keys\(\), \.\.\.driverAnchors\.keys\(\)/);
-  assert.match(dispatcher, /poolExpandedFromStateEvidence/);
+check("6: TX placeholder expansion uses fresh app GPS only and never parks driver zero", () => {
+  const expansion = dispatcher.slice(
+    dispatcher.indexOf("// Agero placeholder coordinates can hide an in-state driver"),
+    dispatcher.indexOf("const serviceType =", dispatcher.indexOf("// Agero placeholder coordinates can hide an in-state driver")),
+  );
+  assert.match(expansion, /Agero placeholder coordinates can hide an in-state driver/);
+  assert.match(expansion, /for \(const \[id, point\] of driverGpsFixes\)/);
+  assert.match(expansion, /poolExpandedFromGps/);
+  assert.doesNotMatch(expansion, /driverAnchors/);
   assert.match(dispatcher, /dispatchDriverId = Number\(recalculated\.driver\.driverId\) \|\| 0/);
-  assert.match(dispatcher, /in-state driver pool expanded from anchors\/fixes/);
+  assert.match(dispatcher, /in-state driver pool expanded from fresh app GPS/);
 });
 
 check("7: over-goal recalc dispatches with accurate uncapped quote", () => {
