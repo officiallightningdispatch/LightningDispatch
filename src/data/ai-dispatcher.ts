@@ -319,7 +319,7 @@ export type DriverGpsFix = {
 
 /** Where the road ETA was routed FROM. Dispatch accepts only a fresh app GPS
  *  origin; Towbook payload and assignment evidence are never valid bases. */
-export type EtaOriginBasis = "gps";
+export type EtaOriginBasis = "gps" | "owner-confirmed";
 
 /** Start of today's ET business day (America/New_York 00:00) as UTC ms —
  *  DST-aware: the offset is resolved from the ET calendar date, so winter EST
@@ -444,6 +444,33 @@ export async function loadDriverDispatchEvidence(orgId: string): Promise<Map<str
       if (!existing || (!existing.state && state)) out.set(id, { lat, lng, state });
     }
   } catch { /* supplemental evidence must never block dispatch */ }
+  return out;
+}
+
+export type OwnerConfirmedDispatchLocation = {
+  state: string;
+  lat: number;
+  lng: number;
+};
+/** Load only explicit, enabled owner confirmations. This is a narrow exception
+ * to strict GPS: it supplies state proof and an ETA origin only for drivers the
+ * owner deliberately vouched for. */
+export async function loadOwnerConfirmedDispatchLocations(orgId: string): Promise<Map<string, OwnerConfirmedDispatchLocation>> {
+  const out = new Map<string, OwnerConfirmedDispatchLocation>();
+  try {
+    const rows = await sql()`SELECT u.towbook_driver_id, cp.owner_confirmed_dispatch_state, cp.owner_confirmed_dispatch_lat, cp.owner_confirmed_dispatch_lng
+      FROM contractor_profiles cp JOIN users u ON u.id=cp.user_id
+      WHERE cp.org_id=${orgId} AND u.deactivated_at IS NULL
+        AND cp.owner_confirmed_dispatch_enabled=TRUE
+        AND cp.owner_confirmed_dispatch_state IS NOT NULL
+        AND cp.owner_confirmed_dispatch_lat IS NOT NULL AND cp.owner_confirmed_dispatch_lng IS NOT NULL` as Array<Record<string, unknown>>;
+    for (const r of rows) {
+      const id = String(r.towbook_driver_id ?? "");
+      const state = String(r.owner_confirmed_dispatch_state ?? "").trim().toUpperCase();
+      const lat = Number(r.owner_confirmed_dispatch_lat), lng = Number(r.owner_confirmed_dispatch_lng);
+      if (id && /^[A-Z]{2}$/.test(state) && Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 && lng !== 0) out.set(id, { state, lat, lng });
+    }
+  } catch { /* fallback is optional; strict GPS remains fail-closed */ }
   return out;
 }
 
@@ -1592,6 +1619,8 @@ function serviceTypeQualification(driver: NearestDriver, serviceType: string | n
 export type AreaContext = {
   anchors?: Map<string, DriverAnchor>;
   gpsFixes?: Map<string, DriverGpsFix>;
+  /** Explicit owner-vouched state/origin for staff/supervisor drivers without app GPS. */
+  ownerConfirmedDispatchLocations?: Map<string, OwnerConfirmedDispatchLocation>;
   /** In-area circle radius (defaults to ANCHOR_RADIUS_MILES). */
   anchorRadiusMiles?: number;
   /** "Now" for the fresh/stale fix decision (defaults to new Date()). */
@@ -1766,14 +1795,14 @@ export async function chooseBestDriverByRoad(
   const baseEligible = drivers.filter((d): d is NearestDriver => {
     if (!d || typeof d !== "object" || Array.isArray(d)) return false;
     const o = d as NearestDriver;
-    // Towbook check-in and Lightning GO/session status are intentionally not
-    // consulted here. Location (fresh app GPS, enforced below) is the sole
-    // dispatch availability signal (owner decision 2026-08-20).
-    return (
-      typeof o.latitude === "number" && Number.isFinite(o.latitude) && o.latitude !== 0 &&
-      typeof o.longitude === "number" && Number.isFinite(o.longitude) && o.longitude !== 0 &&
-      typeof o.estimatedTimeSeconds === "number" && Number.isFinite(o.estimatedTimeSeconds)
-    );
+    // Towbook check-in / Lightning GO are not a general location substitute.
+    // The only exception is an explicit owner-confirmed location for a staff /
+    // supervisor driver; availability is checked below when that exception is used.
+    const fallback = area?.ownerConfirmedDispatchLocations?.get(String(o.driverId));
+    const hasPayloadPoint = typeof o.latitude === "number" && Number.isFinite(o.latitude) && o.latitude !== 0
+      && typeof o.longitude === "number" && Number.isFinite(o.longitude) && o.longitude !== 0;
+    const hasEstimate = typeof o.estimatedTimeSeconds === "number" && Number.isFinite(o.estimatedTimeSeconds);
+    return (hasPayloadPoint && hasEstimate) || Boolean(fallback && hasEstimate);
   });
   if (!baseEligible.length) return null;
 
@@ -1804,7 +1833,10 @@ export async function chooseBestDriverByRoad(
   // therefore exclude it from routing and selection until a fresh fix arrives.
   const stateOriginFor = (d: NearestDriver): { lat: number; lng: number; fixAgeMinutes: number } | null => {
     const fix = area?.gpsFixes?.get(String(d.driverId));
-    if (!fix) return null;
+    if (!fix) {
+      const owner = area?.ownerConfirmedDispatchLocations?.get(String(d.driverId));
+      return owner ? { lat: owner.lat, lng: owner.lng, fixAgeMinutes: 0 } : null;
+    }
     const captured = Date.parse(fix.capturedAt);
     const age = Number.isFinite(captured) ? (now.getTime() - captured) / 60000 : Infinity;
     // State proof allows a real app fix anywhere in the 24h evidence window.
@@ -1813,11 +1845,16 @@ export async function chooseBestDriverByRoad(
   };
   const originFor = (d: NearestDriver): { lat: number; lng: number; basis: EtaOriginBasis; fixAgeMinutes: number } | null => {
     const fix = area?.gpsFixes?.get(String(d.driverId));
-    if (!fix) return null;
-    const t = Date.parse(fix.capturedAt);
+    const t = fix ? Date.parse(fix.capturedAt) : NaN;
     const fixAge = Number.isFinite(t) ? (now.getTime() - t) / 60000 : Infinity;
-    if (!Number.isFinite(fixAge) || fixAge < 0 || fixAge > STALE_GPS_FIX_MINUTES) return null;
-    return { lat: fix.lat, lng: fix.lng, basis: "gps", fixAgeMinutes: fixAge };
+    if (fix && Number.isFinite(fixAge) && fixAge >= 0 && fixAge <= STALE_GPS_FIX_MINUTES) {
+      return { lat: fix.lat, lng: fix.lng, basis: "gps", fixAgeMinutes: fixAge };
+    }
+    const owner = area?.ownerConfirmedDispatchLocations?.get(String(d.driverId));
+    if (!owner) return null;
+    const available = d.isCheckedIn === true || Boolean(area?.lightningAvailable?.has(String(d.driverId)));
+    if (!available) return null;
+    return { lat: owner.lat, lng: owner.lng, basis: "owner-confirmed", fixAgeMinutes: 0 };
   };
 
   // --- SAME-STATE GUARD (owner directive 2026-08-15). Resolve state from
@@ -1835,15 +1872,28 @@ export async function chooseBestDriverByRoad(
     const excluded: StateGuardOutcome["excluded"] = [];
     for (const d of statePool) {
       const did = Number(d.driverId);
+      const owner = area.ownerConfirmedDispatchLocations?.get(String(d.driverId));
+      const routeOrigin = originFor(d);
+      const hasFreshGps = routeOrigin?.basis === "gps";
+      const ownerAvailable = d.isCheckedIn === true || Boolean(area.lightningAvailable?.has(String(d.driverId)));
       const stateOrigin = stateOriginFor(d);
       guardOut.checked++;
-      // No real app GPS fix in 24h: no state proof and no selection. A stale
-      // real fix remains valid state evidence, but is rejected from road ETA.
-      if (!stateOrigin) {
-        excluded.push({ driverId: did, state: null, reason: "no app GPS fix — excluded (no state proof)" });
+      if (owner && !hasFreshGps && !ownerAvailable) {
+        excluded.push({ driverId: did, state: owner.state, reason: "owner-confirmed location ignored — driver is not currently available" });
         continue;
       }
-      const st = await area.stateGuard.resolveDriverState(did, stateOrigin.lat, stateOrigin.lng);
+      // No real app GPS fix in 24h: only the explicit owner confirmation may
+      // provide state proof. It still requires the owner-confirmed driver to be
+      // currently available via Towbook check-in OR a live Lightning GO session.
+      if (!stateOrigin) {
+        if (owner && !(d.isCheckedIn === true || Boolean(area.lightningAvailable?.has(String(d.driverId))))) {
+          excluded.push({ driverId: did, state: owner.state, reason: "owner-confirmed location ignored — driver is not currently available" });
+        } else {
+          excluded.push({ driverId: did, state: null, reason: "no app GPS fix — excluded (no state proof)" });
+        }
+        continue;
+      }
+      const st = owner && !hasFreshGps ? owner.state : await area.stateGuard.resolveDriverState(did, stateOrigin.lat, stateOrigin.lng);
       if (st && st.toUpperCase() === area.stateGuard.jobState.toUpperCase()) {
         inState.push(d);
         guardOut.inState++;
@@ -2073,7 +2123,7 @@ export function etaDetailLabel(c: ChosenDriverEta, buffer: number, floor: number
   // ETA-origin transparency (owner-directed 2026-08-13): the label prints the
   // ACTUAL origin the road ETA was routed FROM and names the basis — a stale
   // app fix routed from the anchor center is never silent in the ledger.
-  const originNote = `; origin: app GPS fix${c.gpsFixAgeMinutes != null ? ` (${Math.round(c.gpsFixAgeMinutes)} min old)` : ""}`;
+  const originNote = c.originBasis === "owner-confirmed" ? "; origin: owner-confirmed dispatch location" : `; origin: app GPS fix${c.gpsFixAgeMinutes != null ? ` (${Math.round(c.gpsFixAgeMinutes)} min old)` : ""}`;
   return `ETA ${finalMinutes} min (${base} + buffer ${buffer}${delay}${tomtomNote}${pingNote}; floor ${floor}; straight-line ${c.straightLineMinutes}; GPS ${Number(c.originLat) || Number(c.driver.latitude)},${Number(c.originLng) || Number(c.driver.longitude)}${originNote})`;
 }
 
@@ -2092,6 +2142,8 @@ export function areaSelectionNote(c: ChosenDriverEta, pickupLat: number, pickupL
   if (c.areaFallback) parts.push("no in-area candidate — global closest-by-ETA fallback");
   if (c.originBasis === "gps") {
     parts.push(`ETA origin: app GPS fix${c.gpsFixAgeMinutes != null ? ` (${Math.round(c.gpsFixAgeMinutes)} min old)` : ""}`);
+  } else if (c.originBasis === "owner-confirmed") {
+    parts.push("ETA origin: owner-confirmed dispatch location (no fresh app GPS fix)");
   }
   return parts.length ? `; ${parts.join("; ")}` : null;
 }
@@ -2589,8 +2641,8 @@ async function retryPendingAssignments(
   const callsRes = await towbookFetch(fetchImpl, `${baseUrl}/api/calls`, cookies);
   const calls = callsRes.ok && Array.isArray(callsRes.body) ? callsRes.body as unknown[] : [];
   const settings = await getOrgSettings(orgId);
-  const [queues, fixes, lightning] = await Promise.all([
-    loadOrgDriverQueues(orgId), loadDriverGpsFixes(orgId), loadLightningAvailableDrivers(orgId),
+  const [queues, fixes, ownerConfirmedDispatchLocations, lightning] = await Promise.all([
+    loadOrgDriverQueues(orgId), loadDriverGpsFixes(orgId), loadOwnerConfirmedDispatchLocations(orgId), loadLightningAvailableDrivers(orgId),
   ]);
   for (const row of rows as Array<Record<string, unknown>>) {
     const callRequestId = String(row.call_request_id ?? '');
@@ -2652,7 +2704,7 @@ async function retryPendingAssignments(
     const guard: StateGuardOutcome = { active:false, jobState:null, blocked:false, blockedReason:null, checked:0, inState:0, excluded:[] };
     const chosen = await chooseBestDriverByRoad(candidates, lat, lng,
       (deps.routerOverride ?? resolveRouter(deps.env ?? process.env, fetchImpl)).router, queues,
-      { gpsFixes: fixes, stateGuard: { jobState: jobState?.toUpperCase() ?? null, resolveDriverState: deps.stateGuardResolver ?? (async (_did, dlat, dlng) => {
+      { gpsFixes: fixes, ownerConfirmedDispatchLocations, stateGuard: { jobState: jobState?.toUpperCase() ?? null, resolveDriverState: deps.stateGuardResolver ?? (async (_did, dlat, dlng) => {
         const key = driverStateCacheKey(_did, dlat, dlng); const cached = retryStateCache.get(key); if (cached !== undefined) return cached;
         const st = resolveTomtomKey(deps.env ?? process.env) ? await reverseGeocodeState(dlat, dlng, resolveTomtomKey(deps.env ?? process.env)!, fetchImpl) : null; retryStateCache.set(key, st); return st;
       }) }, serviceType: offer.serviceType ?? null, serviceQualification, lightningAvailable: lightning }, { stateGuard: guard });
@@ -2881,9 +2933,10 @@ async function runAutoDispatchInternal(
     // (dispatch_jobs assignment history + driver_locations — no migration),
     // then let chooseBestDriverByRoad apply the in-area rule + fresh-fix ETA
     // origin per offer. Never throws (each loader degrades to empty).
-    const [driverQueues, driverGpsFixes, lightningAvailable] = await Promise.all([
+    const [driverQueues, driverGpsFixes, ownerConfirmedDispatchLocations, lightningAvailable] = await Promise.all([
       loadOrgDriverQueues(orgId),
       loadDriverGpsFixes(orgId),
+      loadOwnerConfirmedDispatchLocations(orgId),
       loadLightningAvailableDrivers(orgId),
     ]);
 
@@ -3193,8 +3246,8 @@ async function runAutoDispatchInternal(
       const zoneMatches = new Map<string, boolean>();
       const regionalPreference = await loadRegionalPreferenceMatches(orgId, candidates, lookupAnchor.lat, lookupAnchor.lng, driverQueues);
       const areaCtx: AreaContext = humanReassigned
-        ? { gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches, regionalPreference, lightningAvailable }
-        : { gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches, regionalPreference, lightningAvailable };
+        ? { gpsFixes: driverGpsFixes, ownerConfirmedDispatchLocations, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches, regionalPreference, lightningAvailable }
+        : { gpsFixes: driverGpsFixes, ownerConfirmedDispatchLocations, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches, regionalPreference, lightningAvailable };
       let chosen = await chooseBestDriverByRoad(
         candidates,
         lookupAnchor.lat,
@@ -3252,7 +3305,7 @@ async function runAutoDispatchInternal(
           towbookCheckedIn: chosen.driver.isCheckedIn === true,
           lightningGo: lightningAvailable.has(String(chosen.driver.driverId ?? "")),
           gate: "informational_only",
-          locationEligible: chosen.originBasis === "gps" && chosen.gpsFixAgeMinutes != null && chosen.gpsFixAgeMinutes <= STALE_GPS_FIX_MINUTES,
+          locationEligible: (chosen.originBasis === "gps" && chosen.gpsFixAgeMinutes != null && chosen.gpsFixAgeMinutes <= STALE_GPS_FIX_MINUTES) || chosen.originBasis === "owner-confirmed",
         },
         // Workload-aware facts (owner-directed 2026-08-11): when the chosen
         // driver has active jobs, the ETA is the chain model (remaining on the
@@ -3393,7 +3446,7 @@ async function runAutoDispatchInternal(
             lookupAnchor.lng,
             resolved.router,
             driverQueues,
-            { gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches, regionalPreference, lightningAvailable },
+            { gpsFixes: driverGpsFixes, ownerConfirmedDispatchLocations, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches, regionalPreference, lightningAvailable },
             { stateGuard: recalcGuard },
           );
           if (recalculated) {

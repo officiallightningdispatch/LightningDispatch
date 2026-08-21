@@ -1865,6 +1865,18 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE INDEX IF NOT EXISTS ai_dispatcher_retry_attempts_org_time_idx ON ai_dispatcher_retry_attempts(org_id, attempted_at DESC)`;
     await q`CREATE INDEX IF NOT EXISTS ai_dispatcher_retry_attempts_decision_time_idx ON ai_dispatcher_retry_attempts(decision_id, attempted_at DESC)`;
   }],
+  // 90 (2026-08-21): explicit owner-confirmed dispatch fallback for staff /
+  // supervisor drivers who work from Towbook and may not have an app GPS fix.
+  // State and coordinates are owner-maintained, scoped to this contractor
+  // profile, and only used while enabled; real app GPS remains authoritative
+  // whenever a fresh fix exists.
+  [90, async (q) => {
+    await q`ALTER TABLE contractor_profiles ADD COLUMN IF NOT EXISTS owner_confirmed_dispatch_enabled BOOLEAN NOT NULL DEFAULT FALSE`;
+    await q`ALTER TABLE contractor_profiles ADD COLUMN IF NOT EXISTS owner_confirmed_dispatch_state TEXT`;
+    await q`ALTER TABLE contractor_profiles ADD COLUMN IF NOT EXISTS owner_confirmed_dispatch_lat DOUBLE PRECISION`;
+    await q`ALTER TABLE contractor_profiles ADD COLUMN IF NOT EXISTS owner_confirmed_dispatch_lng DOUBLE PRECISION`;
+    await q`CREATE INDEX IF NOT EXISTS contractor_profiles_owner_dispatch_idx ON contractor_profiles(org_id, owner_confirmed_dispatch_enabled) WHERE owner_confirmed_dispatch_enabled=TRUE`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

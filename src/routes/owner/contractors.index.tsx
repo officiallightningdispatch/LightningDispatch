@@ -11,6 +11,7 @@ import {
   importContractors,
   listContractors,
   removeContractor,
+  setOwnerConfirmedDispatch,
   type ContractorRow,
   type ImportSummary,
   type TowbookPushOutcome,
@@ -597,6 +598,7 @@ function ContractorRowView({ c, last, onChanged, onPayrate, onEdit }: {
               {c.vehicleType ? ` · ${{car: "Car", "tow truck": "Tow truck", other: "Other"}[c.vehicleType] ?? c.vehicleType}` : ""}
             </p>
             {!removed && (
+              <>
               <p className="mt-1.5 flex flex-wrap items-center gap-2">
                 <ComplianceBadge approved={c.approvedDocCount} required={c.requiredDocCount} />
                 {c.onFileDocCount > c.approvedDocCount && (
@@ -618,6 +620,8 @@ function ContractorRowView({ c, last, onChanged, onPayrate, onEdit }: {
                   </span>
                 )}
               </p>
+              <OwnerConfirmedDispatchEditor c={c} onSaved={onChanged} />
+              </>
             )}
           </div>
         </div>
@@ -689,6 +693,48 @@ function ContractorRowView({ c, last, onChanged, onPayrate, onEdit }: {
             <Button variant="danger" loading={busy} onClick={() => void confirmRemove()}>Remove contractor</Button>
             <Button variant="secondary" disabled={busy} onClick={() => { setConfirmingRemove(false); setError(""); setNotice(null); setReason(""); }}>Keep them</Button>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+function OwnerConfirmedDispatchEditor({ c, onSaved }: { c: ContractorRow; onSaved: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [state, setState] = useState(c.ownerConfirmedDispatchState ?? "");
+  const [latitude, setLatitude] = useState(c.ownerConfirmedDispatchLat == null ? "" : String(c.ownerConfirmedDispatchLat));
+  const [longitude, setLongitude] = useState(c.ownerConfirmedDispatchLng == null ? "" : String(c.ownerConfirmedDispatchLng));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const enabled = c.ownerConfirmedDispatchEnabled;
+  const save = async (nextEnabled: boolean) => {
+    setBusy(true); setError("");
+    const r = await setOwnerConfirmedDispatch({ data: {
+      contractorId: c.id, enabled: nextEnabled, state: state.trim().toUpperCase() || undefined,
+      latitude: latitude.trim() ? Number(latitude) : undefined, longitude: longitude.trim() ? Number(longitude) : undefined,
+    }});
+    setBusy(false);
+    if (!r.ok) { setError(r.message); return; }
+    onSaved();
+  };
+  return (
+    <div className="mt-2 max-w-2xl">
+      <button type="button" onClick={() => setOpen((v) => !v)} className={`rounded-full px-2 py-1 text-[11px] font-bold transition-colors ${enabled ? "bg-brand-50 text-brand-700" : "bg-ink-100 text-ink-500 hover:bg-ink-200"}`}>
+        {enabled ? `Owner-confirmed ${c.ownerConfirmedDispatchState ?? "location"}` : "Set owner-confirmed location"}
+      </button>
+      {open && (
+        <div className="mt-2 rounded-xl border border-brand-200 bg-brand-50/40 p-3">
+          <p className="text-xs font-bold text-brand-900">Owner-confirmed dispatch fallback</p>
+          <p className="mt-1 text-[11px] leading-relaxed text-ink-600">For staff/supervisor drivers who work from Towbook without a fresh Lightning GPS fix. This explicit exception supplies state proof and ETA origin only while enabled. The driver must still be currently available: Towbook checked in OR Lightning GO.</p>
+          <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <label><span className="mb-1 block text-[11px] font-semibold text-ink-500">Dispatch state</span><input value={state} onChange={(e) => setState(e.target.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 2))} placeholder="CT" maxLength={2} className="h-9 w-full rounded-lg border border-ink-200 bg-surface px-2 text-sm uppercase" /></label>
+            <label><span className="mb-1 block text-[11px] font-semibold text-ink-500">Confirmed latitude</span><input value={latitude} onChange={(e) => setLatitude(e.target.value)} inputMode="decimal" placeholder="41.21" className="h-9 w-full rounded-lg border border-ink-200 bg-surface px-2 text-sm" /></label>
+            <label><span className="mb-1 block text-[11px] font-semibold text-ink-500">Confirmed longitude</span><input value={longitude} onChange={(e) => setLongitude(e.target.value)} inputMode="decimal" placeholder="-73.19" className="h-9 w-full rounded-lg border border-ink-200 bg-surface px-2 text-sm" /></label>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button loading={busy} onClick={() => void save(true)}>Enable fallback</Button>
+            {enabled && <Button variant="secondary" disabled={busy} onClick={() => void save(false)}>Clear fallback</Button>}
+          </div>
+          {error && <p className="mt-2 text-xs font-semibold text-danger-700">{error}</p>}
         </div>
       )}
     </div>

@@ -47,6 +47,13 @@ export const editContractor = createServerFn({ method: "POST" }).validator(passt
   return core.editContractorHandler(data);
 });
 
+/** Set/clear the owner-confirmed dispatch fallback (state + confirmed
+ * coordinates) for one contractor. Owner/admin only; every mutation is audited. */
+export const setOwnerConfirmedDispatch = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<ContractorManagementResult<ContractorRow>> => {
+  const core = await import("./contractor-management-core");
+  return core.setOwnerConfirmedDispatchHandler(data);
+});
+
 /** Remove a contractor — soft-deactivates the users row (never a hard delete:
  *  history/audit stay), invalidates every session (the contractor can't keep
  *  using the portal or be dispatched), and reflects the removal on Towbook

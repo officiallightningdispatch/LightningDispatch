@@ -1907,6 +1907,30 @@ try {
     check("no app GPS fix: payload coordinates are never an origin; chooser excludes driver", pickNoFix === null,
       JSON.stringify(pickNoFix && { basis: pickNoFix.originBasis, age: pickNoFix.gpsFixAgeMinutes, base: pickNoFix.baseMinutes }));
 
+    // Owner-confirmed fallback: explicit state + confirmed origin opens only the
+    // narrow staff/supervisor exception. It still requires current availability
+    // (Towbook check-in OR Lightning GO), never crosses state, and clear absence
+    // of the setting remains fail-closed.
+    const ownerConfirmed = driver(721132, "Ai Dispatch GB", { checkedIn: true, lat: 41.21, lng: -73.19, etaSec: 600 });
+    const ownerLocation = new Map([["721132", { state: "CT", lat: 41.21, lng: -73.19 }]]);
+    const ownerState = { jobState: "CT", resolveDriverState: async () => { throw new Error("owner-confirmed path must not reverse-geocode"); } };
+    const ownerPick = await chooseBestDriverByRoad([ownerConfirmed], NEW_HAVEN.lat, NEW_HAVEN.lng, makeRouter({ "41.21,-73.19": 900 }), undefined,
+      { gpsFixes: new Map(), ownerConfirmedDispatchLocations: ownerLocation, lightningAvailable: new Set(), stateGuard: ownerState, now: geoNow });
+    check("owner-confirmed in-state no-GPS driver selected", ownerPick?.driver.driverId === 721132 && ownerPick.originBasis === "owner-confirmed" && areaSelectionNote(ownerPick, NEW_HAVEN.lat, NEW_HAVEN.lng)?.includes("owner-confirmed"), JSON.stringify(ownerPick && { id: ownerPick.driver.driverId, basis: ownerPick.originBasis, note: areaSelectionNote(ownerPick, NEW_HAVEN.lat, NEW_HAVEN.lng) }));
+    const ownerOut = await chooseBestDriverByRoad([ownerConfirmed], 40.71, -74.0, makeRouter({ "41.21,-73.19": 900 }), undefined,
+      { gpsFixes: new Map(), ownerConfirmedDispatchLocations: ownerLocation, lightningAvailable: new Set(), stateGuard: { jobState: "NJ", resolveDriverState: async () => null }, now: geoNow });
+    check("owner-confirmed driver is not selected out of state", ownerOut === null, JSON.stringify(ownerOut));
+    const ownerUnavailable = { ...ownerConfirmed, isCheckedIn: false };
+    const ownerUnavailablePick = await chooseBestDriverByRoad([ownerUnavailable], NEW_HAVEN.lat, NEW_HAVEN.lng, makeRouter({ "41.21,-73.19": 900 }), undefined,
+      { gpsFixes: new Map(), ownerConfirmedDispatchLocations: ownerLocation, lightningAvailable: new Set(), stateGuard: ownerState, now: geoNow });
+    check("owner-confirmed fallback requires Towbook/Lightning availability", ownerUnavailablePick === null, JSON.stringify(ownerUnavailablePick));
+    const ownerGoPick = await chooseBestDriverByRoad([ownerUnavailable], NEW_HAVEN.lat, NEW_HAVEN.lng, makeRouter({ "41.21,-73.19": 900 }), undefined,
+      { gpsFixes: new Map(), ownerConfirmedDispatchLocations: ownerLocation, lightningAvailable: new Set(["721132"]), stateGuard: ownerState, now: geoNow });
+    check("owner-confirmed fallback accepts Lightning GO availability", ownerGoPick?.driver.driverId === 721132 && ownerGoPick.originBasis === "owner-confirmed", JSON.stringify(ownerGoPick && { id: ownerGoPick.driver.driverId, basis: ownerGoPick.originBasis }));
+    const ownerNoSetting = await chooseBestDriverByRoad([ownerConfirmed], NEW_HAVEN.lat, NEW_HAVEN.lng, makeRouter(), undefined,
+      { gpsFixes: new Map(), stateGuard: ownerState, now: geoNow });
+    check("without owner confirmation no-GPS still fails closed", ownerNoSetting === null, JSON.stringify(ownerNoSetting));
+
     // Escalation backstop under area context: no eligible candidate at all →
     // null (the engine escalates rather than auto-accepting blind — safety
     // rails intact with anchors configured).

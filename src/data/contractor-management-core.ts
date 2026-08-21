@@ -90,6 +90,11 @@ export type ContractorRow = {
   expiringSoonCount: number;
   /** Structured vehicle type (v2 — Flatbed/Wheel-lift/…; LD-only). */
   vehicleType: string | null;
+  /** Explicit owner-vouched fallback for staff/supervisor dispatch when app GPS is absent. */
+  ownerConfirmedDispatchEnabled: boolean;
+  ownerConfirmedDispatchState: string | null;
+  ownerConfirmedDispatchLat: number | null;
+  ownerConfirmedDispatchLng: number | null;
 };
 
 export type ImportSkip = { towbookDriverId: string; name: string | null; reason: string };
@@ -166,6 +171,8 @@ export async function listContractorsCore(actor: ContractorMgmtActor, opts: { in
         ls.last_login,
         dl.last_ping,
         cp.payrate_cents, cp.vehicle_type,
+        cp.owner_confirmed_dispatch_enabled, cp.owner_confirmed_dispatch_state,
+        cp.owner_confirmed_dispatch_lat, cp.owner_confirmed_dispatch_lng,
         (SELECT COUNT(*)::int FROM contractor_doc_types t WHERE t.org_id = ${actor.orgId} AND t.active) AS required_doc_count,
         (SELECT COUNT(*)::int FROM contractor_documents d
            JOIN contractor_doc_types t ON t.id = d.doc_type_id AND t.active
@@ -231,6 +238,10 @@ export async function listContractorsCore(actor: ContractorMgmtActor, opts: { in
         approvedDocCount: r.approved_doc_count != null ? Number(r.approved_doc_count) : 0,
         expiringSoonCount: r.expiring_soon_count != null ? Number(r.expiring_soon_count) : 0,
         vehicleType: r.vehicle_type != null ? String(r.vehicle_type) : null,
+        ownerConfirmedDispatchEnabled: r.owner_confirmed_dispatch_enabled === true,
+        ownerConfirmedDispatchState: r.owner_confirmed_dispatch_state != null ? String(r.owner_confirmed_dispatch_state) : null,
+        ownerConfirmedDispatchLat: r.owner_confirmed_dispatch_lat != null ? Number(r.owner_confirmed_dispatch_lat) : null,
+        ownerConfirmedDispatchLng: r.owner_confirmed_dispatch_lng != null ? Number(r.owner_confirmed_dispatch_lng) : null,
       };
     });
     return { ok: true, data: contractors };
@@ -298,6 +309,8 @@ export async function addContractorCore(actor: ContractorMgmtActor, data: unknow
       id: userId, name, email, loginHandle: handle, towbookDriverId: driverId, towbookUserId: null,
       status: "not_signed_in", lastActivityAt: null, createdAt: new Date().toISOString(), removedAt: null,
       payrateCents: null, requiredDocCount: 0, onFileDocCount: 0, approvedDocCount: 0, expiringSoonCount: 0, vehicleType: vehicleType === "" ? null : (vehicleType ?? null),
+      ownerConfirmedDispatchEnabled: false, ownerConfirmedDispatchState: null,
+      ownerConfirmedDispatchLat: null, ownerConfirmedDispatchLng: null,
     };
     return { ok: true, data: contractor };
   } catch (err) {
@@ -848,11 +861,52 @@ export async function editContractorCore(actor: ContractorMgmtActor, data: unkno
       towbookUserId: row.towbook_user_id != null ? String(row.towbook_user_id) : null,
       status: "not_signed_in", lastActivityAt: null, createdAt: toIso(row.created_at), removedAt: null,
       payrateCents: null, requiredDocCount: 0, onFileDocCount: 0, approvedDocCount: 0, expiringSoonCount: 0, vehicleType: null,
+      ownerConfirmedDispatchEnabled: false, ownerConfirmedDispatchState: null,
+      ownerConfirmedDispatchLat: null, ownerConfirmedDispatchLng: null,
     };
     return { ok: true, data: { contractor, towbook } };
   } catch (err) {
     return { ok: false, code: "database_error", message: err instanceof Error ? err.message : "Unable to edit the contractor." };
   }
+}
+
+/* ---------------------- owner-confirmed dispatch fallback ---------------------- */
+const OWNER_DISPATCH_SCHEMA = z.object({
+  contractorId: z.string().trim().min(1).max(128),
+  enabled: z.boolean(),
+  state: z.string().trim().toUpperCase().regex(/^[A-Z]{2}$/, "Use a two-letter state code.").optional(),
+  latitude: z.number().finite().gte(-90).lte(90).optional(),
+  longitude: z.number().finite().gte(-180).lte(180).optional(),
+});
+/** Set/clear the explicit owner-vouched dispatch state and origin. Enabled
+ * fallbacks require a state plus usable coordinates so ETA routing never falls
+ * back to a fabricated origin. Clearing disables only the exception; history is
+ * retained in the profile and the audit log. */
+export async function setOwnerConfirmedDispatchCore(actor: ContractorMgmtActor, data: unknown): Promise<ContractorManagementResult<ContractorRow>> {
+  if (!canManage(actor)) return { ok: false, code: "unauthorized", message: "Owner access required." };
+  const v = OWNER_DISPATCH_SCHEMA.safeParse(data);
+  if (!v.success) return { ok: false, code: "invalid_input", message: v.error.issues[0]?.message ?? "Invalid owner-confirmed location." };
+  const { contractorId, enabled } = v.data;
+  const state = v.data.state?.toUpperCase() ?? null;
+  const latitude = v.data.latitude ?? null;
+  const longitude = v.data.longitude ?? null;
+  if (enabled && (!state || latitude == null || longitude == null || (latitude === 0 && longitude === 0))) {
+    return { ok: false, code: "invalid_input", message: "Enabled owner confirmation requires a state and non-zero coordinates." };
+  }
+  try {
+    await ensure();
+    const q = await db();
+    const exists = await q`SELECT u.id FROM users u JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${actor.orgId} AND (m.role='contractor' OR u.towbook_driver_id IS NOT NULL) WHERE u.id=${contractorId} AND u.deactivated_at IS NULL LIMIT 1`;
+    if (!exists.length) return { ok: false, code: "not_found", message: "That contractor is not on this account." };
+    await q`INSERT INTO contractor_profiles(org_id,user_id,owner_confirmed_dispatch_enabled,owner_confirmed_dispatch_state,owner_confirmed_dispatch_lat,owner_confirmed_dispatch_lng,updated_at)
+      VALUES(${actor.orgId},${contractorId},${enabled},${state},${latitude},${longitude},NOW())
+      ON CONFLICT (org_id,user_id) DO UPDATE SET owner_confirmed_dispatch_enabled=EXCLUDED.owner_confirmed_dispatch_enabled, owner_confirmed_dispatch_state=EXCLUDED.owner_confirmed_dispatch_state, owner_confirmed_dispatch_lat=EXCLUDED.owner_confirmed_dispatch_lat, owner_confirmed_dispatch_lng=EXCLUDED.owner_confirmed_dispatch_lng, updated_at=NOW()`;
+    await recordAudit(actor, enabled ? "owner_confirmed_dispatch_enabled" : "owner_confirmed_dispatch_cleared", contractorId, { enabled, state, latitude, longitude, basis: "owner-confirmed" });
+    const listed = await listContractorsCore(actor);
+    if (!listed.ok) return listed;
+    const row = listed.data.find((r) => r.id === contractorId);
+    return row ? { ok: true, data: row } : { ok: false, code: "not_found", message: "That contractor is not on this account." };
+  } catch (e) { return { ok: false, code: "database_error", message: e instanceof Error ? e.message : "Unable to save owner-confirmed dispatch." }; }
 }
 
 /* ------------------------------ remove contractor ------------------------------ */
@@ -939,6 +993,8 @@ export async function removeContractorCore(actor: ContractorMgmtActor, data: unk
       status: "not_signed_in", lastActivityAt: null, createdAt: toIso(row.created_at),
       removedAt: new Date().toISOString(),
       payrateCents: null, requiredDocCount: 0, onFileDocCount: 0, approvedDocCount: 0, expiringSoonCount: 0, vehicleType: null,
+      ownerConfirmedDispatchEnabled: false, ownerConfirmedDispatchState: null,
+      ownerConfirmedDispatchLat: null, ownerConfirmedDispatchLng: null,
     };
     return { ok: true, data: { contractor, towbook, sessionsInvalidated: sessions.length } };
   } catch (err) {
@@ -986,6 +1042,12 @@ export async function editContractorHandler(data: unknown): Promise<ContractorMa
   return editContractorCore(actor, data);
 }
 
+export async function setOwnerConfirmedDispatchHandler(data: unknown): Promise<ContractorManagementResult<ContractorRow>> {
+  if (!configured()) return { ok: false, code: "database_error", message: "Contractor management requires database mode." };
+  const actor = await resolveActor();
+  if (!actor) return { ok: false, code: "unauthorized", message: "Owner access required." };
+  return setOwnerConfirmedDispatchCore(actor, data);
+}
 export async function removeContractorHandler(data: unknown): Promise<ContractorManagementResult<ContractorRemoveResult>> {
   if (!configured()) return { ok: false, code: "database_error", message: "Contractor management requires database mode." };
   const actor = await resolveActor();
