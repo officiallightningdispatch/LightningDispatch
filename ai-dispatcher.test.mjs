@@ -934,7 +934,7 @@ try {
   /* ============ 26a) post-accept dispatch verification (2026-08-10 incident fix) ============ */
   {
     // accept → verification passes on the accept-response call fetch (1 POST only)
-    const m = makeFetch({ offers: [offer(8011)], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })] });
+    const m = makeFetch({ offers: [offer(8011, { drivers: [703785] })], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })] });
     const { deps } = makeDeps(m.fetchImpl);
     const r = await runAutoDispatch(ORG, deps);
     check("verif ok: decision auto_accept_with_driver + reason says VERIFIED", r.decisions[0]?.decision === "auto_accept_with_driver" && String(r.decisions[0]?.reason).includes("VERIFIED on call 279999999"), String(r.decisions[0]?.reason));
@@ -946,7 +946,7 @@ try {
   {
     // THE INCIDENT: accepted driver ≠ driver on the call → assign endpoint called
     // once → succeeds → re-verify → VERIFIED + assignedAfterRetry
-    const m = makeFetch({ offers: [offer(8012)], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })], callDriverId: 999999, assignSucceeds: true });
+    const m = makeFetch({ offers: [offer(8012, { drivers: [703785] })], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })], callDriverId: 999999, assignSucceeds: true });
     const { deps } = makeDeps(m.fetchImpl);
     const r = await runAutoDispatch(ORG, deps);
     const p = posts(m.calls);
@@ -959,7 +959,7 @@ try {
   }
   {
     // assign attempt fails → pending retry, escalated=true
-    const m = makeFetch({ offers: [offer(8013)], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })], callDriverId: 999999, assignSucceeds: false });
+    const m = makeFetch({ offers: [offer(8013, { drivers: [703785] })], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })], callDriverId: 999999, assignSucceeds: false });
     const { deps } = makeDeps(m.fetchImpl);
     const r = await runAutoDispatch(ORG, deps);
     check("verif assign-fail: escalated_dispatch_pending + escalated true", r.decisions[0]?.decision === "escalated_dispatch_pending" && r.decisions[0]?.escalated === true, JSON.stringify(r.decisions));
@@ -972,7 +972,7 @@ try {
   }
   {
     // verification fetch race: first call GET fails, retry succeeds → VERIFIED
-    const m = makeFetch({ offers: [offer(8014)], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })], callsFailures: 1 });
+    const m = makeFetch({ offers: [offer(8014, { drivers: [703785] })], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })], callsFailures: 1 });
     const { deps } = makeDeps(m.fetchImpl);
     const r = await runAutoDispatch(ORG, deps);
     check("verif race: first fetch fails then retry → still VERIFIED", r.decisions[0]?.decision === "auto_accept_with_driver" && String(r.decisions[0]?.reason).includes("VERIFIED"), String(r.decisions[0]?.reason));
@@ -988,7 +988,7 @@ try {
     // not found after accept". Now: the status-0 list is searched FIRST, the PO
     // ties the call, the driver is already on it (accept-with-driver) →
     // VERIFIED with exactly ONE POST (accept only).
-    const m = makeFetch({ offers: [offer(8016)], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })], acceptBody: { ok: true }, acceptedCallStatus: 0 });
+    const m = makeFetch({ offers: [offer(8016, { drivers: [703785] })], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })], acceptBody: { ok: true }, acceptedCallStatus: 0 });
     const { deps } = makeDeps(m.fetchImpl);
     const r = await runAutoDispatch(ORG, deps);
     check("status0-match: decision auto_accept_with_driver + reason says VERIFIED on call 279999999", r.decisions[0]?.decision === "auto_accept_with_driver" && String(r.decisions[0]?.reason).includes("VERIFIED on call 279999999"), String(r.decisions[0]?.reason));
@@ -1006,7 +1006,7 @@ try {
     // [{driver:{id}}]}]} (map-actions.js useDispatchCall) and re-verify. The
     // old guessed endpoint (POST /api/calls/{id}/assignDrivers) 404s live —
     // proven on FIVE offers 2026-08-12 — so the assign path NEVER worked.
-    const m = makeFetch({ offers: [offer(8017)], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })], acceptBody: { ok: true }, acceptedCallStatus: 0, callDriverId: 999999, assignSucceeds: true });
+    const m = makeFetch({ offers: [offer(8017, { drivers: [703785] })], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })], acceptBody: { ok: true }, acceptedCallStatus: 0, callDriverId: 999999, assignSucceeds: true });
     const { deps } = makeDeps(m.fetchImpl);
     const r = await runAutoDispatch(ORG, deps);
     check("status0-assign: decision auto_accept_with_driver + VERIFIED after assign", r.decisions[0]?.decision === "auto_accept_with_driver" && String(r.decisions[0]?.reason).includes("VERIFIED"), String(r.decisions[0]?.reason));
@@ -1029,7 +1029,7 @@ try {
     // and must escalate — never claim a call it cannot tie to the offer.
     const stale2 = [{ id: 279860306, callNumber: 24610, status: { id: 2 }, purchaseOrderNumber: "111111111" }];
     const stale1 = [{ id: 279865368, callNumber: 24612, status: { id: 1 }, purchaseOrderNumber: "222222222" }];
-    const m = makeFetch({ offers: [offer(8018)], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })], acceptBody: { ok: true }, acceptedCallStatus: 0, suppressCreatedFromStatusLists: true, statusListExtra: { 0: [], 1: stale1, 2: stale2 } });
+    const m = makeFetch({ offers: [offer(8018, { drivers: [703785] })], drivers: [driver(703785, "Jayden Fountain", { etaSec: 604 })], acceptBody: { ok: true }, acceptedCallStatus: 0, suppressCreatedFromStatusLists: true, statusListExtra: { 0: [], 1: stale1, 2: stale2 } });
     const { deps } = makeDeps(m.fetchImpl);
     const r = await runAutoDispatch(ORG, deps);
     check("stale-guard: escalated_dispatch_pending + pending retry", r.decisions[0]?.decision === "escalated_dispatch_pending" && String(r.decisions[0]?.reason).includes("pending retry will continue until the tied call appears"), JSON.stringify(r.decisions));
@@ -1121,7 +1121,7 @@ try {
     await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES(${`ad-gps-603482-org3-27f-${FIXTURE_TAG}`}, ${ORG3}, ${USER}, '603482', 41.15, -73.1, ${new Date().toISOString()})`;
     // reason names tomtom-traffic + delay, raw_response.eta carries provider/
     // liveTraffic/trafficDelaySeconds/routerNotes.
-    const m = makeFetch({ offers: [offer(8021)], drivers: [driver(603482, "Antone jerret", { lat: 41.15, lng: -73.1, etaSec: 1255 })] });
+    const m = makeFetch({ offers: [offer(8021, { drivers: [603482] })], drivers: [driver(603482, "Antone jerret", { lat: 41.15, lng: -73.1, etaSec: 1255 })] });
     const rf = makeRouterFetch();
     const { deps } = makeDeps(withRouter(m.fetchImpl, rf.fetchImpl), null, { noRouterOverride: true, env: { TOMTOM_API_KEY: "test-key-not-real" } });
     const r = await runAutoDispatch(ORG3, deps);
@@ -1143,7 +1143,7 @@ try {
     // resolveRouter path (no routerOverride): TOMTOM_KEY_FILE points nowhere so
     // the real stable key file never leaks into the test → OSRM URL hit (600s →
     // 10 min), reason names osrm, no TomTom call.
-    const m = makeFetch({ offers: [offer(8022)], drivers: [driver(603482, "Antone jerret", { lat: 41.15, lng: -73.1, etaSec: 1255 })] });
+    const m = makeFetch({ offers: [offer(8022, { drivers: [603482] })], drivers: [driver(603482, "Antone jerret", { lat: 41.15, lng: -73.1, etaSec: 1255 })] });
     const rf = makeRouterFetch();
     const { deps } = makeDeps(withRouter(m.fetchImpl, rf.fetchImpl), null, { noRouterOverride: true, env: { TOMTOM_KEY_FILE: "/nonexistent/tomtom.key" } });
     const r = await runAutoDispatch(ORG3, deps);
@@ -1159,7 +1159,7 @@ try {
     await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES(${`ad-gps-603482-org3-27h-${FIXTURE_TAG}`}, ${ORG3}, ${USER}, '603482', 41.15, -73.1, ${new Date().toISOString()})`;
     // 27h) engine with a routerOverride tomtom provider (hermetic seam): the
     // decision reason records the provider without any real routing call.
-    const m = makeFetch({ offers: [offer(8023)], drivers: [driver(603482, "Antone jerret", { lat: 41.15, lng: -73.1, etaSec: 1255 })] });
+    const m = makeFetch({ offers: [offer(8023, { drivers: [603482] })], drivers: [driver(603482, "Antone jerret", { lat: 41.15, lng: -73.1, etaSec: 1255 })] });
     const router = makeRouter({ "41.15,-73.10": { seconds: 480, provider: "tomtom", liveTraffic: true, trafficDelaySeconds: 45, notes: "travel 480s; traffic delay 45s" } });
     const { deps } = makeDeps(m.fetchImpl, router);
     const r = await runAutoDispatch(ORG3, deps);
@@ -1347,7 +1347,7 @@ try {
     const stale = { ...driver(2006, "Stale GPS", { lat: 41.19, lng: -73.15, etaSec: 604 }), gpsUpdatedAtUtc: new Date(Date.now() - 30 * 60000).toISOString() };
     check("gpsPingAgeMinutes: detects a 30-min-old ping", gpsPingAgeMinutes(stale) != null && gpsPingAgeMinutes(stale) >= 29 && gpsPingAgeMinutes(stale) <= 31, String(gpsPingAgeMinutes(stale)));
     check("gpsPingAgeMinutes: no timestamp → null (nothing to flag)", gpsPingAgeMinutes(driver(2007, "Fresh", { etaSec: 604 })) === null, "");
-    const stalePick = await chooseBestDriverByRoad([stale], 41.2, -73.2, makeRouter({ "41.19,-73.15": 600 }), undefined, area28);
+    const stalePick = await chooseBestDriverByRoad([stale], 41.2, -73.2, makeRouter({ "41.19,-73.15": 600 }), undefined, { gpsFixes: new Map([["2006", { lat: 41.19, lng: -73.15, capturedAt: new Date(Date.now() - 30 * 60000).toISOString() }]]) });
     check("stale GPS: stale fix is excluded from road ETA", stalePick === null, JSON.stringify(stalePick));
   }
 
@@ -1415,7 +1415,7 @@ try {
     // (e) regression: single-driver happy path with dispatch_jobs EMPTY still
     // dispatches (no queue rows → 0 active → eligible, ETA normal).
     {
-      const m = makeFetch({ offers: [offer(8033)], drivers: [driver(703785, "Jayden Fountain", { lat: 41.18, lng: -73.15, etaSec: 604 })] });
+      const m = makeFetch({ offers: [offer(8033, { drivers: [703785] })], drivers: [driver(703785, "Jayden Fountain", { lat: 41.18, lng: -73.15, etaSec: 604 })] });
       const router2 = makeRouter({ "41.18,-73.15": 540 });
       const { deps } = makeDeps(m.fetchImpl, router2);
       const r = await runAutoDispatch(ORG4, deps);
@@ -1425,7 +1425,7 @@ try {
     // ETA honesty: transient TomTom failure is surfaced in the reason when the
     // chained router falls through (engine-level, real resolveRouter path).
     {
-      const m = makeFetch({ offers: [offer(8034)], drivers: [driver(603482, "Antone jerret", { lat: 41.15, lng: -73.1, etaSec: 1255 })] });
+      const m = makeFetch({ offers: [offer(8034, { drivers: [603482] })], drivers: [driver(603482, "Antone jerret", { lat: 41.15, lng: -73.1, etaSec: 1255 })] });
       const rf = makeRouterFetch({ tomtomStatus: 429 });
       const { deps } = makeDeps(withRouter(m.fetchImpl, rf.fetchImpl), null, { noRouterOverride: true, env: { TOMTOM_API_KEY: "test-key-not-real" } });
       const r = await runAutoDispatch(ORG4, deps);
@@ -1845,10 +1845,10 @@ try {
     });
     const pickNh = await chooseBestDriverByRoad([jayden, levi], NEW_HAVEN.lat, NEW_HAVEN.lng, geoRouter, undefined, { anchors, gpsFixes: new Map([["703785", freshFix(DARIEN)], ["717660", freshFix(WEST_HAVEN)]]) });
     check("in-area preference: New Haven job → West-Haven Levi, NOT Darien Jayden (owner example)",
-      pickNh?.driver.driverId === 703785 && pickNh?.areaFallback === false && pickNh?.anchor === null,
+      pickNh?.driver.driverId === 717660 && pickNh?.areaFallback === false && pickNh?.anchor === null,
       JSON.stringify(pickNh && { d: pickNh.driver.driverId, fb: pickNh.areaFallback, anchor: pickNh.anchor?.driverTowbookId, base: pickNh.baseMinutes }));
     check("in-area choice: reason helper notes the anchor + in-circle pickup",
-      pickNh != null && pickNh.anchor === null && areaSelectionNote(pickNh, NEW_HAVEN.lat, NEW_HAVEN.lng) === null,
+      pickNh != null && pickNh.anchor === null && areaSelectionNote(pickNh, NEW_HAVEN.lat, NEW_HAVEN.lng) != null && String(areaSelectionNote(pickNh, NEW_HAVEN.lat, NEW_HAVEN.lng)).includes("ETA origin: app GPS fix") && !String(areaSelectionNote(pickNh, NEW_HAVEN.lat, NEW_HAVEN.lng)).includes("in-circle"),
       String(pickNh && areaSelectionNote(pickNh, NEW_HAVEN.lat, NEW_HAVEN.lng)));
 
     // Fallback: BOTH anchored OUT of area (Jayden Darien, Levi Stamford) →
@@ -1860,7 +1860,7 @@ try {
     const pickFb = await chooseBestDriverByRoad([jayden, leviStamford], NEW_HAVEN.lat, NEW_HAVEN.lng, geoRouter, undefined, { anchors: anchorsBothOut, gpsFixes: new Map([["703785", freshFix(DARIEN)], ["717660", freshFix(STAMFORD)]]) });
     check("fallback: no in-area candidate → global closest-by-ETA (areaFallback true), fast Jayden wins",
       pickFb?.driver.driverId === 703785 && pickFb?.areaFallback === false && pickFb?.anchor === null &&
-      areaSelectionNote(pickFb, NEW_HAVEN.lat, NEW_HAVEN.lng) === null,
+      areaSelectionNote(pickFb, NEW_HAVEN.lat, NEW_HAVEN.lng) != null && String(areaSelectionNote(pickFb, NEW_HAVEN.lat, NEW_HAVEN.lng)).includes("ETA origin: app GPS fix"),
       JSON.stringify(pickFb && { d: pickFb.driver.driverId, fb: pickFb.areaFallback, base: pickFb.baseMinutes }));
 
     // No-anchor drivers are flexible: with Jayden anchored out-of-area, the
@@ -1870,7 +1870,7 @@ try {
     const anchorsJaydenOnly = new Map([["703785", anchorOf(703785, DARIEN)]]);
     const pickFlex = await chooseBestDriverByRoad([jayden, levi], NEW_HAVEN.lat, NEW_HAVEN.lng, geoRouter, undefined, { anchors: anchorsJaydenOnly, gpsFixes: new Map([["703785", freshFix(DARIEN)], ["717660", freshFix(WEST_HAVEN)]]) });
     check("no-anchor drivers flexible: unanchored Levi takes the New Haven job (anchored Jayden out-of-area excluded)",
-      pickFlex?.driver.driverId === 703785 && pickFlex?.areaFallback === false && pickFlex?.anchor === null,
+      pickFlex?.driver.driverId === 717660 && pickFlex?.areaFallback === false && pickFlex?.anchor === null,
       JSON.stringify(pickFlex && { d: pickFlex.driver.driverId, anchor: pickFlex.anchor }));
     const pickBothFlex = await chooseBestDriverByRoad([jayden, levi], NEW_HAVEN.lat, NEW_HAVEN.lng, geoRouter, undefined, {});
     check("no app GPS fix: no anchors configured still fails closed (payload origin rejected)",
