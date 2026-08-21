@@ -1861,7 +1861,18 @@ export async function chooseBestDriverByRoad(
   // the real app GPS evidence. Availability/status is not a priority or gate;
   // every in-state candidate with a fresh GPS fix remains in the pool.
   let statePool = pool;
-  const guardOut = out?.stateGuard;
+  // The state guard is safety-critical whenever supplied in the area context.
+  // Callers may pass the optional out-object only when they need diagnostics;
+  // omitting it must never disable same-state containment.
+  const guardOut = out?.stateGuard ?? (area?.stateGuard ? {
+    active: false,
+    jobState: null,
+    blocked: false,
+    blockedReason: null,
+    checked: 0,
+    inState: 0,
+    excluded: [],
+  } satisfies StateGuardOutcome : undefined);
   if (guardOut && area?.stateGuard && statePool.length > 0) {
     guardOut.active = true;
     guardOut.jobState = area.stateGuard.jobState;
