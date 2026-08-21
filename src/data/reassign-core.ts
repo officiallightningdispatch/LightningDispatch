@@ -51,7 +51,7 @@
  */
 import { z } from "zod";
 import { parseStateFromAddress, reverseGeocodeState } from "./state-guard-core";
-import { resolveTomtomKey, loadDriverAnchors } from "./ai-dispatcher";
+import { resolveTomtomKey } from "./ai-dispatcher";
 
 export type ReassignActor = { id: string; role: "owner" | "admin" | "dispatcher" | "contractor" };
 
@@ -293,32 +293,31 @@ function jobStateOfJob(job: Record<string, unknown>): string | null {
   return null;
 }
 
-/** The NEW driver's CURRENT location: freshest app GPS fix (driver_locations —
- *  the ping ledger is pruned to 24h, so any row is recent) → today's area
- *  anchor (the first job assigned to the driver since ET midnight — the same
- *  anchor semantics the AI dispatcher's ETA-origin chain uses) → null (the
- *  caller fails closed). Never throws. */
+/** The NEW driver's CURRENT location: a real app GPS fix only. The query
+ * enforces the 24-hour state-evidence window and this function enforces the
+ * <=15-minute location/placement window. Historical assignment anchors are
+ * never a fallback. Never throws. */
 async function resolveDriverCurrentLocation(
   orgId: string,
   towbookDriverId: string,
-): Promise<{ lat: number; lng: number; basis: "gps" | "anchor" } | null> {
+  now: Date = new Date(),
+): Promise<{ lat: number; lng: number; basis: "gps" } | null> {
   try {
     const q = await db();
-    const fixRows = await q`SELECT latitude, longitude FROM driver_locations
+    const fixRows = await q`SELECT latitude, longitude, captured_at FROM driver_locations
       WHERE org_id=${orgId} AND towbook_driver_id=${towbookDriverId}
         AND latitude != 0 AND longitude != 0
+        AND captured_at >= NOW() - INTERVAL '24 hours'
       ORDER BY captured_at DESC LIMIT 1`;
-    if (fixRows.length) {
-      const lat = Number((fixRows[0] as Record<string, unknown>).latitude);
-      const lng = Number((fixRows[0] as Record<string, unknown>).longitude);
-      if (Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 && lng !== 0) {
-        return { lat, lng, basis: "gps" };
-      }
-    }
-    const anchors = await loadDriverAnchors(orgId);
-    const anchor = anchors.get(towbookDriverId);
-    if (anchor) return { lat: anchor.lat, lng: anchor.lng, basis: "anchor" };
-    return null;
+    if (!fixRows.length) return null;
+    const row = fixRows[0] as Record<string, unknown>;
+    const lat = Number(row.latitude);
+    const lng = Number(row.longitude);
+    const captured = Date.parse(String(row.captured_at ?? ""));
+    const ageMinutes = (now.getTime() - captured) / 60000;
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat === 0 || lng === 0
+      || !Number.isFinite(ageMinutes) || ageMinutes < 0 || ageMinutes > 15) return null;
+    return { lat, lng, basis: "gps" };
   } catch {
     return null;
   }
@@ -402,9 +401,9 @@ export async function reassignDriverCore(input: ReassignCoreInput): Promise<Reas
     // to CT drivers). A manual reassign is an ASSIGNMENT and gets the same
     // containment as the AI dispatcher: the job's state comes from its
     // ADDRESS text (pickup → raw startingLocation — never coordinates), the
-    // driver's state from a reverse geocode of its CURRENT location (freshest
-    // app GPS fix → today's area anchor). FAIL-CLOSED: an unresolvable job
-    // state, an unresolvable driver location, or an unresolvable driver state
+    // driver's state from a reverse geocode of its CURRENT fresh app GPS fix.
+    // FAIL-CLOSED: an unresolvable job state, a missing/stale driver GPS fix,
+    // or an unresolvable driver state
     // all REFUSE the reassign (no Towbook write, no DB write, no push); a
     // driver proven in a DIFFERENT state is refused outright. The owner can
     // still assign via Towbook directly — this rail guards the platform path.
@@ -412,9 +411,9 @@ export async function reassignDriverCore(input: ReassignCoreInput): Promise<Reas
     if (!jobState) {
       return { ok: false, code: "invalid_state", message: `The job's state could not be determined from its address — the same-state rule cannot be verified. The assignment was NOT changed (no cross-state assignments).` };
     }
-    const driverLoc = await resolveDriverCurrentLocation(orgId, newDriverId);
+    const driverLoc = await resolveDriverCurrentLocation(orgId, newDriverId, now);
     if (!driverLoc) {
-      return { ok: false, code: "invalid_state", message: `${newDriverName} has no current location on record — their state cannot be verified. The assignment was NOT changed (no cross-state assignments).` };
+      return { ok: false, code: "invalid_state", message: `${newDriverName} has no fresh app GPS fix (required within 15 minutes) — their state/location cannot be verified. The assignment was NOT changed (no cross-state assignments).` };
     }
     const driverState = await resolveDriverStateFor(newDriverId, driverLoc.lat, driverLoc.lng, input.opts?.resolveDriverState, fetchImpl);
     if (!driverState) {

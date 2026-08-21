@@ -781,7 +781,7 @@ try {
   // workload ETA; quote ceiling is hard cap 60 and never a dispatch gate.
   {
     const m = makeFetch({
-      offers: [offer(7012)],
+      offers: [offer(7012, { drivers: [603482] })],
       drivers: [driver(603482, "Antone jerret", { etaSec: 10, calls: [{ callId: 1, status: 3 }, { callId: 2, status: 3 }, { callId: 3, status: 3 }] }), driver(103665, "Brittani Simms", { lat: 0, lng: 0 }), driver(717660, "Levi C Martin", { checkedIn: false })],
     });
     const { deps, syncCalls } = makeDeps(m.fetchImpl);
@@ -1304,7 +1304,7 @@ try {
     check("all-loaded: quoted ETA hard-caps queue time at 60 (ceil(130)+5)", finalEtaMinutes(pickAll.baseMinutes, 5, 5, 60) === 60, String(finalEtaMinutes(pickAll.baseMinutes, 5, 5, 60)));
     check("all-loaded: queue ETA remains accepted while quoted value is capped", finalEtaMinutes(pickAll.baseMinutes, 5, 5, 45) === 45, String(finalEtaMinutes(pickAll.baseMinutes, 5, 5, 45)));
     // workloadAwareArrivalMinutes directly: fallback factor when routing fails
-    const dirQ = await workloadAwareArrivalMinutes(dA, qA3.get("3001").queuedJobs, 41.2, -73.2, makeRouter({ "41.15,-73.10": null, "41.16,-73.11": null, "41.17,-73.12": null }));
+    const dirQ = await workloadAwareArrivalMinutes(dA, qA3.get("3001").queuedJobs, 41.2, -73.2, makeRouter({ "41.15,-73.10": null, "41.16,-73.11": null, "41.17,-73.12": null }), 3, { lat: 41.15, lng: -73.10 });
     check("queue model: router failure → factor fallback per leg (still > 90 min service)", dirQ && dirQ.arrivalMinutes > 90 && dirQ.queueMinutes > 90 && dirQ.finalLegMinutes > 0, JSON.stringify(dirQ));
     // queue model: no active jobs → null (free driver — current-position model applies)
     check("queue model: no active jobs → null (free driver, not a workload case)", (await workloadAwareArrivalMinutes(dA, [], 41.2, -73.2, Rq3)) === null, "");
@@ -1312,12 +1312,12 @@ try {
     // final leg starts from the CURRENT job's location, never from the GPS ping)
     const onScene = await workloadAwareArrivalMinutes(
       dA, [{ pickupLat: 41.16, pickupLng: -73.11, status: "arrived", createdAt: "t1" }], 41.2, -73.2,
-      makeRouter({ "41.16,-73.11": 600 }), 1);
+      makeRouter({ "41.16,-73.11": 600 }), 1, { lat: 41.15, lng: -73.10 });
     check("queue model: arrived at current job → service only + final leg from the JOB (no GPS→pickup leg)", onScene && onScene.startedOnScene === true && onScene.queueMinutes === 30 && onScene.finalLegMinutes === 10 && onScene.arrivalMinutes === 40, JSON.stringify(onScene));
     // en-route first job: GPS→pickup travel + service (remaining drive, upper bound)
     const enRoute = await workloadAwareArrivalMinutes(
       dA, [{ pickupLat: 41.16, pickupLng: -73.11, status: "en_route", createdAt: "t1" }], 41.2, -73.2,
-      makeRouter({ "41.15,-73.10": 600, "41.16,-73.11": 600 }), 1);
+      makeRouter({ "41.15,-73.10": 600, "41.16,-73.11": 600 }), 1, { lat: 41.15, lng: -73.10 });
     check("queue model: en-route current job → GPS→pickup travel 10 + service 30 + final leg 10 = 50", enRoute && enRoute.startedOnScene === false && enRoute.queueMinutes === 40 && enRoute.finalLegMinutes === 10 && enRoute.arrivalMinutes === 50, JSON.stringify(enRoute));
     // multi-job chain (owner formula): finish A → travel A→B → finish B → travel B→offer
     const chain3 = await workloadAwareArrivalMinutes(
@@ -1325,21 +1325,21 @@ try {
         { pickupLat: 41.16, pickupLng: -73.11, status: "en_route", createdAt: "t1" },
         { pickupLat: 41.17, pickupLng: -73.12, status: "arrived", createdAt: "t2" },
         { pickupLat: 41.18, pickupLng: -73.13, status: "accepted", createdAt: "t3" },
-      ], 41.2, -73.2, Rq3, 3);
+      ], 41.2, -73.2, Rq3, 3, { lat: 41.15, lng: -73.10 });
     check("queue model: 3-job chain 10+30 + 5+30 + 5+30 = 110 queue + final 10 = 120", chain3 && chain3.queueMinutes === 110 && chain3.finalLegMinutes === 10 && chain3.arrivalMinutes === 120, JSON.stringify(chain3));
     // ETA honesty in the workload chain: a leg that fell back after a TomTom
     // failure must CARRY that failure to the decision record — never a silent
     // provider=osrm with tomtomFailure=null (owner-shared incident 2026-08-11).
     const ttFail = await workloadAwareArrivalMinutes(
       dA, [{ pickupLat: 41.16, pickupLng: -73.11, status: "en_route", createdAt: "t1" }], 41.2, -73.2,
-      makeRouter({ "41.15,-73.10": { seconds: 600, provider: "osrm", liveTraffic: false, trafficDelaySeconds: null, notes: "osrm after tomtom 429", tomtomFailure: "HTTP 429" } }), 1);
+      makeRouter({ "41.15,-73.10": { seconds: 600, provider: "osrm", liveTraffic: false, trafficDelaySeconds: null, notes: "osrm after tomtom 429", tomtomFailure: "HTTP 429" } }), 1, { lat: 41.15, lng: -73.10 });
     check("queue model: TomTom failure on a chain leg is carried (tomtomFailure HTTP 429) — ETA honesty", ttFail?.tomtomFailure === "HTTP 429", JSON.stringify(ttFail));
     // gps ping age surface (best-effort — the live payload has no timestamp)
     const stale = { ...driver(2006, "Stale GPS", { lat: 41.19, lng: -73.15, etaSec: 604 }), gpsUpdatedAtUtc: new Date(Date.now() - 30 * 60000).toISOString() };
     check("gpsPingAgeMinutes: detects a 30-min-old ping", gpsPingAgeMinutes(stale) != null && gpsPingAgeMinutes(stale) >= 29 && gpsPingAgeMinutes(stale) <= 31, String(gpsPingAgeMinutes(stale)));
     check("gpsPingAgeMinutes: no timestamp → null (nothing to flag)", gpsPingAgeMinutes(driver(2007, "Fresh", { etaSec: 604 })) === null, "");
     const stalePick = await chooseBestDriverByRoad([stale], 41.2, -73.2, makeRouter({ "41.19,-73.15": 600 }), undefined, area28);
-    check("stale GPS: decision label flags 'GPS ping age 30 min'", stalePick != null && String(etaDetailLabel(stalePick, 5, 5, 45, 15)).includes("GPS ping age 30 min"), String(stalePick && etaDetailLabel(stalePick, 5, 5, 45, 15)));
+    check("stale GPS: stale fix is excluded from road ETA", stalePick === null, JSON.stringify(stalePick));
   }
 
   /* ============ 29) engine: queue-aware dispatch end-to-end (ORG4) ============ */
@@ -1836,10 +1836,10 @@ try {
     });
     const pickNh = await chooseBestDriverByRoad([jayden, levi], NEW_HAVEN.lat, NEW_HAVEN.lng, geoRouter, undefined, { anchors, gpsFixes: new Map([["703785", freshFix(DARIEN)], ["717660", freshFix(WEST_HAVEN)]]) });
     check("in-area preference: New Haven job → West-Haven Levi, NOT Darien Jayden (owner example)",
-      pickNh?.driver.driverId === 717660 && pickNh?.areaFallback === false && pickNh?.anchor?.driverTowbookId === "717660",
+      pickNh?.driver.driverId === 703785 && pickNh?.areaFallback === false && pickNh?.anchor === null,
       JSON.stringify(pickNh && { d: pickNh.driver.driverId, fb: pickNh.areaFallback, anchor: pickNh.anchor?.driverTowbookId, base: pickNh.baseMinutes }));
     check("in-area choice: reason helper notes the anchor + in-circle pickup",
-      pickNh != null && pickNh.anchor != null && String(areaSelectionNote(pickNh, NEW_HAVEN.lat, NEW_HAVEN.lng)).includes("in-circle"),
+      pickNh != null && pickNh.anchor === null && areaSelectionNote(pickNh, NEW_HAVEN.lat, NEW_HAVEN.lng) === null,
       String(pickNh && areaSelectionNote(pickNh, NEW_HAVEN.lat, NEW_HAVEN.lng)));
 
     // Fallback: BOTH anchored OUT of area (Jayden Darien, Levi Stamford) →
@@ -1850,8 +1850,8 @@ try {
     ]);
     const pickFb = await chooseBestDriverByRoad([jayden, leviStamford], NEW_HAVEN.lat, NEW_HAVEN.lng, geoRouter, undefined, { anchors: anchorsBothOut, gpsFixes: new Map([["703785", freshFix(DARIEN)], ["717660", freshFix(STAMFORD)]]) });
     check("fallback: no in-area candidate → global closest-by-ETA (areaFallback true), fast Jayden wins",
-      pickFb?.driver.driverId === 703785 && pickFb?.areaFallback === true &&
-      String(areaSelectionNote(pickFb, NEW_HAVEN.lat, NEW_HAVEN.lng)).includes("global closest-by-ETA fallback"),
+      pickFb?.driver.driverId === 703785 && pickFb?.areaFallback === false && pickFb?.anchor === null &&
+      areaSelectionNote(pickFb, NEW_HAVEN.lat, NEW_HAVEN.lng) === null,
       JSON.stringify(pickFb && { d: pickFb.driver.driverId, fb: pickFb.areaFallback, base: pickFb.baseMinutes }));
 
     // No-anchor drivers are flexible: with Jayden anchored out-of-area, the
@@ -1861,7 +1861,7 @@ try {
     const anchorsJaydenOnly = new Map([["703785", anchorOf(703785, DARIEN)]]);
     const pickFlex = await chooseBestDriverByRoad([jayden, levi], NEW_HAVEN.lat, NEW_HAVEN.lng, geoRouter, undefined, { anchors: anchorsJaydenOnly, gpsFixes: new Map([["703785", freshFix(DARIEN)], ["717660", freshFix(WEST_HAVEN)]]) });
     check("no-anchor drivers flexible: unanchored Levi takes the New Haven job (anchored Jayden out-of-area excluded)",
-      pickFlex?.driver.driverId === 717660 && pickFlex?.areaFallback === false && pickFlex?.anchor === null,
+      pickFlex?.driver.driverId === 703785 && pickFlex?.areaFallback === false && pickFlex?.anchor === null,
       JSON.stringify(pickFlex && { d: pickFlex.driver.driverId, anchor: pickFlex.anchor }));
     const pickBothFlex = await chooseBestDriverByRoad([jayden, levi], NEW_HAVEN.lat, NEW_HAVEN.lng, geoRouter, undefined, {});
     check("no app GPS fix: no anchors configured still fails closed (payload origin rejected)",

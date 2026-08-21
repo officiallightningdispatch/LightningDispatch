@@ -395,10 +395,9 @@ export async function loadDriverAnchors(orgId: string, now: Date = new Date()): 
 }
 
 /** Freshest app GPS fix per driver (driver_locations), keyed by Towbook driver
- *  id — the ETA origin when fresh. No time window: the ping ledger is pruned to
- *  24h on write, so any row here is recent; the caller decides freshness via
- *  STALE_GPS_FIX_MINUTES against captured_at. Never throws — a DB error
- *  returns an empty map so the engine degrades to payload-GPS origins. */
+ *  id. The query itself enforces the 24-hour evidence window; callers still
+ *  enforce the <=15-minute location/ETA gate. Never throws — a DB error
+ *  returns an empty map, which makes every location-dependent path fail closed. */
 export async function loadRegionalPreferenceMatches(orgId: string, candidates: unknown[], lat: number, lng: number, queues = new Map<string, DriverQueue>()): Promise<Map<string, number>> {
   const out = new Map<string, number>();
   try {
@@ -454,6 +453,7 @@ export async function loadDriverGpsFixes(orgId: string): Promise<Map<string, Dri
       FROM driver_locations
       WHERE org_id=${orgId} AND towbook_driver_id IS NOT NULL
         AND latitude != 0 AND longitude != 0
+        AND captured_at >= NOW() - INTERVAL '24 hours'
       ORDER BY towbook_driver_id, captured_at DESC`;
     const fixes = new Map<string, DriverGpsFix>();
     for (const r of rows as Array<Record<string, unknown>>) {
@@ -1628,16 +1628,15 @@ export type AreaContext = {
  *  TOTAL active-job count (may exceed queue.length when some jobs lack coords);
  *  it defaults to queue.length so callers that only have geometry stay correct. */
 export async function workloadAwareArrivalMinutes(
-  driver: NearestDriver,
+  _driver: NearestDriver,
   queue: QueuedJob[],
   pickupLat: number,
   pickupLng: number,
   roadRouter: RoadRouter | null,
   activeCount?: number,
   /** Overrides the chain's STARTING position (the GPS→first-job leg): the
-   *  area-geography path passes the driver's freshest app GPS fix or anchor
-   *  center (owner 2026-08-13); when omitted the driver's payload
-   *  latitude/longitude is used (pre-geography default). */
+   *  area-geography path passes the driver's freshest app GPS fix; when omitted
+   *  the helper fails closed rather than consulting Towbook payload coordinates. */
   origin?: { lat: number; lng: number },
 ): Promise<{
   arrivalMinutes: number;
@@ -1656,6 +1655,9 @@ export async function workloadAwareArrivalMinutes(
     ? Math.round(activeCount)
     : queue.length;
   if (total === 0) return null; // free driver — current-position travel is the caller's model
+  if (!origin || !Number.isFinite(origin.lat) || !Number.isFinite(origin.lng) || origin.lat === 0 || origin.lng === 0) {
+    return null; // no GPS origin — never fall back to Towbook payload coordinates
+  }
   let chainTomtomFailure: string | null = null;
   const legMinutes = async (fromLat: number, fromLng: number, toLat: number, toLng: number): Promise<{ minutes: number; provider: EtaProvider }> => {
     let result: RoadResult | null = null;
@@ -1668,8 +1670,8 @@ export async function workloadAwareArrivalMinutes(
     }
     return { minutes: fallbackRoadMinutes(haversineMiles(fromLat, fromLng, toLat, toLng)), provider: "factor" };
   };
-  const originLat = origin != null && Number.isFinite(origin.lat) ? origin.lat : Number(driver.latitude);
-  const originLng = origin != null && Number.isFinite(origin.lng) ? origin.lng : Number(driver.longitude);
+  const originLat = origin.lat;
+  const originLng = origin.lng;
   const unlocatedJobs = Math.max(0, total - queue.length);
   let queueMinutes = 0;
   const breakdown: string[] = [];
@@ -1775,19 +1777,13 @@ export async function chooseBestDriverByRoad(
   });
   if (!baseEligible.length) return null;
 
-  // --- area anchor filter + ETA origin (owner-directed 2026-08-13) ---
-  // Anchored drivers are candidates only when the job falls inside their
-  // anchor circle; unanchored drivers are flexible. When NO in-area candidate
-  // exists the pool falls back to ALL available drivers (global closest by
-  // ETA — the owner's New Haven example: a Darien-anchored Jayden must not
-  // take a New Haven job when a West-Haven-anchored Levi is in-area).
+  // Historical assignment anchors are deliberately ignored. A driver's
+  // location, area membership, state proof, and ETA origin all come from the
+  // current app GPS fix; an earlier dispatch pickup can never filter or place
+  // a driver. Keep the context field for backwards-compatible callers/tests,
+  // but do not read it here.
   const radius = area?.anchorRadiusMiles ?? ANCHOR_RADIUS_MILES;
   const now = area?.now ?? new Date();
-  const inArea = (d: NearestDriver): boolean => {
-    const anchor = area?.anchors?.get(String(d.driverId));
-    if (!anchor) return true; // no anchor → flexible candidate
-    return haversineMiles(pickupLat, pickupLng, anchor.lat, anchor.lng) <= radius;
-  };
   const qualification = area?.serviceQualification;
   const servicePool = baseEligible.filter((d) => {
     const result = serviceTypeQualification(d, area?.serviceType ?? null);
@@ -1798,9 +1794,8 @@ export async function chooseBestDriverByRoad(
     qualification.serviceType = area?.serviceType?.trim() || null;
     qualification.assessed = Boolean(area?.serviceType?.trim());
   }
-  const areaPool = servicePool.filter(inArea);
-  const usedAreaFallback = areaPool.length === 0;
-  const pool = usedAreaFallback ? servicePool : areaPool;
+  const pool = servicePool;
+  const usedAreaFallback = false;
 
   // Owner directive 2026-08-17: driver origin is ONLY the freshest real app
   // GPS fix in driver_locations (24h window). Payload coordinates and the
@@ -1876,7 +1871,7 @@ export async function chooseBestDriverByRoad(
     const pingAge = gpsPingAgeMinutes(d);
     const activeCount = driverActiveCount(d, queues);
     const origin = originFor(d);
-    const anchor = area?.anchors?.get(String(d.driverId)) ?? null;
+    const anchor: DriverAnchor | null = null;
     if (!origin) return null; // no fresh app GPS fix — fail closed
     if (activeCount > 0) {
       // Workload-aware (owner-directed 2026-08-11): a driver with active jobs
@@ -2002,7 +1997,7 @@ export async function chooseBestDriverByRoad(
     if (!arrival) return null; // free driver — cannot be in the all-loaded path
     const straightLineMinutes = Math.max(1, Math.ceil(Number(d.estimatedTimeSeconds) / 60));
     const activeCount = driverActiveCount(d, queues);
-    const anchor = area?.anchors?.get(String(d.driverId)) ?? null;
+    const anchor: DriverAnchor | null = null;
     return {
       driver: d,
       distanceMiles: haversineMiles(origin.lat, origin.lng, pickupLat, pickupLng),
@@ -2594,8 +2589,8 @@ async function retryPendingAssignments(
   const callsRes = await towbookFetch(fetchImpl, `${baseUrl}/api/calls`, cookies);
   const calls = callsRes.ok && Array.isArray(callsRes.body) ? callsRes.body as unknown[] : [];
   const settings = await getOrgSettings(orgId);
-  const [queues, anchors, fixes, lightning] = await Promise.all([
-    loadOrgDriverQueues(orgId), loadDriverAnchors(orgId), loadDriverGpsFixes(orgId), loadLightningAvailableDrivers(orgId),
+  const [queues, fixes, lightning] = await Promise.all([
+    loadOrgDriverQueues(orgId), loadDriverGpsFixes(orgId), loadLightningAvailableDrivers(orgId),
   ]);
   for (const row of rows as Array<Record<string, unknown>>) {
     const callRequestId = String(row.call_request_id ?? '');
@@ -2657,7 +2652,7 @@ async function retryPendingAssignments(
     const guard: StateGuardOutcome = { active:false, jobState:null, blocked:false, blockedReason:null, checked:0, inState:0, excluded:[] };
     const chosen = await chooseBestDriverByRoad(candidates, lat, lng,
       (deps.routerOverride ?? resolveRouter(deps.env ?? process.env, fetchImpl)).router, queues,
-      { anchors, gpsFixes: fixes, stateGuard: { jobState: jobState?.toUpperCase() ?? null, resolveDriverState: deps.stateGuardResolver ?? (async (_did, dlat, dlng) => {
+      { gpsFixes: fixes, stateGuard: { jobState: jobState?.toUpperCase() ?? null, resolveDriverState: deps.stateGuardResolver ?? (async (_did, dlat, dlng) => {
         const key = driverStateCacheKey(_did, dlat, dlng); const cached = retryStateCache.get(key); if (cached !== undefined) return cached;
         const st = resolveTomtomKey(deps.env ?? process.env) ? await reverseGeocodeState(dlat, dlng, resolveTomtomKey(deps.env ?? process.env)!, fetchImpl) : null; retryStateCache.set(key, st); return st;
       }) }, serviceType: offer.serviceType ?? null, serviceQualification, lightningAvailable: lightning }, { stateGuard: guard });
@@ -2730,6 +2725,37 @@ async function persistDispatcherRun(
       VALUES(gen_random_uuid()::text, ${orgId}, ${run.gated}, ${run.offersSeen}, ${run.processed}, ${run.skipped}, ${JSON.stringify(seenOffers)}::jsonb)`;
   } catch { /* never crash the sync loop on a run-row write */ }
 }
+/** Verify the stored driver on an accepted-but-unverified hold before any
+ *  repair/assign write. Pending rows can outlive the GPS fix that produced the
+ *  original choice, so this gate deliberately re-reads driver_locations and
+ *  re-proves the driver's state from that GPS point. No payload coordinates,
+ *  assignment evidence, or historical anchors are accepted. */
+async function verifyPendingDriverGpsGate(
+  orgId: string,
+  rawOffer: Record<string, unknown>,
+  driverId: number,
+  deps: AiDispatcherDeps,
+  fetchImpl: typeof fetch,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const fixes = await loadDriverGpsFixes(orgId);
+  const fix = fixes.get(String(driverId));
+  const age = fix ? (Date.now() - Date.parse(fix.capturedAt)) / 60000 : Infinity;
+  if (!fix || !Number.isFinite(age) || age < 0 || age > STALE_GPS_FIX_MINUTES) {
+    return { ok: false, reason: `pending recovery fail-closed: driver ${driverId} has no fresh app GPS fix (required <=${STALE_GPS_FIX_MINUTES} minutes); stored assignment was not repaired` };
+  }
+  const key = resolveTomtomKey(deps.env ?? process.env);
+  const jobState = (await resolveJobState(orgId, rawOffer, startingLocationOf(rawOffer), key ?? "", fetchImpl)).state;
+  if (!jobState) return { ok: false, reason: `pending recovery fail-closed: job state could not be resolved from its address; driver ${driverId} was not repaired` };
+  const driverState = deps.stateGuardResolver
+    ? await deps.stateGuardResolver(driverId, fix.lat, fix.lng)
+    : key ? await reverseGeocodeState(fix.lat, fix.lng, key, fetchImpl) : null;
+  if (!driverState) return { ok: false, reason: `pending recovery fail-closed: driver ${driverId} state could not be proven from fresh app GPS; stored assignment was not repaired` };
+  if (driverState.toUpperCase() !== jobState.toUpperCase()) {
+    return { ok: false, reason: `pending recovery fail-closed: driver ${driverId} GPS state ${driverState.toUpperCase()} does not match job state ${jobState.toUpperCase()}; stored assignment was not repaired` };
+  }
+  return { ok: true };
+}
+
 /** The engine poll itself (see runAutoDispatch): returns the run result plus
  *  offer_ids for EVERY offer the tick saw — including offers skipped silently
  *  (status!==0, already-processed, shape-failed) — so the run row proves the
@@ -2798,6 +2824,12 @@ async function runAutoDispatchInternal(
         await sql() `UPDATE ai_dispatcher_decisions SET decision='escalated_expired', reason=${String(row.reason ?? '') + '; offer expired — final human escalation'} WHERE id=${String(row.id)}::text AND org_id=${orgId}::text`;
         continue;
       }
+      const pendingGpsGate = await verifyPendingDriverGpsGate(orgId, raw ?? {}, driverId, deps, fetchImpl);
+      if (!pendingGpsGate.ok) {
+        const reason = `${String(row.reason ?? '')}; ${pendingGpsGate.reason}`;
+        await sql() `UPDATE ai_dispatcher_decisions SET reason=${reason}, raw_response=raw_response || ${JSON.stringify({ pendingGpsGate: { ok: false, reason: pendingGpsGate.reason } })}::jsonb WHERE id=${String(row.id)}::text AND org_id=${orgId}::text`;
+        continue;
+      }
       const verification = await verifyDispatch(fetchImpl, baseUrl, cookies, offer, row.call_id ? String(row.call_id) : null, driverId, { retryDelayMs: deps.verifyRetryDelayMs ?? 10000, maxAttempts: deps.verifyMaxAttempts ?? 6, allowAssign: true });
       if (!verification.ok) continue;
       const waypoint = verification.call ? callWaypoint(verification.call) : null;
@@ -2849,12 +2881,10 @@ async function runAutoDispatchInternal(
     // (dispatch_jobs assignment history + driver_locations — no migration),
     // then let chooseBestDriverByRoad apply the in-area rule + fresh-fix ETA
     // origin per offer. Never throws (each loader degrades to empty).
-    const [driverQueues, driverAnchors, driverGpsFixes, lightningAvailable, driverDispatchEvidence] = await Promise.all([
+    const [driverQueues, driverGpsFixes, lightningAvailable] = await Promise.all([
       loadOrgDriverQueues(orgId),
-      loadDriverAnchors(orgId),
       loadDriverGpsFixes(orgId),
       loadLightningAvailableDrivers(orgId),
-      loadDriverDispatchEvidence(orgId),
     ]);
 
     for (const rawOffer of offers) {
@@ -3014,59 +3044,63 @@ async function runAutoDispatchInternal(
       // driver ONLY (when they are also in the offer's eligible list; an
       // ineligible human-chosen driver cannot be accepted with their id, so the
       // offer is accepted WITHOUT dispatch and escalated — never silently
-      // overwritten with a different driver). Offline human-chosen drivers are
-      // still dispatched (the accept carries their driverId and the verification
-      // PUT attaches them — offline dispatch is owner-approved, and the reassign
-      // push reaches offline phones). The ledger reason records the respect.
+      // overwritten with a different driver). A human choice never bypasses
+      // the fresh-GPS/state gate; without it the offer remains unassigned and
+      // the ledger records the fail-closed diagnostic.
+      // The human chooses WHICH driver, but the platform still requires that
+      // driver's current app GPS for placement and state proof.
       const humanReassigned = await lookupHumanReassignedDriver(orgId, offer);
       const manualDriverId = humanReassigned ? Number(humanReassigned.driverTowbookId) || 0 : 0;
       const manualEligible = manualDriverId > 0 && (!eligibleIds || eligibleIds.has(manualDriverId));
+      const manualFix = manualEligible ? driverGpsFixes.get(String(manualDriverId)) ?? null : null;
+      const manualFixAge = manualFix ? (Date.now() - Date.parse(manualFix.capturedAt)) / 60000 : Infinity;
+      const manualGpsEligible = manualEligible && manualFix != null && Number.isFinite(manualFixAge) && manualFixAge >= 0 && manualFixAge <= STALE_GPS_FIX_MINUTES;
+      const manualGateReason = manualEligible && !manualGpsEligible
+        ? `manual reassignment fail-closed: driver ${manualDriverId} has no fresh app GPS fix (required <=${STALE_GPS_FIX_MINUTES} minutes); Towbook assignment evidence is not location/state proof`
+        : null;
       const manualNote = humanReassigned
         ? `manual reassignment respected — human-chosen driver ${humanReassigned.driverName ?? humanReassigned.driverTowbookId} (reassigned ${humanReassigned.reassignedAt} on job ${humanReassigned.jobId}) kept as authoritative; NOT re-dispatched to the road-best driver`
         : null;
+      const manualPayload = manualGpsEligible ? (nd.body as NearestDriver[]).find((d) => Number((d as Record<string, unknown>).driverId) === manualDriverId) : null;
+      const manualCandidate: NearestDriver | null = manualGpsEligible && manualFix
+        ? { ...(manualPayload ?? {}), driverId: manualDriverId, driverName: humanReassigned?.driverName ?? manualPayload?.driverName ?? `Driver ${manualDriverId}`, latitude: manualFix.lat, longitude: manualFix.lng, estimatedTimeSeconds: Number.isFinite(Number(manualPayload?.estimatedTimeSeconds)) ? Number(manualPayload?.estimatedTimeSeconds) : 60, isCheckedIn: manualPayload?.isCheckedIn === true }
+        : null;
       let candidates = humanReassigned
-        ? manualEligible
-          ? (nd.body as NearestDriver[]).filter((d) => {
-              const id = Number((d as Record<string, unknown>).driverId);
-              return Number.isFinite(id) && id === manualDriverId;
-            })
-          : []
+        ? manualCandidate ? [manualCandidate] : []
         : eligibleIds
           ? (nd.body as NearestDriver[]).filter((d) => {
               const id = Number((d as Record<string, unknown>).driverId);
               return Number.isFinite(id) && eligibleIds.has(id);
             })
           : (nd.body as NearestDriver[]);
-      // Agero placeholder coordinates can hide an in-state driver from nearestDrivers.
-      let poolExpandedFromStateEvidence = false;
-      if (!humanReassigned && zoneState.state) {
-        const resolveState = deps.stateGuardResolver;
-        const stateOf = async (d: NearestDriver) => {
-          const id = Number(d.driverId), lat = Number(d.latitude), lng = Number(d.longitude);
-          // Durable dispatch evidence is authoritative for a driver whose
-          // nearestDrivers row is stale/hidden. It must take precedence over
-          // an injected/reverse-geocoded live-origin resolver as well: the
-          // latter may describe the stale lease location, while the completed
-          // dispatch pickup proves the driver's service state for this job.
-          const durable = Number.isFinite(id) ? driverDispatchEvidence.get(String(id))?.state : null;
-          if (durable) return durable;
-          return resolveState && Number.isFinite(id) && Number.isFinite(lat) && Number.isFinite(lng) ? resolveState(id, lat, lng) : null;
-        };
-        const hasInState = resolveState
-          ? (await Promise.all(candidates.map(stateOf))).some((st) => st?.toUpperCase() === zoneState.state!.toUpperCase())
-          : false;
-        if (!hasInState) {
-          const seen = new Set(candidates.map((d) => Number((d as NearestDriver).driverId)));
-          for (const id of new Set([...driverGpsFixes.keys(), ...driverAnchors.keys(), ...driverDispatchEvidence.keys()])) {
-            const numericId = Number(id), evidence = driverDispatchEvidence.get(id), point = driverGpsFixes.get(id) ?? driverAnchors.get(id) ?? evidence;
-            if (!Number.isFinite(numericId) || numericId <= 0 || seen.has(numericId) || (eligibleIds && !eligibleIds.has(numericId)) || !point) continue;
-            const supplemental: NearestDriver = { driverId: numericId, driverName: `Driver ${numericId}`, latitude: point.lat, longitude: point.lng, estimatedTimeSeconds: Math.max(60, fallbackRoadMinutes(haversineMiles(point.lat, point.lng, lookupAnchor.lat, lookupAnchor.lng)) * 60), isCheckedIn: false };
-            if ((await stateOf(supplemental))?.toUpperCase() !== zoneState.state.toUpperCase()) continue;
-            candidates.push(supplemental); seen.add(numericId); poolExpandedFromStateEvidence = true;
-          }
+      // Towbook's candidate payload is only an identity/eligibility hint. When
+      // a real app fix exists, overwrite payload coordinates before any chooser
+      // or routing call; a malformed/placeholder payload row must not hide a
+      // GPS-visible driver and must never become a location source.
+      candidates = candidates.map((d) => {
+        const id = String((d as Record<string, unknown>).driverId ?? "");
+        const fix = driverGpsFixes.get(id);
+        if (!fix) return d;
+        return { ...d, latitude: fix.lat, longitude: fix.lng,
+          estimatedTimeSeconds: Number.isFinite(Number((d as Record<string, unknown>).estimatedTimeSeconds))
+            ? Number((d as Record<string, unknown>).estimatedTimeSeconds) : 60 };
+      });
+      // Agero placeholder coordinates can hide an in-state driver from
+      // nearestDrivers. Supplemental candidates may come ONLY from a real app
+      // GPS fix inside the loader's 24-hour window; assignment evidence and
+      // historical anchors are never location/state evidence.
+      let poolExpandedFromGps = false;
+      if (!humanReassigned) {
+        const seen = new Set(candidates.map((d) => Number((d as NearestDriver).driverId)));
+        for (const [id, point] of driverGpsFixes) {
+          const numericId = Number(id);
+          const age = (Date.now() - Date.parse(point.capturedAt)) / 60000;
+          if (!Number.isFinite(numericId) || numericId <= 0 || seen.has(numericId) || (eligibleIds && !eligibleIds.has(numericId)) || !Number.isFinite(age) || age < 0 || age > STALE_GPS_FIX_MINUTES) continue;
+          const supplemental: NearestDriver = { driverId: numericId, driverName: `Driver ${numericId}`, latitude: point.lat, longitude: point.lng, estimatedTimeSeconds: Math.max(60, fallbackRoadMinutes(haversineMiles(point.lat, point.lng, lookupAnchor.lat, lookupAnchor.lng)) * 60), isCheckedIn: false };
+          candidates.push(supplemental); seen.add(numericId); poolExpandedFromGps = true;
         }
       }
-      if (poolExpandedFromStateEvidence) lookupAnchorNote += "; in-state driver pool expanded from anchors/fixes — nearestDrivers at anchor lacked in-state drivers";
+      if (poolExpandedFromGps) lookupAnchorNote += "; in-state driver pool expanded from fresh app GPS — nearestDrivers omitted GPS-visible drivers";
       const serviceType = offer.serviceType || (typeof (rawOffer as Record<string, unknown>).serviceType === "string" ? String((rawOffer as Record<string, unknown>).serviceType) : null) || null;
       const serviceQualification: ServiceQualificationOutcome = { serviceType, assessed: Boolean(serviceType?.trim()), excluded: [] };
       // MINIMAL QUALIFICATION GATE is applied immediately after Towbook's eligible-list filter.
@@ -3160,7 +3194,7 @@ async function runAutoDispatchInternal(
       const regionalPreference = await loadRegionalPreferenceMatches(orgId, candidates, lookupAnchor.lat, lookupAnchor.lng, driverQueues);
       const areaCtx: AreaContext = humanReassigned
         ? { gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches, regionalPreference, lightningAvailable }
-        : { anchors: driverAnchors, gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches, regionalPreference, lightningAvailable };
+        : { gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches, regionalPreference, lightningAvailable };
       let chosen = await chooseBestDriverByRoad(
         candidates,
         lookupAnchor.lat,
@@ -3177,9 +3211,9 @@ async function runAutoDispatchInternal(
       const effectiveMaxEta = settings.maxEtaMinutes; // goal only; never caps or gates dispatch
       const driver = chosen?.driver ?? null;
       // The driver the accept POST carries: the human-chosen driver when a
-      // manual reassignment was respected (even offline — their driverId IS the
-      // assignment), else the road-aware choice. Zero = no driver.
-      let dispatchDriverId = (manualDriverId > 0 && manualEligible) ? manualDriverId : (driver ? Number(driver.driverId) || 0 : 0);
+      // manual reassignment was respected AND passed the fresh-GPS/state gate,
+      // else the road-aware choice. Zero = no driver.
+      let dispatchDriverId = (manualDriverId > 0 && manualGpsEligible && chosen) ? manualDriverId : (driver ? Number(driver.driverId) || 0 : 0);
       let dispatchDriverName = humanReassigned
         ? (humanReassigned.driverName ?? String(manualDriverId))
         : driver ? String(driver.driverName ?? "") : null;
@@ -3248,7 +3282,7 @@ async function runAutoDispatchInternal(
         ? null
         : humanReassigned
           ? (manualEligible
-              ? `human-chosen driver ${dispatchDriverName} (${manualDriverId}) is not in the live nearestDrivers payload (offline or no GPS) — accepted WITH that driver (their id IS the assignment; ETA goal ${effectiveMaxEta} min (no road ETA available; no ETA fabricated))${manualNote ? `; ${manualNote}` : ""}`
+              ? (manualGateReason ?? `human-chosen driver ${dispatchDriverName} (${manualDriverId}) could not be selected by the GPS/state gate — accepted WITHOUT dispatch; assign manually only after a fresh app GPS fix${manualNote ? `; ${manualNote}` : ""}`)
               : `human-chosen driver ${dispatchDriverName} (${manualDriverId}) is NOT in the offer's eligible list [${offer.drivers!.join(", ")}] — Towbook would silently drop their id, so the offer is accepted WITHOUT dispatch (never overwrite a human's choice with a different driver); assign manually on Towbook${manualNote ? `; ${manualNote}` : ""}`)
           : eligibleIds
             ? `no eligible driver with a fresh real GPS fix to quote an honest workload ETA (offer eligible list [${offer.drivers!.join(", ")}]${allLoadedNote ?? ""}; accepted WITHOUT dispatch so the motor-club offer cannot expire or be missed; assign manually, ETA goal ${effectiveMaxEta} min — no ETA recorded)`
@@ -3359,7 +3393,7 @@ async function runAutoDispatchInternal(
             lookupAnchor.lng,
             resolved.router,
             driverQueues,
-            { anchors: driverAnchors, gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches, regionalPreference, lightningAvailable },
+            { gpsFixes: driverGpsFixes, stateGuard: stateGuardCtx, serviceType, serviceQualification, zoneMatches, regionalPreference, lightningAvailable },
             { stateGuard: recalcGuard },
           );
           if (recalculated) {
