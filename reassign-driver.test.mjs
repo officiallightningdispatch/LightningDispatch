@@ -204,13 +204,19 @@ try {
     (${ORG}, ${DRIVER_B}, 'contractor'),
     (${ORG}, ${DRIVER_C}, 'contractor'),
     (${ORG}, ${DRIVER_D}, 'contractor'),
-    (${ORG2}, ${USER}, 'owner')`;
+    (${ORG2}, ${USER}, 'owner'),
+    (${ORG2}, ${DRIVER_B}, 'contractor'),
+    (${ORG2}, (SELECT id FROM users WHERE towbook_driver_id='603482'), 'contractor'),
+    (${ORG2}, (SELECT id FROM users WHERE towbook_driver_id='703785'), 'contractor')`;
   // SAME-STATE GUARD fixtures: current locations for the drivers the guard
   // reverse-geocodes (freshest driver_locations fix → today's anchor).
   await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES
     (${`qa-rd-loc-a-${randomUUID()}`}, ${ORG}, ${DRIVER_A}, ${TB_A}, ${CT_FIX[0]}, ${CT_FIX[1]}, NOW()),
     (${`qa-rd-loc-b-${randomUUID()}`}, ${ORG}, ${DRIVER_B}, ${TB_B}, ${CT_FIX[0]}, ${CT_FIX[1]}, NOW()),
-    (${`qa-rd-loc-c-${randomUUID()}`}, ${ORG}, ${DRIVER_C}, ${TB_C}, ${TX_FIX[0]}, ${TX_FIX[1]}, NOW())`;
+    (${`qa-rd-loc-c-${randomUUID()}`}, ${ORG}, ${DRIVER_C}, ${TB_C}, ${TX_FIX[0]}, ${TX_FIX[1]}, NOW()),
+    (${`qa-rd-loc-b-org2-${randomUUID()}`}, ${ORG2}, ${DRIVER_B}, ${TB_B}, ${CT_FIX[0]}, ${CT_FIX[1]}, NOW()),
+    (${`qa-rd-loc-road-best-org2-${randomUUID()}`}, ${ORG2}, ${USER}, '603482', ${CT_FIX[0]}, ${CT_FIX[1]}, NOW()),
+    (${`qa-rd-loc-road-second-org2-${randomUUID()}`}, ${ORG2}, ${USER}, '703785', ${CT_FIX[0]}, ${CT_FIX[1]}, NOW())`;
   // DRIVER_D intentionally has NO driver_locations row (the unknown-location case).
   await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES
     (${ORG}, ${await encryptSession(JSON.stringify({ cookies: "xtl=rd-session", baseUrl: "https://app.towbook.com" }))}, 'connected'),
@@ -386,7 +392,7 @@ try {
       jobId: JOB2, contractorId: DRIVER_D, orgId: ORG, actor: { id: USER, role: "owner" },
       opts: { fetchImpl: m.fetchImpl },
     });
-    check("guard unknown-driver-loc: refused invalid_state, reason names no current location", !r.ok && r.code === "invalid_state" && String(r.message).includes("no current location"), JSON.stringify(r));
+    check("guard unknown-driver-loc: refused invalid_state, reason names the missing fresh app GPS fix", !r.ok && r.code === "invalid_state" && String(r.message).includes("no fresh app GPS fix"), JSON.stringify(r));
     check("guard unknown-driver-loc: ZERO Towbook calls", m.calls.length === 0, JSON.stringify(m.calls));
     const row2 = (await q`SELECT assigned_driver_towbook_id FROM dispatch_jobs WHERE id=${JOB2} AND org_id=${ORG}`)[0];
     check("guard unknown-driver-loc: dispatch_jobs unchanged", String(row2.assigned_driver_towbook_id) === TB_B, JSON.stringify(row2));
