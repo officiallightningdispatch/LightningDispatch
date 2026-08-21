@@ -823,7 +823,11 @@ try {
     await clearOrgDispatch();
     await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES(${`ad-gps-703785-fallback-${FIXTURE_TAG}`}, ${ORG}, ${USER}, '703785', 41.15, -73.1, ${new Date().toISOString()})`;
     const m = makeFetch({
-      offers: [offer(7015)],
+      // Isolate the routing-fallback scenario to its one Towbook-eligible
+      // driver. Earlier cases intentionally leave a fresh GPS fix for 603482;
+      // strict-GPS pool expansion would correctly consider that driver too when
+      // the offer's eligible list is left at the helper default.
+      offers: [offer(7015, { drivers: [703785] })],
       drivers: [driver(703785, "Jayden Fountain", { lat: 41.15, lng: -73.1, etaSec: 604 })],
     });
     const router = makeRouter({ "41.15,-73.10": null }); // OSRM failed for this driver
@@ -866,7 +870,10 @@ try {
     // never the Towbook payload coordinates.
     await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES(${`ad-gps-603482-cap-${FIXTURE_TAG}`}, ${ORG}, ${USER}, '603482', 41.1, -73.0, ${new Date().toISOString()})`;
     const m = makeFetch({
-      offers: [offer(7017)],
+      // Keep this ceiling assertion isolated to the driver whose GPS origin
+      // and route are being pinned below; earlier cases leave fresh fixes for
+      // other eligible IDs in the shared QA org.
+      offers: [offer(7017, { drivers: [603482] })],
       drivers: [driver(603482, "Antone jerret", { lat: 41.1, lng: -73.0, etaSec: 3600 })], // road 3600s → raw ETA ~65; quote is hard-capped at 60 and never gates
     });
     const router = makeRouter({ "41.10,-73.00": 3600 });
@@ -906,7 +913,9 @@ try {
   /* ============ 25) no-GPS excluded; cap-full driver gets workload ETA ============ */
   {
     const m = makeFetch({
-      offers: [offer(7019)],
+      // Restrict this focused no-GPS case to the two IDs represented by the
+      // fixture: 103665 (no fix) and 703785 (the intended cap-full winner).
+      offers: [offer(7019, { drivers: [103665, 703785] })],
       drivers: [
         driver(103665, "Brittani Simms", { lat: 0, lng: 0, etaSec: 5 }),          // no GPS → never eligible
         driver(703785, "Jayden Fountain", { lat: 41.2, lng: -73.2, etaSec: 10, calls: [{ callId: 1, status: 3 }, { callId: 2, status: 3 }, { callId: 3, status: 3 }] }), // at the 3-job cap → workload model
