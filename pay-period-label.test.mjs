@@ -18,6 +18,8 @@ const label = payPeriodLabel(
 check("pay-period label uses ET start/end calendar dates", label.includes("Aug 10 – Aug 16"), label);
 check("pay-period label keeps payout due date", label.includes("pays Wed, Aug 19"), label);
 check("ET formatter keeps Monday midnight boundary on Aug 10", formatEtDate("2026-08-10T04:00:00.000Z") === "Aug 10");
+check("ET formatter treats a date-only period start as Aug 10, not UTC-midnight Aug 9", formatEtDate("2026-08-10") === "Aug 10");
+check("date-only period label stays Aug 10–16", payPeriodLabel("2026-08-10", "2026-08-17", "2026-08-19", false).includes("Aug 10 – Aug 16"));
 check("ET formatter renders exclusive end as Aug 16 when given the final instant", formatEtDate("2026-08-17T03:59:59.999Z") === "Aug 16");
 
 const failed = checks.filter(([, ok]) => !ok);

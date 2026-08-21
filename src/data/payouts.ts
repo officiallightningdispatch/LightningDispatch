@@ -24,13 +24,18 @@ export const PAYOUT_RAIL_LABELS: Record<PayoutRail, string> = {
 };
 
 const ET_TIME_ZONE = "America/New_York";
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
 export type EtDateFormatOptions = Omit<Intl.DateTimeFormatOptions, "timeZone">;
 
-/** Format an absolute instant as an Eastern Time display date. Pay-period
- * boundaries and busy-hour starts are ET concepts; never let the browser's
- * local timezone roll their calendar day backward or forward. */
+/** Format an absolute instant or an ET calendar date as an Eastern Time
+ * display date. Date-only values must be anchored away from UTC midnight:
+ * JavaScript parses `YYYY-MM-DD` as 00:00Z, which is the previous calendar
+ * date in Eastern Time. Pay-period boundaries and busy-hour starts are ET
+ * concepts; never let the browser's local timezone roll their calendar day
+ * backward or forward. */
 export function formatEtDate(isoStr: string, options: EtDateFormatOptions = { month: "short", day: "numeric" }): string {
-  const d = new Date(isoStr);
+  const normalized = isoStr.trim();
+  const d = new Date(DATE_ONLY_RE.test(normalized) ? `${normalized}T12:00:00.000Z` : normalized);
   return Number.isNaN(d.getTime())
     ? "…"
     : new Intl.DateTimeFormat("en-US", { ...options, timeZone: ET_TIME_ZONE }).format(d);
