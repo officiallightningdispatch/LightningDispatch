@@ -70,6 +70,12 @@ export function useDriverQueue() {
   const nav = useNavigate();
   const toast = useToast();
   const [calls, setCalls] = useState<DriverCall[] | null>(null);
+  /** Terminal-inclusive snapshot (completed 5/6/252 + cancelled 255 still
+   *  present) for the cancellation-banner diff. `calls` is the active-only
+   *  ordered queue (orderDriverQueue strips terminal statuses), so a completed
+   *  job would otherwise VANISH from `calls` and be misread as cancelled. The
+   *  banner must read THIS raw list to key off the authoritative Towbook status. */
+  const [allCalls, setAllCalls] = useState<DriverCall[] | null>(null);
   const [error, setError] = useState("");
   const [expired, setExpired] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -89,7 +95,7 @@ export function useDriverQueue() {
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
     const r = await driverJobs();
-    if (r.ok) { setCalls(orderDriverQueue(r.calls, driverLocation)); setError(""); setExpired(false); }
+    if (r.ok) { setCalls(orderDriverQueue(r.calls, driverLocation)); setAllCalls(r.calls); setError(""); setExpired(false); }
     else { if (r.expired) setExpired(true); setError(r.message); }
     setLoading(false);
   }, [driverLocation]);
@@ -143,7 +149,7 @@ export function useDriverQueue() {
   const openReconnect = useCallback(() => setReconnectOpen(true), []);
   const closeReconnect = useCallback(() => setReconnectOpen(false), []);
   const onReconnected = useCallback(() => { void load(true); }, [load]);
-  return { calls, error, expired, loading, acting, load, act, signOut, gpsState, reconnectOpen, openReconnect, closeReconnect, onReconnected };
+  return { calls, allCalls, error, expired, loading, acting, load, act, signOut, gpsState, reconnectOpen, openReconnect, closeReconnect, onReconnected };
 }
 
 /** In-place driver-session reconnect sheet (auth incident 2026-08-13). Shown
@@ -336,10 +342,10 @@ export function DriverJobCard({ call, acting, onAct, onQueueChanged }: { call: D
   );
 }
 
-export function DriverBanners({ calls, expired, error, onReconnect }: { calls: DriverCall[] | null; expired: boolean; error: string; onReconnect: () => void }) {
+export function DriverBanners({ calls, allCalls, expired, error, onReconnect }: { calls: DriverCall[] | null; allCalls?: DriverCall[] | null; expired: boolean; error: string; onReconnect: () => void }) {
   return (
     <>
-      <DriverNotificationBanners calls={calls} />
+      <DriverNotificationBanners calls={calls} allCalls={allCalls} />
       {expired && <ExpiredBanner onReconnect={onReconnect} />}
       {error && !expired && <p role="alert" className="mb-4 rounded-xl bg-danger-50 p-3 text-sm text-danger-600">{error}</p>}
     </>

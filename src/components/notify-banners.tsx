@@ -388,11 +388,14 @@ export function OwnerNotificationLayer() {
  * seen-set and raise a "New job assigned" banner for each arrival. The first
  * successful load seeds the set (no burst on sign-in).
  */
-export function DriverNotificationBanners({ calls, showSoundToggle = false }: { calls: readonly NotifyCall[] | null; showSoundToggle?: boolean }) {
+export function DriverNotificationBanners({ calls, allCalls, showSoundToggle = false }: { calls: readonly NotifyCall[] | null; allCalls?: readonly NotifyCall[] | null; showSoundToggle?: boolean }) {
   const { banners, push, dismiss } = useBannerStack("driver");
   const booted = useRef(false);
-  // Previous queue snapshot — used to spot live→cancelled transitions.
-  const prevCalls = useRef<readonly { id: string }[] | null>(null);
+  // Previous queue snapshot — used to spot live→cancelled transitions. This
+  // must hold the TERMINAL-INCLUSIVE snapshot (see `terminalAware` below), so a
+  // completed job that leaves the active `calls` list is not mistaken for a
+  // cancelled one.
+  const prevCalls = useRef<readonly NotifyCall[] | null>(null);
   useAudioPrimer();
   const key = seenKey("driver", "jobs");
   const cancelledKey = seenKey("driver", "cancelled");
@@ -402,14 +405,19 @@ export function DriverNotificationBanners({ calls, showSoundToggle = false }: { 
     // empty or not — bootstraps the seen-set: nothing already in the queue at
     // sign-in ever fires. A job that lands AFTER that first response fires.
     if (calls === null || calls === undefined) return;
+    // `calls` is the active-only ordered queue (orderDriverQueue strips
+    // completed 5/6/252 + cancelled 255). For cancellation detection we need
+    // the TERMINAL-INCLUSIVE snapshot so the diff can see a completed job's
+    // authoritative statusId and skip it, while a genuine 255 still fires.
+    const terminalAware: readonly NotifyCall[] = allCalls ?? calls;
     if (!booted.current) {
       booted.current = true;
       setSeenIds(key, mergeSeen(getSeenIds(key), calls.map((c) => c.id)));
-      prevCalls.current = calls;
+      prevCalls.current = terminalAware;
       return;
     }
     const prev = prevCalls.current;
-    prevCalls.current = calls;
+    prevCalls.current = terminalAware;
 
     const added = diffNewJobIds(getSeenIds(key), calls.map((c) => ({ id: c.id })));
     if (added.length) {
@@ -438,7 +446,7 @@ export function DriverNotificationBanners({ calls, showSoundToggle = false }: { 
     // towing) that is now cancelled (255) or gone from the queue fires once per
     // call id. The banner carries the pickup/vehicle context from the previous
     // snapshot.
-    const cancelled = prev ? diffCancelledJobIds(prev as NotifyCall[], calls as NotifyCall[]) : [];
+    const cancelled = prev ? diffCancelledJobIds(prev as NotifyCall[], terminalAware as NotifyCall[]) : [];
     if (cancelled.length) {
       const already = new Set(getSeenIds(cancelledKey));
       const unseen = cancelled.filter((c) => !already.has(c.id));
@@ -460,7 +468,7 @@ export function DriverNotificationBanners({ calls, showSoundToggle = false }: { 
         );
       }
     }
-  }, [calls, key, cancelledKey, push]);
+  }, [calls, allCalls, key, cancelledKey, push]);
 
   return <BannerStack role="driver" banners={banners} onDismiss={dismiss} showSoundToggle={showSoundToggle} />;
 }

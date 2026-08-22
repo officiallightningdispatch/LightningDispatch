@@ -203,6 +203,49 @@ const CO = (id, amountCents = 1200, extra = {}) => ({ id, amountCents, contracto
   check("null/empty inputs → empty", diffCancelledJobIds(null, []).length === 0 && diffCancelledJobIds([], null).length === 0);
 }
 
+/* --------------------- cancelled-job completion regression (2026-08-22) --------------------- */
+// Owner-reported false positive: completing a call (Towbook status 5) fired
+// "This job was cancelled". Root cause: the caller diffed the ACTIVE-ONLY queue
+// (orderDriverQueue strips terminal statuses 5/6/252/255), so a completed job
+// VANISHED and read as cancelled. The fix passes the TERMINAL-INCLUSIVE snapshot
+// (allCalls), where completion is a PRESENT authoritative statusId — 5, 6, or
+// 252 — and must be skipped, while a genuine 255 still fires.
+{
+  const prev = [
+    C("j5", { statusId: 3, serviceName: "Unlock", pickupAddress: "10 A St", zip: "06604" }),
+    C("j6", { statusId: 2, serviceName: "Jump Start" }),
+    C("j252", { statusId: 4, serviceName: "Tow" }),
+  ];
+  const next = [C("j5", { statusId: 5 }), C("j6", { statusId: 6 }), C("j252", { statusId: 252 })];
+  check("live→completed (5/6/252) never fires cancelled", diffCancelledJobIds(prev, next).length === 0);
+}
+{
+  // The genuine cancellation still fires — exactly once, with pickup/vehicle
+  // context — and never for the completed sibling in the same snapshot.
+  const prev = [
+    C("k1", { statusId: 2, serviceName: "Tire Change", pickupAddress: "5 X Rd", zip: "06605", vehicle: "Ford F-150" }),
+    C("k2", { statusId: 3, serviceName: "Lockout" }),
+  ];
+  const next = [C("k1", { statusId: 255 }), C("k2", { statusId: 5 })];
+  const fired = diffCancelledJobIds(prev, next);
+  check("live→255 fires exactly once with context", fired.length === 1 && fired[0].id === "k1" && fired[0].vehicle === "Ford F-150" && fired[0].pickupAddress === "5 X Rd", JSON.stringify(fired));
+  check("completed sibling never fires", fired.every((c) => c.id !== "k2"));
+}
+{
+  // live→gone WITHOUT any terminal status in the terminal-inclusive snapshot is
+  // still the "vanished without completing" cancellation signal — preserved.
+  const prev = [C("gone", { statusId: 2, serviceName: "Jump Start", pickupAddress: "7 Y St", zip: "06607" })];
+  check("live→gone (no terminal status) still fires", diffCancelledJobIds(prev, []).length === 1);
+}
+{
+  // Already-terminal rows in the PREVIOUS snapshot (completed 5/6/252 or
+  // cancelled 255) never fire — even when they later vanish from the snapshot.
+  const prev = [C("p5", { statusId: 5 }), C("p6", { statusId: 6 }), C("p252", { statusId: 252 }), C("p255", { statusId: 255 })];
+  const next = [C("p5", { statusId: 5 }), C("p6", { statusId: 6 }), C("p252", { statusId: 252 }), C("p255", { statusId: 255 })];
+  check("already terminal in prev never fires (5/6/252/255)", diffCancelledJobIds(prev, next).length === 0);
+  check("terminal rows that vanish from next never fire", diffCancelledJobIds(prev, []).length === 0);
+}
+
 function C(id, extra = {}) { return { id, ...extra }; }
 
 /* --------------------------- parseSeen (persisted set) --------------------------- */

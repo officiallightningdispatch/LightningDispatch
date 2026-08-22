@@ -37,7 +37,7 @@ function HelpIcon({ className = "" }: { className?: string }) {
 
 function ActiveView() {
   const nav = useNavigate();
-  const { calls, error, expired, loading, acting, load, act, signOut, gpsState, reconnectOpen, openReconnect, closeReconnect, onReconnected } = useDriverQueue();
+  const { calls, allCalls, error, expired, loading, acting, load, act, signOut, gpsState, reconnectOpen, openReconnect, closeReconnect, onReconnected } = useDriverQueue();
   const [snap, setSnap] = useState(0);
   const active = calls?.filter((c) => ACTIVE_STATUSES.includes(c.statusId)) ?? null;
   const current = active && active.length > 0 ? active[0] : null;
@@ -116,7 +116,7 @@ function ActiveView() {
           </button>
         </div>
       )}
-      <DriverNotificationBanners calls={calls} />
+      <DriverNotificationBanners calls={calls} allCalls={allCalls} />
       <DriverReconnectSheet open={reconnectOpen} onClose={closeReconnect} onReconnected={onReconnected} onSignOut={() => void signOut()} />
     </AppShell>
   );

@@ -28,11 +28,11 @@ import type { DriverCall } from "~/data/driver-auth";
 export const Route = createFileRoute("/driver/offers")({ component: OffersView });
 
 function OffersView() {
-  const { calls, error, expired, loading, acting, load, act, signOut, gpsState, reconnectOpen, openReconnect, closeReconnect, onReconnected } = useDriverQueue();
+  const { calls, allCalls, error, expired, loading, acting, load, act, signOut, gpsState, reconnectOpen, openReconnect, closeReconnect, onReconnected } = useDriverQueue();
   const offers = calls?.filter((c) => c.statusId === 1) ?? null;
   return (
     <AppShell portal="driver" title="Offers" description="New jobs waiting on your thumbs-up — accept to claim them.">
-      <DriverBanners calls={calls} expired={expired} error={error} onReconnect={() => void openReconnect()} />
+      <DriverBanners calls={calls} allCalls={allCalls} expired={expired} error={error} onReconnect={() => void openReconnect()} />
       <DriverToolbar loading={loading} onRefresh={() => void load(false)} onSignOut={() => void signOut()} />
       <GpsStatusChip state={gpsState} />
       {loading && calls === null ? (

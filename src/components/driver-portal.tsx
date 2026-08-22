@@ -85,7 +85,7 @@ const ACTIVE_STATUSES = [2, 3, 4];
 
 export function RealDriverPortal() {
   const nav = useNavigate();
-  const { calls, error, expired, loading, acting, load, act, signOut, gpsState, reconnectOpen, openReconnect, closeReconnect, onReconnected } = useDriverQueue();
+  const { calls, allCalls, error, expired, loading, acting, load, act, signOut, gpsState, reconnectOpen, openReconnect, closeReconnect, onReconnected } = useDriverQueue();
   const [zone, setZone] = useState<DriverZoneState | null>(null);
   const [zoneOpen, setZoneOpen] = useState(false);
   const loadZone = () => { void getMyZoneState().then((r) => setZone(r as DriverZoneState)).catch(() => setZone(null)); };
@@ -176,7 +176,7 @@ export function RealDriverPortal() {
         onOpenEarnings={() => void nav({ to: "/driver/earnings" })}
         topSlot={<PushPermissionCard />}
       />
-      <DriverNotificationBanners calls={calls} showSoundToggle />
+      <DriverNotificationBanners calls={calls} allCalls={allCalls} showSoundToggle />
       <PushNotificationSetup />
       <DriverReconnectSheet open={reconnectOpen} onClose={closeReconnect} onReconnected={onReconnected} onSignOut={() => void signOut()} />
       <DriverZonePicker open={zoneOpen} onClose={() => setZoneOpen(false)} state={zone?.ok ? zone : null} onSelected={loadZone} />
