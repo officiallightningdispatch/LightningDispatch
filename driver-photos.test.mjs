@@ -275,6 +275,10 @@ await setup();
   check("final complete ok → finalizing", fin.ok === true && fin.phase === "finalizing", JSON.stringify(fin));
   // Customer completion capture (completion flow): signature + survey on file
   // before complete — completeJobCore now hard-gates on it.
+  // T10 (SUB A): before the capture is stored, completion refuses with
+  // completion_capture_required (the signature/survey hard gate is unchanged).
+  const noCapture = await completeJobCore(user, { jobId: c.call }, { fetchImpl });
+  check("complete without customer capture → completion_capture_required", noCapture.ok === false && noCapture.code === "completion_capture_required", JSON.stringify(noCapture));
   const cap = await captureCompletionCore(user, { jobId: c.call, signatureDataUrl: sigDataUrl("Q"), survey: { rating: 5, comment: "QA" } }, { fetchImpl });
   check("customer capture saved (completion gate)", cap.ok === true && cap.completion.status === "captured", JSON.stringify(cap));
   // 3 final photos → completion locked.
@@ -405,6 +409,31 @@ await setup();
   const rows = await jobPhotoRows(ORG, c.job);
   const st = summarizePhotos(rows);
   check("regression: pre-arrival + this service photo present on the PO job", st.counts.pre_arrival === 4 && st.counts.service === 1, JSON.stringify(st.counts));
+}
+
+/* ============ 9) T1 (SUB A): service/final photos capture while en_route ============ */
+{
+  const c = CONF[ORG];
+  // Reset the job to en_route (it auto-arrived earlier) and clear photos so the
+  // capture gates are exercised from a pre-arrival, not-yet-arrived state.
+  await q`UPDATE dispatch_jobs SET status='en_route', arrived_at=NULL WHERE id=${c.job}`;
+  await q`DELETE FROM job_photos WHERE org_id=${ORG} AND job_id=${c.job}`;
+  const { fetchImpl } = makeFetch({ callId: c.call });
+  const user = userFor(ORG);
+  // Pre-arrival still accepted while en_route.
+  for (let i = 0; i < SIDES.length; i++) {
+    const r = await uploadJobPhotoCore(user, { jobId: c.call, phase: "pre_arrival", side: SIDES[i], dataUrl: photoDataUrl(String.fromCharCode(65 + i)) }, { fetchImpl });
+    check(`T1: pre-arrival ${SIDES[i]} ok while en_route`, r.ok === true, JSON.stringify(r));
+  }
+  // Service photo accepted while en_route (pre-arrival complete, status NOT arrived).
+  const svc = await uploadJobPhotoCore(user, { jobId: c.call, phase: "service", side: "front", dataUrl: photoDataUrl("W") }, { fetchImpl });
+  check("T1: service upload accepted while en_route (status gate relaxed)", svc.ok === true && svc.phase === "service", JSON.stringify(svc));
+  // Final photo accepted while en_route once all 4 service photos are present.
+  for (let i = 0; i < SIDES.length; i++) {
+    await uploadJobPhotoCore(user, { jobId: c.call, phase: "service", side: SIDES[i], dataUrl: photoDataUrl(String.fromCharCode(86 + i)) }, { fetchImpl });
+  }
+  const fin = await uploadJobPhotoCore(user, { jobId: c.call, phase: "final", side: "front", dataUrl: photoDataUrl("Y") }, { fetchImpl });
+  check("T1: final upload accepted while en_route (status gate relaxed)", fin.ok === true && fin.phase === "final", JSON.stringify(fin));
 }
 } catch (e) { runError = e instanceof Error ? e : new Error(String(e)); }
 /* ================================ summary + cleanup ================================ */

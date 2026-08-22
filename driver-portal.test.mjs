@@ -97,6 +97,12 @@ const jsonFetch = (routes) => async (url, init) => {
 {
   check("no-status call rejected", normalizeDriverCall({ id: 5, status: {} }) === null);
 }
+{
+  // T8 (SUB A): a Towbook call at status 3 (On Scene) maps to statusId 3 so the
+  // driver queue reflects arrival once the manual/geofence arrive lands.
+  const arrived = normalizeDriverCall({ id: 321003, callNumber: 321003, status: { id: 3 }, waypoints: [{ address: "70 Pitt Street", zip: "06606" }] });
+  check("status 3 (On Scene) → statusId 3 (arrived)", arrived !== null && arrived.statusId === 3, JSON.stringify(arrived));
+}
 
 /* ------------------------------ summary ------------------------------ */
 const failed = checks.filter(([, ok]) => !ok);

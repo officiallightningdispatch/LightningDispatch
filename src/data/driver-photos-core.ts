@@ -289,9 +289,12 @@ export async function uploadJobPhotoCore(user: PhotoUser, data: unknown, opts: {
     if (v.data.phase === "pre_arrival") {
       if (job.status !== "en_route" && job.status !== "arrived") return { ok: false, code: "phase_locked", message: "Arrival photos unlock once you're en route." };
     } else if (v.data.phase === "service") {
-      if (job.status !== "arrived" || !complete.pre_arrival) return { ok: false, code: "phase_locked", message: "Service photos unlock after arrival photos are complete." };
+      // SUB A (2026-08-22): service photos may be CAPTURED regardless of
+      // dispatch_jobs.status (arrival may not have landed yet) — the completion
+      // push still hard-gates on all 12 photos + signature/survey.
+      if (!complete.pre_arrival) return { ok: false, code: "phase_locked", message: "Service photos unlock after arrival photos are complete." };
     } else {
-      if (job.status !== "arrived" || !complete.service) return { ok: false, code: "phase_locked", message: "Final photos unlock after the service photos are complete." };
+      if (!complete.service) return { ok: false, code: "phase_locked", message: "Final photos unlock after the service photos are complete." };
     }
 
     const key = storageKeyFor(user.orgId, job.id, v.data.phase, v.data.side);

@@ -116,7 +116,7 @@ export function useDriverQueue() {
       navigator.serviceWorker.removeEventListener("message", onPushReceived);
     };
   }, [load]);
-  const act = async (callId: string, action: "accept" | "en_route") => {
+  const act = async (callId: string, action: "accept" | "en_route" | "arrive") => {
     if (acting) return;
     setActing(callId); setError("");
     try {
@@ -273,7 +273,7 @@ export function QueueSkeleton() {
 /** The dominant per-stage action block shared by DriverJobCard and the R2
  *  bottom sheets (TripSheet/HomeSheet): Accept → En route → photo callouts +
  *  JobPhotoFlow → detail disclosure. One source of truth for the act() wiring. */
-export function JobCardActions({ call, acting, onAct, onQueueChanged }: { call: DriverCall; acting: boolean; onAct: (id: string, a: "accept" | "en_route") => Promise<void>; onQueueChanged: () => void }) {
+export function JobCardActions({ call, acting, onAct, onQueueChanged }: { call: DriverCall; acting: boolean; onAct: (id: string, a: "accept" | "en_route" | "arrive") => Promise<void>; onQueueChanged: () => void }) {
   const jobStatus = call.statusId === 2 ? "en_route" : call.statusId === 3 ? "arrived" : call.statusId === 5 ? "completed" : "other";
   return (
     <>
@@ -283,9 +283,14 @@ export function JobCardActions({ call, acting, onAct, onQueueChanged }: { call: 
         </Button>
       )}
       {call.statusId === 2 && (
-        <Button className="mt-4 w-full" loading={acting} onClick={() => void onAct(call.id, "en_route")}>
-          <Navigation className="size-5" /> En route — started heading over
-        </Button>
+        <>
+          <Button className="mt-4 w-full" loading={acting} onClick={() => void onAct(call.id, "arrive")}>
+            <MapPin className="size-5" /> I&apos;m on scene — arrived
+          </Button>
+          <Button className="mt-2 w-full" variant="ghost" loading={acting} onClick={() => void onAct(call.id, "en_route")}>
+            <Navigation className="size-5" /> En route — started heading over
+          </Button>
+        </>
       )}
       {call.statusId === 3 && (
         <p className="mt-4 flex items-center gap-2 rounded-xl bg-violet-50 p-3 text-center text-sm font-medium text-violet-700">
@@ -311,7 +316,7 @@ export function JobCardActions({ call, acting, onAct, onQueueChanged }: { call: 
   );
 }
 
-export function DriverJobCard({ call, acting, onAct, onQueueChanged }: { call: DriverCall; acting: boolean; onAct: (id: string, a: "accept" | "en_route") => Promise<void>; onQueueChanged: () => void }) {
+export function DriverJobCard({ call, acting, onAct, onQueueChanged }: { call: DriverCall; acting: boolean; onAct: (id: string, a: "accept" | "en_route" | "arrive") => Promise<void>; onQueueChanged: () => void }) {
   const meta = STATUS_META[call.statusId] ?? { label: `Status ${call.statusId}`, badge: "bg-ink-100 text-ink-600", dot: "bg-ink-400" };
   const address = [call.pickupAddress, call.zip].filter(Boolean).join(", ");
   return (

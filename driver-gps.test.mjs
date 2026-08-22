@@ -286,6 +286,10 @@ await setup();
   check("escalation row recorded", autoArriveEsc?.escalated === true && String(autoArriveEsc?.reason).includes("did not land on Towbook"), JSON.stringify(esc));
   const aud = await q`SELECT detail FROM audit_log WHERE org_id=${ORG3} AND action='geofence_auto_arrive' LIMIT 1`;
   check("failure outcome audited (never swallowed)", aud.length === 1 && String(aud[0].detail.towbookOk) === "false", JSON.stringify(aud));
+  // T6 (SUB A): the failed Towbook PUT rolls LD back to en_route + clears
+  // arrived_at — LD must never claim 'arrived' when Towbook rejected it.
+  const jobAfterFail = await q`SELECT status, arrived_at FROM dispatch_jobs WHERE id=${c.job}`;
+  check("PUT failure rolls LD back to en_route + arrived_at cleared", String(jobAfterFail[0].status) === "en_route" && jobAfterFail[0].arrived_at == null, JSON.stringify(jobAfterFail));
   // Same call re-failing dedupes on the ledger key (ON CONFLICT DO NOTHING).
   await q`UPDATE dispatch_jobs SET status='en_route' WHERE id=${c.job}`;
   await evaluateGeofence({ orgId: ORG3, userId: c.userId, towbookDriverId: c.tbDriver, lat: PICKUP.lat, lng: PICKUP.lng, fetchImpl });

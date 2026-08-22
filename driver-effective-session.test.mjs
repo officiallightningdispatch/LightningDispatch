@@ -203,6 +203,36 @@ const callsOn = (path, method) => tbCalls.filter((c) => c.url.includes(path) && 
     putAfter === putBefore && evAfter[0].n === evBefore[0].n && auditAfter[0].n === auditBefore[0].n,
     JSON.stringify({ res, putDelta: putAfter - putBefore, evBefore: evBefore[0].n, evAfter: evAfter[0].n }));
 }
+/* ------------------------- 3b) manual arrive (SUB A, Towbook status 3) ------------------------- */
+{
+  const putsBefore = tbCalls.filter((c) => c.method === "PUT" && /\/api\/calls\/900001$/.test(c.url)).length;
+  await withSession(OWNER_TOKEN, () => driverJobAction({ data: { jobId: "900001", action: "arrive" } }));
+  const arrivePuts = tbCalls.filter((c) => c.method === "PUT" && /\/api\/calls\/900001$/.test(c.url));
+  const lastArrive = arrivePuts[arrivePuts.length - 1];
+  check("arrive: exactly one new PUT to /api/calls/900001 with status {id:3} (On Scene)",
+    arrivePuts.length === putsBefore + 1 && lastArrive && JSON.parse(String(lastArrive.body ?? "{}")).status?.id === 3,
+    JSON.stringify(arrivePuts));
+  const row = await q`SELECT status, arrived_at, towbook_status FROM dispatch_jobs WHERE id='job-900001' AND org_id=${ORG}`;
+  check("arrive: LD dispatch_jobs status='arrived' + arrived_at set + towbook_status 3",
+    row.length === 1 && row[0].status === "arrived" && row[0].arrived_at != null && String(row[0].towbook_status) === "3",
+    JSON.stringify(row));
+  const ev = await q`SELECT from_status, to_status, actor_user_id, actor_role FROM status_events WHERE org_id=${ORG} AND job_id='job-900001' AND to_status='arrived' ORDER BY occurred_at DESC LIMIT 1`;
+  check("arrive: status_events en_route→arrived under the real session actor",
+    ev.length === 1 && String(ev[0].from_status) === "en_route" && String(ev[0].to_status) === "arrived" && ev[0].actor_user_id === OWNER && ev[0].actor_role === "owner",
+    JSON.stringify(ev));
+  // Idempotent re-tap → no-op (never a double PUT, no double event/audit).
+  const putAfter = tbCalls.filter((c) => c.method === "PUT").length;
+  const evCount = await q`SELECT COUNT(*)::int AS n FROM status_events WHERE org_id=${ORG} AND job_id='job-900001'`;
+  const auditCount = await q`SELECT COUNT(*)::int AS n FROM audit_log WHERE org_id=${ORG} AND entity_id='job-900001' AND action='driver_status_change'`;
+  await withSession(OWNER_TOKEN, () => driverJobAction({ data: { jobId: "900001", action: "arrive" } }));
+  const putAfter2 = tbCalls.filter((c) => c.method === "PUT").length;
+  const evCount2 = await q`SELECT COUNT(*)::int AS n FROM status_events WHERE org_id=${ORG} AND job_id='job-900001'`;
+  const auditCount2 = await q`SELECT COUNT(*)::int AS n FROM audit_log WHERE org_id=${ORG} AND entity_id='job-900001' AND action='driver_status_change'`;
+  check("arrive: re-tap is a no-op (no new PUT, no double event/audit)",
+    putAfter2 === putAfter && evCount2[0].n === evCount[0].n && auditCount2[0].n === auditCount[0].n,
+    JSON.stringify({ putDelta: putAfter2 - putAfter, evBefore: evCount[0].n, evAfter: evCount2[0].n }));
+}
+
 /* ------------------------- 4) availability GO/Offline ------------------------- */
 {
   const before = tbCalls.length;

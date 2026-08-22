@@ -20,7 +20,7 @@ import type { DriverCall } from "~/data/driver-auth";
 const addressOf = (call: DriverCall): string => [call.pickupAddress, call.zip].filter(Boolean).join(", ");
 
 /** "?" style: one prominent job front-and-center (peek) — the Uber look. */
-export function PrimaryJobPeek({ call, position = 1, acting, onAct, onQueueChanged }: { call: DriverCall; position?: number; acting: boolean; onAct: (id: string, a: "accept" | "en_route") => Promise<void>; onQueueChanged: () => void }) {
+export function PrimaryJobPeek({ call, position = 1, acting, onAct, onQueueChanged }: { call: DriverCall; position?: number; acting: boolean; onAct: (id: string, a: "accept" | "en_route" | "arrive") => Promise<void>; onQueueChanged: () => void }) {
   const meta = STATUS_META[call.statusId] ?? { label: `Status ${call.statusId}`, badge: "bg-ink-100 text-ink-600" };
   const address = addressOf(call);
   const [ua, setUa] = useState("");
@@ -124,7 +124,7 @@ export function HomeSheet({
    *  expanded "History" list (Uber-style; owner-directed 2026-08-12). */
   history: DriverCall[];
   acting: string | null;
-  onAct: (id: string, a: "accept" | "en_route") => Promise<void>;
+  onAct: (id: string, a: "accept" | "en_route" | "arrive") => Promise<void>;
   onQueueChanged: () => void;
   onRefresh: () => void;
   refreshing: boolean;
@@ -258,7 +258,7 @@ export function TripSheet({
 }: {
   call: DriverCall;
   acting: boolean;
-  onAct: (id: string, a: "accept" | "en_route") => Promise<void>;
+  onAct: (id: string, a: "accept" | "en_route" | "arrive") => Promise<void>;
   onQueueChanged: () => void;
   snapIndex: number;
   onSnapChange: (i: number) => void;

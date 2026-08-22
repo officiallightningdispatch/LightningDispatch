@@ -70,14 +70,16 @@ export type DriverCall = {
   goalSeconds: number | null;
   serviceKey: string | null;
 };
-export type DriverJobAction = "accept" | "en_route";
+export type DriverJobAction = "accept" | "en_route" | "arrive";
 /* LD action → Towbook status id. CORRECTED 2026-08-12 (owner-reported bug):
  * Towbook's real statuses are 0 Received, 1 Dispatched, 2 En Route, 3 On
  * Scene, 4 Towing, 5 Complete, 7 Arrived (verified in the dispatch editor's
  * statusTimes mapping). Accept now performs accept→en_route in ONE step
- * (owner 2026-08-12: "Accept & go") — both actions target Towbook 2 (En
- * Route); the separate en_route action remains as a manual fallback. */
-const STATUS_ID_FOR_ACTION: Record<DriverJobAction, number> = { accept: 2, en_route: 2 };
+ * (owner 2026-08-12: "Accept & go") — accept and en_route both target
+ * Towbook 2 (En Route); the separate en_route action remains as a manual
+ * fallback. arrive is the manual "I'm on scene" transition to Towbook 3
+ * (On Scene), mirroring geofence auto-arrive (SUB A, 2026-08-22). */
+const STATUS_ID_FOR_ACTION: Record<DriverJobAction, number> = { accept: 2, en_route: 2, arrive: 3 };
 
 /* ------------------------- local copies of Towbook helpers ------------------------- */
 /** Mirrors server.ts TOWBOOK_STATUS_ID_TO_LIFECYCLE (corrected 2026-08-12:
@@ -643,15 +645,16 @@ export type TransitionResult =
   | { ok: true; changed: boolean; statusId: number }
   | { ok: false; expired?: boolean; code: "invalid_state" | "unauthorized" | "towbook_failed" | "not_found" | "no_session"; message: string };
 
-/** Thumbs-up (offered→accepted) / En route (accepted→en_route): PUT
- *  /api/calls/{id} {id, status:{id:N}} via the DRIVER's session, then
- *  write-through to LD dispatch_jobs (status_events + audit_log) so the owner
- *  and ops portals reflect it immediately. Idempotent: a re-tap on an
- *  already-applied transition is a no-op (never a double PUT). Only the
- *  assigned driver can act (assets[].driver.id check). user = the EFFECTIVE
- *  driver identity; actor = the real session user for audit attribution
- *  (owner-confirmed Q4: owner-as-driver actions write status_events under the
- *  owner's user id with a "(owner in driver view)" note suffix). */
+/** Thumbs-up (offered→accepted) / En route (accepted→en_route) / Arrive
+ *  (en_route→arrived, Towbook 3 On Scene): PUT /api/calls/{id} {id,
+ *  status:{id:N}} via the DRIVER's session, then write-through to LD
+ *  dispatch_jobs (status_events + audit_log) so the owner and ops portals
+ *  reflect it immediately. Idempotent: a re-tap on an already-applied
+ *  transition is a no-op (never a double PUT). Only the assigned driver can
+ *  act (assets[].driver.id check). user = the EFFECTIVE driver identity;
+ *  actor = the real session user for audit attribution (owner-confirmed Q4:
+ *  owner-as-driver actions write status_events under the owner's user id with
+ *  a "(owner in driver view)" note suffix). */
 async function applyDriverTransition(
   user: { orgId: string; userId: string; towbookDriverId: string },
   actor: { userId: string; role: string; ownerInDriverView: boolean },
@@ -689,16 +692,20 @@ async function applyDriverTransition(
       }
       const fromTo: Record<string, string | null> = { offered: "en_route", new: "en_route", en_route: "arrived" };
       const next = fromTo[currentLd] ?? null;
+      const actionName = action === "accept" ? "accepted" : action === "arrive" ? "arrived" : "en route";
       if (next === null) {
-        return { ok: false, code: "invalid_state", message: `This job cannot be ${action === "accept" ? "accepted" : "moved en route"} from its current status.` };
+        return { ok: false, code: "invalid_state", message: `This job cannot be ${actionName} from its current status.` };
       }
-      if (next === "arrived" && action !== "en_route") {
+      if (next === "arrived" && action !== "en_route" && action !== "arrive") {
         return { ok: false, code: "invalid_state", message: "This job is already on the way." };
       }
       if (next === "en_route" && currentLd === "en_route") {
         return { ok: true, changed: false, statusId: 2 };
       }
-      const note = `driver ${action === "accept" ? "accepted" : "en route"} (Lightning Dispatch platform job)${actor.ownerInDriverView ? " (owner in driver view)" : ""}`;
+      if (next === "arrived" && currentLd === "arrived") {
+        return { ok: true, changed: false, statusId: 3 };
+      }
+      const note = `driver ${actionName} (Lightning Dispatch platform job)${actor.ownerInDriverView ? " (owner in driver view)" : ""}`;
       await q`UPDATE dispatch_jobs SET status=${next}, assigned_at=COALESCE(assigned_at, NOW()),
         arrived_at=CASE WHEN ${next}='arrived' THEN NOW() ELSE arrived_at END
         WHERE id=${callId} AND org_id=${user.orgId}`;
@@ -727,7 +734,7 @@ async function applyDriverTransition(
   if (!callHasDriver(call, Number(user.towbookDriverId))) {
     return { ok: false, code: "unauthorized", message: "This job is not assigned to you." };
   }
-  const required = toStatus === 2 ? 1 : 2; // accept needs offered; en-route needs accepted
+  const required = toStatus === 2 ? 1 : 2; // accept/en-route need offered; arrive needs en-route
   if (toStatus === 2) {
     const q = await db();
     const { enforceReservedZoneEligibility, containingZone } = await import("./reserved-zone-core");
@@ -739,8 +746,8 @@ async function applyDriverTransition(
     if (!gate.ok) return { ok: false, code: "invalid_state", message: gate.message };
   }
   if (currentId !== required) {
-    const label = toStatus === 2 ? "accept" : "go en route";
-    return { ok: false, code: "invalid_state", message: `This job cannot be ${label}ed from its current status.` };
+    const phrase = toStatus === 2 ? "be accepted" : toStatus === 3 ? "be marked arrived" : "go en route";
+    return { ok: false, code: "invalid_state", message: `This job cannot ${phrase} from its current status.` };
   }
   const put = await tbFetch(fetchImpl, `${session.baseUrl}/api/calls/${callId}`, session, {
     method: "PUT",
@@ -752,7 +759,7 @@ async function applyDriverTransition(
   return { ok: true, changed: true, statusId: toStatus };
 }
 
-const actionLabel = (toStatus: number) => (toStatus === 2 ? "accepted" : "en route");
+const actionLabel = (toStatus: number) => (toStatus === 2 ? "accepted" : toStatus === 3 ? "arrived" : "en route");
 
 /** LD dispatch_jobs write-through: update (or import when the job has not been
  *  synced yet — the 30s sync re-confirms) + status_events + audit_log, matching
@@ -773,7 +780,9 @@ async function writeThrough(user: { orgId: string; towbookDriverId: string }, ac
     if (jobRowId) {
       const from = String(existing[0].status);
       if (from === mapped) return; // already current — nothing to record
-      await q`UPDATE dispatch_jobs SET status=${mapped}, towbook_status=${String(toStatus)} WHERE id=${jobRowId} AND org_id=${user.orgId}`;
+      await q`UPDATE dispatch_jobs SET status=${mapped}, towbook_status=${String(toStatus)},
+        arrived_at=CASE WHEN ${mapped}='arrived' THEN NOW() ELSE arrived_at END
+        WHERE id=${jobRowId} AND org_id=${user.orgId}`;
       await q`INSERT INTO status_events(id, org_id, job_id, from_status, to_status, actor_user_id, actor_role, note)
         SELECT gen_random_uuid()::text, ${user.orgId}, ${jobRowId}, ${from}, ${mapped}, ${actor.userId}, ${actor.role}, ${note}`;
       await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
@@ -799,8 +808,8 @@ async function writeThrough(user: { orgId: string; towbookDriverId: string }, ac
     const pickupLat = Number.isFinite(wLat) && wLat !== 0 ? wLat : null;
     const pickupLng = Number.isFinite(wLng) && wLng !== 0 ? wLng : null;
     const assigned = assignedDriverFromRawCall(rawCall);
-    await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, customer_phone, vehicle_desc, pickup, dropoff, towbook_status, raw_json, pickup_lat, pickup_lng, assigned_driver_towbook_id, assigned_driver_name)
-      VALUES(${newJobRowId}, ${user.orgId}, ${customer || `Towbook job ${callId}`}, '', 0, 0, ${pickup || "Unknown"}, 'flatbed_tow', ${mapped}, NOW(), '', ${callId}, '', ${vehicle}, ${pickup}, ${dropoff}, ${String(toStatus)}, ${JSON.stringify({ sourceUrl: "driver-portal", ...rawCall })}::jsonb, ${pickupLat}, ${pickupLng}, ${assigned.towbookId ?? user.towbookDriverId}, ${assigned.name})`;
+    await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, customer_phone, vehicle_desc, pickup, dropoff, towbook_status, raw_json, pickup_lat, pickup_lng, assigned_driver_towbook_id, assigned_driver_name, arrived_at)
+      VALUES(${newJobRowId}, ${user.orgId}, ${customer || `Towbook job ${callId}`}, '', 0, 0, ${pickup || "Unknown"}, 'flatbed_tow', ${mapped}, NOW(), '', ${callId}, '', ${vehicle}, ${pickup}, ${dropoff}, ${String(toStatus)}, ${JSON.stringify({ sourceUrl: "driver-portal", ...rawCall })}::jsonb, ${pickupLat}, ${pickupLng}, ${assigned.towbookId ?? user.towbookDriverId}, ${assigned.name}, CASE WHEN ${mapped}='arrived' THEN NOW() ELSE NULL END)`;
     await q`INSERT INTO status_events(id, org_id, job_id, from_status, to_status, actor_user_id, actor_role, note)
       SELECT gen_random_uuid()::text, ${user.orgId}, ${newJobRowId}, ${currentMapped}, ${mapped}, ${actor.userId}, ${actor.role}, ${note}`;
     await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
@@ -993,7 +1002,7 @@ export const driverJobs = createServerFn({ method: "GET" }).handler(async () => 
 });
 
 export const driverJobAction = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }) => {
-  const v = z.object({ jobId: z.string().min(1).max(64), action: z.enum(["accept", "en_route"]) }).safeParse(data);
+  const v = z.object({ jobId: z.string().min(1).max(64), action: z.enum(["accept", "en_route", "arrive"]) }).safeParse(data);
   if (!v.success) return { ok: false as const, code: "invalid_state", message: "Invalid job action." };
   if (!configured()) return { ok: false as const, code: "towbook_failed", message: "Driver actions require database mode." };
   const ctx = await resolveEffectiveDriver();

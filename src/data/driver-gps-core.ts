@@ -404,6 +404,17 @@ export async function autoArrive(opts: {
   } catch { /* notification is best-effort; the arrival transition already landed */ }
 
   if (!towbookOk && job.towbookJobId) {
+    // SUB A (2026-08-22): roll back the platform arrival when Towbook rejected
+    // it — LD must never claim 'arrived' while Towbook still says en_route. The
+    // status='arrived' guard only unwinds the row THIS auto-arrive transitioned
+    // (a racing manual arrive or later sync status is left untouched). arrived_at
+    // is cleared so it stays consistent with the en_route lifecycle state.
+    try {
+      await q`UPDATE dispatch_jobs SET status='en_route', arrived_at=NULL
+        WHERE id=${job.id} AND org_id=${orgId} AND status='arrived'`;
+      await q`INSERT INTO status_events(id, org_id, job_id, from_status, to_status, actor_user_id, actor_role, note)
+        SELECT gen_random_uuid()::text, ${orgId}, ${job.id}, 'arrived', 'en_route', ${userId}, 'contractor', ${"geofence auto-arrive rollback (Towbook PUT failed)"}`;
+    } catch { /* best-effort — the escalation below still lands */ }
     try {
       const names = await q`SELECT name FROM users WHERE id=${userId} LIMIT 1`;
       const driverName = names.length ? String(names[0].name ?? "") : "";
