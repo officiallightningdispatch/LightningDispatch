@@ -51,6 +51,22 @@ const T_DRIVER = tbId(uid("td"));
 const T_OTHER = tbId(uid("to"));
 const TB_USER_DRIVER = `tb-user-${tbId(uid("tu"))}`;
 const email = (u) => `${u}@lightning.test`;
+// Selectable zone for the availability GO checkin flow (block 4). driverSetAvailability
+// runs selectZoneCore, which enforces a 6:00–23:59 local selection window
+// (zoneSelectionOpenAt), so choose the seeded zone's tz from one whose current
+// local hour is inside that window — keeps the suite hermetic at any run time.
+const zoneHour = (tz) => Number(new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", hour12: false }).format(new Date())) % 24;
+const ZONE_TZ_CHOICES = [
+  "Pacific/Kiritimati", "Pacific/Auckland", "Pacific/Noumea", "Australia/Sydney",
+  "Australia/Adelaide", "Asia/Tokyo", "Asia/Shanghai", "Asia/Bangkok",
+  "Asia/Dhaka", "Asia/Karachi", "Asia/Dubai", "Europe/Moscow", "Europe/Paris",
+  "Europe/London", "Atlantic/Azores", "America/Noronha", "America/Sao_Paulo",
+  "America/St_Johns", "America/Halifax", "America/New_York", "America/Chicago",
+  "America/Denver", "America/Los_Angeles", "America/Anchorage", "Pacific/Honolulu",
+  "Pacific/Pago_Pago",
+];
+const ZONE_TZ = ZONE_TZ_CHOICES.find((tz) => zoneHour(tz) >= 6) ?? "America/New_York";
+const ZONE_ID = "zone-effective-session";
 
 /* ------------------------------ fixture ------------------------------ */
 await ensureSchema();
@@ -73,6 +89,12 @@ await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES
   (${ORG}, ${DRIVER}, 'contractor'),
   (${ORG}, ${OTHER}, 'contractor'),
   (${ORG}, ${PURE}, 'owner')`;
+// Non-reserved, active zone so the availability GO flow can select it (block 4):
+// selectZoneCore needs an active zone with an open local selection window; the
+// reserved-zone gate passes because is_reserved=false. No contractor_doc_types
+// are seeded for this fresh org, so getComplianceGateCore's required count is 0.
+await q`INSERT INTO dispatch_zones(id, org_id, name, state, market, zone_type, zip_codes, lat, lng, radius_miles, tz, active, sort_order, is_reserved, unlock_jobs_required)
+  VALUES(${ZONE_ID}, ${ORG}, 'Effective Session Zone', 'CT', '', 'market', '{}'::text[], 41.2, -73.2, 20, ${ZONE_TZ}, TRUE, 0, FALSE, 0)`;
 // The linked driver's stored Towbook session (session_kind='driver') — the ONLY
 // session an owner-in-driver-view can act through.
 await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status, session_kind, towbook_driver_id, error, updated_at)
@@ -236,14 +258,14 @@ const callsOn = (path, method) => tbCalls.filter((c) => c.url.includes(path) && 
 /* ------------------------- 4) availability GO/Offline ------------------------- */
 {
   const before = tbCalls.length;
-  await withSession(OWNER_TOKEN, () => driverSetAvailability({ data: { online: true } }));
+  await withSession(OWNER_TOKEN, () => driverSetAvailability({ data: { online: true, zoneId: ZONE_ID } }));
   const checkin = callsOn("/api/user/checkin", "POST").filter((c) => c.url.startsWith("https://towbook.test"));
   const ch = checkin.length ? JSON.parse(String(checkin[checkin.length - 1].body ?? "{}")) : null;
   check("availability GO: checkin POST via the LINKED driver's session (cookie + towbook user id + last-known position)",
     checkin.some((c) => c.cookie === `xtl=fake-session-${T_DRIVER}`) && ch !== null && ch.id === TB_USER_DRIVER && ch.latitude === 41.2 && ch.longitude === -73.2,
     JSON.stringify({ checkin, ch }));
   const before2 = tbCalls.length;
-  await withSession(OWNER_TOKEN, () => driverSetAvailability({ data: { online: false } }));
+  await withSession(OWNER_TOKEN, () => driverSetAvailability({ data: { online: false, zoneId: ZONE_ID } }));
   const checkout = callsOn("/api/user/checkout", "POST").filter((c) => c.url.startsWith("https://towbook.test"));
   check("availability Offline: checkout POST via the LINKED driver's session",
     tbCalls.length > before2 && checkout.some((c) => c.cookie === `xtl=fake-session-${T_DRIVER}`), JSON.stringify(checkout));
