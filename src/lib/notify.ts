@@ -174,7 +174,7 @@ export function diffEscalatedDecisionIds(
   const seenInBatch = new Set<string>();
   for (const d of decisions) {
     if (!d || typeof d.id !== "string" || d.id === "") continue;
-    if (!isEscalationDecision(d.decision) || !isActionableEscalation(d.reason)) continue;
+    if (!isEscalationDecision(d.decision) || !isActionableEscalation(d.decision)) continue;
     if (s.has(d.id) || seenInBatch.has(d.id)) continue;
     seenInBatch.add(d.id);
     out.push(d);

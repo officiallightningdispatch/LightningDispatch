@@ -16,18 +16,24 @@ export const AI_DECISION_META: Record<string, { label: string; badge: string }> 
   auto_accept_with_driver: { label: "Auto-accepted · dispatched", badge: "bg-success-50 text-success-700" },
   auto_accept_no_driver: { label: "Auto-accepted · needs dispatch", badge: "bg-accent-50 text-accent-700" },
   offer_lost_race: { label: "Offer accepted by another provider", badge: "bg-ink-100 text-ink-600" },
-  escalated_out_of_zone: { label: "Escalated · out of zone", badge: "bg-danger-50 text-danger-700" },
-  escalated_missing_coords: { label: "Escalated · no coordinates", badge: "bg-danger-50 text-danger-700" },
+  // DEPRECATED (dead enum members — the engine no longer writes these; kept so
+  // historical rows still render a badge):
+  escalated_out_of_zone: { label: "Escalated · out of zone (deprecated)", badge: "bg-danger-50 text-danger-700" },
+  escalated_missing_coords: { label: "Escalated · no coordinates (deprecated)", badge: "bg-danger-50 text-danger-700" },
+  escalated_driver_lookup_failed: { label: "Escalated · driver lookup failed (deprecated)", badge: "bg-danger-50 text-danger-700" },
+  escalated_cross_state: { label: "Escalated · cross-state (deprecated)", badge: "bg-danger-50 text-danger-700" },
   escalated_expired: { label: "Escalated · expired", badge: "bg-danger-50 text-danger-700" },
-  escalated_driver_lookup_failed: { label: "Escalated · driver lookup failed", badge: "bg-danger-50 text-danger-700" },
   escalated_accept_failed: { label: "Escalated · accept failed", badge: "bg-danger-50 text-danger-700" },
   escalated_unexpected_shape: { label: "Escalated · unexpected offer", badge: "bg-danger-50 text-danger-700" },
   escalated_dispatch_failed: { label: "Escalated · dispatch failed", badge: "bg-danger-50 text-danger-700" },
+  escalated_dispatch_pending: { label: "Escalated · dispatch pending", badge: "bg-danger-50 text-danger-700" },
+  escalated_state_unknown: { label: "Escalated · state unknown", badge: "bg-danger-50 text-danger-700" },
+  escalated_qualification_failed: { label: "Escalated · qualification failed", badge: "bg-danger-50 text-danger-700" },
+  rejected_tow_no_eligible_driver: { label: "Rejected tow · no eligible driver", badge: "bg-danger-50 text-danger-700" },
   escalated_auto_arrive_failed: { label: "Escalated · auto-arrive failed", badge: "bg-danger-50 text-danger-700" },
   escalated_photo_upload_failed: { label: "Escalated · PO photo upload failed", badge: "bg-danger-50 text-danger-700" },
   escalated_status_push_failed: { label: "Escalated · status sync to Towbook failed", badge: "bg-danger-50 text-danger-700" },
   escalated_contractor_push_failed: { label: "Escalated · contractor sync to Towbook failed", badge: "bg-danger-50 text-danger-700" },
-  rejected_tow_no_eligible_driver: { label: "Rejected tow · no eligible driver", badge: "bg-danger-50 text-danger-700" },
 };
 const DECISION_FALLBACK = { label: "Decision", badge: "bg-ink-100 text-ink-600" };
 

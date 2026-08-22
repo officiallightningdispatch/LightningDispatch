@@ -216,22 +216,36 @@ export type OrgAiSettings = {
  *  with an Accept") — the job is COVERED by the winner, so this is a calm
  *  non-escalating record, NOT a needs-a-human error (owner-reported 2026-08-11:
  *  offers 326636200 + 326600476 were falsely escalated on this exact reply). */
-export type AiDispatcherDecision =
-  | "auto_accept_with_driver"
-  | "auto_accept_no_driver"
-  | "offer_lost_race"
-  | "escalated_out_of_zone"
-  | "escalated_missing_coords"
-  | "escalated_expired"
-  | "escalated_driver_lookup_failed"
-  | "escalated_accept_failed"
-  | "escalated_unexpected_shape"
-  | "escalated_dispatch_failed"
-  | "escalated_dispatch_pending"
-  | "escalated_state_unknown"
-  | "escalated_cross_state"
-  | "escalated_qualification_failed"
-  | "rejected_tow_no_eligible_driver";
+/** Canonical decision-type source (SUB I 2026-08-22): every row in
+ * ai_dispatcher_decisions carries one of these. Four legacy members are kept for
+ * historical rows but are DEPRECATED (the engine no longer writes them). Four
+ * cross-module members are emitted by raw SQL outside the engine (nudge, auto-
+ * arrive, photo/status/contractor push) and are included so the UI and notify
+ * taxonomy stay in agreement with the ledger. */
+export const AI_DECISION_VALUES = [
+  "auto_accept_with_driver",
+  "auto_accept_no_driver",
+  "offer_lost_race",
+  // DEPRECATED (dead enum members — never written by the engine):
+  "escalated_out_of_zone",
+  "escalated_missing_coords",
+  "escalated_driver_lookup_failed",
+  "escalated_cross_state",
+  "escalated_expired",
+  "escalated_accept_failed",
+  "escalated_unexpected_shape",
+  "escalated_dispatch_failed",
+  "escalated_dispatch_pending",
+  "escalated_state_unknown",
+  "escalated_qualification_failed",
+  "rejected_tow_no_eligible_driver",
+  // Cross-module escalation values (emitted by raw SQL outside the engine):
+  "escalated_auto_arrive_failed",
+  "escalated_photo_upload_failed",
+  "escalated_status_push_failed",
+  "escalated_contractor_push_failed",
+] as const;
+export type AiDispatcherDecision = (typeof AI_DECISION_VALUES)[number];
 
 export type AutoDispatchRunResult = {
   gated: boolean; // ai_dispatcher_enabled=false → engine did nothing
@@ -1411,7 +1425,7 @@ async function resolveOfferPickupCoords(
   };
 }
 
-type LookupAnchor = { lat: number; lng: number; note: string };
+type LookupAnchor = { lat: number; lng: number; note: string; unresolvedPickup: boolean };
 
 /** Choose the coordinate used by Towbook nearestDrivers and road ranking.
  * Always prefer the strongest real pickup resolution: authoritative sync
@@ -1429,13 +1443,13 @@ async function resolveDriverLookupAnchor(
   const lng = Number(offer.startLocationLongitude);
   if (stateResolution.authoritativeLat != null && stateResolution.authoritativeLng != null) {
     const realLat = stateResolution.authoritativeLat, realLng = stateResolution.authoritativeLng;
-    return { lat: realLat, lng: realLng, note: `lookup anchored at authoritative pickup (${realLat},${realLng}) — offer coords suppressed` };
+    return { lat: realLat, lng: realLng, unresolvedPickup: false, note: `lookup anchored at authoritative pickup (${realLat},${realLng}) — offer coords suppressed` };
   }
   const resolved = await resolveOfferPickupCoords(orgId, rawOffer, deps, fetchImpl);
   if (resolved.ok) {
-    return { lat: resolved.lat, lng: resolved.lng, note: `lookup anchored at ${resolved.source === "geocode" ? "geocoded startingLocation" : "synced pickup"} (${resolved.lat},${resolved.lng}) — offer coords suppressed` };
+    return { lat: resolved.lat, lng: resolved.lng, unresolvedPickup: false, note: `lookup anchored at ${resolved.source === "geocode" ? "geocoded startingLocation" : "synced pickup"} (${resolved.lat},${resolved.lng}) — offer coords suppressed` };
   }
-  return { lat, lng, note: `offer coordinates retained (no better resolution)${isAgeroPlaceholderCoords(lat, lng) ? ` — real pickup unresolved (${resolved.reason})` : ""}` };
+  return { lat, lng, unresolvedPickup: isAgeroPlaceholderCoords(lat, lng), note: `offer coordinates retained (no better resolution)${isAgeroPlaceholderCoords(lat, lng) ? ` — real pickup unresolved (${resolved.reason})` : ""}` };
 }
 
 /** Build the OfferShape from the raw offer record with the given pickup
@@ -2484,6 +2498,23 @@ export function callWaypoint(call: Record<string, unknown>): { lat: number; lng:
   return Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 && lng !== 0 ? { lat, lng } : null;
 }
 
+/** Re-route from a driver's real ETA origin to an authoritative waypoint
+ * (post-accept verification). Returns base minutes (ceil road seconds) when the
+ * router succeeds, else the factor model on the straight-line distance. Never
+ * throws — a router hiccup must never block the dispatch write. */
+async function routeToWaypointBase(
+  roadRouter: RoadRouter | null,
+  origin: { lat: number; lng: number },
+  waypoint: { lat: number; lng: number },
+): Promise<number> {
+  if (!Number.isFinite(origin.lat) || !Number.isFinite(origin.lng)) return 0;
+  try {
+    const result = roadRouter ? await roadRouter(origin.lat, origin.lng, waypoint.lat, waypoint.lng) : null;
+    if (result && Number.isFinite(result.seconds) && result.seconds > 0) return Math.ceil(result.seconds / 60);
+  } catch { /* fall through to the factor model */ }
+  return fallbackRoadMinutes(haversineMiles(origin.lat, origin.lng, waypoint.lat, waypoint.lng));
+}
+
 /** Upsert the verified Towbook call before any best-effort sync. This closes the
  * race where verification succeeds but the periodic importer misses the call. */
 async function upsertVerifiedDispatchJob(orgId: string, offer: OfferShape, call: Record<string, unknown>, callId: string, driverId: number, driverName: string | null): Promise<void> {
@@ -2758,8 +2789,19 @@ async function retryPendingAssignments(
       continue;
     }
     if (verification.call) { try { await upsertVerifiedDispatchJob(orgId, offer, verification.call, verification.callId ?? (callId || String(call.id ?? callRequestId)), driverId, String(chosen.driver.driverName ?? driverId)); } catch { /* ledger remains authoritative */ } }
+    // SUB I Fix A: the retry-sweep re-select must carry the canonical quoted ETA
+    // (never inherit the NULL eta_minutes the auto_accept_no_driver row started
+    // with). When the verified call has an authoritative waypoint, route from the
+    // chosen driver's fresh origin to that waypoint; otherwise use the selector's
+    // baseMinutes. The quote is a goal only — never a dispatch gate.
+    const retryWaypoint = verification.call ? callWaypoint(verification.call) : null;
+    const retryRouter = (deps.routerOverride ?? resolveRouter(deps.env ?? process.env, fetchImpl)).router;
+    const retryEtaBase = retryWaypoint
+      ? await routeToWaypointBase(retryRouter, { lat: chosen.originLat, lng: chosen.originLng }, retryWaypoint)
+      : chosen.baseMinutes;
+    const retryEtaMinutes = finalEtaMinutes(retryEtaBase, settings.etaBufferMinutes, settings.etaFloorMinutes, settings.maxEtaMinutes);
     const reason = `retry sweep (5-minute): accepted and dispatched to ${String(chosen.driver.driverName ?? driverId)} (driver ${driverId}, VERIFIED on call ${verification.callId ?? (callId || String(call.id ?? callRequestId))}); same-state selection; prior driverId 0 hold resolved`;
-    await sql() `UPDATE ai_dispatcher_decisions SET decision='auto_accept_with_driver', escalated=FALSE, driver_id=${String(driverId)}, driver_name=${String(chosen.driver.driverName ?? driverId)}, call_id=${verification.callId ?? (callId || String(call.id ?? callRequestId))}, reason=${reason}, raw_response=raw_response || ${JSON.stringify({ retrySweep:true, verification })}::jsonb WHERE id=${String(row.decision_id)} AND org_id=${orgId}`;
+    await sql() `UPDATE ai_dispatcher_decisions SET decision='auto_accept_with_driver', escalated=FALSE, driver_id=${String(driverId)}, driver_name=${String(chosen.driver.driverName ?? driverId)}, call_id=${verification.callId ?? (callId || String(call.id ?? callRequestId))}, eta_minutes=${retryEtaMinutes}, reason=${reason}, raw_response=raw_response || ${JSON.stringify({ retrySweep:true, verification, eta: { baseMinutes: retryEtaBase, finalMinutes: retryEtaMinutes } })}::jsonb WHERE id=${String(row.decision_id)} AND org_id=${orgId}`;
     await recordRetryAttempt(orgId, String(row.decision_id), callRequestId, verification.callId ?? (callId || String(call.id ?? callRequestId)), "assigned", { driverId, driverName: String(chosen.driver.driverName ?? driverId), verification });
     try { await deps.syncForOrg(orgId, 'sync:auto-accept-retry', actor ?? undefined); } catch { /* sweep is best effort */ }
     retrySweepLastRun.delete(orgId);
@@ -2778,6 +2820,16 @@ const RETRY_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
  * hold still carries a parseable expiry, so this is the fail-safe for holds
  * whose expiry is missing/unparseable). */
 export const MAX_CONSECUTIVE_CALL_UNAVAILABLE = 24;
+
+/** Upper bound on consecutive `escalated_dispatch_pending` re-loop attempts
+ * where the stored driver keeps failing the fresh-GPS gate (SUB I 2026-08-22).
+ * The pending loop otherwise runs every dispatcher tick (3s) with no cap and
+ * appends to the decision reason unboundedly; this reaches a terminal
+ * escalation (escalated_dispatch_failed) after N consecutive failures, mirroring
+ * SUB H's MAX_CONSECUTIVE_CALL_UNAVAILABLE pattern. Offer expiry still bounds
+ * the common case; this is the fail-safe for a pending row whose offer expiry
+ * is missing/unparseable. */
+export const MAX_CONSECUTIVE_DISPATCH_PENDING_ATTEMPTS = 24;
 
 /* ----------------------------------- the engine ----------------------------------- */
 
@@ -2833,7 +2885,7 @@ async function verifyPendingDriverGpsGate(
   driverId: number,
   deps: AiDispatcherDeps,
   fetchImpl: typeof fetch,
-): Promise<{ ok: true } | { ok: false; reason: string }> {
+): Promise<{ ok: true; lat: number; lng: number } | { ok: false; reason: string }> {
   const fixes = await loadDriverGpsFixes(orgId);
   const fix = fixes.get(String(driverId));
   const age = fix ? (Date.now() - Date.parse(fix.capturedAt)) / 60000 : Infinity;
@@ -2850,7 +2902,7 @@ async function verifyPendingDriverGpsGate(
   if (driverState.toUpperCase() !== jobState.toUpperCase()) {
     return { ok: false, reason: `pending recovery fail-closed: driver ${driverId} GPS state ${driverState.toUpperCase()} does not match job state ${jobState.toUpperCase()}; stored assignment was not repaired` };
   }
-  return { ok: true };
+  return { ok: true, lat: fix.lat, lng: fix.lng };
 }
 
 /** The engine poll itself (see runAutoDispatch): returns the run result plus
@@ -2919,20 +2971,44 @@ async function runAutoDispatchInternal(
       if (!offer || !Number.isFinite(driverId) || driverId <= 0) continue;
       if (Date.parse(offer.expirationDateUtc) < Date.now()) {
         await sql() `UPDATE ai_dispatcher_decisions SET decision='escalated_expired', reason=${String(row.reason ?? '') + '; offer expired — final human escalation'} WHERE id=${String(row.id)}::text AND org_id=${orgId}::text`;
+        await recordRetryAttempt(orgId, String(row.id), String(row.call_request_id ?? ''), row.call_id != null ? String(row.call_id) : null, "expired", { reason: "pending-dispatch offer expired; terminal escalation" });
         continue;
       }
       const pendingGpsGate = await verifyPendingDriverGpsGate(orgId, raw ?? {}, driverId, deps, fetchImpl);
       if (!pendingGpsGate.ok) {
-        const reason = `${String(row.reason ?? '')}; ${pendingGpsGate.reason}`;
-        await sql() `UPDATE ai_dispatcher_decisions SET reason=${reason}, raw_response=raw_response || ${JSON.stringify({ pendingGpsGate: { ok: false, reason: pendingGpsGate.reason } })}::jsonb WHERE id=${String(row.id)}::text AND org_id=${orgId}::text`;
+        // SUB I Fix C: bound the every-tick re-loop. Track consecutive failed
+        // sweeps in raw_response.pendingRecovery.attemptStreak; terminal after
+        // MAX_CONSECUTIVE_DISPATCH_PENDING_ATTEMPTS. The reason is kept stable
+        // (never appended) so it cannot grow unbounded; each tick leaves an
+        // auditable retry-attempt row.
+        const recovery = raw?.pendingRecovery && typeof raw.pendingRecovery === 'object' ? raw.pendingRecovery as Record<string, unknown> : {};
+        const attemptStreak = Number(recovery.attemptStreak ?? 0) + 1;
+        if (attemptStreak >= MAX_CONSECUTIVE_DISPATCH_PENDING_ATTEMPTS) {
+          const terminalReason = `${String(row.reason ?? '')}; pending dispatch recovery exhausted after ${attemptStreak} consecutive ticks — final human escalation (${pendingGpsGate.reason})`;
+          await sql() `UPDATE ai_dispatcher_decisions SET decision='escalated_dispatch_failed', reason=${terminalReason}, raw_response=raw_response || ${JSON.stringify({ pendingRecovery: { attemptStreak, terminal: true, reason: pendingGpsGate.reason } })}::jsonb WHERE id=${String(row.id)}::text AND org_id=${orgId}::text`;
+          await recordRetryAttempt(orgId, String(row.id), String(row.call_request_id ?? ''), row.call_id != null ? String(row.call_id) : null, "verification_failed", { attemptStreak, terminal: true, reason: pendingGpsGate.reason });
+          continue;
+        }
+        await sql() `UPDATE ai_dispatcher_decisions SET raw_response=raw_response || ${JSON.stringify({ pendingRecovery: { attemptStreak, reason: pendingGpsGate.reason } })}::jsonb WHERE id=${String(row.id)}::text AND org_id=${orgId}::text`;
+        await recordRetryAttempt(orgId, String(row.id), String(row.call_request_id ?? ''), row.call_id != null ? String(row.call_id) : null, "verification_failed", { attemptStreak, reason: pendingGpsGate.reason });
         continue;
       }
       const verification = await verifyDispatch(fetchImpl, baseUrl, cookies, offer, row.call_id ? String(row.call_id) : null, driverId, { retryDelayMs: deps.verifyRetryDelayMs ?? 10000, maxAttempts: deps.verifyMaxAttempts ?? 6, allowAssign: true });
-      if (!verification.ok) continue;
+      if (!verification.ok) {
+        await recordRetryAttempt(orgId, String(row.id), String(row.call_request_id ?? ''), row.call_id != null ? String(row.call_id) : null, "verification_failed", { error: verification.error });
+        continue;
+      }
       const waypoint = verification.call ? callWaypoint(verification.call) : null;
       if (verification.call) { try { await upsertVerifiedDispatchJob(orgId, offer, verification.call, verification.callId ?? offer.callRequestId, driverId, null); } catch { /* sync fallback */ } }
+      // SUB I Fix A: pending recovery must also carry the canonical quoted ETA.
+      // Prefer a re-route from the driver's fresh GPS origin to the authoritative
+      // call waypoint; fall back to the offer coords when no waypoint exists.
+      const pendingRouter = (deps.routerOverride ?? resolveRouter(deps.env ?? process.env, fetchImpl)).router;
+      const pendingTarget = waypoint ?? { lat: offer.startLocationLatitude, lng: offer.startLocationLongitude };
+      const pendingEtaBase = await routeToWaypointBase(pendingRouter, { lat: pendingGpsGate.lat, lng: pendingGpsGate.lng }, pendingTarget);
+      const pendingEtaMinutes = finalEtaMinutes(pendingEtaBase, settings.etaBufferMinutes, settings.etaFloorMinutes, settings.maxEtaMinutes);
       const reason = `${String(row.reason ?? '')}; retry verified driver on call ${verification.callId}; ETA source: authoritative call waypoint${waypoint ? ` (${waypoint.lat},${waypoint.lng})` : ' unavailable'}`;
-      await sql() `UPDATE ai_dispatcher_decisions SET decision='auto_accept_with_driver', escalated=FALSE, call_id=${verification.callId}::text, reason=${reason}::text, raw_response=raw_response || '{}'::jsonb || ${JSON.stringify({ verification, state: 'RESOLVED' })}::jsonb WHERE id=${String(row.id)}::text AND org_id=${orgId}::text`;
+      await sql() `UPDATE ai_dispatcher_decisions SET decision='auto_accept_with_driver', escalated=FALSE, call_id=${verification.callId}::text, eta_minutes=${pendingEtaMinutes}, reason=${reason}::text, raw_response=raw_response || '{}'::jsonb || ${JSON.stringify({ verification, state: 'RESOLVED', eta: { baseMinutes: pendingEtaBase, finalMinutes: pendingEtaMinutes } })}::jsonb WHERE id=${String(row.id)}::text AND org_id=${orgId}::text`;
       try { await deps.syncForOrg(orgId, 'sync:auto-accept-pending', actor ?? undefined); } catch { /* retry loop never fails */ }
     }
 
@@ -3114,6 +3190,18 @@ async function runAutoDispatchInternal(
         orgId, rawOffer as Record<string, unknown>, offer, zoneState, deps, fetchImpl,
       );
       lookupAnchorNote = lookupAnchor.note;
+      // SUB I Fix B(a): when the retained Agero CT placeholder anchors a job
+      // whose RESOLVED state is NOT CT, the placeholder is cross-state — routing/
+      // ranking ETA to it would quote a cross-country road ETA. Fail-closed hold:
+      // accept WITHOUT dispatch at the SLA ceiling so the offer cannot expire, and
+      // a human resolves the real pickup before any assignment. Never cross-state.
+      // A same-state CT job (CT placeholder + CT address) keeps normal dispatch —
+      // the placeholder is within ~8 mi of the real CT pickup, and Fix B(b) re-
+      // routes to the authoritative waypoint once the call is created.
+      if (lookupAnchor.unresolvedPickup && zoneState.state.trim().toUpperCase() !== "CT") {
+        await acceptFallback(`unresolved pickup (placeholder retained) — ${lookupAnchor.note}`, { offer: rawOffer, pickupResolution: lookupAnchor.note });
+        continue;
+      }
       // --- driver lookup: nearestDrivers from the real pickup point ---
       const nd = await towbookFetch(
         fetchImpl,
@@ -3241,7 +3329,7 @@ async function runAutoDispatchInternal(
           ? `qualification gate excluded every eligible candidate: ${serviceQualification.excluded.map((e) => `driver ${e.driverId}: ${e.reason}`).join("; ")}`
           : "qualification gate rejected tow job: no eligible candidates";
         await record({ decision: serviceType && /(?:tow|heavy|flatbed|wheel[- ]?lift)/i.test(serviceType) ? "rejected_tow_no_eligible_driver" : "escalated_qualification_failed", driverId: null, driverName: null, etaMinutes: null, zoneDistanceMiles: null, reason, rawResponse: { offer, serviceQualification } });
-        result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: serviceType && /(?:tow|heavy|flatbed|wheel[- ]?lift)/i.test(serviceType) ? "rejected_tow_no_eligible_driver" : "escalated_qualification_failed", escalated: serviceType && /(?:tow|heavy|flatbed|wheel[- ]?lift)/i.test(serviceType) ? false : true, reason });
+        result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: serviceType && /(?:tow|heavy|flatbed|wheel[- ]?lift)/i.test(serviceType) ? "rejected_tow_no_eligible_driver" : "escalated_qualification_failed", escalated: true, reason });
         continue;
       }
       // ETA v3 provider resolution: TomTom when TOMTOM_API_KEY is set (with
@@ -3547,6 +3635,20 @@ async function runAutoDispatchInternal(
           }
         }
         if (verification.ok) {
+          const authoritativeWaypoint = verification.call ? callWaypoint(verification.call) : null;
+          if (authoritativeWaypoint && chosen) {
+            // Once found, the call waypoint is authoritative; the offer start
+            // location and anchor GPS are only pre-accept selection inputs.
+            // SUB I Fix B(b): actually re-route from the chosen driver's real
+            // origin to the waypoint (the old code re-clamped the selection
+            // baseMinutes without ever re-routing).
+            const waypointBase = await routeToWaypointBase(resolved.router, { lat: chosen.originLat, lng: chosen.originLng }, authoritativeWaypoint);
+            etaMinutes = finalEtaMinutes(waypointBase, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta);
+            if (etaFacts) {
+              etaFacts.finalMinutes = etaMinutes;
+              etaFacts.baseMinutes = waypointBase;
+            }
+          }
           const etaLabel = etaMinutes != null && chosen
             ? ` — ${etaDetailLabel(chosen, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta, etaMinutes)}`
             : " — no road ETA quoted (driver not in the live nearestDrivers payload; ETA goal (no road ETA available))";
@@ -3554,13 +3656,6 @@ async function runAutoDispatchInternal(
           const qualificationNote = serviceQualification.excluded.length
             ? `; service-type '${serviceQualification.serviceType}' excluded ${serviceQualification.excluded.map((e) => `driver ${e.driverId}: ${e.reason}`).join("; ")}`
             : `; service-type ${serviceQualification.assessed ? `'${serviceQualification.serviceType}' assessed; no explicit exclusions` : "could not be assessed (missing/unknown); no driver removed"}`;
-          const authoritativeWaypoint = verification.call ? callWaypoint(verification.call) : null;
-          if (authoritativeWaypoint && chosen) {
-            // Once found, the call waypoint is authoritative; the offer start
-            // location and anchor GPS are only pre-accept selection inputs.
-            const waypointBase = chosen.baseMinutes;
-            etaMinutes = finalEtaMinutes(waypointBase, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta);
-          }
           const reason = `accepted and dispatched to ${dispatchDriverName ?? dispatchDriverId} (driver ${dispatchDriverId}, VERIFIED on call ${verification.callId}); ETA source: authoritative call waypoint${authoritativeWaypoint ? ` (${authoritativeWaypoint.lat},${authoritativeWaypoint.lng})` : " unavailable"}${verificationRecoveryNote ? `; ${verificationRecoveryNote}` : ""}${recalculationNote ? `; ${recalculationNote}` : ""}${manualNote ? `; ${manualNote}` : ""}${guardOutcome.assignmentTier === "location_only_in_state" ? "; same-state selection used fresh GPS only (Towbook/Lightning availability informational)" : ""}${jobStateResolution.note ? `; ${jobStateResolution.note}` : ""}${qualificationNote}${etaLabel}${areaNote ?? ""}`;
           if (verification.call) {
             try { await upsertVerifiedDispatchJob(orgId, offer, verification.call, verification.callId ?? offer.callRequestId, dispatchDriverId, dispatchDriverName); } catch { /* sync remains fallback; decision is still recorded */ }

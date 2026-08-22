@@ -17,6 +17,7 @@
 // a mocked fetch, asserts decisions/audit/sync wiring, then deletes every row it
 // created. Never touches the owner org.
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 
 const { neon } = await import("@neondatabase/serverless");
 const q = neon(process.env.DATABASE_URL);
@@ -61,6 +62,8 @@ const {
   etDayStartUtcMs,
   areaSelectionNote,
   MAX_CONSECUTIVE_CALL_UNAVAILABLE,
+  AI_DECISION_VALUES,
+  MAX_CONSECUTIVE_DISPATCH_PENDING_ATTEMPTS,
 } = await import("./src/data/ai-dispatcher.ts");
 const { encryptSession } = await import("./src/data/towbook-key.ts");
 const { ensureSchema } = await import("./src/data/migrations.ts");
@@ -80,6 +83,7 @@ const ORG5 = `qa-ad5-${randomUUID()}`; // lost-race classification tests
 const ORG6 = `qa-ad6-${randomUUID()}`; // coordinate-less offer resolution (owner 2026-08-13)
 const ORG7 = `qa-ad7-${randomUUID()}`; // geography: area anchors + fresh-GPS ETA origins (owner 2026-08-13)
 const ORG8 = `qa-ad8-${randomUUID()}`; // SUB H bounded recovery-loop regressions (2026-08-22)
+const ORG9 = `qa-ad9-${randomUUID()}`; // SUB I dispatch-state regressions (2026-08-22)
 const USER = `qa-ad-user-${randomUUID()}`;
 const QUAL_USERS = [1,2,3,4,5,6,7].map(() => `qa-ad-qual-${randomUUID()}`);
 // Per-run random Towbook IDs (global unique users_towbook_driver_id_idx): a
@@ -333,10 +337,12 @@ try {
   await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES(${ORG7}, ${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))}, 'connected')`;
   await q`INSERT INTO organizations(id, name) VALUES(${ORG8}, 'qa ai-dispatcher retry-loop')`;
   await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES(${ORG8}, ${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))}, 'connected')`;
+  await q`INSERT INTO organizations(id, name) VALUES(${ORG9}, 'qa ai-dispatcher sub-i')`;
+  await q`INSERT INTO towbook_sessions(org_id, encrypted_session, status) VALUES(${ORG9}, ${await encryptSession(JSON.stringify({ cookies: "xtl=fake", baseUrl: "https://app.towbook.com" }))}, 'connected')`;
   for (let i=0;i<QUAL_USERS.length;i++) await q`INSERT INTO users(id,name,email,password_hash,towbook_driver_id) VALUES(${QUAL_USERS[i]},${'QA Qual '+i},${'qual'+i+'-'+randomUUID()+'@qa.local'},'x',${String(QUAL_TB[i])})`;
   // Legacy dispatcher fixtures intentionally exercise pre-gate behavior; the
   // qualification-specific hermetic cases can opt their org back on.
-  for (const qaOrg of [ORG, ORG2, ORG3, ORG4, ORG5, ORG6, ORG7, ORG8]) {
+  for (const qaOrg of [ORG, ORG2, ORG3, ORG4, ORG5, ORG6, ORG7, ORG8, ORG9]) {
     await q`INSERT INTO org_settings(org_id, qualification_gate_enabled) VALUES(${qaOrg}, FALSE) ON CONFLICT(org_id) DO UPDATE SET qualification_gate_enabled=FALSE`;
   }
   await q`INSERT INTO organization_memberships(org_id,user_id,role) VALUES(${ORG7},${QUAL_USERS[0]},'contractor')`;
@@ -2212,7 +2218,58 @@ try {
     check('qualification known service type with empty selected list fails closed to service-not-selected',emptySelected.decisions[0]?.decision==='escalated_qualification_failed'&&posts(emptySelectedM.calls).length===0&&String(emptySelectedRows[0]?.reason||'').includes(`service-not-selected:jump_start`)&&emptySelectedRows[0]?.raw_response?.serviceQualification?.excluded?.some((e)=>e.driverId===QUAL_TB[4]&&e.reason==='service-not-selected:jump_start'),JSON.stringify({r:emptySelected,rows:emptySelectedRows}));
     const {r: sole,m: sm}=await runQ(92013,[driver(QUAL_TB[1],'sole unqualified')]);
     check('qualification sole-unqualified: zero POSTs, no-driver fallback hard blocked',sole.decisions[0]?.decision==='escalated_qualification_failed'&&posts(sm.calls).length===0&&!sm.calls.some(c=>c.method==='POST'));
+    // SUB I T5: rejected_tow_no_eligible_driver escalated flag must be consistent
+    // between the DB row (recordDecision escalates it) and the run-result push.
+    const {r: t5r, rows: t5rows}=await runQ(92030,[driver(QUAL_TB[5],'tow escalated-flag')],{offer:{serviceType:'heavy tow'}});
+    check('SUB I T5: rejected_tow escalated flag consistent between DB row and run-result',t5r.decisions[0]?.decision==='rejected_tow_no_eligible_driver'&&t5r.decisions[0]?.escalated===true&&t5rows[0]?.escalated===true,JSON.stringify({r:t5r.decisions[0],row:{decision:t5rows[0]?.decision,escalated:t5rows[0]?.escalated}}));
   }
+  /* ============ SUB I regression: retry-sweep / NULL-hold eta_minutes (T1, T2) ============ */
+  {
+    const t1Offer = offer(95001, { startingLocation: "BRIDGEPORT CT", drivers: [], expiresInMin: 240 });
+    const t1Call = { id: 9500101, callRequestId: 95001, startLocationLatitude: t1Offer.startLocationLatitude, startLocationLongitude: t1Offer.startLocationLongitude, startingLocation: "BRIDGEPORT CT", status: { id: 0 }, assets: [{ id: 424242, driver: { id: 0, name: "" } }] };
+    await q`INSERT INTO ai_dispatcher_decisions(id,org_id,call_request_id,decision,escalated,driver_id,reason,raw_response) VALUES(${randomUUID()},${ORG9},'95001','auto_accept_no_driver',TRUE,'0','T1 hold',${JSON.stringify({offer: t1Offer})}::jsonb)`;
+    const t2Offer = offer(95005, { startingLocation: "BRIDGEPORT CT", drivers: [], expiresInMin: 240 });
+    const t2Call = { id: 9500501, callRequestId: 95005, startLocationLatitude: t2Offer.startLocationLatitude, startLocationLongitude: t2Offer.startLocationLongitude, startingLocation: "BRIDGEPORT CT", status: { id: 0 }, assets: [{ id: 424242, driver: { id: 0, name: "" } }] };
+    await q`INSERT INTO ai_dispatcher_decisions(id,org_id,call_request_id,decision,escalated,driver_id,reason,raw_response) VALUES(${randomUUID()},${ORG9},'95005','auto_accept_no_driver',TRUE,NULL,'T2 NULL hold',${JSON.stringify({offer: t2Offer})}::jsonb)`;
+    await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES
+      (${'subi-gps-95011-' + FIXTURE_TAG}, ${ORG9}, ${USER}, '95011', 41.19, -73.15, ${new Date().toISOString()}),
+      (${'subi-gps-95016-' + FIXTURE_TAG}, ${ORG9}, ${USER}, '95016', 41.16, -73.16, ${new Date().toISOString()})`;
+    const subiRouter = makeRouter({ "41.19,-73.15": 540, "41.16,-73.16": 600 });
+    const subiM = makeFetch({ offers: [], drivers: [driver(95011, "T1 CT driver"), driver(95016, "T2 CT driver")], liveCalls: [t1Call, t2Call] });
+    const { deps: subiDeps } = makeDeps(subiM.fetchImpl, subiRouter, { env: {}, stateResolver: async () => "CT" });
+    await runAutoDispatch(ORG9, subiDeps);
+    const t1row = (await q`SELECT decision, driver_id, eta_minutes FROM ai_dispatcher_decisions WHERE org_id=${ORG9} AND call_request_id='95001'`)[0];
+    const t2row = (await q`SELECT decision, driver_id, eta_minutes FROM ai_dispatcher_decisions WHERE org_id=${ORG9} AND call_request_id='95005'`)[0];
+    const settings9 = await getOrgSettings(ORG9);
+    const t1Expected = finalEtaMinutes(9, settings9.etaBufferMinutes, settings9.etaFloorMinutes, settings9.maxEtaMinutes);
+    const t2Expected = finalEtaMinutes(10, settings9.etaBufferMinutes, settings9.etaFloorMinutes, settings9.maxEtaMinutes);
+    check("SUB I T1: retry-sweep resolution row eta_minutes NOT NULL, > 0, == canonical ETA", t1row?.decision === "auto_accept_with_driver" && Number(t1row?.eta_minutes) === t1Expected && t1Expected > 0, JSON.stringify({ row: t1row, expected: t1Expected }));
+    check("SUB I T2: NULL-driver-id hold resolution row eta_minutes NOT NULL, > 0, == canonical ETA", t2row?.decision === "auto_accept_with_driver" && Number(t2row?.eta_minutes) === t2Expected && t2Expected > 0, JSON.stringify({ row: t2row, expected: t2Expected }));
+  }
+
+  /* ============ SUB I T3: unresolved pickup placeholder retained ============ */
+  {
+    const t3Offer = offer(96003, { lat: 41.214889, lng: -73.195803, startingLocation: "317 Cherokee Rose Cir, Georgetown, TX 78626", drivers: [96031], expiresInMin: 240 });
+    await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES(${'subi-gps-96031-' + FIXTURE_TAG}, ${ORG9}, ${USER}, '96031', 30.477, -97.705, ${new Date().toISOString()})`;
+    const t3m = makeFetch({ offers: [t3Offer], drivers: [driver(96031, "T3 TX driver", { checkedIn: true, lat: 30.477, lng: -97.705 })] });
+    const { deps: t3deps } = makeDeps(t3m.fetchImpl, null, { stateResolver: async (_id, lat) => Number(lat) < 35 ? "TX" : "CT" });
+    const t3r = await runAutoDispatch(ORG9, t3deps);
+    const t3row = (await q`SELECT decision, escalated, driver_id, eta_minutes, reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG9} AND call_request_id='96003'`)[0];
+    check("SUB I T3: placeholder-retained holds fail-closed (no placeholder-routed ETA, never cross-state)", t3r.decisions[0]?.decision === "auto_accept_no_driver" && t3r.decisions[0]?.escalated === true && String(t3row?.driver_id ?? "0") === "0" && !t3row?.raw_response?.eta && String(t3row?.reason).includes("unresolved pickup (placeholder retained)") && !t3m.calls.some((c) => c.method === "PUT"), JSON.stringify({ r: t3r.decisions[0], row: t3row }));
+  }
+
+  /* ============ SUB I T4: AI_DECISION_META <-> canonical type agreement (hermetic) ============ */
+  {
+    const viewsSrc = await readFile(new URL("./src/components/ai-dispatcher-views.tsx", import.meta.url), "utf8");
+    const metaMatch = viewsSrc.match(/export const AI_DECISION_META[\s\S]*?= \{([\s\S]*?)\n\};/);
+    const metaKeys = metaMatch ? [...metaMatch[1].matchAll(/^  ([a-z0-9_]+):\s*\{/gm)].map((m) => m[1]) : [];
+    const canonical = new Set(AI_DECISION_VALUES);
+    const missingFromMeta = [...canonical].filter((v) => !metaKeys.includes(v));
+    const extraInMeta = metaKeys.filter((k) => !canonical.has(k));
+    check("SUB I T4: every canonical decision value has an AI_DECISION_META label", missingFromMeta.length === 0, JSON.stringify(missingFromMeta));
+    check("SUB I T4: AI_DECISION_META has no keys outside the canonical set", extraInMeta.length === 0, JSON.stringify(extraInMeta));
+  }
+
   console.log("\nALL AI-DISPATCHER CHECKS PASSED");
   for (const [name, ok, extra] of checks) console.log(`  ${ok ? "PASS" : "FAIL"}  ${name}${extra ? ` (${extra})` : ""}`);
 } finally {
@@ -2226,6 +2283,7 @@ try {
     assertQaOrg(ORG6); await q`DELETE FROM organizations WHERE id=${ORG6}`.catch(() => {});
     assertQaOrg(ORG7); await q`DELETE FROM organizations WHERE id=${ORG7}`.catch(() => {});
     assertQaOrg(ORG8); await q`DELETE FROM organizations WHERE id=${ORG8}`.catch(() => {});
+    assertQaOrg(ORG9); await q`DELETE FROM organizations WHERE id=${ORG9}`.catch(() => {});
     await q`DELETE FROM users WHERE id=${USER}`.catch(() => {});
     for (const id of QUAL_USERS) await q`DELETE FROM users WHERE id=${id}`.catch(() => {});
   }
@@ -2263,9 +2321,13 @@ try {
     (SELECT count(*) FROM ai_dispatcher_decisions WHERE org_id=${ORG8}) AS ad8,
     (SELECT count(*) FROM org_settings WHERE org_id=${ORG8}) AS os8,
     (SELECT count(*) FROM towbook_sessions WHERE org_id=${ORG8}) AS sess8,
-    (SELECT count(*) FROM ai_dispatcher_runs WHERE org_id=${ORG8}) AS runs8`;
+    (SELECT count(*) FROM ai_dispatcher_runs WHERE org_id=${ORG8}) AS runs8,
+    (SELECT count(*) FROM ai_dispatcher_decisions WHERE org_id=${ORG9}) AS ad9,
+    (SELECT count(*) FROM org_settings WHERE org_id=${ORG9}) AS os9,
+    (SELECT count(*) FROM towbook_sessions WHERE org_id=${ORG9}) AS sess9,
+    (SELECT count(*) FROM ai_dispatcher_runs WHERE org_id=${ORG9}) AS runs9`;
   const l = leftover[0];
-  console.log(`\ncleanup: ai_decisions=${l.ad} settings=${l.os} jobs=${l.jobs} events=${l.ev} audit=${l.audit} sessions=${l.sess} members=${l.members} users=${l.users} runs=${l.runs} ad2=${l.ad2} settings2=${l.os2} runs2=${l.runs2} ad3=${l.ad3} settings3=${l.os3} sess3=${l.sess3} runs3=${l.runs3} ad4=${l.ad4} settings4=${l.os4} jobs4=${l.jobs4} sess4=${l.sess4} runs4=${l.runs4} ad5=${l.ad5} settings5=${l.os5} sess5=${l.sess5} runs5=${l.runs5} ad6=${l.ad6} settings6=${l.os6} jobs6=${l.jobs6} sess6=${l.sess6} runs6=${l.runs6} ad8=${l.ad8} settings8=${l.os8} sess8=${l.sess8} runs8=${l.runs8}`);
+  console.log(`\ncleanup: ai_decisions=${l.ad} settings=${l.os} jobs=${l.jobs} events=${l.ev} audit=${l.audit} sessions=${l.sess} members=${l.members} users=${l.users} runs=${l.runs} ad2=${l.ad2} settings2=${l.os2} runs2=${l.runs2} ad3=${l.ad3} settings3=${l.os3} sess3=${l.sess3} runs3=${l.runs3} ad4=${l.ad4} settings4=${l.os4} jobs4=${l.jobs4} sess4=${l.sess4} runs4=${l.runs4} ad5=${l.ad5} settings5=${l.os5} sess5=${l.sess5} runs5=${l.runs5} ad6=${l.ad6} settings6=${l.os6} jobs6=${l.jobs6} sess6=${l.sess6} runs6=${l.runs6} ad8=${l.ad8} settings8=${l.os8} sess8=${l.sess8} runs8=${l.runs8} ad9=${l.ad9} settings9=${l.os9} sess9=${l.sess9} runs9=${l.runs9}`);
   if (Object.values(l).some((v) => Number(v) > 0)) {
     console.error("WARNING: QA rows remain!");
     process.exitCode = 1;
