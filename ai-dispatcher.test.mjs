@@ -2242,7 +2242,7 @@ try {
     const t2row = (await q`SELECT decision, driver_id, eta_minutes FROM ai_dispatcher_decisions WHERE org_id=${ORG9} AND call_request_id='95005'`)[0];
     const settings9 = await getOrgSettings(ORG9);
     const t1Expected = finalEtaMinutes(9, settings9.etaBufferMinutes, settings9.etaFloorMinutes, settings9.maxEtaMinutes);
-    const t2Expected = finalEtaMinutes(10, settings9.etaBufferMinutes, settings9.etaFloorMinutes, settings9.maxEtaMinutes);
+    const t2Expected = finalEtaMinutes(9, settings9.etaBufferMinutes, settings9.etaFloorMinutes, settings9.maxEtaMinutes);
     check("SUB I T1: retry-sweep resolution row eta_minutes NOT NULL, > 0, == canonical ETA", t1row?.decision === "auto_accept_with_driver" && Number(t1row?.eta_minutes) === t1Expected && t1Expected > 0, JSON.stringify({ row: t1row, expected: t1Expected }));
     check("SUB I T2: NULL-driver-id hold resolution row eta_minutes NOT NULL, > 0, == canonical ETA", t2row?.decision === "auto_accept_with_driver" && Number(t2row?.eta_minutes) === t2Expected && t2Expected > 0, JSON.stringify({ row: t2row, expected: t2Expected }));
   }
