@@ -2643,7 +2643,7 @@ async function retryPendingAssignments(
   const last = retrySweepLastRun.get(orgId) ?? 0;
   if (Date.now() - last < RETRY_SWEEP_INTERVAL_MS) return;
   retrySweepLastRun.set(orgId, Date.now());
-  const rows = await sql() `SELECT id AS decision_id, call_request_id, call_id, raw_response
+  const rows = await sql() `SELECT id AS decision_id, call_request_id, call_id, reason, raw_response
     FROM ai_dispatcher_decisions
     WHERE org_id=${orgId} AND decision='auto_accept_no_driver'
       AND (driver_id='0' OR driver_id IS NULL)
@@ -2658,9 +2658,35 @@ async function retryPendingAssignments(
   for (const row of rows as Array<Record<string, unknown>>) {
     const callRequestId = String(row.call_request_id ?? '');
     const callId = row.call_id == null ? '' : String(row.call_id);
+    const raw = row.raw_response && typeof row.raw_response === 'object' ? row.raw_response as Record<string, unknown> : {};
+    const rawOffer = raw.offer && typeof raw.offer === 'object' ? raw.offer as Record<string, unknown> : raw;
+    // ---- BOUNDED RECOVERY (SUB H 2026-08-22): a hold that can never resolve
+    // must reach a terminal decision instead of being re-attempted every five
+    // minutes forever. Two never-resolvable cases are terminal here:
+    //   (1) the offer's expirationDateUtc has passed;
+    //   (2) the call has been absent from the /api/calls snapshot for
+    //       MAX_CONSECUTIVE_CALL_UNAVAILABLE consecutive sweeps.
+    // A genuinely-pending hold (unexpired offer + call still present) keeps the
+    // owner's 5-minute retry semantics untouched. ----
+    const expiry = typeof rawOffer.expirationDateUtc === 'string' ? rawOffer.expirationDateUtc : null;
+    if (expiry && !Number.isNaN(Date.parse(expiry)) && Date.parse(expiry) < Date.now()) {
+      const reason = `${String(row.reason ?? '')}; offer expired — final human escalation`;
+      await sql()`UPDATE ai_dispatcher_decisions SET decision='escalated_expired', reason=${reason} WHERE id=${String(row.decision_id)}::text AND org_id=${orgId}::text`;
+      await recordRetryAttempt(orgId, String(row.decision_id), callRequestId, callId || null, "expired", { expirationDateUtc: expiry, reason: "offer expirationDateUtc has passed; terminal escalation (no further retry)" });
+      continue;
+    }
     const call = calls.find((c) => c && typeof c === 'object' && (String((c as Record<string, unknown>).callRequestId ?? '') === callRequestId || (callId !== '' && String((c as Record<string, unknown>).id ?? '') === callId))) as Record<string, unknown> | undefined;
     if (!call) {
-      await recordRetryAttempt(orgId, String(row.decision_id), callRequestId, callId || null, "call_unavailable", { reason: "Towbook call was not present in the current call snapshot; hold remains eligible for the next sweep" });
+      const recovery = raw.retryRecovery && typeof raw.retryRecovery === 'object' ? raw.retryRecovery as Record<string, unknown> : {};
+      const callUnavailableStreak = Number(recovery.callUnavailableStreak ?? 0) + 1;
+      if (callUnavailableStreak >= MAX_CONSECUTIVE_CALL_UNAVAILABLE) {
+        const reason = `${String(row.reason ?? '')}; call unavailable across ${callUnavailableStreak} consecutive retry sweeps — final human escalation`;
+        await sql()`UPDATE ai_dispatcher_decisions SET decision='escalated_expired', reason=${reason}, raw_response=raw_response || ${JSON.stringify({ retryRecovery: { callUnavailableStreak } })}::jsonb WHERE id=${String(row.decision_id)}::text AND org_id=${orgId}::text`;
+        await recordRetryAttempt(orgId, String(row.decision_id), callRequestId, callId || null, "call_unavailable", { callUnavailableStreak, terminal: true, reason: "Towbook call absent from snapshot for MAX_CONSECUTIVE_CALL_UNAVAILABLE consecutive sweeps; terminal escalation" });
+        continue;
+      }
+      await sql()`UPDATE ai_dispatcher_decisions SET raw_response=raw_response || ${JSON.stringify({ retryRecovery: { callUnavailableStreak } })}::jsonb WHERE id=${String(row.decision_id)}::text AND org_id=${orgId}::text`;
+      await recordRetryAttempt(orgId, String(row.decision_id), callRequestId, callId || null, "call_unavailable", { callUnavailableStreak, reason: "Towbook call was not present in the current call snapshot; hold remains eligible for the next sweep" });
       continue;
     }
     const callStatus = Number(call.status && typeof call.status === "object" ? (call.status as Record<string, unknown>).id : call.status);
@@ -2671,8 +2697,6 @@ async function retryPendingAssignments(
       await recordRetryAttempt(orgId, String(row.decision_id), callRequestId, callId || String(call.id ?? "") || null, "already_resolved", { statusId: Number.isFinite(callStatus) ? callStatus : null, assignedDriverId: resolvedDriver, reason: "Towbook call is already assigned or terminal; retry skipped" });
       continue;
     }
-    const raw = row.raw_response && typeof row.raw_response === 'object' ? row.raw_response as Record<string, unknown> : {};
-    const rawOffer = raw.offer && typeof raw.offer === 'object' ? raw.offer as Record<string, unknown> : raw;
     const callLat = Number(call.startLocationLatitude ?? call.latitude ?? call.pickupLatitude);
     const callLng = Number(call.startLocationLongitude ?? call.longitude ?? call.pickupLongitude);
     const lat = Number(rawOffer.startLocationLatitude ?? rawOffer.latitude ?? callLat);
@@ -2744,6 +2768,16 @@ async function retryPendingAssignments(
 const retryStateCache = new Map<string, string | null>();
 const retrySweepLastRun = new Map<string, number>();
 const RETRY_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+
+/** Upper bound on consecutive `call_unavailable` sweeps before an accepted
+ * hold is escalated to a terminal decision. A genuinely-pending hold's call is
+ * present in the current /api/calls snapshot, so it never accumulates these —
+ * only a call that has permanently disappeared from Towbook does. 24 × 5 min =
+ * 2 hours of continuous absence before the owner sees the final escalation
+ * (the offer's own expirationDateUtc check above fires first whenever the
+ * hold still carries a parseable expiry, so this is the fail-safe for holds
+ * whose expiry is missing/unparseable). */
+export const MAX_CONSECUTIVE_CALL_UNAVAILABLE = 24;
 
 /* ----------------------------------- the engine ----------------------------------- */
 
