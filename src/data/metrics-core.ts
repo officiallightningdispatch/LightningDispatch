@@ -171,7 +171,7 @@ type PhotoAgg = { jobId: string; phase: string; n: number };
 type DecisionRow = { callId: string | null; callRequestId: string | null; decision: string; escalated: boolean; driverId: string | null; driverName: string | null; etaMinutes: number | null; createdAt: number };
 type CompletionRow = { jobId: string; rating: number | null; comment: string | null };
 type TipRow = { jobId: string; driverId: string | null; driverTowbookId: string | null; amountCents: number };
-type PingAgg = { jobId: string; driverId: string | null; n: number };
+type PingAgg = { jobId: string | null; driverId: string | null; capturedAt: number };
 type AvailRow = { userId: string; day: string; onlineMinutes: number; pingCount: number; sessionStartedAt: number | null };
 type DeclineRow = { jobId: string };
 type ComplianceByDriver = Map<string, { required: number; approved: number; onFile: number }>;
@@ -204,6 +204,41 @@ type OrgData = {
 const assignedTo = (j: JobRow, u: RosterRow): boolean =>
   (j.assignedDriverTowbookId != null && j.assignedDriverTowbookId === u.towbookDriverId) ||
   (j.assignedContractorId != null && j.assignedContractorId === u.id);
+
+/** GPS coverage: the set of created-in-period assigned jobs credited with ≥1
+ *  real app ping from this driver. Explicit job links remain authoritative.
+ *  Tracker pings with a null job_id are matched only when exactly ONE of the
+ *  driver's jobs was active at that captured instant; ambiguous pings are
+ *  deliberately not credited (a job-less ping cannot safely identify one job
+ *  when assignments overlap). Pure + exported so hermetic tests assert the
+ *  null-job matching without the full metrics pipeline. */
+export function gpsCoveragePingedJobs(
+  pings: PingAgg[],
+  createdInPeriod: JobRow[],
+  completedJobs: JobRow[],
+  u: RosterRow,
+  nowMs: number,
+): Set<string> {
+  const createdIds = new Set(createdInPeriod.map((j) => j.id));
+  const completedById = new Map(completedJobs.map((j) => [j.id, j]));
+  const pingedJobIds = new Set<string>();
+  for (const p of pings) {
+    if (p.driverId !== u.id) continue;
+    if (p.jobId != null) {
+      if (createdIds.has(p.jobId)) pingedJobIds.add(p.jobId);
+      continue;
+    }
+    const matches = createdInPeriod.filter((j) => {
+      if (!assignedTo(j, u)) return false;
+      const detail = completedById.get(j.id) ?? j;
+      const start = detail.assignedAt ?? detail.createdAt;
+      const end = detail.completedAt ?? nowMs;
+      return Number.isFinite(p.capturedAt) && p.capturedAt >= start && p.capturedAt <= end;
+    });
+    if (matches.length === 1) pingedJobIds.add(matches[0].id);
+  }
+  return pingedJobIds;
+}
 
 async function fetchOrgData(orgId: string, period: MetricsPeriod, driverUserId: string | null, now: Date = new Date()): Promise<OrgData> {
   const q = sql();
@@ -328,11 +363,15 @@ async function fetchOrgData(orgId: string, period: MetricsPeriod, driverUserId: 
     amountCents: Number(r.amount_cents ?? 0),
   }));
 
-  const pingRows = jobIds.length
-    ? await q`SELECT job_id, driver_id, COUNT(*)::int AS n FROM driver_locations WHERE org_id=${orgId} AND job_id IS NOT NULL AND job_id = ANY(${jobIds}) GROUP BY job_id, driver_id`
-    : [];
+  // Keep both explicitly job-linked pings and tracker pings whose job_id is
+  // null. The LD tracker intentionally has no reliable job association for
+  // Towbook-side work; computeDriver applies a conservative time-window match
+  // for those rows instead of discarding real GPS evidence.
+  const pingRows = await q`SELECT job_id, driver_id, captured_at FROM driver_locations WHERE org_id=${orgId}`;
   const pings: PingAgg[] = (pingRows as Record<string, unknown>[]).map((r) => ({
-    jobId: String(r.job_id), driverId: r.driver_id != null ? String(r.driver_id) : null, n: Number(r.n),
+    jobId: r.job_id != null ? String(r.job_id) : null,
+    driverId: r.driver_id != null ? String(r.driver_id) : null,
+    capturedAt: new Date(String(r.captured_at)).getTime(),
   }));
 
   const availRows = await q`SELECT user_id, day, online_minutes, ping_count, session_started_at FROM driver_availability_log WHERE org_id=${orgId}`;
@@ -794,11 +833,11 @@ function computeDriver(
     data.batteryVariantByJobId,
   );
 
-  // GPS coverage: created-in-period assigned jobs with ≥1 ping from this driver.
-  const pingsByJob = new Map<string, number>();
-  for (const p of data.pings) if (p.driverId === u.id) pingsByJob.set(p.jobId, (pingsByJob.get(p.jobId) ?? 0) + p.n);
-  const pingedJobs = createdInPeriod.filter((j) => (pingsByJob.get(j.id) ?? 0) > 0).length;
-  const gpsCoveragePct = pct(pingedJobs, createdInPeriod.length);
+  // GPS coverage: created-in-period assigned jobs with ≥1 real app ping from
+  // this driver. See gpsCoveragePingedJobs for the explicit-link + null-job
+  // time-window matching rule.
+  const pingedJobIds = gpsCoveragePingedJobs(data.pings, createdInPeriod, data.completedJobs, u, now.getTime());
+  const gpsCoveragePct = pct(pingedJobIds.size, createdInPeriod.length);
 
   const avail = effectiveOnlineMinutes(u.id, data.availability, bounds, now.getTime());
   const onlineCoveragePct = coveragePct(avail.minutes, period, avail.minDay, avail.maxDay, now);

@@ -507,6 +507,20 @@ export type DriverLocationRow = {
   capturedAt: string;
 };
 
+export type DriverGpsHealthStatus = "live" | "stale" | "silent";
+export type DriverGpsHealthRow = {
+  driverId: string;
+  driverName: string;
+  towbookDriverId: string;
+  lastFixAt: string | null;
+  ageMinutes: number | null;
+  status: DriverGpsHealthStatus;
+  reason: "fresh_fix" | "stale_fix" | "no_fix";
+};
+
+export const GPS_LIVE_MAX_AGE_MINUTES = 2;
+export const GPS_DISPATCH_MAX_AGE_MINUTES = 15;
+
 /** Latest ping per driver (last 60 min) for the owner/ops live map. Stale is
  *  computed client-side from capturedAt (>2 min). Exported as a plain function
  *  so the server fn below is a thin session/role wrapper (tests call this). */
@@ -533,6 +547,42 @@ export async function latestDriverLocations(orgId: string): Promise<DriverLocati
     jobCustomer: r.job_customer != null ? String(r.job_customer) : null,
     capturedAt: new Date(String(r.captured_at)).toISOString(),
   }));
+}
+
+/** Server-derived GPS reliability signal for the owner. The roster is left-joined
+ * to the latest real app fix so a driver with no fix is visible as silent rather
+ * than disappearing from the report. No status is inferred from Towbook,
+ * assignment coordinates, or availability sessions. */
+export async function latestDriverGpsHealth(orgId: string, nowMs = Date.now()): Promise<DriverGpsHealthRow[]> {
+  const q = await db();
+  const rows = await q`SELECT u.id AS driver_id, u.name AS driver_name, u.towbook_driver_id,
+      p.captured_at AS last_fix_at
+    FROM users u
+    JOIN organization_memberships m ON m.org_id=${orgId} AND m.user_id=u.id AND m.role='contractor'
+    LEFT JOIN LATERAL (
+      SELECT captured_at FROM driver_locations
+      WHERE org_id=${orgId} AND driver_id=u.id
+      ORDER BY captured_at DESC LIMIT 1
+    ) p ON TRUE
+    WHERE u.deactivated_at IS NULL AND u.towbook_driver_id IS NOT NULL
+    ORDER BY LOWER(u.name), u.created_at`;
+  return rows.map((r: Record<string, unknown>) => {
+    const lastFixAt = r.last_fix_at != null ? new Date(String(r.last_fix_at)).toISOString() : null;
+    const rawAge = lastFixAt == null ? null : (nowMs - new Date(lastFixAt).getTime()) / 60000;
+    const ageMinutes = rawAge == null ? null : Math.max(0, Math.round(rawAge * 10) / 10);
+    const status: DriverGpsHealthStatus = ageMinutes == null || ageMinutes > GPS_DISPATCH_MAX_AGE_MINUTES
+      ? "silent"
+      : ageMinutes > GPS_LIVE_MAX_AGE_MINUTES ? "stale" : "live";
+    return {
+      driverId: String(r.driver_id),
+      driverName: String(r.driver_name ?? "Driver"),
+      towbookDriverId: String(r.towbook_driver_id),
+      lastFixAt,
+      ageMinutes,
+      status,
+      reason: lastFixAt == null ? "no_fix" : status === "live" ? "fresh_fix" : "stale_fix",
+    };
+  });
 }
 
 /** Latest ping per driver (last 60 min) for the owner/ops live map. Stale is

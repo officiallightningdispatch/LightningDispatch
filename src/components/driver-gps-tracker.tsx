@@ -9,16 +9,18 @@ import { getLocation, isNative, onNativeAppState, startLocationUpdates, stopLoca
  * Capacitor watches continue while the app is backgrounded; web uses the
  * browser watch plus a five-minute safety capture while the page is active.
  *
- * The upload path is deliberately separate from GPS collection: a slow or
- * temporarily unreachable server must not stop the native watch/browser watch.
- * Failed transient uploads retry the same captured fix briefly, preserving its
- * original timestamp; an auth failure is surfaced and is never retried in a
- * tight loop.
+ * Uploads are deliberately decoupled from collection. A short network outage
+ * queues each real fix and retries it with backoff; the original capture time
+ * is preserved so a delayed upload can never masquerade as a fresh location.
  */
 export type DriverGpsState = "idle" | "tracking" | "denied" | "unsupported" | "error";
 const WEB_CAPTURE_INTERVAL_MS = 5 * 60 * 1000;
 const RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000];
-const MAX_FIX_RETRY_AGE_MS = 2 * 60 * 1000;
+/** Keep transiently failed fixes for 15 minutes, while dispatch still applies
+ * its own <=15-minute freshness gate to the captured timestamp. */
+const MAX_FIX_RETRY_AGE_MS = 15 * 60 * 1000;
+/** Bound memory during a prolonged outage (20-second fixes ≈ 40 minutes). */
+const MAX_QUEUED_FIXES = 120;
 
 let state: DriverGpsState = "idle";
 let running = false;
@@ -37,7 +39,7 @@ type CapturedFix = {
   capturedAt: number;
 };
 
-let queuedFix: CapturedFix | null = null;
+let queuedFixes: CapturedFix[] = [];
 let uploadInFlight = false;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 let retryAttempt = 0;
@@ -57,12 +59,16 @@ function clearRetryTimer() {
 }
 
 function scheduleRetry() {
-  if (retryTimer != null || !queuedFix) return;
-  const fix = queuedFix;
-  if (Date.now() - fix.capturedAt > MAX_FIX_RETRY_AGE_MS) {
-    queuedFix = null;
-    setState("error");
-    return;
+  if (retryTimer != null || !queuedFixes.length) return;
+  const oldest = queuedFixes[0];
+  if (!oldest || Date.now() - oldest.capturedAt > MAX_FIX_RETRY_AGE_MS) {
+    // A fix older than the dispatch freshness window cannot be useful for
+    // routing. Drop only expired queued evidence; newer fixes remain queued.
+    queuedFixes = queuedFixes.filter((fix) => Date.now() - fix.capturedAt <= MAX_FIX_RETRY_AGE_MS);
+    if (!queuedFixes.length) {
+      setState("error");
+      return;
+    }
   }
   const delay = RETRY_DELAYS_MS[Math.min(retryAttempt, RETRY_DELAYS_MS.length - 1)];
   retryAttempt += 1;
@@ -73,10 +79,9 @@ function scheduleRetry() {
 }
 
 async function flushUploadQueue() {
-  if (uploadInFlight || !queuedFix) return;
+  if (uploadInFlight || !queuedFixes.length) return;
   uploadInFlight = true;
-  const fix = queuedFix;
-  queuedFix = null;
+  const fix = queuedFixes.shift() as CapturedFix;
   try {
     const result = await pingDriverLocation({
       data: {
@@ -97,7 +102,7 @@ async function flushUploadQueue() {
         retryAttempt = 0;
         setState("error");
       } else if (running) {
-        queuedFix = queuedFix ?? fix;
+        queuedFixes.unshift(fix);
         setState("error");
         scheduleRetry();
       }
@@ -107,16 +112,16 @@ async function flushUploadQueue() {
     }
   } catch {
     // Server-function/network failures are transient until proven otherwise.
-    // Keep the captured timestamp so a delayed upload cannot masquerade as a
-    // newly captured GPS fix and cannot weaken the dispatch freshness rule.
+    // Keep the captured timestamp so a delayed upload cannot make an old fix
+    // look fresh and cannot weaken the dispatch freshness rule.
     if (running) {
-      queuedFix = queuedFix ?? fix;
+      queuedFixes.unshift(fix);
       setState("error");
       scheduleRetry();
     }
   } finally {
     uploadInFlight = false;
-    if (queuedFix && retryTimer == null) void flushUploadQueue();
+    if (queuedFixes.length && retryTimer == null) void flushUploadQueue();
   }
 }
 
@@ -129,13 +134,14 @@ function report(position: DriverPosition | GeolocationPosition) {
   }
   const rawTimestamp = "timestamp" in position && typeof position.timestamp === "number" ? position.timestamp : Date.now();
   const capturedAt = Number.isFinite(rawTimestamp) && rawTimestamp > 0 ? rawTimestamp : Date.now();
-  queuedFix = {
+  if (queuedFixes.length >= MAX_QUEUED_FIXES) queuedFixes.shift();
+  queuedFixes.push({
     latitude: c.latitude,
     longitude: c.longitude,
     accuracy: typeof c.accuracy === "number" && Number.isFinite(c.accuracy) ? Math.round(c.accuracy) : null,
     speedMph: typeof c.speed === "number" && Number.isFinite(c.speed) && c.speed >= 0 ? c.speed * 2.236936 : null,
     capturedAt,
-  };
+  });
   clearRetryTimer();
   retryAttempt = 0;
   void flushUploadQueue();
@@ -162,7 +168,12 @@ async function start() {
         return;
       }
       const appStateListener = await onNativeAppState((isActive) => {
-        if (isActive) void getLocation().then(report).catch(reportError);
+        if (isActive) {
+          retryAttempt = 0;
+          clearRetryTimer();
+          void getLocation().then(report).catch(reportError);
+          void flushUploadQueue();
+        }
       });
       cleanup = () => {
         void stopLocation(watchId);
@@ -189,16 +200,23 @@ async function start() {
   const capture = () => navigator.geolocation.getCurrentPosition(report, reportError, options);
   capture();
   const timer = window.setInterval(capture, WEB_CAPTURE_INTERVAL_MS);
-  const onVisible = () => { if (document.visibilityState === "visible") capture(); };
+  const onVisible = () => { if (document.visibilityState === "visible") { capture(); void flushUploadQueue(); } };
+  const onOnline = () => { retryAttempt = 0; clearRetryTimer(); void flushUploadQueue(); };
   document.addEventListener("visibilitychange", onVisible);
+  window.addEventListener("online", onOnline);
   cleanup = () => {
     if (watchId != null) navigator.geolocation.clearWatch(watchId);
     window.clearInterval(timer);
     document.removeEventListener("visibilitychange", onVisible);
+    window.removeEventListener("online", onOnline);
   };
 }
 
-function subscribe(listener: (next: DriverGpsState) => void) {
+/** Low-level subscription seam (used by the hook below and by the hermetic
+ *  tracker fixture). Starts the tracker on first subscriber and tears it down
+ *  when the last subscriber leaves. Exported so the flush-on-resume queue
+ *  behavior is testable without mounting a React tree. */
+export function subscribe(listener: (next: DriverGpsState) => void) {
   subscribers.add(listener);
   listener(state);
   void start();
@@ -210,7 +228,7 @@ function subscribe(listener: (next: DriverGpsState) => void) {
       cleanup = null;
       running = false;
       clearRetryTimer();
-      queuedFix = null;
+      queuedFixes = [];
       retryAttempt = 0;
       uploadInFlight = false;
       state = "idle";
