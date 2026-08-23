@@ -125,7 +125,8 @@ async function loadJobRow(user: JobDetailUser, jobId: string): Promise<Record<st
       assigned_driver_name, assigned_driver_towbook_id, note,
       customer_phone, vehicle_desc, pickup, dropoff, towbook_job_id, towbook_status,
       raw_json, raw_json#>>'{purchaseOrderNumber}' AS purchase_order_number,
-      raw_json#>>'{arrivalETA}' AS arrival_eta
+      raw_json#>>'{arrivalETA}' AS arrival_eta,
+      quoted_eta_minutes
     FROM dispatch_jobs WHERE org_id=${user.orgId} AND (id=${jobId} OR towbook_job_id=${jobId}) LIMIT 1`;
   return rows.length ? (rows[0] as Record<string, unknown>) : null;
 }
@@ -179,9 +180,15 @@ export async function getJobDetailCore(user: JobDetailUser, data: unknown): Prom
       }
     }
 
-    // Latest AI-dispatcher ETA quoted for this call (if any).
+    // The AI dispatcher's quoted ETA (SUB B defect 1): prefer the persisted
+    // dispatch_jobs.quoted_eta_minutes (written at verified dispatch), then fall
+    // back to the latest decision row for legacy rows that predate the column.
     let quotedEtaMinutes: number | null = null;
-    if (job.towbookJobId) {
+    if (row.quoted_eta_minutes != null) {
+      const persisted = Number(row.quoted_eta_minutes);
+      if (Number.isFinite(persisted)) quotedEtaMinutes = persisted;
+    }
+    if (quotedEtaMinutes == null && job.towbookJobId) {
       const q = await db();
       const dec = await q`SELECT eta_minutes FROM ai_dispatcher_decisions
         WHERE org_id=${user.orgId} AND call_id=${job.towbookJobId} AND eta_minutes IS NOT NULL

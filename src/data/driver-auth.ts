@@ -69,6 +69,10 @@ export type DriverCall = {
   arrivedAtIso: string | null;
   goalSeconds: number | null;
   serviceKey: string | null;
+  /** The AI dispatcher's quoted ETA in whole minutes (dispatch_jobs.
+   *  quoted_eta_minutes) — the traffic-aware quote the driver-facing ETA should
+   *  prefer over Towbook's raw arrivalETA. null for legacy/unknown rows. */
+  ldEtaMinutes: number | null;
 };
 export type DriverJobAction = "accept" | "en_route" | "arrive";
 /* LD action → Towbook status id. CORRECTED 2026-08-12 (owner-reported bug):
@@ -501,6 +505,7 @@ export function normalizeDriverCall(call: Record<string, unknown>): DriverCall |
     arrivedAtIso: callArrivalAt(call),
     goalSeconds: null,
     serviceKey: null,
+    ldEtaMinutes: null,
   };
 }
 
@@ -556,6 +561,7 @@ async function platformOnlyCalls(user: { orgId: string; towbookDriverId: string 
         arrivedAtIso: arrivedAt,
         goalSeconds: null,
         serviceKey: null,
+        ldEtaMinutes: null,
       };
     });
   } catch {
@@ -583,7 +589,36 @@ async function fetchDriverQueue(user: { orgId: string; towbookDriverId: string }
   const platformCards = await platformOnlyCalls(user); // battery-install etc.
   const seen = new Set(towbookCards.map((c) => c.id));
   const merged = [...towbookCards, ...platformCards.filter((c) => !seen.has(c.id))];
-  return { ok: true, calls: await attachServiceTime(user, merged) };
+  return { ok: true, calls: await attachServiceTime(user, await attachLdEta(user, merged)) };
+}
+/** Attach the AI dispatcher's quoted ETA (dispatch_jobs.quoted_eta_minutes) to
+ *  en-route/accepted/offered calls (statusId 1-3) so the driver-facing ETA
+ *  prefers the traffic-aware LD quote over Towbook's raw arrivalETA (SUB B
+ *  defect 1). Calls whose column is NULL keep their Towbook arrivalETA fallback.
+ *  Best-effort: any DB hiccup leaves the queue fully functional. */
+async function attachLdEta(user: { orgId: string }, calls: DriverCall[]): Promise<DriverCall[]> {
+  const eligible = calls.filter((c) => c.statusId === 1 || c.statusId === 2 || c.statusId === 3);
+  if (!eligible.length) return calls;
+  try {
+    const q = await db();
+    const ids = eligible.map((c) => c.id);
+    const rows = await q`SELECT id, towbook_job_id, quoted_eta_minutes FROM dispatch_jobs
+      WHERE org_id=${user.orgId} AND (towbook_job_id = ANY(${ids}) OR id = ANY(${ids})) AND quoted_eta_minutes IS NOT NULL`;
+    const byKey = new Map<string, number>();
+    for (const r of rows as Record<string, unknown>[]) {
+      const minutes = Number(r.quoted_eta_minutes);
+      if (!Number.isFinite(minutes)) continue;
+      if (r.towbook_job_id != null) byKey.set(String(r.towbook_job_id), minutes);
+      if (r.id != null) byKey.set(String(r.id), minutes);
+    }
+    return calls.map((c) => {
+      if (c.statusId !== 1 && c.statusId !== 2 && c.statusId !== 3) return c;
+      const minutes = byKey.get(c.id);
+      return minutes != null ? { ...c, ldEtaMinutes: minutes } : c;
+    });
+  } catch {
+    return calls;
+  }
 }
 /** Service-time live counter enrichment (completion-goals-spec.md §1, §5):
  *  for every ARRIVED-state call (statusId 3 on scene / 4 towing) attach the
