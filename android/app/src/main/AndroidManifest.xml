@@ -43,5 +43,9 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <!-- Job photos are captured with the device camera on every completion. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Android 13+ notification runtime permission for dispatch alerts. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-feature android:name="android.hardware.location.gps" android:required="true" />
 </manifest>
