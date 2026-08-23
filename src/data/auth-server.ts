@@ -28,10 +28,20 @@ export const normalizeRole = (r: unknown): Role => (r === "manager" ? "owner" : 
 // startSession also actively deletes the old name so the browser self-heals.
 export const cookieName = "ld_session_v2";
 export const legacyCookieNames = ["lightning_session"];
-const cookieOpts = (maxAge: number) => ({
-  path: "/", httpOnly: true, sameSite: "lax" as const, maxAge,
-  ...(process.env.NODE_ENV === "production" ? { secure: true } : {}),
-});
+const cookieOpts = (maxAge: number) => {
+  const secure = process.env.NODE_ENV === "production";
+  return {
+    path: "/",
+    httpOnly: true,
+    // SameSite=None + Secure lets the native Capacitor webview send the session
+    // cookie cross-origin to https://www.lightningdispatch.app. Browsers reject
+    // SameSite=None without Secure, so None is only used in production (where
+    // Secure is set); local dev keeps Lax, unchanged.
+    sameSite: (secure ? "none" : "lax") as "none" | "lax",
+    maxAge,
+    secure,
+  };
+};
 const writeCookie = async (name: string, value: string, maxAge: number) => {
   const { setCookie } = await import("@tanstack/start-server-core");
   setCookie(name, value, cookieOpts(maxAge));
