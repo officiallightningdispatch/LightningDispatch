@@ -544,10 +544,40 @@ export function fallbackRoadMinutes(distanceMiles: number): number {
  *  eligible for a new auto-dispatch. */
 export const MAX_DRIVER_QUEUE = 3;
 
-/** Tunable on-scene service-time estimate per queued job (minutes) used by the
- *  all-loaded queue-inclusive arrival model. Tune with the owner when real
- *  service-time data accumulates. */
+/** Tunable on-scene service-time estimate per queued job (minutes) used as the
+ *  FALLBACK when a queued job's service type is unknown/unlocated. The primary
+ *  estimate is the canonical service-time goal (see serviceMinutesForJob). */
 export const SERVICE_MINUTES_PER_JOB = 30;
+
+/** Canonical default service-time goals (jump 5 / tire 15 / lockout 5 / fuel 5 /
+ *  battery std 60 / adv 120) — the same defaults service-time-core seeds. Used by
+ *  serviceMinutesForJob so the queue-inclusive arrival model reflects REAL
+ *  per-service on-scene goals rather than a flat 30 (owner 2026-08-23). */
+const DEFAULT_SERVICE_TIME_GOALS: { serviceType: string; variant: string; goalSeconds: number }[] = [
+  { serviceType: "jump_start", variant: "", goalSeconds: SERVICE_GOAL_DEFAULTS.jump_start },
+  { serviceType: "tire_change", variant: "", goalSeconds: SERVICE_GOAL_DEFAULTS.tire_change },
+  { serviceType: "fuel_delivery", variant: "", goalSeconds: SERVICE_GOAL_DEFAULTS.fuel_delivery },
+  { serviceType: "lockout", variant: "", goalSeconds: SERVICE_GOAL_DEFAULTS.lockout },
+  { serviceType: "battery_install", variant: "standard", goalSeconds: BATTERY_GOAL_DEFAULTS.standard },
+  { serviceType: "battery_install", variant: "advanced", goalSeconds: BATTERY_GOAL_DEFAULTS.advanced },
+];
+
+/** On-scene service minutes for a queued job's service_type, from the canonical
+ *  service-time goals (jump 5 / tire 15 / lockout 5 / fuel 5 / battery 60/120).
+ *  Unknown/unlocated service types fall back to SERVICE_MINUTES_PER_JOB. */
+export function serviceMinutesForJob(serviceType: string | null | undefined): number {
+  const raw = String(serviceType ?? "").trim().toLowerCase();
+  if (!raw) return SERVICE_MINUTES_PER_JOB;
+  if (raw === "battery_advanced" || raw.includes("advanced")) {
+    return BATTERY_GOAL_DEFAULTS.advanced / 60;
+  }
+  if (raw === "battery_standard" || raw.includes("battery")) {
+    return BATTERY_GOAL_DEFAULTS.standard / 60;
+  }
+  const { goalSeconds } = goalSecondsFor(DEFAULT_SERVICE_TIME_GOALS, raw, null);
+  if (goalSeconds == null || !Number.isFinite(goalSeconds) || goalSeconds <= 0) return SERVICE_MINUTES_PER_JOB;
+  return goalSeconds / 60;
+}
 
 /** dispatch_jobs lifecycle statuses that count toward a driver's queue
  *  (terminal states never count). */
@@ -573,6 +603,9 @@ export type QueuedJob = {
   pickupLng: number;
   status: string;
   createdAt: string;
+  /** Raw dispatch_jobs.service_type so the queue model can use the real
+   *  per-service on-scene goal (unknown → the flat fallback). */
+  serviceType?: string | null;
 };
 
 /** A driver's queue, from the org's dispatch_jobs (the sync already persists
@@ -614,7 +647,7 @@ export function isDriverAvailableForTowQualification(driver: unknown, lightningA
 }
 
 export async function loadOrgDriverQueues(orgId: string): Promise<Map<string, DriverQueue>> {
-  const rows = await sql()`SELECT assigned_driver_towbook_id AS did, status, pickup_lat, pickup_lng, created_at
+  const rows = await sql()`SELECT assigned_driver_towbook_id AS did, status, pickup_lat, pickup_lng, created_at, service_type
     FROM dispatch_jobs
     WHERE org_id=${orgId}
       AND assigned_driver_towbook_id IS NOT NULL
@@ -633,8 +666,9 @@ export async function loadOrgDriverQueues(orgId: string): Promise<Map<string, Dr
     entry.activeCount++;
     const lat = Number(r.pickup_lat);
     const lng = Number(r.pickup_lng);
+    const svc = r.service_type != null ? String(r.service_type) : null;
     if (Number.isFinite(lat) && lat !== 0 && Number.isFinite(lng) && lng !== 0) {
-      entry.queuedJobs.push({ pickupLat: lat, pickupLng: lng, status: String(r.status ?? ""), createdAt: String(r.created_at ?? "") });
+      entry.queuedJobs.push({ pickupLat: lat, pickupLng: lng, status: String(r.status ?? ""), createdAt: String(r.created_at ?? ""), serviceType: svc });
     }
     map.set(did, entry);
   }
@@ -1728,22 +1762,25 @@ export async function workloadAwareArrivalMinutes(
       // chain to the NEXT job starts from THIS job's location (owner formula —
       // never from the driver's last GPS ping).
       startedOnScene = true;
-      queueMinutes += SERVICE_MINUTES_PER_JOB;
-      breakdown.push(`${SERVICE_MINUTES_PER_JOB} min service`);
+      const firstSvcMin = serviceMinutesForJob(first.serviceType);
+      queueMinutes += firstSvcMin;
+      breakdown.push(`${Math.round(firstSvcMin)} min service`);
       prevLat = first.pickupLat;
       prevLng = first.pickupLng;
       for (let i = 1; i < queue.length; i++) {
         const leg = await legMinutes(prevLat, prevLng, queue[i].pickupLat, queue[i].pickupLng);
-        queueMinutes += leg.minutes + SERVICE_MINUTES_PER_JOB;
-        breakdown.push(`${Math.round(leg.minutes)} min to queued job ${i + 1}`, `${SERVICE_MINUTES_PER_JOB} min service`);
+        const svcMinI = serviceMinutesForJob(queue[i].serviceType);
+        queueMinutes += leg.minutes + svcMinI;
+        breakdown.push(`${Math.round(leg.minutes)} min to queued job ${i + 1}`, `${Math.round(svcMinI)} min service`);
         prevLat = queue[i].pickupLat;
         prevLng = queue[i].pickupLng;
       }
     } else {
       for (const job of queue) {
         const leg = await legMinutes(prevLat, prevLng, job.pickupLat, job.pickupLng);
-        queueMinutes += leg.minutes + SERVICE_MINUTES_PER_JOB;
-        breakdown.push(`${Math.round(leg.minutes)} min to queued job ${breakdown.filter((x) => x.includes("queued job")).length + 1}`, `${SERVICE_MINUTES_PER_JOB} min service`);
+        const svcMinJ = serviceMinutesForJob(job.serviceType);
+        queueMinutes += leg.minutes + svcMinJ;
+        breakdown.push(`${Math.round(leg.minutes)} min to queued job ${breakdown.filter((x) => x.includes("queued job")).length + 1}`, `${Math.round(svcMinJ)} min service`);
         prevLat = job.pickupLat;
         prevLng = job.pickupLng;
       }
@@ -1752,7 +1789,7 @@ export async function workloadAwareArrivalMinutes(
   // Unlocated active jobs (no pickup coords): their on-scene service time is
   // still real workload — estimate it at the tail (never dropped, never routed
   // blind).
-  if (unlocatedJobs > 0) { queueMinutes += SERVICE_MINUTES_PER_JOB * unlocatedJobs; breakdown.push(`${SERVICE_MINUTES_PER_JOB * unlocatedJobs} min service for ${unlocatedJobs} unlocated job(s)`); }
+  if (unlocatedJobs > 0) { const unlocatedSvc = SERVICE_MINUTES_PER_JOB * unlocatedJobs; queueMinutes += unlocatedSvc; breakdown.push(`${Math.round(unlocatedSvc)} min service for ${unlocatedJobs} unlocated job(s)`); }
   // Final leg: from the LAST job's location to the offer — NOT from the
   // driver's GPS (they are at the last job when this leg begins).
   const finalLeg = await legMinutes(prevLat, prevLng, pickupLat, pickupLng);
