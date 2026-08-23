@@ -2535,21 +2535,50 @@ export function callWaypoint(call: Record<string, unknown>): { lat: number; lng:
   return Number.isFinite(lat) && Number.isFinite(lng) && lat !== 0 && lng !== 0 ? { lat, lng } : null;
 }
 
+/** Provider-level audit detail for a post-accept re-route (SUB B defect 3):
+ *  the base minutes plus which provider produced them, so the decision ledger's
+ *  etaFacts can reflect the ACTUAL re-route provider rather than the pre-accept
+ *  selection's provider. */
+export type WaypointRouteResult = {
+  baseMinutes: number;
+  provider: EtaProvider;
+  liveTraffic: boolean;
+  trafficDelaySeconds: number | null;
+  roadSeconds: number | null;
+};
+
 /** Re-route from a driver's real ETA origin to an authoritative waypoint
- * (post-accept verification). Returns base minutes (ceil road seconds) when the
- * router succeeds, else the factor model on the straight-line distance. Never
- * throws — a router hiccup must never block the dispatch write. */
-async function routeToWaypointBase(
+ * (post-accept verification). Returns the waypoint route (base minutes + the
+ * provider-level audit detail) when the router succeeds, else the factor model
+ * on the straight-line distance. Never throws — a router hiccup must never
+ * block the dispatch write. */
+export async function routeToWaypointBase(
   roadRouter: RoadRouter | null,
   origin: { lat: number; lng: number },
   waypoint: { lat: number; lng: number },
-): Promise<number> {
-  if (!Number.isFinite(origin.lat) || !Number.isFinite(origin.lng)) return 0;
+): Promise<WaypointRouteResult> {
+  if (!Number.isFinite(origin.lat) || !Number.isFinite(origin.lng)) {
+    return { baseMinutes: 0, provider: "factor", liveTraffic: false, trafficDelaySeconds: null, roadSeconds: null };
+  }
   try {
     const result = roadRouter ? await roadRouter(origin.lat, origin.lng, waypoint.lat, waypoint.lng) : null;
-    if (result && Number.isFinite(result.seconds) && result.seconds > 0) return Math.ceil(result.seconds / 60);
+    if (result && Number.isFinite(result.seconds) && result.seconds > 0) {
+      return {
+        baseMinutes: Math.ceil(result.seconds / 60),
+        provider: result.provider,
+        liveTraffic: result.liveTraffic === true,
+        trafficDelaySeconds: result.provider === "tomtom" && Number.isFinite(result.trafficDelaySeconds) ? result.trafficDelaySeconds : null,
+        roadSeconds: result.seconds,
+      };
+    }
   } catch { /* fall through to the factor model */ }
-  return fallbackRoadMinutes(haversineMiles(origin.lat, origin.lng, waypoint.lat, waypoint.lng));
+  return {
+    baseMinutes: fallbackRoadMinutes(haversineMiles(origin.lat, origin.lng, waypoint.lat, waypoint.lng)),
+    provider: "factor",
+    liveTraffic: false,
+    trafficDelaySeconds: null,
+    roadSeconds: null,
+  };
 }
 
 /** Upsert the verified Towbook call before any best-effort sync. This closes the
