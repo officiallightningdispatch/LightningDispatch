@@ -17,6 +17,7 @@ import { DriverNotificationBanners, SoundToggle } from "~/components/notify-bann
 import { Button, Card, useToast } from "~/components/ui";
 import { driverJobAction, driverJobs, driverLogout, driverReconnect, driverReconnectContext, type DriverCall } from "~/data/driver-auth";
 import { orderDriverQueue } from "~/lib/driver-queue-core";
+import { preferredEtaIso } from "~/lib/driver-eta-core";
 import { PUSH_RECEIVED_MESSAGE_TYPE } from "~/lib/push-received";
 import { useDriverGpsState, type DriverGpsState } from "~/components/driver-gps-tracker";
 
@@ -338,7 +339,7 @@ export function DriverJobCard({ call, acting, onAct, onQueueChanged }: { call: D
           <div className="flex gap-2"><Truck className="mt-0.5 size-4 shrink-0 text-ink-400" /><dd className="text-ink-700">{call.vehicle}</dd></div>
         )}
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-500">
-          <span>ETA: <strong className="font-semibold text-ink-700">{etaLabel(call.arrivalETA)}</strong></span>
+          <span>ETA: <strong className="font-semibold text-ink-700">{etaLabel(preferredEtaIso(call))}</strong></span>
           {call.purchaseOrderNumber && <span>PO: <strong className="font-semibold text-ink-700">{call.purchaseOrderNumber}</strong></span>}
         </div>
       </dl>

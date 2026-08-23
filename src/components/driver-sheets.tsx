@@ -9,6 +9,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { DriverBottomSheet } from "~/components/driver-bottom-sheet";
 import { ProgressRail } from "~/components/driver-progress";
 import { etaLabel, JobCardActions, STATUS_META, type GpsState } from "~/components/driver-queue";
+import { preferredEtaIso } from "~/lib/driver-eta-core";
 import { normalizeDutyType } from "~/lib/driver-queue-core";
 import { GpsStatusChip } from "~/components/driver-queue";
 import { buildNavigateUrl } from "~/lib/navigation";
@@ -49,7 +50,7 @@ export function PrimaryJobPeek({ call, position = 1, acting, onAct, onQueueChang
       <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-ink-500">
         <span className="font-semibold text-ink-700">Stop {position}</span>
         <span>
-          ETA <strong className="font-semibold tabular-nums text-ink-700">{etaLabel(call.arrivalETA)}</strong>
+          ETA <strong className="font-semibold tabular-nums text-ink-700">{etaLabel(preferredEtaIso(call))}</strong>
         </span>
         {(call.vehicleYear || call.vehicleMake || call.vehicleModel) && (
           <span className="flex min-w-0 items-center gap-1"><Truck className="size-3.5 shrink-0" /><span className="break-words">{[call.vehicleYear, call.vehicleMake, call.vehicleModel].filter(Boolean).join(" ") || "—"}</span></span>
@@ -83,7 +84,7 @@ export function OfferRow({ call, acting, onAct }: { call: DriverCall; acting: bo
       <div className="min-w-0 flex-1">
         <p className="break-words text-sm font-bold text-ink-800">{call.serviceName}</p>
         <p className="break-words text-xs text-ink-500">{address || `Call #${call.callNumber}`}</p>
-        <p className="mt-0.5 text-[11px] font-semibold tabular-nums text-brand-700">{etaLabel(call.arrivalETA)}</p>
+        <p className="mt-0.5 text-[11px] font-semibold tabular-nums text-brand-700">{etaLabel(preferredEtaIso(call))}</p>
       </div>
       <Button size="md" loading={acting} onClick={() => void onAct(call.id, "accept")} className="shrink-0">
         Accept
