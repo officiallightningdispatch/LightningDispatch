@@ -1877,6 +1877,13 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`ALTER TABLE contractor_profiles ADD COLUMN IF NOT EXISTS owner_confirmed_dispatch_lng DOUBLE PRECISION`;
     await q`CREATE INDEX IF NOT EXISTS contractor_profiles_owner_dispatch_idx ON contractor_profiles(org_id, owner_confirmed_dispatch_enabled) WHERE owner_confirmed_dispatch_enabled=TRUE`;
   }],
+  // 91 (2026-08-23): SUB B — persist the AI dispatcher's final quoted ETA
+  // (minutes, already capped by finalEtaMinutes) onto dispatch_jobs so the
+  // DRIVER-facing ETA can prefer the traffic-aware LD quote over Towbook's raw
+  // arrivalETA (SUB B defect 1). Nullable: legacy rows fall back to Towbook.
+  [91, async (q) => {
+    await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS quoted_eta_minutes INTEGER`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

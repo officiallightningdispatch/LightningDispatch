@@ -2583,7 +2583,7 @@ export async function routeToWaypointBase(
 
 /** Upsert the verified Towbook call before any best-effort sync. This closes the
  * race where verification succeeds but the periodic importer misses the call. */
-async function upsertVerifiedDispatchJob(orgId: string, offer: OfferShape, call: Record<string, unknown>, callId: string, driverId: number, driverName: string | null): Promise<void> {
+async function upsertVerifiedDispatchJob(orgId: string, offer: OfferShape, call: Record<string, unknown>, callId: string, driverId: number, driverName: string | null, quotedEtaMinutes: number | null = null): Promise<void> {
   const waypoint = callWaypoint(call);
   const w = Array.isArray(call.waypoints) && call.waypoints[0] && typeof call.waypoints[0] === "object" ? call.waypoints[0] as Record<string, unknown> : {};
   const customer = (call.customerName ?? call.customer ?? call.name ?? "Customer") as unknown;
@@ -2593,9 +2593,9 @@ async function upsertVerifiedDispatchJob(orgId: string, offer: OfferShape, call:
   const status = Number(statusValue) === 252 ? "completed" : Number(statusValue) === 255 ? "cancelled" : "accepted";
   const lat = waypoint?.lat ?? offer.startLocationLatitude; const lng = waypoint?.lng ?? offer.startLocationLongitude;
   const phone = String(call.phone ?? call.customerPhone ?? "");
-  await sql() `INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, phone, customer_phone, lat, lng, pickup_lat, pickup_lng, pickup, area, service_type, status, assigned_driver_towbook_id, assigned_driver_name, towbook_status, raw_json, created_at, assigned_at)
-    VALUES(gen_random_uuid()::text, ${orgId}, ${callId || offer.callRequestId}, ${String(customer)}, ${phone}, ${phone}, ${lat}, ${lng}, ${lat}, ${lng}, ${pickup}, ${pickup}, ${service}, ${status}, ${String(driverId)}, ${driverName}, ${String(statusValue ?? "")}, ${JSON.stringify(call)}::jsonb, NOW(), NOW())
-    ON CONFLICT (org_id, towbook_job_id) WHERE towbook_job_id IS NOT NULL DO UPDATE SET customer_name=EXCLUDED.customer_name, phone=EXCLUDED.phone, customer_phone=EXCLUDED.customer_phone, lat=EXCLUDED.lat, lng=EXCLUDED.lng, pickup_lat=EXCLUDED.pickup_lat, pickup_lng=EXCLUDED.pickup_lng, pickup=EXCLUDED.pickup, area=EXCLUDED.area, service_type=EXCLUDED.service_type, status=EXCLUDED.status, assigned_driver_towbook_id=EXCLUDED.assigned_driver_towbook_id, assigned_driver_name=EXCLUDED.assigned_driver_name, towbook_status=EXCLUDED.towbook_status, raw_json=EXCLUDED.raw_json, assigned_at=COALESCE(dispatch_jobs.assigned_at, EXCLUDED.assigned_at)`;
+  await sql() `INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, phone, customer_phone, lat, lng, pickup_lat, pickup_lng, pickup, area, service_type, status, assigned_driver_towbook_id, assigned_driver_name, towbook_status, raw_json, created_at, assigned_at, quoted_eta_minutes)
+    VALUES(gen_random_uuid()::text, ${orgId}, ${callId || offer.callRequestId}, ${String(customer)}, ${phone}, ${phone}, ${lat}, ${lng}, ${lat}, ${lng}, ${pickup}, ${pickup}, ${service}, ${status}, ${String(driverId)}, ${driverName}, ${String(statusValue ?? "")}, ${JSON.stringify(call)}::jsonb, NOW(), NOW(), ${quotedEtaMinutes})
+    ON CONFLICT (org_id, towbook_job_id) WHERE towbook_job_id IS NOT NULL DO UPDATE SET customer_name=EXCLUDED.customer_name, phone=EXCLUDED.phone, customer_phone=EXCLUDED.customer_phone, lat=EXCLUDED.lat, lng=EXCLUDED.lng, pickup_lat=EXCLUDED.pickup_lat, pickup_lng=EXCLUDED.pickup_lng, pickup=EXCLUDED.pickup, area=EXCLUDED.area, service_type=EXCLUDED.service_type, status=EXCLUDED.status, assigned_driver_towbook_id=EXCLUDED.assigned_driver_towbook_id, assigned_driver_name=EXCLUDED.assigned_driver_name, towbook_status=EXCLUDED.towbook_status, raw_json=EXCLUDED.raw_json, assigned_at=COALESCE(dispatch_jobs.assigned_at, EXCLUDED.assigned_at), quoted_eta_minutes=COALESCE(EXCLUDED.quoted_eta_minutes, dispatch_jobs.quoted_eta_minutes)`;
 }
 /** Post-accept verification loop (the core of the dispatch fix): GET the
  *  created call and check the chosen driver is actually on it
@@ -2854,7 +2854,6 @@ async function retryPendingAssignments(
       await recordRetryAttempt(orgId, String(row.decision_id), callRequestId, callId || String(call.id ?? "") || null, "verification_failed", { error: verification.error, verification });
       continue;
     }
-    if (verification.call) { try { await upsertVerifiedDispatchJob(orgId, offer, verification.call, verification.callId ?? (callId || String(call.id ?? callRequestId)), driverId, String(chosen.driver.driverName ?? driverId)); } catch { /* ledger remains authoritative */ } }
     // SUB I Fix A: the retry-sweep re-select must carry the canonical quoted ETA
     // (never inherit the NULL eta_minutes the auto_accept_no_driver row started
     // with). When the verified call has an authoritative waypoint, route from the
@@ -2862,12 +2861,14 @@ async function retryPendingAssignments(
     // baseMinutes. The quote is a goal only — never a dispatch gate.
     const retryWaypoint = verification.call ? callWaypoint(verification.call) : null;
     const retryRouter = (deps.routerOverride ?? resolveRouter(deps.env ?? process.env, fetchImpl)).router;
-    const retryEtaBase = retryWaypoint
+    const retryRoute = retryWaypoint
       ? await routeToWaypointBase(retryRouter, { lat: chosen.originLat, lng: chosen.originLng }, retryWaypoint)
-      : chosen.baseMinutes;
+      : null;
+    const retryEtaBase = retryRoute ? retryRoute.baseMinutes : chosen.baseMinutes;
     const retryEtaMinutes = finalEtaMinutes(retryEtaBase, settings.etaBufferMinutes, settings.etaFloorMinutes, settings.maxEtaMinutes);
+    if (verification.call) { try { await upsertVerifiedDispatchJob(orgId, offer, verification.call, verification.callId ?? (callId || String(call.id ?? callRequestId)), driverId, String(chosen.driver.driverName ?? driverId), retryEtaMinutes); } catch { /* ledger remains authoritative */ } }
     const reason = `retry sweep (5-minute): accepted and dispatched to ${String(chosen.driver.driverName ?? driverId)} (driver ${driverId}, VERIFIED on call ${verification.callId ?? (callId || String(call.id ?? callRequestId))}); same-state selection; prior driverId 0 hold resolved`;
-    await sql() `UPDATE ai_dispatcher_decisions SET decision='auto_accept_with_driver', escalated=FALSE, driver_id=${String(driverId)}, driver_name=${String(chosen.driver.driverName ?? driverId)}, call_id=${verification.callId ?? (callId || String(call.id ?? callRequestId))}, eta_minutes=${retryEtaMinutes}, reason=${reason}, raw_response=raw_response || ${JSON.stringify({ retrySweep:true, verification, eta: { baseMinutes: retryEtaBase, finalMinutes: retryEtaMinutes } })}::jsonb WHERE id=${String(row.decision_id)} AND org_id=${orgId}`;
+    await sql() `UPDATE ai_dispatcher_decisions SET decision='auto_accept_with_driver', escalated=FALSE, driver_id=${String(driverId)}, driver_name=${String(chosen.driver.driverName ?? driverId)}, call_id=${verification.callId ?? (callId || String(call.id ?? callRequestId))}, eta_minutes=${retryEtaMinutes}, reason=${reason}, raw_response=raw_response || ${JSON.stringify({ retrySweep:true, verification, eta: { baseMinutes: retryEtaBase, finalMinutes: retryEtaMinutes, provider: retryRoute?.provider ?? chosen.provider, liveTraffic: retryRoute?.liveTraffic ?? chosen.liveTraffic, trafficDelaySeconds: retryRoute?.trafficDelaySeconds ?? chosen.trafficDelaySeconds, roadSeconds: retryRoute?.roadSeconds ?? chosen.roadSeconds } })}::jsonb WHERE id=${String(row.decision_id)} AND org_id=${orgId}`;
     await recordRetryAttempt(orgId, String(row.decision_id), callRequestId, verification.callId ?? (callId || String(call.id ?? callRequestId)), "assigned", { driverId, driverName: String(chosen.driver.driverName ?? driverId), verification });
     try { await deps.syncForOrg(orgId, 'sync:auto-accept-retry', actor ?? undefined); } catch { /* sweep is best effort */ }
     retrySweepLastRun.delete(orgId);
@@ -3065,16 +3066,16 @@ async function runAutoDispatchInternal(
         continue;
       }
       const waypoint = verification.call ? callWaypoint(verification.call) : null;
-      if (verification.call) { try { await upsertVerifiedDispatchJob(orgId, offer, verification.call, verification.callId ?? offer.callRequestId, driverId, null); } catch { /* sync fallback */ } }
       // SUB I Fix A: pending recovery must also carry the canonical quoted ETA.
       // Prefer a re-route from the driver's fresh GPS origin to the authoritative
       // call waypoint; fall back to the offer coords when no waypoint exists.
       const pendingRouter = (deps.routerOverride ?? resolveRouter(deps.env ?? process.env, fetchImpl)).router;
       const pendingTarget = waypoint ?? { lat: offer.startLocationLatitude, lng: offer.startLocationLongitude };
-      const pendingEtaBase = await routeToWaypointBase(pendingRouter, { lat: pendingGpsGate.lat, lng: pendingGpsGate.lng }, pendingTarget);
-      const pendingEtaMinutes = finalEtaMinutes(pendingEtaBase, settings.etaBufferMinutes, settings.etaFloorMinutes, settings.maxEtaMinutes);
+      const pendingRoute = await routeToWaypointBase(pendingRouter, { lat: pendingGpsGate.lat, lng: pendingGpsGate.lng }, pendingTarget);
+      const pendingEtaMinutes = finalEtaMinutes(pendingRoute.baseMinutes, settings.etaBufferMinutes, settings.etaFloorMinutes, settings.maxEtaMinutes);
+      if (verification.call) { try { await upsertVerifiedDispatchJob(orgId, offer, verification.call, verification.callId ?? offer.callRequestId, driverId, null, pendingEtaMinutes); } catch { /* sync fallback */ } }
       const reason = `${String(row.reason ?? '')}; retry verified driver on call ${verification.callId}; ETA source: authoritative call waypoint${waypoint ? ` (${waypoint.lat},${waypoint.lng})` : ' unavailable'}`;
-      await sql() `UPDATE ai_dispatcher_decisions SET decision='auto_accept_with_driver', escalated=FALSE, call_id=${verification.callId}::text, eta_minutes=${pendingEtaMinutes}, reason=${reason}::text, raw_response=raw_response || '{}'::jsonb || ${JSON.stringify({ verification, state: 'RESOLVED', eta: { baseMinutes: pendingEtaBase, finalMinutes: pendingEtaMinutes } })}::jsonb WHERE id=${String(row.id)}::text AND org_id=${orgId}::text`;
+      await sql() `UPDATE ai_dispatcher_decisions SET decision='auto_accept_with_driver', escalated=FALSE, call_id=${verification.callId}::text, eta_minutes=${pendingEtaMinutes}, reason=${reason}::text, raw_response=raw_response || '{}'::jsonb || ${JSON.stringify({ verification, state: 'RESOLVED', eta: { baseMinutes: pendingRoute.baseMinutes, finalMinutes: pendingEtaMinutes, provider: pendingRoute.provider, liveTraffic: pendingRoute.liveTraffic, trafficDelaySeconds: pendingRoute.trafficDelaySeconds, roadSeconds: pendingRoute.roadSeconds } })}::jsonb WHERE id=${String(row.id)}::text AND org_id=${orgId}::text`;
       try { await deps.syncForOrg(orgId, 'sync:auto-accept-pending', actor ?? undefined); } catch { /* retry loop never fails */ }
     }
 
@@ -3708,11 +3709,16 @@ async function runAutoDispatchInternal(
             // SUB I Fix B(b): actually re-route from the chosen driver's real
             // origin to the waypoint (the old code re-clamped the selection
             // baseMinutes without ever re-routing).
-            const waypointBase = await routeToWaypointBase(resolved.router, { lat: chosen.originLat, lng: chosen.originLng }, authoritativeWaypoint);
-            etaMinutes = finalEtaMinutes(waypointBase, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta);
+            const waypointRoute = await routeToWaypointBase(resolved.router, { lat: chosen.originLat, lng: chosen.originLng }, authoritativeWaypoint);
+            etaMinutes = finalEtaMinutes(waypointRoute.baseMinutes, settings.etaBufferMinutes, settings.etaFloorMinutes, effectiveMaxEta);
             if (etaFacts) {
               etaFacts.finalMinutes = etaMinutes;
-              etaFacts.baseMinutes = waypointBase;
+              etaFacts.baseMinutes = waypointRoute.baseMinutes;
+              etaFacts.provider = waypointRoute.provider;
+              etaFacts.liveTraffic = waypointRoute.liveTraffic;
+              etaFacts.trafficDelaySeconds = waypointRoute.trafficDelaySeconds;
+              etaFacts.roadSeconds = waypointRoute.roadSeconds;
+              etaFacts.usedFallback = waypointRoute.provider === "factor";
             }
           }
           const etaLabel = etaMinutes != null && chosen
@@ -3724,7 +3730,7 @@ async function runAutoDispatchInternal(
             : `; service-type ${serviceQualification.assessed ? `'${serviceQualification.serviceType}' assessed; no explicit exclusions` : "could not be assessed (missing/unknown); no driver removed"}`;
           const reason = `accepted and dispatched to ${dispatchDriverName ?? dispatchDriverId} (driver ${dispatchDriverId}, VERIFIED on call ${verification.callId}); ETA source: authoritative call waypoint${authoritativeWaypoint ? ` (${authoritativeWaypoint.lat},${authoritativeWaypoint.lng})` : " unavailable"}${verificationRecoveryNote ? `; ${verificationRecoveryNote}` : ""}${recalculationNote ? `; ${recalculationNote}` : ""}${manualNote ? `; ${manualNote}` : ""}${guardOutcome.assignmentTier === "location_only_in_state" ? "; same-state selection used fresh GPS only (Towbook/Lightning availability informational)" : ""}${jobStateResolution.note ? `; ${jobStateResolution.note}` : ""}${qualificationNote}${etaLabel}${areaNote ?? ""}`;
           if (verification.call) {
-            try { await upsertVerifiedDispatchJob(orgId, offer, verification.call, verification.callId ?? offer.callRequestId, dispatchDriverId, dispatchDriverName); } catch { /* sync remains fallback; decision is still recorded */ }
+            try { await upsertVerifiedDispatchJob(orgId, offer, verification.call, verification.callId ?? offer.callRequestId, dispatchDriverId, dispatchDriverName, etaMinutes); } catch { /* sync remains fallback; decision is still recorded */ }
           }
           await record({
             decision: "auto_accept_with_driver",
