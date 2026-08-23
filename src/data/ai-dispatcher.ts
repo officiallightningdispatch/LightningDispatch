@@ -6,7 +6,7 @@ import { resolveTomtomKey } from "./tomtom-key";
 export { resolveTomtomKey } from "./tomtom-key";
 import type { RecoveryResult } from "./towbook-recovery";
 import { recordOwnerNotification } from "./owner-notifications-core";
-import { normalizeServiceSelectionType } from "./service-time-core";
+import { normalizeServiceSelectionType, SERVICE_GOAL_DEFAULTS, BATTERY_GOAL_DEFAULTS, goalSecondsFor } from "./service-time-core";
 import { serviceSelectionMatchesJob } from "./migrations";
 
 /* ============================ AI dispatcher engine ============================

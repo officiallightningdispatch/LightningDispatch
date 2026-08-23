@@ -5,7 +5,6 @@
  * re-anchors its progress bar when the quote changes. No React here so the
  * math is unit-testable without a component render.
  */
-import type { DriverCall } from "~/data/driver-auth";
 
 /** The subset of a DriverCall the ETA helpers need (ldEtaMinutes optional so
  *  notification/push payloads with only arrivalETA remain assignable). */
