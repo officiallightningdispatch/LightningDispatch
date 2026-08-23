@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite dev",
     "build": "vite build && bash ./scripts/prepare-secrets.sh",
+    "build:cap": "vite build --config vite.capacitor.config.ts",
     "start": "bun run serve.ts",
     "publish": "bash ./publish.sh",
     "go-live": "bash ./go-live.sh",
