@@ -1,0 +1,182 @@
+name: Build & Upload iOS to TestFlight
+
+# Manual trigger only (workflow_dispatch) so the owner/lead can run it on demand
+# from the Actions tab. No secrets are embedded here — every value is read from
+# GitHub Actions secrets (see /home/team/shared/ios-signing/CI-SETUP.md).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-upload:
+    name: Archive, sign, and upload to TestFlight
+    runs-on: macos-14
+
+    # Expose the required secrets as environment variables scoped to this job.
+    env:
+      P12_BASE64: ${{ secrets.P12_BASE64 }}
+      P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+      APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+      APPLE_KEY_ID: ${{ secrets.APPLE_KEY_ID }}
+      APPLE_ISSUER_ID: ${{ secrets.APPLE_ISSUER_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      BUNDLE_ID: ${{ secrets.BUNDLE_ID }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build static SPA for Capacitor
+        run: bun run build:cap
+
+      - name: Sync Capacitor native projects
+        run: bunx cap sync
+
+      - name: Import signing certificate into a temporary keychain
+        env:
+          P12_BASE64: ${{ secrets.P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          P12_PATH="$RUNNER_TEMP/distribution.p12"
+
+          # Decode the base64-encoded PKCS#12 bundle from the secret.
+          echo "$P12_BASE64" | base64 --decode > "$P12_PATH"
+
+          # Create an isolated temporary keychain (does not pollute the login keychain).
+          security create-keychain -p "" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "" "$KEYCHAIN_PATH"
+
+          # Import the distribution certificate + private key.
+          security import "$P12_PATH" \
+            -P "$P12_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+
+          # Make the temp keychain the default and put it first in the search list,
+          # while keeping the login keychain available.
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+          # Allow codesign/xcodebuild to use the signing identity without prompting.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$KEYCHAIN_PATH"
+
+          # Verify the identity is visible to codesign.
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+          # Persist paths for later steps.
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Write App Store Connect API key
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_KEY_ID: ${{ secrets.APPLE_KEY_ID }}
+        run: |
+          set -euo pipefail
+          AUTH_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_KEY_ID}.p8"
+          printf '%s\n' "$APPLE_API_KEY_P8" > "$AUTH_KEY_PATH"
+          chmod 600 "$AUTH_KEY_PATH"
+          echo "AUTH_KEY_PATH=$AUTH_KEY_PATH" >> "$GITHUB_ENV"
+
+      - name: Archive (build + sign) with automatic signing
+        env:
+          APPLE_KEY_ID: ${{ secrets.APPLE_KEY_ID }}
+          APPLE_ISSUER_ID: ${{ secrets.APPLE_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          ARCHIVE_PATH="$RUNNER_TEMP/LightningDispatch.xcarchive"
+          echo "ARCHIVE_PATH=$ARCHIVE_PATH" >> "$GITHUB_ENV"
+
+          xcodebuild \
+            -project ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "$ARCHIVE_PATH" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGN_STYLE=Automatic \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$AUTH_KEY_PATH" \
+            -authenticationKeyID "$APPLE_KEY_ID" \
+            -authenticationKeyIssuerID "$APPLE_ISSUER_ID" \
+            archive
+
+      - name: Generate ExportOptions.plist
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          EXPORT_OPTIONS="$RUNNER_TEMP/ExportOptions.plist"
+          echo "EXPORT_OPTIONS=$EXPORT_OPTIONS" >> "$GITHUB_ENV"
+
+          # Build the plist with PlistBuddy to avoid heredoc/indentation pitfalls.
+          printf '%s\n' \
+            '<?xml version="1.0" encoding="UTF-8"?>' \
+            '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+            '<plist version="1.0">' \
+            '<dict/>' \
+            '</plist>' > "$EXPORT_OPTIONS"
+
+          /usr/libexec/PlistBuddy -c "Add :method string app-store-connect" "$EXPORT_OPTIONS"
+          /usr/libexec/PlistBuddy -c "Add :destination string upload" "$EXPORT_OPTIONS"
+          /usr/libexec/PlistBuddy -c "Add :signingStyle string automatic" "$EXPORT_OPTIONS"
+          /usr/libexec/PlistBuddy -c "Add :teamID string $APPLE_TEAM_ID" "$EXPORT_OPTIONS"
+          /usr/libexec/PlistBuddy -c "Add :uploadSymbols bool true" "$EXPORT_OPTIONS"
+          /usr/libexec/PlistBuddy -c "Add :uploadBitcode bool false" "$EXPORT_OPTIONS"
+          /usr/libexec/PlistBuddy -c "Add :stripSwiftSymbols bool true" "$EXPORT_OPTIONS"
+          /usr/libexec/PlistBuddy -c "Add :manageAppVersionAndBuildNumber bool true" "$EXPORT_OPTIONS"
+
+          echo "--- ExportOptions.plist ---"
+          cat "$EXPORT_OPTIONS"
+
+      - name: Export and upload to TestFlight
+        env:
+          APPLE_KEY_ID: ${{ secrets.APPLE_KEY_ID }}
+          APPLE_ISSUER_ID: ${{ secrets.APPLE_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          EXPORT_DIR="$RUNNER_TEMP/export"
+          mkdir -p "$EXPORT_DIR"
+          echo "EXPORT_DIR=$EXPORT_DIR" >> "$GITHUB_ENV"
+
+          # `destination = upload` in ExportOptions.plist makes xcodebuild upload the
+          # exported .ipa directly to App Store Connect (TestFlight), authenticated
+          # with the App Store Connect API key. This is the current supported method;
+          # `xcrun altool` was removed in Xcode 16.
+          xcodebuild \
+            -exportArchive \
+            -archivePath "$ARCHIVE_PATH" \
+            -exportOptionsPlist "$EXPORT_OPTIONS" \
+            -exportPath "$EXPORT_DIR" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$AUTH_KEY_PATH" \
+            -authenticationKeyID "$APPLE_KEY_ID" \
+            -authenticationKeyIssuerID "$APPLE_ISSUER_ID"
+
+          echo "Uploaded archive. Exported artifacts:"
+          ls -la "$EXPORT_DIR"
+
+      - name: Upload .ipa as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lightningdispatch-ios
+          path: ${{ runner.temp }}/export/*.ipa
+          if-no-files-found: error
+          retention-days: 14
