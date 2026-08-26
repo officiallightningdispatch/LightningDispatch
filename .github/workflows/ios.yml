@@ -1,8 +1,9 @@
 name: Build & Upload iOS to TestFlight
 
 # Manual trigger only (workflow_dispatch) so the owner/lead can run it on demand
-# from the Actions tab. No secrets are embedded here — every value is read from
-# GitHub Actions secrets (see /home/team/shared/ios-signing/CI-SETUP.md).
+# from the Actions tab. Only signing secrets (P12 + API key) are read from GitHub
+# Actions secrets; Apple identifiers are hardcoded here because they are not
+# secret (see /home/team/shared/ios-signing/CI-SETUP.md).
 
 on:
   workflow_dispatch:
@@ -20,10 +21,9 @@ jobs:
       P12_BASE64: ${{ secrets.P12_BASE64 }}
       P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
       APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
-      APPLE_KEY_ID: ${{ secrets.APPLE_KEY_ID }}
-      APPLE_ISSUER_ID: ${{ secrets.APPLE_ISSUER_ID }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      BUNDLE_ID: ${{ secrets.BUNDLE_ID }}
+      APPLE_KEY_ID: RR25ZLU234
+      APPLE_ISSUER_ID: c7ed6fd2-303c-4b68-9cc7-e43da3dfb5d7
+      APPLE_TEAM_ID: J55SPG373Q
 
     steps:
       - name: Checkout
@@ -86,7 +86,7 @@ jobs:
       - name: Write App Store Connect API key
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
-          APPLE_KEY_ID: ${{ secrets.APPLE_KEY_ID }}
+          APPLE_KEY_ID: RR25ZLU234
         run: |
           set -euo pipefail
           AUTH_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_KEY_ID}.p8"
@@ -96,9 +96,9 @@ jobs:
 
       - name: Archive (build + sign) with automatic signing
         env:
-          APPLE_KEY_ID: ${{ secrets.APPLE_KEY_ID }}
-          APPLE_ISSUER_ID: ${{ secrets.APPLE_ISSUER_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_KEY_ID: RR25ZLU234
+          APPLE_ISSUER_ID: c7ed6fd2-303c-4b68-9cc7-e43da3dfb5d7
+          APPLE_TEAM_ID: J55SPG373Q
         run: |
           set -euo pipefail
           ARCHIVE_PATH="$RUNNER_TEMP/LightningDispatch.xcarchive"
@@ -120,7 +120,7 @@ jobs:
 
       - name: Generate ExportOptions.plist
         env:
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_TEAM_ID: J55SPG373Q
         run: |
           set -euo pipefail
           EXPORT_OPTIONS="$RUNNER_TEMP/ExportOptions.plist"
@@ -148,8 +148,8 @@ jobs:
 
       - name: Export and upload to TestFlight
         env:
-          APPLE_KEY_ID: ${{ secrets.APPLE_KEY_ID }}
-          APPLE_ISSUER_ID: ${{ secrets.APPLE_ISSUER_ID }}
+          APPLE_KEY_ID: RR25ZLU234
+          APPLE_ISSUER_ID: c7ed6fd2-303c-4b68-9cc7-e43da3dfb5d7
         run: |
           set -euo pipefail
           EXPORT_DIR="$RUNNER_TEMP/export"
