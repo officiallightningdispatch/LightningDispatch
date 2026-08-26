@@ -54,7 +54,13 @@ jobs:
           P12_PATH="$RUNNER_TEMP/distribution.p12"
 
           # Decode the base64-encoded PKCS#12 bundle from the secret.
-          echo "$P12_BASE64" | base64 --decode > "$P12_PATH"
+          # Strip any whitespace/newlines a copy-paste may have introduced (base64
+          # has no legitimate whitespace), then decode.
+          P12_B64_CLEAN="$(printf '%s' "$P12_BASE64" | tr -d '[:space:]')"
+          echo "P12_BASE64 chars (after whitespace strip): ${#P12_B64_CLEAN} (expect 4292)"
+          printf '%s' "$P12_B64_CLEAN" | base64 --decode > "$P12_PATH"
+          echo "Decoded P12 file size: $(wc -c < "$P12_PATH" | tr -d ' ') bytes (expect 3219)"
+          [ -s "$P12_PATH" ] || { echo "ERROR: decoded P12 is empty — P12_BASE64 secret is missing or wrong"; exit 1; }
 
           # Create an isolated temporary keychain (does not pollute the login keychain).
           security create-keychain -p "" "$KEYCHAIN_PATH"
@@ -91,6 +97,7 @@ jobs:
           set -euo pipefail
           AUTH_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_KEY_ID}.p8"
           printf '%s\n' "$APPLE_API_KEY_P8" > "$AUTH_KEY_PATH"
+          grep -q "BEGIN PRIVATE KEY" "$AUTH_KEY_PATH" || { echo "ERROR: APPLE_API_KEY_P8 is missing the PEM 'BEGIN PRIVATE KEY' marker — secret is empty or wrong"; exit 1; }
           chmod 600 "$AUTH_KEY_PATH"
           echo "AUTH_KEY_PATH=$AUTH_KEY_PATH" >> "$GITHUB_ENV"
 
