@@ -188,10 +188,13 @@ jobs:
           echo "Uploaded archive. Exported artifacts:"
           ls -la "$EXPORT_DIR"
 
+      # `destination = upload` streams the .ipa straight to App Store Connect and
+      # leaves the export dir empty, so there is no local .ipa to archive. Keep this
+      # step non-fatal so a successful TestFlight upload reads as green.
       - name: Upload .ipa as a workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: lightningdispatch-ios
           path: ${{ runner.temp }}/export/*.ipa
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
