@@ -14,7 +14,7 @@ permissions:
 jobs:
   build-and-upload:
     name: Archive, sign, and upload to TestFlight
-    runs-on: macos-15
+    runs-on: macos-26
 
     # Expose the required secrets as environment variables scoped to this job.
     env:
