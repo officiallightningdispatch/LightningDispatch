@@ -37,9 +37,6 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Build static SPA for Capacitor
-        run: bun run build:cap
-
       - name: Sync Capacitor native projects
         run: bunx cap sync
 
