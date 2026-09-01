@@ -19,10 +19,13 @@ export const Route = createRootRoute({
         content:
           "Lightning Dispatch OS — the AI-assisted operations platform for Lightning Roadside Assistants. Dispatch, contractor, and owner tools in one mobile-first system.",
       },
+      { name: "apple-mobile-web-app-capable", content: "yes" },
+      { name: "apple-mobile-web-app-title", content: "Lightning Dispatch" },
     ],
     links: [
       { rel: "stylesheet", href: appCss },
       { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" },
+      { rel: "manifest", href: "/manifest.webmanifest" },
     ],
   }),
   notFoundComponent: () => (
