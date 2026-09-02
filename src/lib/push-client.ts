@@ -321,3 +321,66 @@ export function pushPermissionCopy(permission: PushBrowserTruth["permission"]): 
       return "This browser can't receive push alerts";
   }
 }
+
+
+/* ------------------------- native (Capacitor) push ------------------------- */
+
+/** True when the page is running inside the Lightning Dispatch native iOS/
+ *  Android shell (Capacitor), where the Web Push APIs (service worker /
+ *  PushManager) do not exist but the native push plugin does. SSR-safe: the
+ *  dynamic import is only evaluated on the client. */
+export async function isNativeShell(): Promise<boolean> {
+  if (typeof window === "undefined") return false;
+  try {
+    const { Capacitor } = await import("@capacitor/core");
+    return Capacitor.isNativePlatform();
+  } catch {
+    return false;
+  }
+}
+
+export type NativePushSetupResult =
+  | { ok: true }
+  | { ok: false; reason: "not_native" | "not_granted" | "register_failed" | "save_failed" | "error"; detail?: string };
+
+/** Request notification permission, register with APNs, capture the device
+ *  token, and forward it to the server (upsert). The token is re-fetched fresh
+ *  every launch — NEVER cached. Idempotent and safe to call on every load.
+ *  Returns a diagnostic result so the caller can surface a real error + retry. */
+export async function ensureNativePushRegistration(): Promise<NativePushSetupResult> {
+  if (typeof window === "undefined") return { ok: false, reason: "not_native" };
+  let Capacitor, PushNotifications, saveNativePushToken;
+  try {
+    ({ Capacitor } = await import("@capacitor/core"));
+    ({ PushNotifications } = await import("@capacitor/push-notifications"));
+    ({ saveNativePushToken } = await import("~/data/push"));
+  } catch {
+    return { ok: false, reason: "not_native" };
+  }
+  if (!Capacitor.isNativePlatform()) return { ok: false, reason: "not_native" };
+  try {
+    const perm = await PushNotifications.requestPermissions();
+    if (perm.receive !== "granted") return { ok: false, reason: "not_granted" };
+
+    // Add the listeners BEFORE register() so the token is never missed.
+    let resolveToken: (t: string | null) => void;
+    const tokenPromise = new Promise<string | null>((res) => { resolveToken = res; });
+    const regHandle = await PushNotifications.addListener("registration", (t: { value: string }) => resolveToken(t.value));
+    const errHandle = await PushNotifications.addListener("registrationError", () => resolveToken(null));
+    try {
+      await PushNotifications.register();
+      const token = await Promise.race([
+        tokenPromise,
+        new Promise<null>((res) => setTimeout(() => res(null), 10000)),
+      ]);
+      if (!token) return { ok: false, reason: "register_failed" };
+      const saved = await saveNativePushToken({ data: { token } });
+      return saved.ok ? { ok: true } : { ok: false, reason: "save_failed", detail: saved.error };
+    } finally {
+      try { await regHandle.remove(); } catch { /* noop */ }
+      try { await errHandle.remove(); } catch { /* noop */ }
+    }
+  } catch (err) {
+    return { ok: false, reason: "error", detail: err instanceof Error ? err.message : String(err) };
+  }
+}

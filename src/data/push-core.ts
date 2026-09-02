@@ -44,6 +44,7 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import { findSiteRoot } from "./towbook-key";
 import type { AuthUser } from "./auth-server";
+import { loadApnsCredentials, sendApnsNotification } from "./apns";
 
 export type PushActor = { id: string; orgId: string; role: string };
 export type PushSubscriptionRow = {
@@ -229,6 +230,107 @@ export async function deletePushSubscriptionCore(
   return { ok: true, deleted: rows.length > 0 };
 }
 
+/* ---------------------------- native (APNs) tokens ---------------------------- */
+
+export type ApnsDeviceTokenRow = {
+  id: string;
+  orgId: string;
+  userId: string;
+  token: string;
+  deviceLabel: string | null;
+  createdAt: string;
+  lastSeenAt: string | null;
+};
+
+const apnsTokenSchema = z.object({
+  token: z.string().regex(/^[0-9a-fA-F]{64}$/, "token must be a 64-char hex APNs device token"),
+  deviceLabel: z.string().max(120).optional(),
+});
+
+function mapApnsToken(r: Record<string, unknown>): ApnsDeviceTokenRow {
+  return {
+    id: String(r.id),
+    orgId: String(r.org_id),
+    userId: String(r.user_id),
+    token: String(r.token),
+    deviceLabel: r.device_label != null ? String(r.device_label) : null,
+    createdAt: new Date(String(r.created_at)).toISOString(),
+    lastSeenAt: r.last_seen_at != null ? new Date(String(r.last_seen_at)).toISOString() : null,
+  };
+}
+
+export type SaveNativePushTokenResult = { ok: true; token: ApnsDeviceTokenRow } | { ok: false; error: string };
+
+/** Upsert the actor's OWN native device token (account-scoped uniqueness on
+ *  (org, user, token) — migration 92). Same driver gate as the web-subscription
+ *  CRUD; org+user are forced from the session-resolved actor, never the client. */
+export async function saveNativePushTokenCore(actor: PushActor, input: unknown): Promise<SaveNativePushTokenResult> {
+  const gate = await contractorOnly(actor);
+  if (gate) return { ok: false, error: gate };
+  const v = apnsTokenSchema.safeParse(input);
+  if (!v.success) return { ok: false, error: "Invalid device token." };
+  const q = await db();
+  const id = `apns-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+  const rows = await q`INSERT INTO apns_device_tokens(id, org_id, user_id, token, device_label, last_seen_at)
+    VALUES(${id}, ${actor.orgId}, ${actor.id}, ${v.data.token}, ${v.data.deviceLabel ?? null}, NOW())
+    ON CONFLICT (org_id, user_id, token) DO UPDATE SET device_label = EXCLUDED.device_label, last_seen_at = NOW()
+    RETURNING id, org_id, user_id, token, device_label, created_at, last_seen_at`;
+  return { ok: true, token: mapApnsToken(rows[0] as Record<string, unknown>) };
+}
+
+export type ListNativePushTokensResult = { ok: true; tokens: ApnsDeviceTokenRow[] } | { ok: false; error: string };
+
+export async function listNativePushTokensCore(actor: PushActor): Promise<ListNativePushTokensResult> {
+  const gate = await contractorOnly(actor);
+  if (gate) return { ok: false, error: gate };
+  const q = await db();
+  const rows = await q`SELECT id, org_id, user_id, token, device_label, created_at, last_seen_at FROM apns_device_tokens WHERE org_id=${actor.orgId} AND user_id=${actor.id} ORDER BY created_at`;
+  return { ok: true, tokens: (rows as Record<string, unknown>[]).map(mapApnsToken) };
+}
+
+export type DeleteNativePushTokenResult = { ok: true; deleted: boolean } | { ok: false; error: string };
+
+export async function deleteNativePushTokenCore(actor: PushActor, token: string): Promise<DeleteNativePushTokenResult> {
+  const gate = await contractorOnly(actor);
+  if (gate) return { ok: false, error: gate };
+  if (!/^[0-9a-fA-F]{64}$/.test(token)) return { ok: false, error: "Invalid device token." };
+  const q = await db();
+  const rows = await q`DELETE FROM apns_device_tokens WHERE org_id=${actor.orgId} AND user_id=${actor.id} AND token=${token} RETURNING id`;
+  return { ok: true, deleted: rows.length > 0 };
+}
+
+/** Send an assignment payload to the user's native (APNs) device tokens.
+ *  Independent of web push and FAIL-CLOSED: a missing table (older test DB),
+ *  missing credentials, or an APNs rejection resolve to zero/failed counts and
+ *  NEVER throw — the web outcome and the assignment itself are untouched. */
+async function sendNativePushForUser(
+  orgId: string,
+  userId: string,
+  payload: AssignmentPushPayload,
+): Promise<{ attempted: number; sent: number; failed: number }> {
+  const out = { attempted: 0, sent: 0, failed: 0 };
+  try {
+    const q = await db();
+    const rows = await q`SELECT token FROM apns_device_tokens WHERE org_id=${orgId} AND user_id=${userId}`;
+    if (!rows.length) return out;
+    const creds = loadApnsCredentials();
+    const json = buildPushNotificationJson(payload);
+    const title = String(json.title);
+    const body = String(json.body);
+    const url = String((json.data as { url?: unknown } | undefined)?.url ?? "/driver");
+    const tag = String(json.tag ?? `job-${payload.callId ?? payload.callRequestId ?? "unknown"}`);
+    for (const r of rows as Record<string, unknown>[]) {
+      out.attempted++;
+      const res = await sendApnsNotification(String(r.token), { title, body, url, tag }, creds);
+      if (res.ok) out.sent++;
+      else out.failed++;
+    }
+  } catch {
+    // fail-closed — never mask the web outcome or the assignment
+  }
+  return out;
+}
+
 /* ------------------------------ self-test send ------------------------------ */
 
 /** Result of a push self-test (owner-directed 2026-08-13). reason is null on a
@@ -404,7 +506,13 @@ export async function sendAssignmentPush(
   try {
     const q = await db();
     const subs = await q`SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE org_id=${orgId} AND user_id=${userId}`;
-    if (!subs.length) {
+    // Native (APNs) send — independent of web subs (the TestFlight app has no
+    // service worker, so native tokens are its only path). Fail-closed.
+    const nativeOutcome = await sendNativePushForUser(orgId, userId, payload);
+    outcome.attempted += nativeOutcome.attempted;
+    outcome.sent += nativeOutcome.sent;
+    outcome.failed += nativeOutcome.failed;
+    if (!subs.length && outcome.attempted === 0) {
       outcome.skipped = true;
       outcome.reason = "no_subscriptions";
       await recordAudit(orgId, userId, payload, "no_subscriptions", { attempts: [] });

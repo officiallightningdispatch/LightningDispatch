@@ -9,7 +9,7 @@ mock.module('@capacitor/app', () => ({ App: { addListener: async () => ({ remove
 mock.module('@capacitor/camera', () => ({ CameraResultType: { Uri: 'uri' }, CameraSource: { Camera: 'camera' }, Camera: { getPhoto: async () => { if (state.cameraError) throw state.cameraError; return { path: 'native-photo' }; } } }));
 mock.module('@capacitor/geolocation', () => ({ Geolocation: { requestPermissions: async () => state.locationPermission ?? { location: 'granted' }, getCurrentPosition: async () => ({ coords: { latitude: 1, longitude: 2 } }), watchPosition: async (_o, cb) => { state.watch.push(cb); return 'watch-1'; }, clearWatch: async ({ id }) => { state.cleared = id; } } }));
 mock.module('@capacitor/push-notifications', () => ({ PushNotifications: { checkPermissions: async () => state.push, requestPermissions: async () => state.pushAfter ?? { receive: 'granted' }, register: async () => { state.registered = true; }, addListener: async (_e, cb) => { state.tokenCallback = cb; return { remove: async () => {} }; } } }));
-mock.module('./src/data/push.ts', () => ({ savePushSubscription: async ({ data }) => state.savePush?.(data) ?? { ok: true } }));
+mock.module('./src/data/push.ts', () => ({ saveNativePushToken: async ({ data }) => state.savePush?.(data) ?? { ok: true } }));
 mock.module('./src/data/driver-gps.ts', () => ({ pingDriverLocation: async ({ data }) => { (state.pings ??= []).push(data); return { ok: true }; } }));
 
 globalThis.localStorage = { data: new Map(), getItem(k) { return this.data.get(k) ?? null; }, setItem(k, v) { this.data.set(k, String(v)); }, removeItem(k) { this.data.delete(k); } };

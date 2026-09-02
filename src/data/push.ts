@@ -14,8 +14,8 @@
  * WebAudio strike are the primary path anyway).
  */
 import { createServerFn } from "@tanstack/react-start";
-import type { PushSelfTestResult, PushSubscriptionRow } from "./push-core";
-export type { PushSelfTestResult, PushSubscriptionRow } from "./push-core";
+import type { ApnsDeviceTokenRow, PushSelfTestResult, PushSubscriptionRow } from "./push-core";
+export type { ApnsDeviceTokenRow, PushSelfTestResult, PushSubscriptionRow } from "./push-core";
 
 const passthrough = (x: unknown) => x;
 
@@ -53,6 +53,43 @@ export const deletePushSubscription = createServerFn({ method: "POST" }).validat
   const endpoint = (data as { endpoint?: unknown } | undefined)?.endpoint;
   const actor = await core.resolvePushActor(u);
   const res = await core.deletePushSubscriptionCore(actor, typeof endpoint === "string" ? endpoint : "");
+  return res.ok ? { ok: true as const, data: { deleted: res.deleted } } : { ok: false as const, error: res.error };
+});
+
+/** Register (upsert) the caller's OWN native (APNs) device token — the
+ *  TestFlight iOS app forwards its APNs token here on every launch. Driver-
+ *  identity gated exactly like the web-subscription CRUD; org+user are forced
+ *  from the session-resolved actor, never the client. */
+export const saveNativePushToken = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<PushCommandResult<ApnsDeviceTokenRow>> => {
+  const core = await import("./push-core");
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u) return { ok: false as const, error: "Sign in required." };
+  const actor = await core.resolvePushActor(u);
+  const res = await core.saveNativePushTokenCore(actor, data);
+  return res.ok ? { ok: true as const, data: res.token } : { ok: false as const, error: res.error };
+});
+
+/** The caller's own native (APNs) device tokens (usually one). */
+export const listNativePushTokens = createServerFn({ method: "GET" }).validator(passthrough).handler(async (): Promise<PushCommandResult<ApnsDeviceTokenRow[]>> => {
+  const core = await import("./push-core");
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u) return { ok: false as const, error: "Sign in required." };
+  const actor = await core.resolvePushActor(u);
+  const res = await core.listNativePushTokensCore(actor);
+  return res.ok ? { ok: true as const, data: res.tokens } : { ok: false as const, error: res.error };
+});
+
+/** Delete one of the caller's own native tokens by token value. */
+export const deleteNativePushToken = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }): Promise<PushCommandResult<{ deleted: boolean }>> => {
+  const core = await import("./push-core");
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u) return { ok: false as const, error: "Sign in required." };
+  const token = (data as { token?: unknown } | undefined)?.token;
+  const actor = await core.resolvePushActor(u);
+  const res = await core.deleteNativePushTokenCore(actor, typeof token === "string" ? token : "");
   return res.ok ? { ok: true as const, data: { deleted: res.deleted } } : { ok: false as const, error: res.error };
 });
 

@@ -7,7 +7,7 @@ import { App } from '@capacitor/app';
 import { Camera, CameraResultType, CameraSource, type Photo } from '@capacitor/camera';
 import { Geolocation, type Position } from '@capacitor/geolocation';
 import { PushNotifications } from '@capacitor/push-notifications';
-import { savePushSubscription } from '~/data/push';
+import { saveNativePushToken as saveApnsToken } from '~/data/push';
 import { pingDriverLocation } from '~/data/driver-gps';
 
 export const isNative = () => Capacitor.isNativePlatform();
@@ -34,7 +34,7 @@ export async function registerPush() {
 export async function saveNativePushToken(token: string) {
   if (!isNative() || !token) return { ok: false as const, error: 'Native push is unavailable.' };
   try {
-    const result = await savePushSubscription({ data: { endpoint: `native://${platform()}/${token}`, p256dh: token, auth: token, userAgent: `LightningDispatch/${platform()}` } });
+    const result = await saveApnsToken({ data: { token, deviceLabel: `LightningDispatch/${platform()}` } });
     return result.ok ? { ok: true as const } : { ok: false as const, error: result.error };
   } catch (e) { return { ok: false as const, error: e instanceof Error ? e.message : 'Session unavailable.' }; }
 }

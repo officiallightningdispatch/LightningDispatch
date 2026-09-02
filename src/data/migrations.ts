@@ -1884,6 +1884,24 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
   [91, async (q) => {
     await q`ALTER TABLE dispatch_jobs ADD COLUMN IF NOT EXISTS quoted_eta_minutes INTEGER`;
   }],
+  // 92 (2026-09-02): native (APNs) device tokens for the TestFlight iOS app.
+  // One row per (org, user, token): the app re-registers on every launch and
+  // upserts in place, so a re-issued token replaces its own row while a
+  // DIFFERENT user's save inserts their own (account-scoped, same shape as the
+  // push_subscriptions migration-46 repair -- never re-parents).
+  [92, async (q) => {
+    await q`CREATE TABLE IF NOT EXISTS apns_device_tokens (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token TEXT NOT NULL,
+      device_label TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS apns_device_tokens_org_user_token_idx ON apns_device_tokens(org_id, user_id, token)`;
+    await q`CREATE INDEX IF NOT EXISTS apns_device_tokens_org_user_idx ON apns_device_tokens(org_id, user_id)`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

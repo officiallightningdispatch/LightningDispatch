@@ -38,7 +38,9 @@ import { useEffect, useRef, useState } from "react";
 import { Button, Card, useToast } from "~/components/ui";
 import {
   asksRemaining,
+  ensureNativePushRegistration,
   ensurePushSubscription,
+  isNativeShell,
   notificationSupportStatus,
   notificationsSupported,
   playStrikeAsset,
@@ -72,6 +74,12 @@ export function PushPermissionCard() {
   });
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<{ reason: PushSetupFailureReason; message: string } | null>(null);
+  const [native, setNative] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void isNativeShell().then((v) => { if (alive) setNative(v); });
+    return () => { alive = false; };
+  }, []);
 
   if (!visible) return null;
 
@@ -109,6 +117,24 @@ export function PushPermissionCard() {
     } finally {
       setBusy(false);
     }
+  };
+
+  /** Native (Capacitor) flow — request permission, register the APNs token. */
+  const nativeAllow = async () => {
+    setBusy(true);
+    setFailure(null);
+    const res = await ensureNativePushRegistration();
+    if (res.ok) {
+      playStrikeAsset();
+      toast("Offers on — one strike means one new job.");
+      setVisible(false);
+    } else if (res.reason === "not_granted") {
+      toast("Notifications are off for Lightning Dispatch in iOS Settings — you can re-enable them there anytime.");
+      setVisible(false);
+    } else {
+      setFailure({ reason: "subscribe_failed", message: "Couldn't turn on alerts on this phone. Try again." });
+    }
+    setBusy(false);
   };
 
   /** "I've done that — re-check" (iOS): after the driver adds the site to the
@@ -149,7 +175,7 @@ export function PushPermissionCard() {
           </p>
         </div>
       </div>
-      {support !== "supported" && !failure && (
+      {!native && support !== "supported" && !failure && (
         <div className="mt-3 rounded-xl border border-brand-200 bg-brand-50 px-3 py-2.5" role="status">
           {support === "ios_not_installed" ? (
             <p className="text-xs leading-relaxed text-ink-700">
@@ -172,7 +198,11 @@ export function PushPermissionCard() {
         </div>
       )}
       <div className="mt-3 space-y-2">
-        {support === "ios_not_installed" ? (
+        {native ? (
+          <Button variant="primary" size="md" className="h-11 w-full" loading={busy} onClick={() => void nativeAllow()}>
+            {failure ? "Try again" : "Allow notifications"}
+          </Button>
+        ) : support === "ios_not_installed" ? (
           <Button variant="primary" size="md" className="h-11 w-full" loading={busy} onClick={() => void recheck()}>
             I've done that — re-check
           </Button>
@@ -205,12 +235,15 @@ export function PushNotificationSetup() {
     if (ran.current) return;
     ran.current = true;
     preloadStrikeAsset();
-    if (!notificationsSupported()) return;
     const boot = async () => {
+      if (await isNativeShell()) {
+        await ensureNativePushRegistration();
+        return;
+      }
+      if (!notificationsSupported()) return;
       if (Notification.permission === "granted") {
         await ensurePushSubscription();
       } else if (Notification.permission === "default") {
-        // Register the SW early so a later Allow has no registration latency.
         await registerServiceWorker();
       }
     };
