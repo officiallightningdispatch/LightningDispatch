@@ -54,15 +54,18 @@ check("anchor is reused for all dispatch ranking stages", () => {
 
 
 
-// Queue ETA contract: two routed legs to queued jobs, service after each, then
-// the final routed leg.  12 + 30 + 24 + 30 + 20 = 116; SLA 45 is not a quote cap.
+// Queue ETA contract: per queued job the chain adds the routed leg + that job's
+// REAL service-time goal (serviceMinutesForJob), then the final routed leg.
+// Raw routing math is uncapped; the 60-minute cap (finalEtaMinutes) is a quote
+// ceiling only — it never gates dispatch or truncates the ledger's raw math.
 check("D: queue-aware ETA exact arithmetic is uncapped", () => {
   const travel = [12, 24, 20];
   const service = 30;
   const quoted = travel[0] + service + travel[1] + service + travel[2];
   assert.equal(quoted, 116);
   assert.ok(quoted > 45);
-  assert.match(source, /queueMinutes \+= leg\.minutes \+ SERVICE_MINUTES_PER_JOB/);
+  assert.match(source, /queueMinutes \+= leg\.minutes \+ svcMin[IJ]/);
+  assert.match(source, /serviceMinutesForJob\(queue\[i\]\.serviceType\)/);
   assert.match(source, /arrivalMinutes: queueMinutes \+ finalLeg\.minutes/);
   assert.ok(source.includes("return Math.min(Math.max(floor, raw), Math.max(1, Math.round(_maxEtaMinutes ?? 60)));"));
 });
