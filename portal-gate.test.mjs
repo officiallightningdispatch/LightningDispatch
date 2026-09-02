@@ -28,7 +28,11 @@ check("signed-out (null) never passes", driverGateAllows(null) === false);
   const src = readFileSync(new URL("./src/components/portal-gate.tsx", import.meta.url), "utf8");
   check("OwnerGate still owner+admin only", src.includes('export const OwnerGate = ({ children }: { children: ReactNode }) => <PortalGate roles={["owner", "admin"]}>{children}</PortalGate>'));
   check("OpsGate still owner+admin+dispatcher only", src.includes('export const OpsGate = ({ children }: { children: ReactNode }) => <PortalGate roles={["owner", "admin", "dispatcher"]}>{children}</PortalGate>'));
-  check("DriverGate is the only gate with allowDriverIdentity", src.includes("export const DriverGate = ({ children }: { children: ReactNode }) => <PortalGate roles={[\"contractor\"]} allowDriverIdentity>{children}</PortalGate>"));
+  check("DriverGate is the only gate with allowDriverIdentity and wraps children in DriverGpsTracker", src.includes(`export const DriverGate = ({ children }: { children: ReactNode }) => (
+  <PortalGate roles={["contractor"]} allowDriverIdentity>
+    <DriverGpsTracker>{children}</DriverGpsTracker>
+  </PortalGate>
+)`));
   check("DriverGate role list unchanged (contractor only)", src.includes('roles={["contractor"]}'));
   check("403 branch carries no-driver reason only for DriverGate", src.includes('search: (allowDriverIdentity ? { reason: "no-driver" } : {}) as any'));
 }
