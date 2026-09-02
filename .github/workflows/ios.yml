@@ -86,6 +86,15 @@ jobs:
           # Persist paths for later steps.
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
+      - name: Install App Store provisioning profile
+        run: |
+          set -euo pipefail
+          PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$PROFILE_DIR"
+          cp ios/ci/LightningDispatch_AppStore.mobileprovision \
+            "$PROFILE_DIR/a7eeb83b-5cee-416d-afa1-fce95dc22b64.mobileprovision"
+          ls -la "$PROFILE_DIR"
+
       - name: Write App Store Connect API key
         env:
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
@@ -104,13 +113,11 @@ jobs:
           ARCHIVE_PATH="$RUNNER_TEMP/LightningDispatch.xcarchive"
           echo "ARCHIVE_PATH=$ARCHIVE_PATH" >> "$GITHUB_ENV"
 
-          # Build an unsigned .xcarchive. Signing happens at Export, where
-          # `method = app-store-connect` + `signingStyle = automatic` + the App
-          # Store Connect API key make xcodebuild (re)generate the App Store
-          # provisioning profile — no devices needed, and the profile's
-          # aps-environment entitlement follows the App ID capabilities (Push
-          # Notifications). Signing at archive time would default to DEVELOPMENT
-          # and fail with "your team has no devices".
+          # Build an unsigned .xcarchive. Distribution signing happens later in the
+          # Export step, which is `method = app-store-connect` + manual signing with
+          # an explicit App Store provisioning profile (committed at ios/ci/) — no
+          # devices needed. Signing here would default to DEVELOPMENT and fail with
+          # "your team has no devices".
           xcodebuild \
             -project ios/App/App.xcodeproj \
             -scheme App \
@@ -140,8 +147,10 @@ jobs:
 
           /usr/libexec/PlistBuddy -c "Add :method string app-store-connect" "$EXPORT_OPTIONS"
           /usr/libexec/PlistBuddy -c "Add :destination string upload" "$EXPORT_OPTIONS"
-          /usr/libexec/PlistBuddy -c "Add :signingStyle string automatic" "$EXPORT_OPTIONS"
+          /usr/libexec/PlistBuddy -c "Add :signingStyle string manual" "$EXPORT_OPTIONS"
           /usr/libexec/PlistBuddy -c "Add :teamID string $APPLE_TEAM_ID" "$EXPORT_OPTIONS"
+          /usr/libexec/PlistBuddy -c "Add :provisioningProfiles dict" "$EXPORT_OPTIONS"
+          /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:com.lightningroadside.lightningdispatch string a7eeb83b-5cee-416d-afa1-fce95dc22b64" "$EXPORT_OPTIONS"
           /usr/libexec/PlistBuddy -c "Add :uploadSymbols bool true" "$EXPORT_OPTIONS"
           /usr/libexec/PlistBuddy -c "Add :uploadBitcode bool false" "$EXPORT_OPTIONS"
           /usr/libexec/PlistBuddy -c "Add :stripSwiftSymbols bool true" "$EXPORT_OPTIONS"
@@ -169,7 +178,6 @@ jobs:
             -archivePath "$ARCHIVE_PATH" \
             -exportOptionsPlist "$EXPORT_OPTIONS" \
             -exportPath "$EXPORT_DIR" \
-            -allowProvisioningUpdates \
             -authenticationKeyPath "$AUTH_KEY_PATH" \
             -authenticationKeyID "$APPLE_KEY_ID" \
             -authenticationKeyIssuerID "$APPLE_ISSUER_ID"
