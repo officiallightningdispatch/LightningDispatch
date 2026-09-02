@@ -15,11 +15,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     // plugin (it observes these NotificationCenter names to emit the JS
     // "registration" / "registrationError" events with the device token).
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
-        NotificationCenter.default.post(name: Notification.Name("didRegisterForRemoteNotificationsWithDeviceToken"), object: deviceToken)
+        NotificationCenter.default.post(name: .capacitorDidRegisterForRemoteNotifications, object: deviceToken)
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
-        NotificationCenter.default.post(name: Notification.Name("didFailToRegisterForRemoteNotificationsWithError"), object: error)
+        NotificationCenter.default.post(name: .capacitorDidFailToRegisterForRemoteNotifications, object: error)
     }
 
     func applicationWillResignActive(_ application: UIApplication) {
