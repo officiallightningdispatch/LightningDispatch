@@ -1,6 +1,6 @@
 /** Server-only assignment nudges and conservative headed detection (Feature 1/2). */
 import { sql } from "~/db";
-import { haversineMiles, chooseBestDriverByRoad, loadOrgDriverQueues, loadDriverGpsFixes, loadZoneMatches, loadRegionalPreferenceMatches, resolveRouter, type StateGuardOutcome } from "./ai-dispatcher";
+import { haversineMiles, chooseBestDriverByRoad, loadOrgDriverQueues, loadDriverGpsFixes, loadZoneMatches, loadRegionalPreferenceMatches, resolveRouter, finalEtaMinutes, type StateGuardOutcome } from "./ai-dispatcher";
 import { decryptSession } from "./towbook-key";
 import { resolveStateFromAddress, reverseGeocodeState } from "./state-guard-core";
 import { resolveTomtomKey } from "./tomtom-key";
@@ -27,7 +27,8 @@ async function sendWarningPush(orgId:string, driverId:string, jobId:string):Prom
 
 /** Select and execute one reassignment. All Towbook writes go through the proven
  * reassign core, which reads back the call and preserves its lifecycle status. */
-async function reassignNotHeaded(orgId:string, job:Record<string,unknown>, oldId:string, now:Date):Promise<void> {
+type EtaSettings = { maxEtaMinutes:number; etaBufferMinutes:number; etaFloorMinutes:number };
+async function reassignNotHeaded(orgId:string, job:Record<string,unknown>, oldId:string, now:Date, eta:EtaSettings):Promise<void> {
   const jobId=String(job.id), lat=Number(job.pickup_lat), lng=Number(job.pickup_lng);
   if (!Number.isFinite(lat)||!Number.isFinite(lng)) return escalate(orgId,jobId,oldId,"reassigned_no_candidate", "missing pickup coordinates");
   const sessionRows=await sql()`SELECT encrypted_session FROM towbook_sessions WHERE org_id=${orgId} AND session_kind='owner' AND status='connected'`;
@@ -73,14 +74,25 @@ async function reassignNotHeaded(orgId:string, job:Record<string,unknown>, oldId
   if (!result.ok) return escalate(orgId,jobId,oldId,"reassigned_no_candidate",`Towbook reassignment failed: ${result.message}`);
   await recordNudge(orgId,jobId,oldId,"reassigned","reassigned_not_headed");
   await sendPush(orgId,oldId,jobId,"Job reassigned");
-  await sql() `INSERT INTO ai_dispatcher_decisions(id,org_id,call_request_id,call_id,decision,escalated,driver_id,driver_name,eta_minutes,reason,raw_response) VALUES(gen_random_uuid()::text,${orgId},${jobId},${job.towbook_job_id??null},'auto_accept_with_driver',false,${newId},${String(chosen.driver.driverName??"")},${Math.ceil(chosen.baseMinutes)},'reassigned_not_headed',${JSON.stringify({oldDriverId:oldId,newDriverId:newId})}::jsonb) ON CONFLICT DO NOTHING`;
+  await sql() `INSERT INTO ai_dispatcher_decisions(id,org_id,call_request_id,call_id,decision,escalated,driver_id,driver_name,eta_minutes,reason,raw_response) VALUES(gen_random_uuid()::text,${orgId},${jobId},${job.towbook_job_id??null},'auto_accept_with_driver',false,${newId},${String(chosen.driver.driverName??"")},${finalEtaMinutes(chosen.baseMinutes, eta.etaBufferMinutes, eta.etaFloorMinutes, eta.maxEtaMinutes)},'reassigned_not_headed',${JSON.stringify({oldDriverId:oldId,newDriverId:newId,baseMinutes:chosen.baseMinutes,provider:chosen.provider??null})}::jsonb) ON CONFLICT DO NOTHING`;
 }
 async function escalate(orgId:string,jobId:string,driverId:string,reason:string,detail:string):Promise<void> { await sql() `INSERT INTO ai_dispatcher_decisions(id,org_id,call_request_id,call_id,decision,escalated,driver_id,reason,raw_response) VALUES(gen_random_uuid()::text,${orgId},${jobId},${jobId},'escalated_dispatch_failed',true,${driverId},${reason},${JSON.stringify({detail})}::jsonb) ON CONFLICT DO NOTHING`; }
 
 export async function processAssignmentNudges(orgId:string, now:Date = new Date()):Promise<void> {
-  const settings=await sql()`SELECT nudge_enabled,reassign_not_headed_minutes FROM org_settings WHERE org_id=${orgId}`;
+  const settings=await sql()`SELECT nudge_enabled,reassign_not_headed_minutes,max_eta_minutes,eta_buffer_minutes,eta_floor_minutes FROM org_settings WHERE org_id=${orgId}`;
   if (settings.length && settings[0].nudge_enabled === false) return;
   const mins=Number(settings[0]?.reassign_not_headed_minutes)||5;
+  // Owner rule (2026-08-17): the quoted ETA ceiling is 60 minutes — no driver,
+  // ledger, or tool ever sees an ETA above 60. Production org_settings.max_eta_minutes
+  // is 60 (owner-aligned); the legacy migration DEFAULT is 45 and getOrgSettings
+  // falls back to 45, so the reassign path overrides the fallback to 60 and clamps
+  // at 60 to honor the owner ceiling exactly.
+  const orgMax = Number(settings[0]?.max_eta_minutes);
+  const eta:EtaSettings = {
+    maxEtaMinutes: orgMax > 0 ? Math.min(orgMax, 60) : 60,
+    etaBufferMinutes: Number(settings[0]?.eta_buffer_minutes) || 5,
+    etaFloorMinutes: Number(settings[0]?.eta_floor_minutes) || 5,
+  };
   const rows=await sql()`SELECT id,assigned_driver_towbook_id,assigned_at,pickup_lat,pickup_lng,pickup,service_type,towbook_job_id,status FROM dispatch_jobs WHERE org_id=${orgId} AND assigned_driver_towbook_id IS NOT NULL AND assigned_at IS NOT NULL AND status IN ('offered','accepted','en_route') AND assigned_at <= ${new Date(now.getTime()-mins*60000).toISOString()}`;
   for (const r of rows as Array<Record<string,unknown>>) {
     const jobId=String(r.id), oldId=String(r.assigned_driver_towbook_id);
@@ -97,7 +109,7 @@ export async function processAssignmentNudges(orgId:string, now:Date = new Date(
     if (attempted.length) continue;
     const warning=await sql()`SELECT 1 FROM dispatch_nudge_events WHERE org_id=${orgId} AND job_id=${jobId} AND kind='warning' LIMIT 1`;
     if (!warning.length && mins>=4) { await recordNudge(orgId,jobId,oldId,"warning","not_headed_4m"); await sendWarningPush(orgId,oldId,jobId); }
-    await reassignNotHeaded(orgId,r,oldId,now);
+    await reassignNotHeaded(orgId,r,oldId,now,eta);
     const completed=await sql()`SELECT 1 FROM dispatch_nudge_events WHERE org_id=${orgId} AND job_id=${jobId} AND kind='reassigned' LIMIT 1`;
     if (!completed.length) await recordNudge(orgId,jobId,oldId,"reassign_attempted","reassigned_no_candidate");
   }
