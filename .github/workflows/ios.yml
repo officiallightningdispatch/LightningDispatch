@@ -92,7 +92,7 @@ jobs:
           PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
           mkdir -p "$PROFILE_DIR"
           cp ios/ci/LightningDispatch_AppStore.mobileprovision \
-            "$PROFILE_DIR/a7eeb83b-5cee-416d-afa1-fce95dc22b64.mobileprovision"
+            "$PROFILE_DIR/fad4523a-eb05-4d8a-852e-5c79f0fbf01a.mobileprovision"
           ls -la "$PROFILE_DIR"
 
       - name: Write App Store Connect API key
@@ -150,7 +150,7 @@ jobs:
           /usr/libexec/PlistBuddy -c "Add :signingStyle string manual" "$EXPORT_OPTIONS"
           /usr/libexec/PlistBuddy -c "Add :teamID string $APPLE_TEAM_ID" "$EXPORT_OPTIONS"
           /usr/libexec/PlistBuddy -c "Add :provisioningProfiles dict" "$EXPORT_OPTIONS"
-          /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:com.lightningroadside.lightningdispatch string a7eeb83b-5cee-416d-afa1-fce95dc22b64" "$EXPORT_OPTIONS"
+          /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:com.lightningroadside.lightningdispatch string fad4523a-eb05-4d8a-852e-5c79f0fbf01a" "$EXPORT_OPTIONS"
           /usr/libexec/PlistBuddy -c "Add :uploadSymbols bool true" "$EXPORT_OPTIONS"
           /usr/libexec/PlistBuddy -c "Add :uploadBitcode bool false" "$EXPORT_OPTIONS"
           /usr/libexec/PlistBuddy -c "Add :stripSwiftSymbols bool true" "$EXPORT_OPTIONS"
