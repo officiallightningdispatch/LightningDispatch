@@ -52,6 +52,11 @@ export interface Job {
   assignedDriverName?: string;
   assignedDriverTowbookId?: string;
   note: string;
+  /** Owner-facing vehicle display string — assets[0] year+make+model, or the
+   *  vehicle_desc free-text fallback. Undefined when neither exists. */
+  vehicle?: string;
+  /** Towbook call number from raw_json.callNumber. */
+  callNumber?: string;
 }
 
 export const contractors: Contractor[] = [
