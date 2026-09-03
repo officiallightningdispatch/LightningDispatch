@@ -16,6 +16,23 @@ for (const [address, state, source] of cases) {
   assert.equal(parseStateFromAddress(address), state, address);
 }
 assert.equal(resolveStateFromAddress("16 Lords Hwy Weston Connecticut 78626").mismatch, true);
+// Regression: "Co Rd" / "County Road" must NOT resolve "CO" (Colorado).
+const countyRoadCases = [
+  "4251 Co Rd 132, Hutto, TX 78634, USA",
+  "1000 County Rd 200, Georgetown, TX 78626",
+  "Co Rd 5, Hutto, TX 78634",
+  "County Road 132, Hutto, TX 78634",
+];
+for (const address of countyRoadCases) {
+  const result = resolveStateFromAddress(address);
+  assert.equal(result.state, "TX", address);
+  assert.equal(result.source, "address", address);
+  assert.equal(result.mismatch, false, address);
+}
+// Real Colorado addresses still resolve CO.
+assert.deepEqual(resolveStateFromAddress("Denver, CO 80202"), { state: "CO", source: "address", mismatch: false });
+// Punctuation-separated postal form still resolves CT.
+assert.deepEqual(resolveStateFromAddress("Bridgeport, C.T."), { state: "CT", source: "address", mismatch: false });
 const placeholderCases = [
   [41.214889, -73.195803, true],
   [41.289999999, -73.070000001, true],
@@ -25,4 +42,5 @@ const placeholderCases = [
   [0, 0, false],
 ];
 for (const [lat, lng, expected] of placeholderCases) assert.equal(isAgeroPlaceholderCoords(lat, lng), expected, `${lat},${lng}`);
-console.log(`state-guard ${cases.length + 1 + placeholderCases.length}/${cases.length + 1 + placeholderCases.length} passed`);
+const total = cases.length + 1 + countyRoadCases.length + 2 + placeholderCases.length;
+console.log(`state-guard ${total}/${total} passed`);
