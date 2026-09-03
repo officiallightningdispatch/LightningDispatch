@@ -37,7 +37,7 @@ try {
   for (const z of data) await q`INSERT INTO dispatch_zones(id,org_id,name,state,market,zone_type,zip_codes,lat,lng,radius_miles,tz,active,sort_order) VALUES(${idFor(z.key)},${ORG},${z.name},${z.state},${z.market},${z.zone_type},${z.zip_codes ?? []},${z.lat},${z.lng},${z.radius_miles ?? 10},${z.tz},TRUE,${data.indexOf(z)})`;
   created = true;
   await check("DATASET KEYS UNIQUE", async () => { const keys = data.map(z => z.key); assert.equal(new Set(keys).size, keys.length); });
-  await check("NON-COVERAGE PARTITION ZONES HAVE ZIPs", async () => { const rows = await q`SELECT name,zone_type,cardinality(zip_codes)::int n FROM dispatch_zones WHERE org_id=${ORG} AND zone_type NOT IN ('coverage','corridor')`; assert.ok(rows.length > 0); assert.ok(rows.every(r => r.n >= 1), JSON.stringify(rows.filter(r => r.n < 1))); });
+  await check("MARKET PARTITION ZONES HAVE ZIPs (county/corridor may be radius-only)", async () => { const rows = await q`SELECT name,zone_type,cardinality(zip_codes)::int n FROM dispatch_zones WHERE org_id=${ORG} AND zone_type='market'`; assert.ok(rows.length > 0); assert.ok(rows.every(r => r.n >= 1), JSON.stringify(rows.filter(r => r.n < 1))); });
   await check("ZIPs ARE UNIQUE", async () => { const rows = await q`SELECT unnest(zip_codes) zip FROM dispatch_zones WHERE org_id=${ORG} GROUP BY zip HAVING count(*) > 1`; assert.equal(rows.length, 0); });
   await check("COVERAGE AND CORRIDOR ARE RADIUS-ONLY", async () => { const rows = await q`SELECT zone_type,cardinality(zip_codes)::int n FROM dispatch_zones WHERE org_id=${ORG} AND zone_type IN ('coverage','corridor')`; assert.ok(rows.length > 0); assert.ok(rows.every(r => r.n === 0)); });
 } finally {

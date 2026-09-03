@@ -32,7 +32,7 @@ try {
   assert.deepEqual(await upsertZoneCore(actor,{id:tx,name:'Austin',state:'TX',market:'Austin',zoneType:'market',zipCodes:['78626','78701'],parentZoneId:null,lat:30.2672,lng:-97.7431}),{ok:true,id:tx});
   let r=await getDispatchZonesForOwnerCore(actor);let z=r.zones.find(x=>x.id===tx); assert.equal(z.state,'TX');assert.equal(z.market,'Austin');assert.equal(z.zoneType,'market');assert.deepEqual(z.zipCodes,['78626','78701']);assert.equal(z.parentZoneId,null);
   const before=(await q`SELECT updated_at FROM dispatch_zones WHERE id=${tx}`)[0].updated_at; await q`SELECT pg_sleep(1.1)`;
-  await upsertZoneCore(actor,{id:tx,name:'Austin Updated',state:'TX',market:'Austin Metro',zoneType:'submarket',zipCodes:['78701'],parentZoneId:null,lat:30.2672,lng:-97.7431});
+  await upsertZoneCore(actor,{id:tx,name:'Austin Updated',state:'TX',market:'Austin Metro',zoneType:'market',zipCodes:['78701'],parentZoneId:null,lat:30.2672,lng:-97.7431});
   const after=(await q`SELECT updated_at FROM dispatch_zones WHERE id=${tx}`)[0].updated_at; assert.notEqual(String(before),String(after));
  });
  await upsertZoneCore(actor,{id:ct,name:'Bridgeport',state:'CT',market:'Bridgeport',zoneType:'market',zipCodes:['06601'],lat:41.18,lng:-73.19});

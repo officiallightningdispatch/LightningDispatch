@@ -16,6 +16,7 @@ const ZONE_EMPTY = `qa-zone-empty-${randomUUID()}`;
 const DAY = "2026-08-15";
 const actor = { orgId: ORG, id: OWNER, role: "owner" };
 const driver = (id, lat, lng) => ({ driverId: id, isCheckedIn: true, latitude: lat, longitude: lng, estimatedTimeSeconds: 600 });
+const gpsFixesFor = (cands) => new Map(cands.map((d) => [String(d.driverId), { lat: d.latitude, lng: d.longitude, capturedAt: new Date().toISOString() }]));
 const checks = [];
 async function check(name, fn) { try { await fn(); checks.push([name, true]); console.log(`PASS ${name}`); } catch (e) { checks.push([name, false]); console.error(`FAIL ${name}: ${e.message}`); throw e; } }
 let created = false;
@@ -73,10 +74,10 @@ try {
     const candidates=[driver('910001',41.208862,-73.207253),driver('910002',41.208862,-73.207253)];
     const matches=await loadZoneMatches(ORG,candidates,41.208862,-73.207253,new Date());
     assert.equal(matches.get('910001'),true); assert.equal(matches.get('910002'),false);
-    const picked=await chooseBestDriverByRoad(candidates,41.208862,-73.207253,null,new Map(),{zoneMatches:matches}); assert.equal(String(picked?.driver?.driverId),'910001');
+    const picked=await chooseBestDriverByRoad(candidates,41.208862,-73.207253,null,new Map(),{zoneMatches:matches,gpsFixes:gpsFixesFor(candidates)}); assert.equal(String(picked?.driver?.driverId),'910001');
     const none=await loadZoneMatches(ORG,candidates,40,-75,new Date('2026-08-15T12:00:00Z')); assert.equal([...none.values()].every(v=>v===false),true);
-    const unchanged=await chooseBestDriverByRoad([driver('910002',41.2,-73.2),driver('910001',41.2,-73.2)],41.208862,-73.207253,null,new Map(),{zoneMatches:none}); assert.equal(String(unchanged?.driver?.driverId),'910001');
-    const emergency=await chooseBestDriverByRoad([driver('910002',41.2,-73.2)],40,-75,null,new Map(),{zoneMatches:none}); assert.equal(String(emergency?.driver?.driverId),'910002');
+    const unchanged=await chooseBestDriverByRoad([driver('910002',41.2,-73.2),driver('910001',41.2,-73.2)],41.208862,-73.207253,null,new Map(),{zoneMatches:none,gpsFixes:gpsFixesFor([driver('910002',41.2,-73.2),driver('910001',41.2,-73.2)])}); assert.equal(String(unchanged?.driver?.driverId),'910001');
+    const emergency=await chooseBestDriverByRoad([driver('910002',41.2,-73.2)],40,-75,null,new Map(),{zoneMatches:none,gpsFixes:gpsFixesFor([driver('910002',41.2,-73.2)])}); assert.equal(String(emergency?.driver?.driverId),'910002');
   });
   await check("OVERRIDE: owner production override bypasses limit, clears, audits", async () => {
     const a={...actor}; const day='2026-08-17';
@@ -150,7 +151,7 @@ try {
   await check("ZONE PREFERENCE IN UNDER-CAP PATH (id cannot mask it)", async () => {
     const candidates=[driver('910002',41.2,-73.2),driver('910001',41.2,-73.2)];
     const matches=new Map([['910002',true],['910001',false]]);
-    const picked=await chooseBestDriverByRoad(candidates,41.208862,-73.207253,null,new Map(),{zoneMatches:matches});
+    const picked=await chooseBestDriverByRoad(candidates,41.208862,-73.207253,null,new Map(),{zoneMatches:matches,gpsFixes:gpsFixesFor(candidates)});
     assert.equal(String(picked?.driver?.driverId),'910002');
   });
 } finally {
