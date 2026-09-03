@@ -91,7 +91,9 @@ const jsonFetch = (routes) => async (url, init) => {
     && card.id === "321001" && card.callNumber === "321001"
     && card.serviceName === "Jump Start" && card.statusId === 1
     && card.pickupAddress === "70 Pitt Street" && card.zip === "06606"
-    && card.vehicle.includes("Toyota") && card.vehicle.includes("Silver") && card.vehicle.includes("4T1BF1FK1FU123456")
+    && card.vehicle === "Silver 2015 Toyota Camry"
+    && !card.vehicle.includes("4T1BF1FK1FU123456")
+    && card.vehicleColor === "Silver"
     && card.arrivalETA === "2026-08-11T21:07:00" && card.purchaseOrderNumber === "PO-88412", JSON.stringify(card));
 }
 {

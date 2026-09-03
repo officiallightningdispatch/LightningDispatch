@@ -265,6 +265,13 @@ export function TripSheet({
   onSnapChange: (i: number) => void;
 }) {
   const address = addressOf(call);
+  // Vehicle on the call-number line: color as its own token, then year · make ·
+  // model as a space-joined unit (owner 2026-09-03: "color · year · make · model",
+  // VIN dropped). Omit empty tokens so we never render dangling separators.
+  const vehicleMeta = [
+    call.vehicleColor,
+    [call.vehicleYear, call.vehicleMake, call.vehicleModel].filter(Boolean).join(" "),
+  ].filter(Boolean).join(" · ");
   const phoneDigits = call.customerPhone.replace(/[^+\d]/g, "");
   const [ua, setUa] = useState("");
   useEffect(() => {
@@ -284,7 +291,7 @@ export function TripSheet({
       {/* Row 1: pickup + call/service meta */}
       <p className="text-lg font-black leading-snug tracking-tight text-ink-950">{address || "Pickup location"}</p>
       <p className="mt-0.5 text-xs font-semibold uppercase tracking-wide text-ink-400">
-        Call #{call.callNumber} · {call.serviceName}
+        Call #{call.callNumber}{vehicleMeta ? ` · ${vehicleMeta}` : ""} · {call.serviceName}
       </p>
 
       {/* Row 2: call + navigate — the Navigate button is a direct maps deep

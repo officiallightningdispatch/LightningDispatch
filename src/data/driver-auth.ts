@@ -41,6 +41,7 @@ export type DriverCall = {
   vehicleYear: string | null;
   vehicleMake: string | null;
   vehicleModel: string | null;
+  vehicleColor: string | null;
   vehicleDutySignal: string | null;
   arrivalETA: string | null;
   purchaseOrderNumber: string | null;
@@ -467,6 +468,23 @@ function callArrivalAt(call: Record<string, unknown>): string | null {
   return typeof v === "string" && v ? v : null;
 }
 
+/** Build the driver-facing vehicle line in the owner-specified order
+ *  (color · year · make · model), skipping empty/undefined tokens so callers
+ *  never render dangling separators. VIN is intentionally NOT a parameter — it
+ *  is sensitive and was not requested on the driver card. Returns "" when
+ *  nothing is present. */
+export function formatDriverVehicle(
+  color: unknown,
+  year: unknown,
+  make: unknown,
+  model: unknown,
+): string {
+  return [color, year, make, model]
+    .map((v) => (v == null ? "" : String(v).trim()))
+    .filter((s) => s !== "")
+    .join(" ");
+}
+
 /** Normalize one raw Towbook call into a driver card. Field names read directly
  *  from the real call object (evidence: api-calls-full.json). */
 export function normalizeDriverCall(call: Record<string, unknown>): DriverCall | null {
@@ -475,8 +493,8 @@ export function normalizeDriverCall(call: Record<string, unknown>): DriverCall |
   if (statusId == null) return null;
   const waypoint = Array.isArray(call.waypoints) ? (call.waypoints[0] as Record<string, unknown> | undefined) : undefined;
   const asset = Array.isArray(call.assets) ? (call.assets[0] as Record<string, unknown> | undefined) : undefined;
-  const color = asset && asset.color && typeof asset.color === "object" ? String((asset.color as Record<string, unknown>).name ?? "") : "";
-  const vehicle = [asset?.year, asset?.make, asset?.model, color, asset?.vin].filter((v) => v != null && String(v) !== "").join(" ");
+  const vehicleColor = asset && asset.color && typeof asset.color === "object" ? String((asset.color as Record<string, unknown>).name ?? "") : "";
+  const vehicle = formatDriverVehicle(vehicleColor, asset?.year, asset?.make, asset?.model);
   const reason = call.reason && typeof call.reason === "object" ? String((call.reason as Record<string, unknown>).name ?? "") : "";
   const arrivalETA = typeof call.arrivalETA === "string" && call.arrivalETA ? call.arrivalETA : null;
   const contact = firstContact(call);
@@ -493,6 +511,7 @@ export function normalizeDriverCall(call: Record<string, unknown>): DriverCall |
     vehicleYear: asset?.year != null ? String(asset.year) : null,
     vehicleMake: asset?.make != null ? String(asset.make) : null,
     vehicleModel: asset?.model != null ? String(asset.model) : null,
+    vehicleColor: vehicleColor !== "" ? vehicleColor : null,
     vehicleDutySignal: asset?.vehicleClass != null ? String(asset.vehicleClass) : (asset?.weightClass != null ? String(asset.weightClass) : null),
     arrivalETA,
     purchaseOrderNumber: call.purchaseOrderNumber != null ? String(call.purchaseOrderNumber) : null,
@@ -549,6 +568,7 @@ async function platformOnlyCalls(user: { orgId: string; towbookDriverId: string 
         vehicleYear: null,
         vehicleMake: null,
         vehicleModel: null,
+        vehicleColor: null,
         vehicleDutySignal: null,
         arrivalETA: null,
         purchaseOrderNumber: null,
