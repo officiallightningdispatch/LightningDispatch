@@ -286,20 +286,55 @@ function mapSaleRow(r: Record<string, unknown>): BatterySaleRowInternal {
   };
 }
 
-type JobFacts = { id: string; status: string | null; serviceType: string; batteryTestResult: "ok" | "faulty" | null; towbookJobId: string | null };
+type JobFacts = {
+  id: string;
+  status: string | null;
+  serviceType: string;
+  batteryTestResult: "ok" | "faulty" | null;
+  towbookJobId: string | null;
+  /** Authoritative VIN from raw_json.assets[0].vin (uppercased), else null. */
+  vin: string | null;
+  /** Cheap assets[0].year/make/model (non-authoritative, completeness only). */
+  rawVehicle: { year: string | null; make: string | null; model: string | null } | null;
+};
+
+/** raw_json may arrive already-parsed (jsonb driver) OR as a JSON string — parse
+ *  defensively and never throw on malformed JSON. */
+function parseRawJsonObject(raw: unknown): Record<string, unknown> | null {
+  if (raw == null) return null;
+  if (typeof raw === "object") return raw as Record<string, unknown>;
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
 
 async function loadJobFacts(q: Awaited<ReturnType<typeof db>>, orgId: string, jobId: string): Promise<JobFacts | null> {
-  const rows = await q`SELECT id, status, service_type, battery_test_result, towbook_job_id
+  const rows = await q`SELECT id, status, service_type, battery_test_result, towbook_job_id, raw_json
     FROM dispatch_jobs WHERE org_id=${orgId} AND (id=${jobId} OR towbook_job_id=${jobId}) LIMIT 1`;
   if (!rows.length) return null;
   const r = rows[0] as Record<string, unknown>;
   const t = r.battery_test_result != null ? String(r.battery_test_result) : null;
+  const raw = parseRawJsonObject(r.raw_json);
+  const assets = raw?.assets;
+  const first = Array.isArray(assets) ? assets[0] : undefined;
+  const asset = first && typeof first === "object" ? (first as Record<string, unknown>) : null;
+  const trimStr = (v: unknown): string | null => (v == null ? null : String(v).trim() || null);
   return {
     id: String(r.id),
     status: r.status != null ? String(r.status) : null,
     serviceType: String(r.service_type ?? ""),
     batteryTestResult: t === "ok" || t === "faulty" ? t : null,
     towbookJobId: r.towbook_job_id != null ? String(r.towbook_job_id) : null,
+    vin: asset && typeof asset.vin === "string" ? asset.vin.trim().toUpperCase() || null : null,
+    rawVehicle: asset
+      ? { year: trimStr(asset.year), make: trimStr(asset.make), model: trimStr(asset.model) }
+      : null,
   };
 }
 
@@ -399,8 +434,52 @@ export function deriveAgentState(facts: JobFacts, sale: BatterySaleRow | Battery
   };
 }
 
+/** Jumpstart auto-select (owner 2026-09-03): when the job already carries a VIN
+ *  and there is no open sale yet, pre-resolve the group via the authoritative
+ *  VIN → decode → compatibility path so the flow skips VIN entry + the vehicle
+ *  confirm (auto-confirmed). Fail closed: any non-"matched" outcome leaves no
+ *  sale row and returns null. The NHTSA decode is fired only here, once per job,
+ *  guarded by "no sale row exists" + "test=faulty" in the caller. */
+async function tryAutoResolveVin(
+  q: Awaited<ReturnType<typeof db>>,
+  user: PhotoUser,
+  job: { id: string; towbookJobId: string | null },
+  facts: JobFacts,
+  fetchImpl: typeof fetch,
+): Promise<BatterySaleRowInternal | null> {
+  if (!facts.vin) return null;
+  const { lookupBatteryCompatibilityFromVinCore } = await import("./battery-compat-core");
+  const lookup = await lookupBatteryCompatibilityFromVinCore(
+    { orgId: user.orgId, role: user.role, id: user.id, towbookDriverId: user.towbookDriverId },
+    { vin: facts.vin, jobId: job.id },
+    fetchImpl,
+  );
+  if (!lookup.ok || lookup.outcome !== "matched") return null;
+  const sale = await upsertQuote(q, user, job.id, {
+    vin: facts.vin,
+    make: lookup.match.make,
+    model: lookup.match.model,
+    year: String(lookup.match.year),
+    manual: false,
+    confirmed: true,
+    compatibilityId: lookup.match.compatibilityId,
+    batteryGroupSize: lookup.match.batteryGroupSize,
+  });
+  try {
+    await audit(q, user, job, "battery_vin_autoresolved", {
+      vin_sha256: createHash("sha256").update(facts.vin).digest("hex"),
+      make: lookup.match.make,
+      model: lookup.match.model,
+      year: lookup.match.year,
+      compatibilityId: lookup.match.compatibilityId,
+      batteryGroupSize: lookup.match.batteryGroupSize,
+    });
+  } catch { /* best-effort audit — never mask the auto-resolve */ }
+  return sale;
+}
+
 /** Full agent state for one job — driver (assigned) only. */
-export async function batteryAgentStateCore(user: PhotoUser, data: unknown): Promise<{ ok: true; state: BatteryAgentState } | { ok: false; code: "not_found" | "unauthorized"; message: string }> {
+export async function batteryAgentStateCore(user: PhotoUser, data: unknown, opts: { fetchImpl?: typeof fetch } = {}): Promise<{ ok: true; state: BatteryAgentState } | { ok: false; code: "not_found" | "unauthorized"; message: string }> {
   const v = z.object({ jobId: z.string().min(1).max(128) }).safeParse(data);
   if (!v.success) return { ok: false, code: "not_found", message: "Invalid request." };
   try {
@@ -412,7 +491,17 @@ export async function batteryAgentStateCore(user: PhotoUser, data: unknown): Pro
     if (!assigned) return { ok: false, code: "unauthorized", message: "This job is not assigned to you." };
     const facts = await loadJobFacts(q, user.orgId, job.id);
     if (!facts) return { ok: false, code: "not_found", message: "Job not found on your account — refresh the queue." };
-    const sale = await loadSale(q, user.orgId, job.id);
+    let sale = await loadSale(q, user.orgId, job.id);
+    // Jumpstart auto-select: pre-resolve the group from the job's VIN exactly once
+    // (no existing sale row + faulty test). Any failure falls through to the VIN step.
+    if (!sale && facts.batteryTestResult === "faulty") {
+      const auto = await tryAutoResolveVin(q, user, { id: job.id, towbookJobId: job.towbookJobId }, facts, opts.fetchImpl ?? globalThis.fetch);
+      if (auto) {
+        const rates = await batteryRatesCore(user.orgId);
+        const installJob = auto.installJobId ? await loadInstallJob(q, user.orgId, auto.installJobId) : null;
+        return { ok: true, state: deriveAgentState(facts, auto, rates, installJob) };
+      }
+    }
     const rates = await batteryRatesCore(user.orgId);
     const installJob = sale?.installJobId ? await loadInstallJob(q, user.orgId, sale.installJobId) : null;
     return { ok: true, state: deriveAgentState(facts, sale, rates, installJob) };
