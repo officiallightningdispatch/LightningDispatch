@@ -1139,11 +1139,13 @@ try {
     const { deps } = makeDeps(withRouter(m.fetchImpl, rf.fetchImpl), null, { noRouterOverride: true, env: { TOMTOM_API_KEY: "test-key-not-real" } });
     const r = await runAutoDispatch(ORG3, deps);
     check("engine+key: auto_accept_with_driver + reason names tomtom-traffic + delay 2", r.decisions[0]?.decision === "auto_accept_with_driver" && String(r.decisions[0]?.reason).includes("tomtom-traffic road") && String(r.decisions[0]?.reason).includes("delay 2"), String(r.decisions[0]?.reason));
-    // The key path makes two legitimate TomTom requests: one traffic route for
-    // the ETA and one reverse-geocode corroboration for the same-state guard.
-    // The latter is required by the fail-closed state policy; this assertion
-    // still proves the ETA provider path is TomTom and never falls to OSRM.
-    check("engine+key: TomTom routing + state corroboration, zero OSRM calls (key path)", rf.tomtomCalls.length === 2 && rf.osrmCalls.length === 0, `${rf.tomtomCalls.length}/${rf.osrmCalls.length}`);
+    // The key path makes four legitimate TomTom requests: ONE traffic route for
+    // the ETA plus THREE geocode-resolve attempts. The geocode resilience layer
+    // (2026-09-03) retries geocodeLookupOnce up to its default of 3; this mock's
+    // canned *routing* body never satisfies the geocode shape, so each attempt
+    // falls through and the engine retains the placeholder/address resolution as
+    // before. Zero OSRM calls still proves the ETA provider path stays on TomTom.
+    check("engine+key: TomTom routing + geocode resolve, zero OSRM calls (key path)", rf.tomtomCalls.length === 4 && rf.osrmCalls.length === 0, `${rf.tomtomCalls.length}/${rf.osrmCalls.length}`);
     const rows = await decisions3();
     const v = rows.find((x) => String(x.call_request_id) === "8021");
     check("engine+key: ETA 14 min + raw_response.eta provider tomtom/liveTraffic/delay/routerNotes", v && Number(v.eta_minutes) === 14 && v.raw_response?.eta?.provider === "tomtom" && v.raw_response?.eta?.liveTraffic === true && v.raw_response?.eta?.trafficDelaySeconds === 120 && String(v.raw_response?.eta?.routerNotes).includes("delay 120"), JSON.stringify(v?.raw_response?.eta));
