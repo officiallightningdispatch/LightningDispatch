@@ -7,6 +7,7 @@ import { getOrgSettings, etaProviderStatus } from "./ai-dispatcher";
 import type { AuthUser } from "./auth-server";
 import type { LiveMapData } from "./live-map-core";
 import type { ContractorStatus, JobStatus, Contractor, Job, ServiceType } from "./seed";
+import { jobIdentityExtras } from "~/lib/job-vehicle";
 
 export type DispatchData = { contractors: Contractor[]; jobs: Job[] };
 export type CommandErrorCode = "validation"|"not_found"|"invalid_state"|"conflict"|"offline_contractor"|"database_unavailable"|"unauthorized";
@@ -43,7 +44,7 @@ function prepare() {
 // here fixes the old request-only wiring while the handler-level awaits remain a
 // fallback for runtimes that load modules lazily.
 
-function mapJob(r: Record<string,unknown>): Job { return {id:String(r.id),...(r.towbook_job_id != null && String(r.towbook_job_id) !== "" ? {towbookJobId:String(r.towbook_job_id)} : {}),customerName:String(r.customer_name),phone:String(r.phone),location:{lat:Number(r.lat),lng:Number(r.lng),area:String(r.area)},serviceType:r.service_type as Job["serviceType"],status:r.status as JobStatus,createdAt:new Date(String(r.created_at)).toISOString(),assignedAt:r.assigned_at?new Date(String(r.assigned_at)).toISOString():undefined,arrivedAt:r.arrived_at?new Date(String(r.arrived_at)).toISOString():undefined,completedAt:r.completed_at?new Date(String(r.completed_at)).toISOString():undefined,assignedContractorId:r.assigned_contractor_id?String(r.assigned_contractor_id):undefined,assignedDriverName:r.assigned_driver_name?String(r.assigned_driver_name):undefined,assignedDriverTowbookId:r.assigned_driver_towbook_id?String(r.assigned_driver_towbook_id):undefined,note:String(r.note||"")}; }
+function mapJob(r: Record<string,unknown>): Job { const identity=jobIdentityExtras(r.raw_json, r.vehicle_desc); return {id:String(r.id),...(r.towbook_job_id != null && String(r.towbook_job_id) !== "" ? {towbookJobId:String(r.towbook_job_id)} : {}),customerName:String(r.customer_name),phone:String(r.phone),location:{lat:Number(r.lat),lng:Number(r.lng),area:String(r.area)},serviceType:r.service_type as Job["serviceType"],status:r.status as JobStatus,createdAt:new Date(String(r.created_at)).toISOString(),assignedAt:r.assigned_at?new Date(String(r.assigned_at)).toISOString():undefined,arrivedAt:r.arrived_at?new Date(String(r.arrived_at)).toISOString():undefined,completedAt:r.completed_at?new Date(String(r.completed_at)).toISOString():undefined,assignedContractorId:r.assigned_contractor_id?String(r.assigned_contractor_id):undefined,assignedDriverName:r.assigned_driver_name?String(r.assigned_driver_name):undefined,assignedDriverTowbookId:r.assigned_driver_towbook_id?String(r.assigned_driver_towbook_id):undefined,note:String(r.note||""),...(identity.vehicle?{vehicle:identity.vehicle}:{}),...(identity.callNumber?{callNumber:identity.callNumber}:{})}; }
 
 /** The org's ACTIVE roster for the dispatch surface — ANY active org user
  *  (deactivated_at IS NULL) with a non-null towbook_driver_id, regardless of
@@ -134,7 +135,7 @@ async function contractorOnline(orgId: string, userId: string): Promise<boolean>
   return Number((rows[0] as Record<string, unknown>).active ?? 0) > 0;
 }
 
-async function dataFor(u: AuthUser): Promise<DispatchData> { const cs=await listRosterContractors(u.orgId, u.role==="contractor" ? u.contractorId || undefined : undefined); const q=sql(); const js=await q`SELECT id,towbook_job_id,customer_name,phone,lat,lng,area,service_type,status,created_at,assigned_at,arrived_at,completed_at,assigned_contractor_id,assigned_driver_name,assigned_driver_towbook_id,note FROM dispatch_jobs WHERE org_id=${u.orgId} ${u.role==="contractor" ? q`AND (assigned_contractor_id=${u.contractorId||""} OR assigned_driver_towbook_id=(SELECT towbook_driver_id FROM users WHERE id=${u.contractorId||""}))` : q``} ORDER BY created_at DESC`; return {contractors:cs,jobs:js.map(mapJob)}; }
+async function dataFor(u: AuthUser): Promise<DispatchData> { const cs=await listRosterContractors(u.orgId, u.role==="contractor" ? u.contractorId || undefined : undefined); const q=sql(); const js=await q`SELECT id,towbook_job_id,customer_name,phone,lat,lng,area,service_type,status,created_at,assigned_at,arrived_at,completed_at,assigned_contractor_id,assigned_driver_name,assigned_driver_towbook_id,note,vehicle_desc,raw_json FROM dispatch_jobs WHERE org_id=${u.orgId} ${u.role==="contractor" ? q`AND (assigned_contractor_id=${u.contractorId||""} OR assigned_driver_towbook_id=(SELECT towbook_driver_id FROM users WHERE id=${u.contractorId||""}))` : q``} ORDER BY created_at DESC`; return {contractors:cs,jobs:js.map(mapJob)}; }
 async function result(u: AuthUser): Promise<CommandResult> { return {ok:true,data:await dataFor(u)}; }
 function can(u:AuthUser, roles:AuthUser["role"][]) { return roles.includes(u.role); }
 /** Portal → Towbook push for owner/admin/dispatcher job status changes

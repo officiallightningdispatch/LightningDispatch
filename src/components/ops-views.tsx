@@ -346,7 +346,7 @@ export function HistoryView() {
                     <StatusBadge className={meta.badge}>{meta.label}</StatusBadge>
                   </div>
                   <p className="mt-0.5 text-sm text-ink-600">
-                    {SERVICE_LABELS[job.serviceType]} · {job.location.area}
+                    {SERVICE_LABELS[job.serviceType]}{job.callNumber ? ` · Call #${job.callNumber}` : ""}{job.vehicle ? ` · ${job.vehicle}` : ""} · {job.location.area}
                   </p>
                   <p className="mt-1 text-xs tabular-nums text-ink-400">
                     {job.status === "cancelled"
@@ -425,7 +425,7 @@ export function ContractorsView() {
                   <p className="mt-0.5 break-words text-xs text-ink-500">{c.vehicleTypes.length ? c.vehicleTypes.join(" · ") : "No capabilities listed"}</p>
                   {active ? (
                     <p className="mt-0.5 break-words text-xs font-medium text-brand-700">
-                      {SERVICE_LABELS[active.serviceType]} · {active.customerName} · {JOB_STATUS_META[active.status].label}
+                      {SERVICE_LABELS[active.serviceType]}{active.callNumber ? ` · Call #${active.callNumber}` : ""}{active.vehicle ? ` · ${active.vehicle}` : ""} · {active.customerName} · {JOB_STATUS_META[active.status].label}
                     </p>
                   ) : (
                     <p className="mt-0.5 text-xs text-ink-400">No active job</p>
@@ -659,7 +659,7 @@ function IncomingJobCard({ job, contractors }: { job: Job; contractors: Contract
             <StatusBadge className={JOB_STATUS_META.new.badge}>{JOB_STATUS_META.new.label}</StatusBadge>
             <span className="text-[11px] font-medium tabular-nums text-ink-400">created {timeAgo(job.createdAt)}</span>
           </div>
-          <p className="mt-0.5 text-sm text-ink-600">{SERVICE_LABELS[job.serviceType]} · {job.location.area}</p>
+          <p className="mt-0.5 text-sm text-ink-600">{SERVICE_LABELS[job.serviceType]}{job.callNumber ? ` · Call #${job.callNumber}` : ""}{job.vehicle ? ` · ${job.vehicle}` : ""} · {job.location.area}</p>
           <p className="whitespace-pre-wrap break-words text-xs text-ink-400">{job.note}</p>
         </div>
       </div>
@@ -750,7 +750,7 @@ function RecommendationPanel({ job, rec, picking }: { job: Job; rec: DispatchRec
       <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-ink-200">
         <div className="h-full rounded-full bg-gradient-to-r from-brand-500 to-brand-400" style={{ width: `${top.score}%` }} />
       </div>
-      <p className="mt-1.5 text-[11px] text-ink-400">Job {job.id} · {SERVICE_LABELS[job.serviceType]} at {job.location.area}</p>
+      <p className="mt-1.5 text-[11px] text-ink-400">Job {job.id} · {SERVICE_LABELS[job.serviceType]}{job.callNumber ? ` · Call #${job.callNumber}` : ""}{job.vehicle ? ` · ${job.vehicle}` : ""} at {job.location.area}</p>
     </div>
   );
 }
@@ -912,7 +912,7 @@ function ActiveJobCard({ job, contractors, role }: { job: Job; contractors: Cont
             <h3 className="font-bold leading-tight">{job.customerName}</h3>
             <StatusBadge className={JOB_STATUS_META[job.status].badge}>{JOB_STATUS_META[job.status].label}</StatusBadge>
           </div>
-          <p className="mt-0.5 text-sm text-ink-600">{SERVICE_LABELS[job.serviceType]} · {job.location.area}</p>
+          <p className="mt-0.5 text-sm text-ink-600">{SERVICE_LABELS[job.serviceType]}{job.callNumber ? ` · Call #${job.callNumber}` : ""}{job.vehicle ? ` · ${job.vehicle}` : ""} · {job.location.area}</p>
           {(contractor || driverName) && (
             <p className="mt-1 flex flex-wrap items-center gap-x-2 text-xs text-ink-500">
               <span className="inline-flex items-center gap-1.5 font-semibold text-ink-700">
@@ -993,7 +993,7 @@ function CompletedRow({ job, contractors, last }: { job: Job; contractors: Contr
         <div className="min-w-0 flex-1">
           <p className="break-words text-sm font-semibold">
             {job.customerName} <span className="font-normal text-ink-400">·</span>{" "}
-            <span className="font-medium text-ink-500">{SERVICE_LABELS[job.serviceType]}</span>
+            <span className="font-medium text-ink-500">{SERVICE_LABELS[job.serviceType]}{job.callNumber ? ` · Call #${job.callNumber}` : ""}{job.vehicle ? ` · ${job.vehicle}` : ""}</span>
           </p>
           <p className="text-xs tabular-nums text-ink-400">
             {driverName ?? "Unassigned"} · {duration} · done {timeAgo(job.completedAt)}
