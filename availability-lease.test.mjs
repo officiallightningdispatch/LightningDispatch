@@ -29,7 +29,7 @@ try {
     (${DRIVER},'QA availability driver',${DRIVER+'@qa.local'},'x','991001')`;
   await q`INSERT INTO organization_memberships(org_id,user_id,role) VALUES
     (${ORG},${OWNER},'owner'),(${ORG},${DRIVER},'contractor')`;
-  await upsertZoneCore(actor, { id: ZONE, name: "QA Lease Zone", lat: 41.2, lng: -73.2, radiusMiles: 10, tz: "America/New_York", active: true });
+  await upsertZoneCore(actor, { id: ZONE, name: "QA Lease Zone", state: "CT", lat: 41.2, lng: -73.2, radiusMiles: 10, tz: "America/New_York", active: true });
 
   await check("GO writes a fresh lease with session start", async () => {
     await recordAvailabilityStart(q, ORG, DRIVER);

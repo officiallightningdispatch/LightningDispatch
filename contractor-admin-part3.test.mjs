@@ -88,33 +88,34 @@ async function setup() {
   }
 }
 await setup();
-/* ==================== 1) required-type seeding (the 5 mandated docs) ==================== */
-let w9, i9, lic, ins;
+/* ==================== 1) required-type seeding (the 6 mandated docs) ==================== */
+let w9, i9, lic, licBack, ins;
 {
   const empty = await listRequiredDocTypesCore(ACTOR);
   check("seed: initial list empty", empty.ok === true && empty.data.length === 0, JSON.stringify(empty));
   const s1 = await seedMandatedDocTypesCore(ACTOR);
-  check("seed: owner can seed", s1.ok === true && s1.data.length === 5, JSON.stringify(s1));
+  check("seed: owner can seed", s1.ok === true && s1.data.length === 6, JSON.stringify(s1));
   const names = s1.ok ? s1.data.map((t) => `${t.name}${t.requiresFacialVerification ? "*" : ""}`).join("|") : "";
-  check("seed: exactly W-9|I-9|Driver's License*|Insurance information in order",
-    names === "W-9|I-9|Driver's License*|Insurance information|Notifications & Location", names);
+  check("seed: exactly W-9|I-9|Driver's License — Front*|Driver's License — Back|Insurance information|Notifications & Location in order",
+    names === "W-9|I-9|Driver's License — Front*|Driver's License — Back|Insurance information|Notifications & Location", names);
   w9 = s1.ok ? s1.data.find((t) => t.name === "W-9") : null;
   i9 = s1.ok ? s1.data.find((t) => t.name === "I-9") : null;
-  lic = s1.ok ? s1.data.find((t) => t.name === "Driver's License") : null;
+  lic = s1.ok ? s1.data.find((t) => t.name === "Driver's License — Front") : null;
+  licBack = s1.ok ? s1.data.find((t) => t.name === "Driver's License — Back") : null;
   ins = s1.ok ? s1.data.find((t) => t.name === "Insurance information") : null;
   check("seed: non-facial types have requiresFacialVerification=false",
-    w9 && !w9.requiresFacialVerification && i9 && !i9.requiresFacialVerification && ins && !ins.requiresFacialVerification);
-  check("seed: license type requires facial verification",
+    w9 && !w9.requiresFacialVerification && i9 && !i9.requiresFacialVerification && ins && !ins.requiresFacialVerification && licBack && !licBack.requiresFacialVerification);
+  check("seed: license front type requires facial verification",
     lic && lic.requiresFacialVerification === true, JSON.stringify(lic));
   const s2 = await seedMandatedDocTypesCore(ACTOR);
   check("seed: idempotent — second call adds nothing", s2.ok === true && s2.data.length === 0, JSON.stringify(s2));
   const dbN = await q`SELECT COUNT(*)::int AS n FROM contractor_doc_types WHERE org_id=${ORG} AND active=TRUE`;
-  check("seed: exactly 5 active rows", Number(dbN[0].n) === 5, JSON.stringify(dbN));
+  check("seed: exactly 6 active rows", Number(dbN[0].n) === 6, JSON.stringify(dbN));
   check("seed: admin actor can seed too", (await seedMandatedDocTypesCore({ orgId: ORG, id: OWNER, role: "admin" })).ok === true);
   check("seed: contractor actor → unauthorized", (await seedMandatedDocTypesCore(DRIVER_ACTOR)).ok === false);
   check("seed: no audit rows (idempotent re-seed = nothing to record)", true);
   const aud = await q`SELECT action FROM audit_log WHERE org_id=${ORG} AND action='contractor_doc_type_added'`;
-  check("seed: 5 doc-type-added audit rows", aud.length === 5, JSON.stringify(aud));
+  check("seed: 6 doc-type-added audit rows", aud.length === 6, JSON.stringify(aud));
 }
 /* ==================== 1b) auto-seed for ANY org (owner mandate 2026-08-12): ====================
  * the PRODUCTION org is seeded at server boot via ensureMandatedDocTypesForOrg
@@ -130,31 +131,31 @@ const ORG3 = `qa-ca-p3c-${randomUUID()}`; // deliberately member-less
   await q`INSERT INTO users(id, name, email, password_hash) VALUES(${ORG2_OWNER}, 'QA P3B Owner', ${`qa-p3-${ORG2_OWNER}@lightning.test`}, 'x')`;
   await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${ORG2}, ${ORG2_OWNER}, 'owner')`;
   check("auto-seed: test orgs are never the production org (guard)", ORG !== PRODUCTION_ORG_ID && ORG2 !== PRODUCTION_ORG_ID && ORG3 !== PRODUCTION_ORG_ID);
-  check("auto-seed: mandated constant is the owner's exact set (W-9, I-9, License+facial, Insurance, Notifications & Location)",
-    MANDATED_DOC_TYPES.length === 5 &&
-    MANDATED_DOC_TYPES.map((m) => `${m.name}${m.requiresFacialVerification ? "*" : ""}`).join("|") === "W-9|I-9|Driver's License*|Insurance information|Notifications & Location");
+  check("auto-seed: mandated constant is the owner's exact set (W-9, I-9, License front+facial, License back, Insurance, Notifications & Location)",
+    MANDATED_DOC_TYPES.length === 6 &&
+    MANDATED_DOC_TYPES.map((m) => `${m.name}${m.requiresFacialVerification ? "*" : ""}`).join("|") === "W-9|I-9|Driver's License — Front*|Driver's License — Back|Insurance information|Notifications & Location");
   const a1 = await ensureMandatedDocTypesForOrg(ORG2);
-  check("auto-seed: fresh org gets all 5 types (no actor needed)", a1.length === 5, JSON.stringify(a1));
-  check("auto-seed: exact mandated names + license flagged facial",
-    a1.map((t) => `${t.name}${t.requiresFacialVerification ? "*" : ""}`).join("|") === "W-9|I-9|Driver's License*|Insurance information|Notifications & Location", JSON.stringify(a1));
+  check("auto-seed: fresh org gets all 6 types (no actor needed)", a1.length === 6, JSON.stringify(a1));
+  check("auto-seed: exact mandated names + license front flagged facial",
+    a1.map((t) => `${t.name}${t.requiresFacialVerification ? "*" : ""}`).join("|") === "W-9|I-9|Driver's License — Front*|Driver's License — Back|Insurance information|Notifications & Location", JSON.stringify(a1));
   const a2 = await ensureMandatedDocTypesForOrg(ORG2);
   check("auto-seed: idempotent — second call adds nothing", a2.length === 0, JSON.stringify(a2));
   const a3 = await ensureMandatedDocTypesForOrg(ORG3);
-  check("auto-seed: member-less org seeds all 5 without crashing", a3.length === 5, JSON.stringify(a3));
+  check("auto-seed: member-less org seeds all 6 without crashing", a3.length === 6, JSON.stringify(a3));
   const a4 = await ensureMandatedDocTypesForOrg(ORG3);
   check("auto-seed: member-less org idempotent too", a4.length === 0, JSON.stringify(a4));
   const aud2 = await q`SELECT actor_user_id FROM audit_log WHERE org_id=${ORG2} AND action='contractor_doc_type_added'`;
-  check("auto-seed: audit rows attributed to the org's owner member", aud2.length === 5 && aud2.every((r) => String(r.actor_user_id) === ORG2_OWNER), JSON.stringify(aud2));
+  check("auto-seed: audit rows attributed to the org's owner member", aud2.length === 6 && aud2.every((r) => String(r.actor_user_id) === ORG2_OWNER), JSON.stringify(aud2));
   const aud3 = await q`SELECT COUNT(*)::int AS n FROM audit_log WHERE org_id=${ORG3} AND action='contractor_doc_type_added'`;
   check("auto-seed: no members → zero audit rows, seed still succeeded", Number(aud3[0].n) === 0, JSON.stringify(aud3));
   const names = await q`SELECT name FROM contractor_doc_types WHERE org_id=${ORG2} ORDER BY sort_order`;
-  check("auto-seed: DB rows exist for ORG2 in mandated order", names.map((r) => String(r.name)).join("|") === "W-9|I-9|Driver's License|Insurance information|Notifications & Location", JSON.stringify(names));
+  check("auto-seed: DB rows exist for ORG2 in mandated order", names.map((r) => String(r.name)).join("|") === "W-9|I-9|Driver's License — Front|Driver's License — Back|Insurance information|Notifications & Location", JSON.stringify(names));
 }
 /* ==================== 2) upload → pending → approve → approved lifecycle ==================== */
 let docId;
 {
   const before = await getMyDocumentsCore(DRIVER_ACTOR);
-  check("docs: 5 rows, all missing, 0 approved", before.ok === true && before.data.length === 5 && before.data.every((d) => d.status === "missing"), JSON.stringify(before));
+  check("docs: 6 rows, all missing, 0 approved", before.ok === true && before.data.length === 6 && before.data.every((d) => d.status === "missing"), JSON.stringify(before));
   const uploadOpts = { fetchImpl: makeFetch().fetchImpl };
   const u1 = await uploadMyDocumentCore(DRIVER_ACTOR, { docTypeId: w9.id, fileName: "w9.pdf", dataUrl: PDF_1KB, expiresOn: "" }, uploadOpts);
   check("upload: W-9 accepted (pending)", u1.ok === true && u1.storageKey && u1.status === "uploaded", JSON.stringify(u1));
@@ -232,17 +233,17 @@ let docId;
   const g0 = await getComplianceGateCore(DRIVER_ACTOR);
   check("gate: blocked while docs missing (w9 approved, others missing/rejected)", g0.ok === false && g0.code === "docs_incomplete", JSON.stringify(g0));
   check("gate: message is white-label, names the Docs screen + GO", g0.ok === false && /Documents/.test(g0.message) && /go online/i.test(g0.message), g0.ok ? "open" : g0.message);
-  check("gate: message shows the approved/required counts + points at Documents", g0.ok === false && g0.message.includes("1 of 5 required documents are approved") && /Open Documents/.test(g0.message), g0.ok ? "open" : g0.message);
-  check("gate: required count is 5", g0.ok === false && g0.required === 5, JSON.stringify(g0));
-  // Approve I-9 (rejected → driver reuploads → owner verifies), license + selfie (verify), insurance (verify)
+  check("gate: message shows the approved/required counts + points at Documents", g0.ok === false && g0.message.includes("1 of 6 required documents are approved") && /Open Documents/.test(g0.message), g0.ok ? "open" : g0.message);
+  check("gate: required count is 6", g0.ok === false && g0.required === 6, JSON.stringify(g0));
+  // Approve I-9 (rejected → driver reuploads → owner verifies), license front + selfie (verify), insurance (verify), license back (upload + verify)
   const m = makeFetch();
   const re = await uploadMyDocumentCore(DRIVER_ACTOR, { docTypeId: i9.id, fileName: "i9-2.pdf", dataUrl: PDF_1KB, expiresOn: "" }, { fetchImpl: m.fetchImpl });
   await setDocumentStatusCore(ACTOR, { docId: (await docIdOf(DRIVER_ACTOR, i9.id)) ?? "", status: "verified", reviewNote: "" });
   await setDocumentStatusCore(ACTOR, { docId: docId ?? "", status: "verified", reviewNote: "" }); // W-9 re-affirm
-  // License + insurance are still awaiting the owner's review → the gate stays
-  // closed with the pending-review note ("GO blocked with pending docs").
+  // License (front) + license back + insurance are still awaiting the owner's
+  // review → the gate stays closed with the pending-review note.
   const stillPending = await getComplianceGateCore(DRIVER_ACTOR);
-  check("gate: still blocked with pending review (license + insurance await the owner)",
+  check("gate: still blocked with pending review (license front/back + insurance await the owner)",
     stillPending.ok === false && stillPending.code === "docs_incomplete" && stillPending.message.includes("awaiting the owner's review"), stillPending.ok ? "open" : stillPending.message);
   const licRow = await getMyDocumentsCore(DRIVER_ACTOR);
   const licDoc = licRow.ok ? licRow.data.find((d) => d.docTypeId === lic.id) : null;
@@ -250,7 +251,10 @@ let docId;
   const insRow = await getMyDocumentsCore(DRIVER_ACTOR);
   const insDoc = insRow.ok ? insRow.data.find((d) => d.docTypeId === ins.id) : null;
   await setDocumentStatusCore(ACTOR, { docId: insDoc && insDoc.docId ? insDoc.docId : "", status: "verified", reviewNote: "" });
-  // Migration 41: the 5th mandated type "Notifications & Location" is a
+  const lb = await uploadMyDocumentCore(DRIVER_ACTOR, { docTypeId: licBack.id, fileName: "license-back.jpg", dataUrl: JPG_1KB, expiresOn: "" }, { fetchImpl: m.fetchImpl });
+  check("gate: license back uploads (pending)", lb.ok === true && lb.status === "uploaded", JSON.stringify(lb));
+  await setDocumentStatusCore(ACTOR, { docId: (await docIdOf(DRIVER_ACTOR, licBack.id)) ?? "", status: "verified", reviewNote: "" });
+  // Migration 41: the "Notifications & Location" mandated type is a
   // driver-self-completed item (push subscription + live GPS fix — no owner
   // review). Complete it so the gate can open.
   await q`INSERT INTO push_subscriptions(id, org_id, user_id, endpoint, p256dh, auth)
@@ -260,20 +264,20 @@ let docId;
   const gateAll = await getComplianceGateCore(DRIVER_ACTOR);
   check("gate: open once every type approved", gateAll.ok === true, JSON.stringify(gateAll));
   const comp = await getMyComplianceCore(DRIVER_ACTOR);
-  check("compliance: 5/5 approved, 0 needed, 0 pending", comp.ok === true && comp.data.approved === 5 && comp.data.required === 5 && comp.data.neededCount === 0 && comp.data.pendingCount === 0, JSON.stringify(comp));
+  check("compliance: 6/6 approved, 0 needed, 0 pending", comp.ok === true && comp.data.approved === 6 && comp.data.required === 6 && comp.data.neededCount === 0 && comp.data.pendingCount === 0, JSON.stringify(comp));
 }
 /* ==================== 7) owner-in-driver-view: same gate, same data ==================== */
 {
   const ownerRows = await getMyDocumentsCore(OWNER_DRIVER_ACTOR);
-  check("owner-in-driver-view: sees the driver doc list (5 rows, all missing)",
-    ownerRows.ok === true && ownerRows.data.length === 5 && ownerRows.data.every((d) => d.status === "missing"), JSON.stringify(ownerRows));
+  check("owner-in-driver-view: sees the driver doc list (6 rows, all missing)",
+    ownerRows.ok === true && ownerRows.data.length === 6 && ownerRows.data.every((d) => d.status === "missing"), JSON.stringify(ownerRows));
   const g = await getComplianceGateCore(OWNER_DRIVER_ACTOR);
   check("owner-in-driver-view: gate blocked with docs_incomplete (identical logic)",
-    g.ok === false && g.code === "docs_incomplete" && g.required === 5, JSON.stringify(g));
+    g.ok === false && g.code === "docs_incomplete" && g.required === 6, JSON.stringify(g));
   const g2 = await getComplianceGateCore(OWNER_DRIVER_ACTOR);
   check("owner-in-driver-view: message copy matches the driver-facing wording", g2.ok === false && /go online/i.test(g2.message), g2.ok ? "open" : g2.message);
   const ownerComp = await getMyComplianceCore(OWNER_DRIVER_ACTOR);
-  check("owner-in-driver-view: compliance summary shows the same counts", ownerComp.ok === true && ownerComp.data.approved === 0 && ownerComp.data.required === 5, JSON.stringify(ownerComp));
+  check("owner-in-driver-view: compliance summary shows the same counts", ownerComp.ok === true && ownerComp.data.approved === 0 && ownerComp.data.required === 6, JSON.stringify(ownerComp));
   // Uploads by the owner-in-driver-view land for the same contractor identity:
   const m = makeFetch();
   const u = await uploadMyDocumentCore(OWNER_DRIVER_ACTOR, { docTypeId: w9.id, fileName: "odv-w9.pdf", dataUrl: PDF_1KB, expiresOn: "" }, { fetchImpl: m.fetchImpl });
