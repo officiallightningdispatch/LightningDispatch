@@ -1902,6 +1902,15 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE UNIQUE INDEX IF NOT EXISTS apns_device_tokens_org_user_token_idx ON apns_device_tokens(org_id, user_id, token)`;
     await q`CREATE INDEX IF NOT EXISTS apns_device_tokens_org_user_idx ON apns_device_tokens(org_id, user_id)`;
   }],
+  // 93 (2026-09-03): arrival module (owner-directed 2026-08-16). A driver who
+  // exceeds their service goal at the FIRST service-phase photo is auto-assigned
+  // the On-Time Service Standards lesson with a ONE-WEEK deadline. due_at is the
+  // only new column -- status stays 'in_progress' and the Academy view surfaces
+  // the lesson (already lists in-progress rows). due_at is nullable: manual
+  // assignments and legacy rows have no deadline.
+  [93, async (q) => {
+    await q`ALTER TABLE academy_progress ADD COLUMN IF NOT EXISTS due_at TIMESTAMPTZ`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

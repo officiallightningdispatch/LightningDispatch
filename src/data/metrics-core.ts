@@ -109,6 +109,7 @@ export type LessonProgressRow = {
   lessonId: string; slug: string; title: string; summary: string; metricKey: string;
   durationMinutes: number; sortOrder: number; status: "not_started" | "in_progress" | "completed";
   completedAt: string | null;
+  dueAt: string | null;
 };
 export type LessonProgressResult = { ok: true; lessons: LessonProgressRow[] } | { ok: false; error: string };
 export type MarkLessonCompleteResult = { ok: true; status: "completed" } | { ok: false; error: string };
@@ -1234,7 +1235,7 @@ export async function getLessonProgressHandler(): Promise<LessonProgressResult> 
   try {
     const q = sql();
     const rows = await q`SELECT l.id, l.slug, l.title, l.summary, l.metric_key, l.duration_minutes, l.sort_order,
-        ap.status, ap.completed_at
+        ap.status, ap.completed_at, ap.due_at
       FROM academy_lessons l
       LEFT JOIN academy_progress ap ON ap.org_id=${eff.u.orgId} AND ap.user_id=${eff.userRowId} AND ap.lesson_id=l.id
       WHERE l.active=TRUE ORDER BY l.sort_order`;
@@ -1248,6 +1249,7 @@ export async function getLessonProgressHandler(): Promise<LessonProgressResult> 
       sortOrder: Number(r.sort_order ?? 0),
       status: r.status == null ? "not_started" : (String(r.status) === "completed" ? "completed" : "in_progress"),
       completedAt: r.completed_at != null ? new Date(String(r.completed_at)).toISOString() : null,
+      dueAt: r.due_at != null ? new Date(String(r.due_at)).toISOString() : null,
     }));
     return { ok: true, lessons };
   } catch (e) {

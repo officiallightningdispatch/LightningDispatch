@@ -29,6 +29,7 @@ import { loadB2Config, authorizeAccount, putObject, getObject } from "./b2-clien
 import { loadDriverSession, callHasDriver, tbFetch } from "./driver-gps-core";
 import type { DriverSession } from "./driver-auth";
 import { batteryInstallPhotoGate, decrementBatteryInventory, createBatteryWarranty } from "./battery-lifecycle-core";
+import { goalSecondsFor, UNKNOWN_SERVICE_GOAL_SECONDS, ON_TIME_STANDARDS_LESSON_ID, serviceTimeGoalsCore } from "./service-time-core";
 
 /* ----------------------------------- domain ----------------------------------- */
 
@@ -238,8 +239,80 @@ export async function photoStatusForJob(orgId: string, job: ResolvedJob): Promis
   };
 }
 
-/* ------------------------------ B2 storage layer ------------------------------ */
+/* ------------------------------ arrival module (2026-08-16) ------------------------------ */
 
+export type ArrivalStopResult =
+  | { ok: true; durationSeconds: number; exceededGoal: boolean; academyAssigned: boolean }
+  | { ok: false; code: "not_found" | "no_arrival"; message: string };
+
+/** Resolve the org goal for this job's service type, mirroring the queue's
+ *  enrichment (goalSecondsFor + 15-min unknown default). Returns null only
+ *  when the job row itself is missing. */
+async function goalForJob(orgId: string, serviceType: string | null): Promise<{ goalSeconds: number | null }> {
+  const goals = await serviceTimeGoalsCore(orgId);
+  const { goalSeconds } = goalSecondsFor(goals, serviceType ?? "", null);
+  if (goalSeconds != null) return { goalSeconds };
+  return { goalSeconds: UNKNOWN_SERVICE_GOAL_SECONDS };
+}
+
+/**
+ * The timer-stop boundary (owner 2026-08-16): the FIRST successfully persisted
+ * service-phase photo. At that exact moment, write `duration_seconds` onto
+ * dispatch_jobs IDEMPOTENTLY — computed from arrival (arrived_at) to now, written
+ * ONCE, never overwritten (preserve the first timestamp). If the elapsed time
+ * exceeds the job's service goal, also auto-assign the On-Time Service Standards
+ * lesson with a ONE-WEEK due date. Everything is server-side: the client never
+ * supplies elapsed-vs-goal. Non-blocking — a failure here must never fail the
+ * photo upload that triggered it, so the caller invokes this best-effort.
+ */
+export async function recordArrivalStopCore(
+  orgId: string,
+  userId: string,
+  jobId: string,
+  opts: { nowMs?: number } = {},
+): Promise<ArrivalStopResult> {
+  try {
+    await ensure();
+    const q = await db();
+    const rows = await q`SELECT id, service_type, arrived_at, assigned_at, duration_seconds, assigned_contractor_id, assigned_driver_towbook_id
+      FROM dispatch_jobs WHERE org_id=${orgId} AND id=${jobId} LIMIT 1`;
+    if (!rows.length) return { ok: false, code: "not_found", message: "Job not found." };
+    const r = rows[0] as Record<string, unknown>;
+    const now = opts.nowMs ?? Date.now();
+    const arrived = r.arrived_at != null ? new Date(String(r.arrived_at)).getTime() : null;
+    const assigned = r.assigned_at != null ? new Date(String(r.assigned_at)).getTime() : null;
+    const anchor = arrived ?? assigned;
+    if (anchor == null || !Number.isFinite(anchor)) {
+      return { ok: false, code: "no_arrival", message: "No arrival timestamp — can't record service duration." };
+    }
+    const elapsed = Math.max(0, Math.round((now - anchor) / 1000));
+    const goal = await goalForJob(orgId, r.service_type != null ? String(r.service_type) : null);
+    // Idempotent, never-overwrite duration write (first timestamp wins).
+    await q`UPDATE dispatch_jobs SET duration_seconds=COALESCE(duration_seconds, ${elapsed})
+      WHERE org_id=${orgId} AND id=${jobId}`;
+    const exceeded = goal.goalSeconds != null && elapsed > goal.goalSeconds;
+    let academyAssigned = false;
+    if (exceeded) {
+      const targetUser = typeof userId === "string" && userId ? userId : null;
+      if (targetUser) {
+        const ins = await q`INSERT INTO academy_progress(org_id, user_id, lesson_id, status, due_at)
+          VALUES(${orgId}, ${targetUser}, ${ON_TIME_STANDARDS_LESSON_ID}, 'in_progress', NOW() + INTERVAL '7 days')
+          ON CONFLICT (org_id, user_id, lesson_id) DO NOTHING RETURNING lesson_id`;
+        academyAssigned = ins.length > 0;
+        try {
+          await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail)
+            VALUES(gen_random_uuid()::text, ${orgId}, ${targetUser}, 'contractor', 'assign_academy_lesson', 'academy_progress', ${targetUser},
+              ${JSON.stringify({ lessonId: ON_TIME_STANDARDS_LESSON_ID, source: "arrival_module", elapsedSeconds: elapsed, goalSeconds: goal.goalSeconds ?? null })}::jsonb)`;
+        } catch { /* best-effort audit */ }
+      }
+    }
+    return { ok: true, durationSeconds: elapsed, exceededGoal: exceeded, academyAssigned };
+  } catch (err) {
+    return { ok: false, code: "not_found", message: err instanceof Error ? err.message : "Unable to record service duration." };
+  }
+}
+
+/* ------------------------------ B2 storage layer ------------------------------ */
 const storageKeyFor = (orgId: string, jobId: string, phase: PhotoPhase, side: PhotoSide) => `ld-photos/${orgId}/${jobId}/${phase}/${side}.jpg`;
 
 /** Decode a data: URL into bytes + mime (client-side resize always sends
@@ -286,6 +359,7 @@ export async function uploadJobPhotoCore(user: PhotoUser, data: unknown, opts: {
 
     const photos = await jobPhotoRows(user.orgId, job.id);
     const { complete } = summarizePhotos(photos);
+    const hadServicePhotos = Object.keys(photos.service).length > 0;
     if (v.data.phase === "pre_arrival") {
       if (job.status !== "en_route" && job.status !== "arrived") return { ok: false, code: "phase_locked", message: "Arrival photos unlock once you're en route." };
     } else if (v.data.phase === "service") {
@@ -327,6 +401,15 @@ export async function uploadJobPhotoCore(user: PhotoUser, data: unknown, opts: {
         SELECT gen_random_uuid()::text, ${user.orgId}, ${user.id}, 'contractor', 'photo_uploaded', 'job', ${job.id},
           jsonb_build_object('phase', ${v.data.phase}::text, 'side', ${v.data.side}::text, 'storageKey', ${key}::text, 'bytes', ${decoded.bytes.length}::int), 'driver-photos'`;
     } catch { /* best-effort audit */ }
+    // TIMER-STOP BOUNDARY (owner 2026-08-16): the FIRST successfully persisted
+    // service-phase photo ends the live actual-time timer. Write duration_seconds
+    // once + auto-assign the on-time Academy lesson if the driver exceeded the
+    // goal. Best-effort — a duration/academy hiccup must NEVER fail the photo.
+    if (v.data.phase === "service" && !hadServicePhotos) {
+      try {
+        await recordArrivalStopCore(user.orgId, user.id, job.id);
+      } catch { /* never block the photo upload */ }
+    }
     return { ok: true, storageKey: key, side: v.data.side, phase: v.data.phase };
   } catch (err) {
     return { ok: false, code: "b2_failed", message: err instanceof Error ? err.message : "Photo upload failed. Try again." };
