@@ -237,6 +237,7 @@ export const AI_DECISION_VALUES = [
   "escalated_dispatch_failed",
   "escalated_dispatch_pending",
   "escalated_state_unknown",
+  "escalated_pickup_contradiction",
   "escalated_qualification_failed",
   "rejected_tow_no_eligible_driver",
   // Cross-module escalation values (emitted by raw SQL outside the engine):
@@ -1028,14 +1029,16 @@ export function validateGeocodeResult(
   return { ok: false, reason: `no strong token overlap — ${why}` };
 }
 
-/** Real TomTom Search geocode lookup (the production path): best result for a
- *  full address, limit=3, US-only + the address's state hint when present.
- *  Returns null on ANY failure (no key is the caller's concern — the caller
- *  only calls this with a resolved key; 429/5xx/network/timeout/bad shape all
- *  yield null) so the engine always escalates instead of guessing. The raw
- *  result is VALIDATED by validateGeocodeResult before any coordinates are
- *  trusted — this function never decides acceptability. */
-export async function tomtomGeocodeLookup(
+/** One raw TomTom Search geocode attempt (the single-attempt primitive, kept
+ *  injectable/overridable so hermetic tests can assert exactly-one-call
+ *  semantics): best result for a full address, limit=3, US-only + the
+ *  address's state hint when present. Returns null on ANY failure (no key is
+ *  the caller's concern — the caller only calls this with a resolved key;
+ *  429/5xx/network/timeout/bad shape all yield null) so the engine always
+ *  escalates instead of guessing. The raw result is VALIDATED by
+ *  validateGeocodeResult before any coordinates are trusted — this function
+ *  never decides acceptability. */
+export async function geocodeLookupOnce(
   address: string,
   apiKey: string,
   fetchImpl: typeof fetch = globalThis.fetch,
@@ -1072,6 +1075,43 @@ export async function tomtomGeocodeLookup(
   } catch {
     return null;
   }
+}
+
+/** Retry/backoff knobs for the geocode resilience layer (owner incident
+ *  2026-09-03, offer 330196412): a single transient TomTom blip must not
+ *  strand a live job. All injectable so hermetic tests can run with zero real
+ *  delay; production defaults are bounded (~2s then ~4s between attempts, max
+ *  3 attempts, each capped by ROUTER_TIMEOUT_MS). */
+export type GeocodeLookupOptions = {
+  maxAttempts?: number;
+  backoffMs?: number | ((attempt: number) => number);
+  sleep?: (ms: number) => Promise<void>;
+};
+
+/** Real TomTom Search geocode lookup (the production path) with short
+ *  retry/backoff: attempts geocodeLookupOnce up to maxAttempts times and
+ *  returns the first success. Persistent failure (429/5xx/network/timeout/bad
+ *  body every attempt) still yields null so the engine escalates instead of
+ *  guessing. The single-attempt behavior remains available as
+ *  geocodeLookupOnce for callers/tests that need exactly-one-call semantics. */
+export async function tomtomGeocodeLookup(
+  address: string,
+  apiKey: string,
+  fetchImpl: typeof fetch = globalThis.fetch,
+  options: GeocodeLookupOptions = {},
+): Promise<GeocodeLookup | null> {
+  const maxAttempts = options.maxAttempts ?? 3;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const backoffFor = options.backoffMs ?? ((attempt: number) => (attempt <= 1 ? 2000 : 4000));
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const lookup = await geocodeLookupOnce(address, apiKey, fetchImpl);
+    if (lookup) return lookup;
+    if (attempt < maxAttempts) {
+      const delay = typeof backoffFor === "function" ? backoffFor(attempt) : backoffFor;
+      if (delay > 0) await sleep(delay);
+    }
+  }
+  return null;
 }
 
 /* ------------------------------- settings + ledger ------------------------------- */
@@ -1459,7 +1499,16 @@ async function resolveOfferPickupCoords(
   };
 }
 
-type LookupAnchor = { lat: number; lng: number; note: string; unresolvedPickup: boolean };
+type LookupAnchor = {
+  lat: number;
+  lng: number;
+  note: string;
+  unresolvedPickup: boolean;
+  /** True when the offer coordinates are the known Agero CT placeholder AND the
+   *  startingLocation address text resolves to a DIFFERENT US state — the
+   *  placeholder must NOT be retained and the offer must NOT auto-accept. */
+  pickupContradiction: boolean;
+};
 
 /** Choose the coordinate used by Towbook nearestDrivers and road ranking.
  * Always prefer the strongest real pickup resolution: authoritative sync
@@ -1477,13 +1526,31 @@ async function resolveDriverLookupAnchor(
   const lng = Number(offer.startLocationLongitude);
   if (stateResolution.authoritativeLat != null && stateResolution.authoritativeLng != null) {
     const realLat = stateResolution.authoritativeLat, realLng = stateResolution.authoritativeLng;
-    return { lat: realLat, lng: realLng, unresolvedPickup: false, note: `lookup anchored at authoritative pickup (${realLat},${realLng}) — offer coords suppressed` };
+    return { lat: realLat, lng: realLng, unresolvedPickup: false, pickupContradiction: false, note: `lookup anchored at authoritative pickup (${realLat},${realLng}) — offer coords suppressed` };
   }
   const resolved = await resolveOfferPickupCoords(orgId, rawOffer, deps, fetchImpl);
   if (resolved.ok) {
-    return { lat: resolved.lat, lng: resolved.lng, unresolvedPickup: false, note: `lookup anchored at ${resolved.source === "geocode" ? "geocoded startingLocation" : "synced pickup"} (${resolved.lat},${resolved.lng}) — offer coords suppressed` };
+    return { lat: resolved.lat, lng: resolved.lng, unresolvedPickup: false, pickupContradiction: false, note: `lookup anchored at ${resolved.source === "geocode" ? "geocoded startingLocation" : "synced pickup"} (${resolved.lat},${resolved.lng}) — offer coords suppressed` };
   }
-  return { lat, lng, unresolvedPickup: isAgeroPlaceholderCoords(lat, lng), note: `offer coordinates retained (no better resolution)${isAgeroPlaceholderCoords(lat, lng) ? ` — real pickup unresolved (${resolved.reason})` : ""}` };
+  const placeholder = isAgeroPlaceholderCoords(lat, lng);
+  if (placeholder) {
+    // PLACEHOLDER GUARD (owner incident 2026-09-03, offer 330196412): a known
+    // Agero CT placeholder is present AND the startingLocation address text
+    // resolves to a different US state. Retaining the placeholder would route a
+    // real out-of-state job to CT — fail closed to a human instead of
+    // auto-accepting at driverId 0.
+    const addrState = resolveStateFromAddress(startingLocationOf(rawOffer) ?? "").state;
+    if (addrState && addrState !== "CT") {
+      return {
+        lat,
+        lng,
+        unresolvedPickup: true,
+        pickupContradiction: true,
+        note: `placeholder coordinates contradict address text (${lat},${lng} is the known Agero CT placeholder; address resolves to ${addrState}) — held for human (${resolved.reason})`,
+      };
+    }
+  }
+  return { lat, lng, unresolvedPickup: placeholder, pickupContradiction: false, note: `offer coordinates retained (no better resolution)${placeholder ? ` — real pickup unresolved (${resolved.reason})` : ""}` };
 }
 
 /** Build the OfferShape from the raw offer record with the given pickup
@@ -3257,6 +3324,16 @@ async function runAutoDispatchInternal(
         orgId, rawOffer as Record<string, unknown>, offer, zoneState, deps, fetchImpl,
       );
       lookupAnchorNote = lookupAnchor.note;
+      // PLACEHOLDER GUARD (owner incident 2026-09-03, offer 330196412): known
+      // Agero CT placeholder coords + a startingLocation that resolves to a
+      // DIFFERENT state = the placeholder contradicts the real pickup. Fail
+      // closed to a human — never retain the placeholder, never auto-accept at
+      // driverId 0 (an accept would strand a real out-of-state job).
+      if (lookupAnchor.pickupContradiction) {
+        await record({ decision: "escalated_pickup_contradiction", reason: lookupAnchor.note, rawResponse: { offer, pickupResolution: lookupAnchor.note } });
+        result.processed++; result.decisions.push({ callRequestId: offer.callRequestId, decision: "escalated_pickup_contradiction", escalated: true, reason: lookupAnchor.note });
+        continue;
+      }
       // SUB I Fix B(a): when the retained Agero CT placeholder anchors a job
       // whose RESOLVED state is NOT CT, the placeholder is cross-state — routing/
       // ranking ETA to it would quote a cross-country road ETA. Fail-closed hold:

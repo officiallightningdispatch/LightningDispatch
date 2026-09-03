@@ -56,6 +56,7 @@ const {
   SERVICE_MINUTES_PER_JOB,
   validateGeocodeResult,
   tomtomGeocodeLookup,
+  geocodeLookupOnce,
   GEOCODE_SCORE_FLOOR,
   ANCHOR_RADIUS_MILES,
   STALE_GPS_FIX_MINUTES,
@@ -1138,11 +1139,13 @@ try {
     const { deps } = makeDeps(withRouter(m.fetchImpl, rf.fetchImpl), null, { noRouterOverride: true, env: { TOMTOM_API_KEY: "test-key-not-real" } });
     const r = await runAutoDispatch(ORG3, deps);
     check("engine+key: auto_accept_with_driver + reason names tomtom-traffic + delay 2", r.decisions[0]?.decision === "auto_accept_with_driver" && String(r.decisions[0]?.reason).includes("tomtom-traffic road") && String(r.decisions[0]?.reason).includes("delay 2"), String(r.decisions[0]?.reason));
-    // The key path makes two legitimate TomTom requests: one traffic route for
-    // the ETA and one reverse-geocode corroboration for the same-state guard.
-    // The latter is required by the fail-closed state policy; this assertion
-    // still proves the ETA provider path is TomTom and never falls to OSRM.
-    check("engine+key: TomTom routing + state corroboration, zero OSRM calls (key path)", rf.tomtomCalls.length === 2 && rf.osrmCalls.length === 0, `${rf.tomtomCalls.length}/${rf.osrmCalls.length}`);
+    // The key path makes four legitimate TomTom requests: ONE traffic route for
+    // the ETA plus THREE geocode-resolve attempts. The geocode resilience layer
+    // (2026-09-03) retries geocodeLookupOnce up to its default of 3; this mock's
+    // canned *routing* body never satisfies the geocode shape, so each attempt
+    // falls through and the engine retains the placeholder/address resolution as
+    // before. Zero OSRM calls still proves the ETA provider path stays on TomTom.
+    check("engine+key: TomTom routing + geocode resolve, zero OSRM calls (key path)", rf.tomtomCalls.length === 4 && rf.osrmCalls.length === 0, `${rf.tomtomCalls.length}/${rf.osrmCalls.length}`);
     const rows = await decisions3();
     const v = rows.find((x) => String(x.call_request_id) === "8021");
     check("engine+key: ETA 14 min + raw_response.eta provider tomtom/liveTraffic/delay/routerNotes", v && Number(v.eta_minutes) === 14 && v.raw_response?.eta?.provider === "tomtom" && v.raw_response?.eta?.liveTraffic === true && v.raw_response?.eta?.trafficDelaySeconds === 120 && String(v.raw_response?.eta?.routerNotes).includes("delay 120"), JSON.stringify(v?.raw_response?.eta));
@@ -1443,11 +1446,13 @@ try {
       const r = await runAutoDispatch(ORG4, deps);
       const rows = await q`SELECT reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG4} AND call_request_id='8034'`;
       check("engine tomtom-429: reason surfaces 'tomtom failed (HTTP 429) → osrm' + ETA still quoted", rows[0] && String(rows[0].reason).includes("tomtom failed (HTTP 429) → osrm") && String(rows[0].reason).includes("osrm road 10 + buffer 5") && rows[0].raw_response?.eta?.tomtomFailure === "HTTP 429", String(rows[0]?.reason));
-      // The engine-level path makes two TomTom requests: the routing attempt
-      // (which 429s → OSRM fallback) and the reverse-geocode corroboration for
-      // the same-state guard. The assertion still proves the chain attempted
-      // TomTom live first and fell to OSRM only after the 429.
-      check("engine tomtom-429: TomTom routing attempt + state corroboration, 1 OSRM fallback (chain attempted live first)", rf.tomtomCalls.length === 2 && rf.osrmCalls.length === 1, `${rf.tomtomCalls.length}/${rf.osrmCalls.length}`);
+      // The engine now makes 1 TomTom routing attempt (which 429s → OSRM
+      // fallback) PLUS 3 geocode-resolve attempts from the new retry layer (the
+      // mock's routing body never satisfies the geocode shape, so all 3 fall
+      // through and the placeholder/address resolution is retained exactly as
+      // before) = 4 TomTom total, still 1 OSRM. The assertion still proves the
+      // chain attempted TomTom live first and fell to OSRM only after the 429.
+      check("engine tomtom-429: TomTom routing attempt + state corroboration, 1 OSRM fallback (chain attempted live first)", rf.tomtomCalls.length === 4 && rf.osrmCalls.length === 1, `${rf.tomtomCalls.length}/${rf.osrmCalls.length}`);
     }
     // ETA honesty in the WORKLOAD chain (busy driver): the decision records the
     // TomTom failure when a chain leg fell back — provider osrm + tomtomFailure
@@ -1701,7 +1706,67 @@ try {
     check("GB/TX durable evidence: CT driver is blocked by in-state-only guard", posts(stale.calls).every((c) => c.body?.driverId == null || Number(c.body.driverId) !== ct), JSON.stringify(posts(stale.calls).map((c) => c.body)));
   }
 
-  /* ============ 27k) tick observability: ai_dispatcher_runs (backlog #1) ============ */
+  /* ============ 27k-bis) geocode resilience + placeholder guard (owner incident 2026-09-03, offer 330196412) ============ */
+  {
+    const txAddr = "105-B Williams Dr, Georgetown, TX 78633";
+    const ctAddr = "123 MAIN ST, BRIDGEPORT CT 06606";
+    // (a) geocode transient failure then success on retry → the job resolves to
+    // the REAL Texas pickup (not the placeholder), via the production retry
+    // path (tomtomGeocodeLookup, no geocodeOverride).
+    {
+      const m = makeFetch({
+        offers: [offer(97001, { lat: 41.214889, lng: -73.195803, startingLocation: txAddr, purchaseOrderNumber: "geocode-retry-97001" })],
+        drivers: [driver(703785, "Jayden Fountain", { lat: 30.61, lng: -97.65 })],
+      });
+      await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES(${'geocode-retry-gps-' + FIXTURE_TAG}, ${ORG6}, ${USER}, '703785', 30.61, -97.65, ${new Date().toISOString()})`;
+      const geoCalls = [];
+      let geocodeFailsLeft = 1;
+      const routerFetch = async (url, init = {}) => {
+        const u = String(url);
+        if (u.includes("/search/2/geocode/")) {
+          geoCalls.push(u);
+          if (geocodeFailsLeft > 0) { geocodeFailsLeft--; return jsonResponse(500, { error: "transient blip" }); }
+          return jsonResponse(200, { results: [{ score: 96, position: { lat: 30.61, lon: -97.65 }, address: { freeformAddress: "105-B Williams Dr, Georgetown, TX 78633" } }] });
+        }
+        if (u.includes("/routing/1/calculateRoute")) {
+          return jsonResponse(200, { routes: [{ summary: { travelTimeInSeconds: 600, trafficDelayInSeconds: 0 } }] });
+        }
+        if (u.includes("router.project-osrm.org")) {
+          return jsonResponse(200, { code: "Ok", routes: [{ duration: 600 }] });
+        }
+        throw new Error(`geocode-retry mock hit unexpected URL: ${u}`);
+      };
+      const { deps } = makeDeps(withRouter(m.fetchImpl, routerFetch), null, { noRouterOverride: true, env: { TOMTOM_API_KEY: "test-key-not-real" }, stateResolver: async () => "TX" });
+      const r = await runAutoDispatch(ORG6, deps);
+      const row = (await q`SELECT decision, escalated, driver_id, reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='97001'`)[0];
+      check("geocode retry: two geocode attempts (transient fail then success)", geoCalls.length === 2, JSON.stringify(geoCalls));
+      check("geocode retry: proceeds with real TX coords, NOT the placeholder", r.decisions[0]?.decision === "auto_accept_with_driver" && !r.decisions[0]?.escalated && m.calls.some((c) => String(c.url).includes("latitude=30.61") && String(c.url).includes("longitude=-97.65")) && !m.calls.some((c) => String(c.url).includes("latitude=41.214889")), JSON.stringify(m.calls.map((c) => c.url)));
+      check("geocode retry: dispatched to the in-state TX driver, reason records geocoded pickup", posts(m.calls)[0]?.body?.driverId === 703785 && String(row?.reason).includes("geocoded startingLocation") && String(row?.reason).includes("30.61"), JSON.stringify({ post: posts(m.calls)[0]?.body, reason: row?.reason }));
+    }
+    // (b) placeholder coords + address text in a DIFFERENT state + geocode still
+    // failing → held for human, never auto-accepted at driverId 0.
+    {
+      const m = makeFetch({ offers: [offer(97002, { lat: 41.214889, lng: -73.195803, startingLocation: txAddr, purchaseOrderNumber: "geocode-contradiction-97002" })], drivers: [] });
+      const { deps } = makeDeps(m.fetchImpl, null, { geocodeOverride: async () => null, stateResolver: async () => "TX" });
+      const r = await runAutoDispatch(ORG6, deps);
+      const row = (await q`SELECT decision, escalated, driver_id, reason FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='97002'`)[0];
+      check("placeholder guard: contradiction held for human (escalated_pickup_contradiction), NOT auto-accepted at driverId 0", r.decisions[0]?.decision === "escalated_pickup_contradiction" && r.decisions[0]?.escalated === true && posts(m.calls).length === 0 && String(row?.reason).includes("contradict") && String(row?.reason).includes("held for human"), JSON.stringify({ r: r.decisions[0], row }));
+    }
+    // (c) placeholder coords + address genuinely in CT (no contradiction) still
+    // behaves as before: placeholder retained, normal same-state dispatch.
+    {
+      const m = makeFetch({
+        offers: [offer(97003, { lat: 41.214889, lng: -73.195803, startingLocation: ctAddr, purchaseOrderNumber: "geocode-ct-97003" })],
+        drivers: [driver(703785, "Jayden Fountain", { lat: 41.19, lng: -73.15 })],
+      });
+      await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude, captured_at) VALUES(${'geocode-ct-gps-' + FIXTURE_TAG}, ${ORG6}, ${USER}, '703785', 41.19, -73.15, ${new Date().toISOString()})`;
+      const { deps } = makeDeps(m.fetchImpl, null, { geocodeOverride: async () => null });
+      const r = await runAutoDispatch(ORG6, deps);
+      const row = (await q`SELECT decision, escalated, reason FROM ai_dispatcher_decisions WHERE org_id=${ORG6} AND call_request_id='97003'`)[0];
+      check("placeholder guard: CT placeholder + CT address (no contradiction) still dispatches normally", r.decisions[0]?.decision === "auto_accept_with_driver" && !r.decisions[0]?.escalated && posts(m.calls)[0]?.body?.driverId === 703785, JSON.stringify({ r: r.decisions[0], post: posts(m.calls)[0]?.body }));
+    }
+  }
+
   {
     // Every tick leaves a run row: gated, every skipped state, empty feed,
     // offers seen (incl. silent skips: status!==0, already-processed), and
@@ -2257,7 +2322,7 @@ try {
     const { deps: t3deps } = makeDeps(t3m.fetchImpl, null, { stateResolver: async (_id, lat) => Number(lat) < 35 ? "TX" : "CT" });
     const t3r = await runAutoDispatch(ORG9, t3deps);
     const t3row = (await q`SELECT decision, escalated, driver_id, eta_minutes, reason, raw_response FROM ai_dispatcher_decisions WHERE org_id=${ORG9} AND call_request_id='96003'`)[0];
-    check("SUB I T3: placeholder-retained holds fail-closed (no placeholder-routed ETA, never cross-state)", t3r.decisions[0]?.decision === "auto_accept_no_driver" && t3r.decisions[0]?.escalated === true && String(t3row?.driver_id ?? "0") === "0" && !t3row?.raw_response?.eta && String(t3row?.reason).includes("unresolved pickup (placeholder retained)") && !t3m.calls.some((c) => c.method === "PUT"), JSON.stringify({ r: t3r.decisions[0], row: t3row }));
+    check("SUB I T3: placeholder-vs-TX-address contradiction fails closed to human (escalated_pickup_contradiction, no accept)", t3r.decisions[0]?.decision === "escalated_pickup_contradiction" && t3r.decisions[0]?.escalated === true && posts(t3m.calls).length === 0 && String(t3row?.reason).includes("contradict") && !t3m.calls.some((c) => c.method === "PUT"), JSON.stringify({ r: t3r.decisions[0], row: t3row }));
   }
 
 
