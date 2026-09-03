@@ -84,7 +84,7 @@ export function resolveStateFromAddress(value: string): AddressStateResolution {
     const rawUpper = value.toUpperCase();
     for (const [code] of Object.entries(STATE_NAMES).map(([name, code]) => [code, name] as const)) {
       const letters = code.split("");
-      if (new RegExp(`(^|[^A-Z])${letters[0]}[^A-Z]*${letters[1]}([^A-Z]|$)`).test(rawUpper)) { explicit = code; break; }
+      if (new RegExp(`(^|[^A-Z])${letters[0]}[^A-Z0-9]+${letters[1]}([^A-Z]|$)`).test(rawUpper)) { explicit = code; break; }
     }
   }
   if (!explicit) {
