@@ -34,6 +34,9 @@ export const BATTERY_GOAL_DEFAULTS: Readonly<Record<string, number>> = {
   standard: 60 * 60,
   advanced: 2 * 60 * 60,
 };
+/** Owner 2026-08-16 (arrival module): an unknown service type still shows a
+ *  15-minute goal and is flagged for review — never a blank target. */
+export const UNKNOWN_SERVICE_GOAL_SECONDS = 15 * 60;
 export const SERVICE_TIME_SERVICE_TYPES = Object.keys(SERVICE_GOAL_DEFAULTS);
 export const SERVICE_TIME_LABELS: Readonly<Record<string, string>> = {
   jump_start: "Jump start",
@@ -169,6 +172,9 @@ export type CounterEnrichment = {
   arrivedAtIso: string | null;
   goalSeconds: number | null;
   serviceKey: string | null;
+  /** True when the service type couldn't be resolved — the arrival module
+   *  shows the 15-minute default and "flagged for review". */
+  reviewFlag: boolean;
 };
 /** Pure enrichment for the driver queue (spec "counter data source"): attach
  *  the arrival timestamp + service-time goal to every ARRIVED-state call
@@ -176,18 +182,20 @@ export type CounterEnrichment = {
  *  (server timestamp, not local clock drift) with the raw Towbook arrivalTime
  *  as fallback; goal = org goals via goalSecondsFor (battery standard/advanced
  *  from Phase 1's battery_sales.install_type). Not-yet-arrived calls keep
- *  nulls — the counter waits for arrival. Pure + deterministic (unit-testable
- *  without a DB). */
+ *  nulls — the counter waits for arrival. An UNKNOWN service type keeps
+ *  serviceKey null but still resolves to the 15-minute default and sets
+ *  reviewFlag (owner 2026-08-16) so the driver always sees a target. Pure +
+ *  deterministic (unit-testable without a DB). */
 export function attachServiceTimeData(
   calls: CounterCall[],
   goals: ServiceTimeGoalRow[],
   batteryVariantByJobId: Map<string, string>,
-  arrivalByJobId: Map<string, { arrivedAtIso: string | null; serviceType: string | null }>,
+  arrivalByJobId: Map<string, { arrivedAtIso: string | null; serviceType: string | null; durationSeconds?: number | null }>,
 ): Map<string, CounterEnrichment> {
   const out = new Map<string, CounterEnrichment>();
   for (const c of calls) {
     if (c.statusId !== 3 && c.statusId !== 4) {
-      out.set(c.id, { arrivedAtIso: null, goalSeconds: null, serviceKey: null });
+      out.set(c.id, { arrivedAtIso: null, goalSeconds: null, serviceKey: null, reviewFlag: false });
       continue;
     }
     const job = arrivalByJobId.get(c.id);
@@ -198,7 +206,18 @@ export function attachServiceTimeData(
       serviceType,
       batteryVariantByJobId.get(c.id) ?? null,
     );
-    out.set(c.id, { arrivedAtIso, goalSeconds, serviceKey });
+    // Unknown service type → 15-min default + review flag; keep serviceKey null.
+    if (serviceKey == null) {
+      out.set(c.id, { arrivedAtIso, goalSeconds: UNKNOWN_SERVICE_GOAL_SECONDS, serviceKey: null, reviewFlag: true });
+      continue;
+    }
+    // Known service key but a missing goal row (battery variant without a row) —
+    // fall back to the 15-min default too, flagged for review.
+    if (goalSeconds == null) {
+      out.set(c.id, { arrivedAtIso, goalSeconds: UNKNOWN_SERVICE_GOAL_SECONDS, serviceKey, reviewFlag: true });
+      continue;
+    }
+    out.set(c.id, { arrivedAtIso, goalSeconds, serviceKey, reviewFlag: false });
   }
   return out;
 }

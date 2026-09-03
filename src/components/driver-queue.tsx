@@ -7,7 +7,7 @@
  * createServerFn wrappers (driver-auth), never server-only modules.
  */
 import { useNavigate } from "@tanstack/react-router";
-import { Check, LogOut, MapPin, Navigation, Radar, RefreshCw, ThumbsUp, Truck, Unplug, X } from "lucide-react";
+import { Check, Clock, LogOut, MapPin, Navigation, Radar, RefreshCw, ThumbsUp, Truck, Unplug, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { BatterySalesAgent, isJumpstartService } from "~/components/battery-agent-ui";
 import { TirePlugOffer } from "~/components/tire-plug-ui";
@@ -40,6 +40,70 @@ export const etaLabel = (iso: string | null): string => {
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 };
+
+const formatClock = (totalSeconds: number): string => {
+  const s = Math.max(0, Math.round(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  return `${m}:${String(sec).padStart(2, "0")}`;
+};
+const formatGoal = (goalSeconds: number | null | undefined): string => {
+  if (goalSeconds == null || !Number.isFinite(goalSeconds) || goalSeconds < 0) return "—";
+  return formatClock(goalSeconds);
+};
+
+/**
+ * On-arrival module (owner-directed 2026-08-16): shows the job's TIME GOAL and
+ * a LIVE ACTUAL TIME anchored to `arrivedAtIso`. Purely display-only — it never
+ * gates, overlays, or intercepts any photo/match/transition/signature/completion
+ * control (those live in <JobPhotoFlow> rendered directly below). The timer is
+ * anchored to the server arrival timestamp; once the server writes the first
+ * service-phase photo's duration (`durationSeconds`), the display freezes at the
+ * authoritative value instead of continuing to tick.
+ */
+export function ArrivalModule({ call }: { call: DriverCall }) {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (call.statusId !== 3) return;
+    if (call.durationSeconds != null) return; // frozen at the authoritative value
+    const t = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [call.statusId, call.durationSeconds]);
+
+  const arrivedMs = call.arrivedAtIso ? Date.parse(call.arrivedAtIso) : NaN;
+  const elapsedSeconds = call.durationSeconds != null
+    ? call.durationSeconds
+    : Number.isFinite(arrivedMs)
+      ? Math.max(0, (nowMs - arrivedMs) / 1000)
+      : null;
+  const exceeded = call.goalSeconds != null && elapsedSeconds != null && elapsedSeconds > call.goalSeconds;
+
+  return (
+    <div className={`mt-3 rounded-xl border p-3 ${exceeded ? "border-danger-200 bg-danger-50" : "border-ink-100 bg-ink-50"}`}>
+      <div className="flex items-center justify-between gap-2 text-sm">
+        <span className="flex items-center gap-2 text-ink-600">
+          <Clock className="size-4 text-brand-600" />
+          <span className="font-semibold">Time goal</span>
+        </span>
+        <span className="font-bold tabular-nums text-ink-800">{formatGoal(call.goalSeconds)}</span>
+      </div>
+      <div className="mt-1 flex items-center justify-between gap-2 text-sm">
+        <span className="text-ink-500">Actual time</span>
+        <span className={`font-bold tabular-nums ${exceeded ? "text-danger-700" : "text-ink-800"}`}>
+          {elapsedSeconds == null ? "—" : formatClock(elapsedSeconds)}
+        </span>
+      </div>
+      {call.reviewFlag && (
+        <p className="mt-2 text-xs text-amber-700">Unknown service type — using a 15-min default (flagged for review).</p>
+      )}
+      {exceeded && (
+        <p className="mt-2 text-xs font-medium text-danger-700">Over goal — on-time service standards training is required within one week.</p>
+      )}
+    </div>
+  );
+}
 
 export type GpsState = DriverGpsState;
 /** The GPS tracker is mounted once by DriverGate and is deliberately not tied
@@ -294,9 +358,12 @@ export function JobCardActions({ call, acting, onAct, onQueueChanged }: { call: 
         </>
       )}
       {call.statusId === 3 && (
-        <p className="mt-4 flex items-center gap-2 rounded-xl bg-violet-50 p-3 text-center text-sm font-medium text-violet-700">
-          <Check className="size-4 shrink-0" /> You&apos;re on scene — take the arrival photos, then the service photos.
-        </p>
+        <>
+          <ArrivalModule call={call} />
+          <p className="mt-4 flex items-center gap-2 rounded-xl bg-violet-50 p-3 text-center text-sm font-medium text-violet-700">
+            <Check className="size-4 shrink-0" /> You&apos;re on scene — take the arrival photos, then the service photos.
+          </p>
+        </>
       )}
       {call.statusId === 4 && (
         <p className="mt-4 flex items-center gap-2 rounded-xl bg-brand-50 p-3 text-center text-sm font-medium text-brand-700">

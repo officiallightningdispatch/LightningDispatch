@@ -63,12 +63,19 @@ export type DriverCall = {
    *  goal for this service. arrivedAtIso is the SERVER timestamp (LD
    *  dispatch_jobs.arrived_at, falling back to the raw Towbook arrivalTime) —
    *  never local clock drift. goalSeconds = org service_time_goals lookup
-   *  (battery installs resolve standard/advanced from battery_sales); null
-   *  when the service has no goal (counter shows elapsed without a target).
-   *  Filled server-side in fetchDriverQueue. */
+   *  (battery installs resolve standard/advanced from battery_sales); an
+   *  unknown service type still resolves to the 15-minute default with
+   *  reviewFlag set (owner 2026-08-16). Filled server-side in fetchDriverQueue. */
   arrivedAtIso: string | null;
   goalSeconds: number | null;
   serviceKey: string | null;
+  /** True when the service type couldn't be resolved — the arrival module
+   *  shows the 15-minute default and "flagged for review" (owner 2026-08-16). */
+  reviewFlag: boolean;
+  /** Authoritative service duration in seconds, written ONCE at the first
+   *  service-phase photo (timer stop). null until then — the live timer is
+   *  frozen/stopped server-side once this lands. */
+  durationSeconds: number | null;
   /** The AI dispatcher's quoted ETA in whole minutes (dispatch_jobs.
    *  quoted_eta_minutes) — the traffic-aware quote the driver-facing ETA should
    *  prefer over Towbook's raw arrivalETA. null for legacy/unknown rows. */
@@ -505,6 +512,8 @@ export function normalizeDriverCall(call: Record<string, unknown>): DriverCall |
     arrivedAtIso: callArrivalAt(call),
     goalSeconds: null,
     serviceKey: null,
+    reviewFlag: false,
+    durationSeconds: null,
     ldEtaMinutes: null,
   };
 }
@@ -528,7 +537,7 @@ const LD_STATUS_TO_ID: Readonly<Record<string, number>> = {
 async function platformOnlyCalls(user: { orgId: string; towbookDriverId: string }): Promise<DriverCall[]> {
   try {
     const q = await db();
-    const rows = await q`SELECT id, status, customer_name, phone, area, pickup, pickup_lat, pickup_lng, vehicle_desc, note, service_type, created_at, completed_at, arrived_at, assigned_at
+    const rows = await q`SELECT id, status, customer_name, phone, area, pickup, pickup_lat, pickup_lng, vehicle_desc, note, service_type, created_at, completed_at, arrived_at, assigned_at, duration_seconds
       FROM dispatch_jobs
       WHERE org_id=${user.orgId} AND towbook_job_id IS NULL AND assigned_driver_towbook_id=${user.towbookDriverId}
       ORDER BY created_at DESC LIMIT 100`;
@@ -561,6 +570,8 @@ async function platformOnlyCalls(user: { orgId: string; towbookDriverId: string 
         arrivedAtIso: arrivedAt,
         goalSeconds: null,
         serviceKey: null,
+        reviewFlag: false,
+        durationSeconds: r.duration_seconds != null ? Number(r.duration_seconds) : null,
         ldEtaMinutes: null,
       };
     });
@@ -637,7 +648,7 @@ async function attachServiceTime(user: { orgId: string }, calls: DriverCall[]): 
     const [goalRows, variantRows, arrivalRows] = await Promise.all([
       q`SELECT service_type, variant, goal_seconds FROM service_time_goals WHERE org_id=${user.orgId}`,
       q`SELECT install_job_id, install_type FROM battery_sales WHERE org_id=${user.orgId} AND install_type IS NOT NULL AND install_job_id IS NOT NULL`,
-      q`SELECT id, towbook_job_id, arrived_at, service_type FROM dispatch_jobs WHERE org_id=${user.orgId} AND (towbook_job_id = ANY(${ids}) OR id = ANY(${ids}))`,
+      q`SELECT id, towbook_job_id, arrived_at, service_type, duration_seconds FROM dispatch_jobs WHERE org_id=${user.orgId} AND (towbook_job_id = ANY(${ids}) OR id = ANY(${ids}))`,
     ]);
     const goals = (goalRows as Record<string, unknown>[]).map((r) => ({
       serviceType: String(r.service_type),
@@ -648,11 +659,12 @@ async function attachServiceTime(user: { orgId: string }, calls: DriverCall[]): 
     for (const r of variantRows as Record<string, unknown>[]) {
       if (r.install_job_id != null) batteryVariantByJobId.set(String(r.install_job_id), String(r.install_type));
     }
-    const arrivalByJobId = new Map<string, { arrivedAtIso: string | null; serviceType: string | null }>();
+    const arrivalByJobId = new Map<string, { arrivedAtIso: string | null; serviceType: string | null; durationSeconds: number | null }>();
     for (const r of arrivalRows as Record<string, unknown>[]) {
       const entry = {
         arrivedAtIso: r.arrived_at != null ? new Date(String(r.arrived_at)).toISOString() : null,
         serviceType: r.service_type != null ? String(r.service_type) : null,
+        durationSeconds: r.duration_seconds != null ? Number(r.duration_seconds) : null,
       };
       if (r.id != null) arrivalByJobId.set(String(r.id), entry);
       if (r.towbook_job_id != null) arrivalByJobId.set(String(r.towbook_job_id), entry);
@@ -667,7 +679,8 @@ async function attachServiceTime(user: { orgId: string }, calls: DriverCall[]): 
     return calls.map((c) => {
       const e = enriched.get(c.id);
       if (!e) return c;
-      return { ...c, arrivedAtIso: e.arrivedAtIso ?? c.arrivedAtIso, goalSeconds: e.goalSeconds, serviceKey: e.serviceKey };
+      const storedDuration = arrivalByJobId.get(c.id)?.durationSeconds ?? c.durationSeconds ?? null;
+      return { ...c, arrivedAtIso: e.arrivedAtIso ?? c.arrivedAtIso, goalSeconds: e.goalSeconds, serviceKey: e.serviceKey, reviewFlag: e.reviewFlag, durationSeconds: storedDuration };
     });
   } catch {
     return calls; // never break the queue for counter data

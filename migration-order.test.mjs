@@ -5,9 +5,9 @@ import { test } from 'node:test';
 const source = readFileSync(new URL('./src/data/migrations.ts', import.meta.url), 'utf8');
 const versions = [...source.matchAll(/^\s*\[(\d+),\s*async\s*\(q\)\s*=>/gm)].map((m) => Number(m[1]));
 
-test('migration catalog is unique and covers through version 92', () => {
+test('migration catalog is unique and covers through version 93', () => {
   assert.ok(versions.length > 50);
-  assert.equal(Math.max(...versions), 92);
+  assert.equal(Math.max(...versions), 93);
   assert.equal(new Set(versions).size, versions.length, 'duplicate migration version');
 });
 
