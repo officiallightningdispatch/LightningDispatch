@@ -22,7 +22,7 @@ import tsConfigPaths from "vite-tsconfig-paths";
 // only) to point server-function RPC at the deployed backend; the web build
 // (vite.config.ts) keeps the default same-origin `/_serverFn/`.
 
-const NATIVE_SERVER_FN_BASE = "https://www.lightningdispatch.app/_serverFn/";
+const NATIVE_SERVER_FN_BASE = "https://909fd9d2fde94962cd798bdcbee436ba.ctonew.app/_serverFn/";
 
 // Runs as a config-hook plugin AFTER the tanstackStart plugin's own define
 // (tanstackStart is enforce:"pre"), so our value wins for these two keys.
