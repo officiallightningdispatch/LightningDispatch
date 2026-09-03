@@ -337,6 +337,7 @@ export function OwnerNotificationLayer() {
           escalated_dispatch_failed: "Dispatch verification failed; review and claim it in Towbook.",
           escalated_driver_lookup_failed: "Driver lookup failed; review and claim it in Towbook.",
           escalated_state_unknown: "Driver/job state could not be verified; review in Towbook.",
+          escalated_pickup_contradiction: "Offer coordinates contradict the pickup address; claim it in Towbook.",
           escalated_cross_state: "Cross-state assignment was blocked; review in Towbook.",
           escalated_dispatch_pending: "Accepted but unverified — verify the call and driver assignment.",
         };

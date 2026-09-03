@@ -28,6 +28,7 @@ export const AI_DECISION_META: Record<string, { label: string; badge: string }> 
   escalated_dispatch_failed: { label: "Escalated · dispatch failed", badge: "bg-danger-50 text-danger-700" },
   escalated_dispatch_pending: { label: "Escalated · dispatch pending", badge: "bg-danger-50 text-danger-700" },
   escalated_state_unknown: { label: "Escalated · state unknown", badge: "bg-danger-50 text-danger-700" },
+  escalated_pickup_contradiction: { label: "Escalated · pickup contradiction", badge: "bg-danger-50 text-danger-700" },
   escalated_qualification_failed: { label: "Escalated · qualification failed", badge: "bg-danger-50 text-danger-700" },
   rejected_tow_no_eligible_driver: { label: "Rejected tow · no eligible driver", badge: "bg-danger-50 text-danger-700" },
   escalated_auto_arrive_failed: { label: "Escalated · auto-arrive failed", badge: "bg-danger-50 text-danger-700" },
@@ -152,6 +153,7 @@ const ACTIONABLE_ESCALATIONS = new Set([
   "escalated_photo_upload_failed",
   "escalated_status_push_failed",
   "escalated_contractor_push_failed",
+  "escalated_pickup_contradiction",
   "rejected_tow_no_eligible_driver",
 ]);
 
