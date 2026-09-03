@@ -399,14 +399,15 @@ export function ZoneMap({
 
   /* ------------------------- draw / select / edit tools ------------------------- */
   const addPoint = (p: Point) => {
-    const old = pointsRef.current;
-    if (old.length >= 3 && Math.abs(old[0][0] - p[0]) < 0.03 && Math.abs(old[0][1] - p[1]) < 0.03) {
-      const ring = [...old, old[0]];
-      geometryChangeRef.current?.({ type: "Polygon", coordinates: [ring] });
-      setTool(null);
-      return;
-    }
-    setPoints([...old, p]);
+    setPoints((old) => {
+      if (old.length >= 3 && Math.abs(old[0][0] - p[0]) < 0.03 && Math.abs(old[0][1] - p[1]) < 0.03) {
+        const ring = [...old, old[0]];
+        geometryChangeRef.current?.({ type: "Polygon", coordinates: [ring] });
+        setTool(null);
+        return old;
+      }
+      return [...old, p];
+    });
   };
   const handleClick = (lng: number, lat: number) => {
     if (toolRef.current === "draw") {
