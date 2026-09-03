@@ -6,7 +6,7 @@ const config: CapacitorConfig = {
   // Thin-shell: the native webview loads the live site directly, so every
   // serverFn call and cookie is same-origin (no CORS involved) and sign-in
   // works. No bundled SPA (no webDir) — server.url takes precedence.
-  server: { url: 'https://www.lightningdispatch.app', androidScheme: 'https' },
+  server: { url: 'https://909fd9d2fde94962cd798bdcbee436ba.ctonew.app', androidScheme: 'https' },
   plugins: {
     SplashScreen: { launchShowDuration: 0 },
     PushNotifications: { presentationOptions: ['badge', 'sound', 'alert'] },
