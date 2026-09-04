@@ -1926,6 +1926,23 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE UNIQUE INDEX IF NOT EXISTS contractor_applications_org_user_idx ON contractor_applications(org_id, user_id)`;
     await q`CREATE INDEX IF NOT EXISTS contractor_applications_org_status_idx ON contractor_applications(org_id, status)`;
   }],
+  // 94 (2026-09-04): Stripe Connect contractor bank-linking (automated-payouts
+  // Slice 1, owner-approved 2026-09-03). Identity/onboarding ONLY — the
+  // contractor's linked Connected Account id plus its onboarding state and the
+  // charges/payouts enabled flags live on contractor_profiles (org-scoped,
+  // keyed (org_id, user_id), which already exists since migration 23). Amounts
+  // + immutable ledger arrive in later slices. Numbered ABOVE the prod MAX
+  // observed at branch time (93).
+  [94, async (q) => {
+    await q`ALTER TABLE contractor_profiles ADD COLUMN IF NOT EXISTS stripe_account_id TEXT`;
+    await q`ALTER TABLE contractor_profiles ADD COLUMN IF NOT EXISTS stripe_onboarding_status TEXT`;
+    await q`ALTER TABLE contractor_profiles ADD COLUMN IF NOT EXISTS stripe_charges_enabled BOOLEAN NOT NULL DEFAULT FALSE`;
+    await q`ALTER TABLE contractor_profiles ADD COLUMN IF NOT EXISTS stripe_payouts_enabled BOOLEAN NOT NULL DEFAULT FALSE`;
+    await q`ALTER TABLE contractor_profiles ADD COLUMN IF NOT EXISTS stripe_created_at TIMESTAMPTZ`;
+    await q`ALTER TABLE contractor_profiles ADD COLUMN IF NOT EXISTS stripe_updated_at TIMESTAMPTZ`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS contractor_profiles_stripe_account_idx
+      ON contractor_profiles(org_id, stripe_account_id) WHERE stripe_account_id IS NOT NULL`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();
