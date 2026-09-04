@@ -1902,6 +1902,30 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE UNIQUE INDEX IF NOT EXISTS apns_device_tokens_org_user_token_idx ON apns_device_tokens(org_id, user_id, token)`;
     await q`CREATE INDEX IF NOT EXISTS apns_device_tokens_org_user_idx ON apns_device_tokens(org_id, user_id)`;
   }],
+  // 93 (2026-09-04): contractor sign-up applications (owner-directed 2026-09-04,
+  // "Uber-style onboarding" pulled forward from Phase C). A new contractor can
+  // create an account and submit an application; the row is persisted but the
+  // contractor stays NON-dispatchable until the owner verifies documents (the
+  // existing AI-dispatcher missing-compliance exclusion is the actual gate).
+  // Minimal state machine: 'interested' | 'submitted' | 'activated' | 'waitlisted'.
+  [93, async (q) => {
+    await q`CREATE TABLE IF NOT EXISTS contractor_applications (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      status TEXT NOT NULL DEFAULT 'submitted' CHECK (status IN ('interested','submitted','activated','waitlisted')),
+      tools JSONB NOT NULL DEFAULT '[]'::jsonb,
+      service_area TEXT,
+      phone TEXT,
+      notes TEXT,
+      reviewer_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      reviewed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS contractor_applications_org_user_idx ON contractor_applications(org_id, user_id)`;
+    await q`CREATE INDEX IF NOT EXISTS contractor_applications_org_status_idx ON contractor_applications(org_id, status)`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();
