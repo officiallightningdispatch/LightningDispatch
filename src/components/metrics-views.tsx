@@ -446,25 +446,17 @@ function DriverMetricCard({ label, value, unit, weak, why, trend, target }: {
   );
 }
 
-/** /driver/metrics — the driver's own performance + Lightning Dispatch
- *  Academy. White-label: no backend brand ever. Owner-in-driver-view resolves
- *  to their effective driver identity server-side (their own metrics). */
+/** /driver/metrics — the driver's own performance. White-label: no backend
+ *  brand ever. Owner-in-driver-view resolves to their effective driver identity
+ *  server-side (their own metrics). The Academy section now lives on its own
+ *  /driver/academy tab (AcademyLandingView below). */
 export function DriverMetricsView() {
   const [period, setPeriod] = useState<MetricsPeriod>("week");
   const [state, setState] = useState<DriverMetricsDetailResult | null>(null);
-  const [academy, setAcademy] = useState<AcademyRecommendationsResult | null>(null);
-  const [lessons, setLessons] = useState<LessonProgressResult | null>(null);
   const [loading, setLoading] = useState(true);
   const load = async (p: MetricsPeriod) => {
     setLoading(true);
-    const [m, rec, prog] = await Promise.all([
-      getMyMetrics({ data: { period: p } }),
-      getAcademyRecommendations(),
-      getLessonProgress(),
-    ]);
-    setState(m);
-    setAcademy(rec);
-    setLessons(prog);
+    setState(await getMyMetrics({ data: { period: p } }));
     setLoading(false);
   };
   useEffect(() => { void load(period); }, []);
@@ -474,16 +466,6 @@ export function DriverMetricsView() {
   if (state && state.ok) {
     const d = state.driver;
     const m = d.metrics;
-    const recs = academy?.ok ? academy.recommendations : [];
-    const allLessons = lessons?.ok ? lessons.lessons : [];
-    const recLessonIds = new Set(recs.map((r) => r.lessonId));
-    // Browse list = every active lesson except the recommended ones (which are
-    // already shown as coach cards above them).
-    const browse = allLessons.filter((l) => !recLessonIds.has(l.lessonId));
-    const statusBadge = (status: string) =>
-      status === "completed" ? <span className="rounded-full bg-success-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-success-700">Done ✓</span>
-        : status === "in_progress" ? <span className="rounded-full bg-info-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-info-700">In progress</span>
-          : <span className="rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-ink-500">Not started</span>;
 
     return (
       <div className="space-y-5">
@@ -503,91 +485,131 @@ export function DriverMetricsView() {
           <DriverMetricCard label="Customer rating" value={m.customerRating.value} unit={m.customerRating.unit} weak={m.customerRating.weak} why={m.customerRating.why} trend={m.customerRating.trend} target={m.customerRating.target} />
           <DriverMetricCard label="Tip rate" value={m.tipRate.value} unit={m.tipRate.unit} weak={m.tipRate.weak} why={m.tipRate.why} trend={m.tipRate.trend} target={m.tipRate.target} />
         </section>
-
-        {/* Lightning Dispatch Academy */}
-        <section aria-label="Lightning Dispatch Academy">
-          <div className="flex items-center gap-3">
-            <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-brand-50 text-brand-600">
-              <Zap className="size-5" aria-hidden="true" />
-            </span>
-            <div>
-              <h2 className="text-base font-bold text-ink-900">Lightning Dispatch Academy</h2>
-              <p className="text-xs text-ink-400">Personal coaching from your performance</p>
-            </div>
-          </div>
-
-          {recs.length > 0 ? (
-            <>
-              {/* AI coach banner — brand-tinted attention (NOT yellow — reserved). */}
-              <div className="mt-3 flex items-start gap-2.5 rounded-xl border border-brand-200 bg-brand-50 p-3.5">
-                <GraduationCap className="mt-0.5 size-4 shrink-0 text-brand-600" aria-hidden="true" />
-                <p className="text-sm leading-relaxed text-brand-900">
-                  <span className="font-bold">Coach:</span> {recs[0].why}.{" "}
-                  Try: <span className="font-bold">{recs[0].title}</span>.
-                </p>
-              </div>
-              <div className="mt-3 space-y-3">
-                {recs.map((r) => {
-                  const lesson = allLessons.find((l) => l.lessonId === r.lessonId);
-                  return (
-                    <Link key={r.lessonId} to={`/driver/academy/${r.lessonId}` as any} className="block">
-                      <Card interactive className="p-4">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <p className="text-sm font-semibold text-ink-900">{r.title}</p>
-                            <p className="mt-0.5 text-xs text-ink-400 break-words">{lesson?.summary ?? r.summary}</p>
-                          </div>
-                          {statusBadge(r.status)}
-                        </div>
-                        <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                          <span className="rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-bold text-ink-500">
-                            {lesson?.durationMinutes ?? 4} min read
-                          </span>
-                          <span className="rounded-full bg-brand-50 px-2 py-0.5 text-[10px] font-bold text-brand-700">
-                            {r.refresh ? "Refresh — " : ""}why: {r.why}
-                          </span>
-                        </div>
-                      </Card>
-                    </Link>
-                  );
-                })}
-              </div>
-            </>
-          ) : (
-            <Card className="mt-3 border-success-100 bg-success-50/60 p-4">
-              <div className="flex items-center gap-2">
-                <Trophy className="size-4 text-success-600" aria-hidden="true" />
-                <p className="text-sm font-bold text-success-800">You&apos;re on track — nothing needs coaching right now.</p>
-              </div>
-              {browse.length > 0 && (
-                <p className="mt-1 text-xs text-success-700">Want to level up anyway? Browse the full library below.</p>
-              )}
-            </Card>
-          )}
-
-          {browse.length > 0 && (
-            <div className="mt-4">
-              <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-ink-400">All lessons</h3>
-              <Card className="divide-y divide-ink-100">
-                {browse.map((l) => (
-                  <Link key={l.lessonId} to={`/driver/academy/${l.lessonId}` as any} className="flex items-center gap-3 px-4 py-3.5 transition-colors hover:bg-ink-50">
-                    <div className="min-w-0 flex-1">
-                      <p className="break-words text-sm font-semibold text-ink-800">{l.title}</p>
-                      <p className="break-words text-xs text-ink-400">{l.summary}</p>
-                    </div>
-                    <span className="shrink-0 rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-bold text-ink-500">{l.durationMinutes} min</span>
-                    {statusBadge(l.status)}
-                    <ChevronRight className="size-4 shrink-0 text-ink-300" aria-hidden="true" />
-                  </Link>
-                ))}
-              </Card>
-            </div>
-          )}
-        </section>
       </div>
     );
   }
   return null;
+}
+
+/* ============================== DRIVER: ACADEMY LANDING ============================== */
+/** Shared status pill for a lesson's completion state. */
+function AcademyStatusBadge({ status }: { status: "not_started" | "in_progress" | "completed" }) {
+  return status === "completed" ? <span className="rounded-full bg-success-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-success-700">Done ✓</span>
+    : status === "in_progress" ? <span className="rounded-full bg-info-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-info-700">In progress</span>
+      : <span className="rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-ink-500">Not started</span>;
+}
+
+/** /driver/academy — the Lightning Dispatch Academy landing: the AI coach
+ *  recommendation cards + the "All lessons" browse list. White-label: no
+ *  backend brand ever. */
+export function AcademyLandingView() {
+  const [academy, setAcademy] = useState<AcademyRecommendationsResult | null>(null);
+  const [lessons, setLessons] = useState<LessonProgressResult | null>(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let live = true;
+    void (async () => {
+      const [rec, prog] = await Promise.all([getAcademyRecommendations(), getLessonProgress()]);
+      if (!live) return;
+      setAcademy(rec);
+      setLessons(prog);
+      setLoading(false);
+    })();
+    return () => { live = false; };
+  }, []);
+
+  if (loading && academy === null) return <BoardSkeleton rows={3} />;
+  if (academy && !academy.ok) return <InlineError message={academy.error} />;
+  if (!academy?.ok) return null;
+
+  const recs = academy.recommendations;
+  const allLessons = lessons?.ok ? lessons.lessons : [];
+  const recLessonIds = new Set(recs.map((r) => r.lessonId));
+  // Browse list = every active lesson except the recommended ones (which are
+  // already shown as coach cards above them).
+  const browse = allLessons.filter((l) => !recLessonIds.has(l.lessonId));
+
+  return (
+    <section aria-label="Lightning Dispatch Academy">
+      <div className="flex items-center gap-3">
+        <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-brand-50 text-brand-600">
+          <Zap className="size-5" aria-hidden="true" />
+        </span>
+        <div>
+          <h2 className="text-base font-bold text-ink-900">Lightning Dispatch Academy</h2>
+          <p className="text-xs text-ink-400">Personal coaching from your performance</p>
+        </div>
+      </div>
+
+      {recs.length > 0 ? (
+        <>
+          {/* AI coach banner — brand-tinted attention (NOT yellow — reserved). */}
+          <div className="mt-3 flex items-start gap-2.5 rounded-xl border border-brand-200 bg-brand-50 p-3.5">
+            <GraduationCap className="mt-0.5 size-4 shrink-0 text-brand-600" aria-hidden="true" />
+            <p className="text-sm leading-relaxed text-brand-900">
+              <span className="font-bold">Coach:</span> {recs[0].why}.{" "}
+              Try: <span className="font-bold">{recs[0].title}</span>.
+            </p>
+          </div>
+          <div className="mt-3 space-y-3">
+            {recs.map((r) => {
+              const lesson = allLessons.find((l) => l.lessonId === r.lessonId);
+              return (
+                <Link key={r.lessonId} to={`/driver/academy/${r.lessonId}` as any} className="block">
+                  <Card interactive className="p-4">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-ink-900">{r.title}</p>
+                        <p className="mt-0.5 text-xs text-ink-400 break-words">{lesson?.summary ?? r.summary}</p>
+                      </div>
+                      <AcademyStatusBadge status={r.status} />
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                      <span className="rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-bold text-ink-500">
+                        {lesson?.durationMinutes ?? 4} min read
+                      </span>
+                      <span className="rounded-full bg-brand-50 px-2 py-0.5 text-[10px] font-bold text-brand-700">
+                        {r.refresh ? "Refresh — " : ""}why: {r.why}
+                      </span>
+                    </div>
+                  </Card>
+                </Link>
+              );
+            })}
+          </div>
+        </>
+      ) : (
+        <Card className="mt-3 border-success-100 bg-success-50/60 p-4">
+          <div className="flex items-center gap-2">
+            <Trophy className="size-4 text-success-600" aria-hidden="true" />
+            <p className="text-sm font-bold text-success-800">You&apos;re on track — nothing needs coaching right now.</p>
+          </div>
+          {browse.length > 0 && (
+            <p className="mt-1 text-xs text-success-700">Want to level up anyway? Browse the full library below.</p>
+          )}
+        </Card>
+      )}
+
+      {browse.length > 0 && (
+        <div className="mt-4">
+          <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-ink-400">All lessons</h3>
+          <Card className="divide-y divide-ink-100">
+            {browse.map((l) => (
+              <Link key={l.lessonId} to={`/driver/academy/${l.lessonId}` as any} className="flex items-center gap-3 px-4 py-3.5 transition-colors hover:bg-ink-50">
+                <div className="min-w-0 flex-1">
+                  <p className="break-words text-sm font-semibold text-ink-800">{l.title}</p>
+                  <p className="break-words text-xs text-ink-400">{l.summary}</p>
+                </div>
+                <span className="shrink-0 rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-bold text-ink-500">{l.durationMinutes} min</span>
+                <AcademyStatusBadge status={l.status} />
+                <ChevronRight className="size-4 shrink-0 text-ink-300" aria-hidden="true" />
+              </Link>
+            ))}
+          </Card>
+        </div>
+      )}
+    </section>
+  );
 }
 
 /* ============================== DRIVER: LESSON ============================== */
