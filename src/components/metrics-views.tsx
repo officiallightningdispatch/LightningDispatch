@@ -648,7 +648,7 @@ export function AcademyLessonView({ lessonId }: { lessonId: string }) {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
-        <Link to="/driver/metrics" className="grid size-10 shrink-0 place-items-center rounded-xl border border-ink-200 bg-surface text-ink-600 transition-colors hover:bg-ink-50" aria-label="Back to Metrics">
+        <Link to="/driver/academy" className="grid size-10 shrink-0 place-items-center rounded-xl border border-ink-200 bg-surface text-ink-600 transition-colors hover:bg-ink-50" aria-label="Back to Academy">
           <ArrowLeft className="size-4" aria-hidden="true" />
         </Link>
         <div className="min-w-0">
@@ -684,8 +684,8 @@ export function AcademyLessonView({ lessonId }: { lessonId: string }) {
         <Card className="border-success-100 bg-success-50/60 p-4 text-center">
           <p className="text-sm font-bold text-success-800">Lesson complete — well done. 🎉</p>
           <p className="mt-0.5 text-xs text-success-700">Your metrics were re-checked; this lesson won&apos;t re-surface unless the metric slips again.</p>
-          <Link to="/driver/metrics" className="mt-3 inline-flex h-11 items-center justify-center rounded-xl bg-brand-500 px-5 text-sm font-bold text-white transition-colors hover:bg-brand-600">
-            Back to Metrics
+          <Link to="/driver/academy" className="mt-3 inline-flex h-11 items-center justify-center rounded-xl bg-brand-500 px-5 text-sm font-bold text-white transition-colors hover:bg-brand-600">
+            Back to Academy
           </Link>
         </Card>
       ) : (
