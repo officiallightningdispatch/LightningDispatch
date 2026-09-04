@@ -339,15 +339,79 @@ export async function isNativeShell(): Promise<boolean> {
   }
 }
 
+export type NativePushFailureReason = "not_native" | "not_granted" | "register_failed" | "save_failed" | "error";
+
 export type NativePushSetupResult =
   | { ok: true }
-  | { ok: false; reason: "not_native" | "not_granted" | "register_failed" | "save_failed" | "error"; detail?: string };
+  | { ok: false; reason: NativePushFailureReason; detail?: string };
+
+/** Driver-readable copy for each native (Capacitor) push failure reason. Unlike
+ *  the old one-size-fits-all "Couldn't turn on alerts on this phone. Try again.",
+ *  this names the actual failure so the owner's next physical-device tap shows
+ *  exactly WHY it failed: permission denied vs APNs register failed vs server
+ *  save refused vs a thrown error. `detail` (the APNs error string or the
+ *  server's refusal message) is appended when present, so an entitlement or
+ *  role-gate problem is visible on-device instead of buried. */
+export function nativePushFailureCopy(reason: NativePushFailureReason, detail?: string): string {
+  const base: Record<NativePushFailureReason, string> = {
+    not_native: "This browser can't receive job alerts. Open Lightning Dispatch in the app to turn on alerts.",
+    not_granted: "Notifications are off for Lightning Dispatch in your iPhone Settings. Turn them on, then come back and tap Allow.",
+    register_failed: "We couldn't register this phone with Apple's alert service. Check your connection and tap Allow again.",
+    save_failed: "We couldn't save this phone for alerts. Sign out and back in, then try again.",
+    error: "Couldn't turn on alerts on this phone. Try again.",
+  };
+  const msg = base[reason];
+  return detail ? `${msg} (${detail.slice(0, 180)})` : msg;
+}
+
+/* In-memory (per-launch) cache of the APNs device token. iOS does NOT re-invoke
+ * didRegisterForRemoteNotificationsWithDeviceToken for an already-registered
+ * device whose token is unchanged — a second register() returns immediately but
+ * the "registration" event never re-fires, so re-registering on every tap would
+ * hang for the full 10s timeout. We capture the token the FIRST time it arrives
+ * (from any register() this launch) in a persistent listener and reuse it. This
+ * is in-memory only — never persisted — per the "token re-fetched fresh every
+ * launch, NEVER cached" rule (a fresh launch re-registers and re-captures). */
+let cachedNativeToken: string | null = null;
+let lastNativeRegistrationError: string | null = null;
+let nativeTokenListenerPromise: Promise<void> | null = null;
+
+/** Install (once per launch) a persistent "registration"/"registrationError"
+ *  listener that stashes the APNs token the moment any register() produces one,
+ *  so a later tap can reuse it instead of re-registering (see note above). */
+function ensurePersistentNativeTokenListener(PushNotifications: {
+  // The plugin's addListener is overloaded on literal event names; the
+  // overloaded method is not assignable to a widened string signature, so type
+  // it loosely here — we only ever call it with the literal "registration" and
+  // "registrationError" events.
+  addListener: any;
+}): Promise<void> {
+  if (!nativeTokenListenerPromise) {
+    nativeTokenListenerPromise = (async () => {
+      await PushNotifications.addListener("registration", (t: { value: string }) => {
+        cachedNativeToken = t.value;
+        lastNativeRegistrationError = null;
+      });
+      await PushNotifications.addListener("registrationError", (e: { error?: string }) => {
+        lastNativeRegistrationError = typeof e?.error === "string" ? e.error : "APNs registration failed";
+      });
+    })();
+  }
+  return nativeTokenListenerPromise;
+}
 
 /** Request notification permission, register with APNs, capture the device
  *  token, and forward it to the server (upsert). The token is re-fetched fresh
- *  every launch — NEVER cached. Idempotent and safe to call on every load.
- *  Returns a diagnostic result so the caller can surface a real error + retry. */
-export async function ensureNativePushRegistration(): Promise<NativePushSetupResult> {
+ *  every launch — NEVER cached (in-memory reuse only within a launch; see the
+ *  cache note above). Idempotent and safe to call on every load.
+ *  Returns a diagnostic result so the caller can surface a real error + retry.
+ *
+ *  `prompt` (default true) controls whether a not-yet-granted permission is
+ *  requested here. The boot-time caller passes `prompt:false` so the app launch
+ *  NEVER fires the iOS permission dialog out from under the user — the prompt is
+ *  reserved for the explicit "Allow notifications" tap (which calls with the
+ *  default). Boot still silently re-registers when permission is ALREADY granted. */
+export async function ensureNativePushRegistration(options: { prompt?: boolean } = {}): Promise<NativePushSetupResult> {
   if (typeof window === "undefined") return { ok: false, reason: "not_native" };
   let Capacitor, PushNotifications, saveNativePushToken;
   try {
@@ -359,27 +423,43 @@ export async function ensureNativePushRegistration(): Promise<NativePushSetupRes
   }
   if (!Capacitor.isNativePlatform()) return { ok: false, reason: "not_native" };
   try {
-    const perm = await PushNotifications.requestPermissions();
-    if (perm.receive !== "granted") return { ok: false, reason: "not_granted" };
+    // Install the persistent token listener FIRST — before any permission
+    // await — so a token issued by ANY register() this launch (including the
+    // boot-time NativeContractorStatus path) lands in the cache.
+    await ensurePersistentNativeTokenListener(PushNotifications);
 
-    // Add the listeners BEFORE register() so the token is never missed.
-    let resolveToken: (t: string | null) => void;
-    const tokenPromise = new Promise<string | null>((res) => { resolveToken = res; });
-    const regHandle = await PushNotifications.addListener("registration", (t: { value: string }) => resolveToken(t.value));
-    const errHandle = await PushNotifications.addListener("registrationError", () => resolveToken(null));
-    try {
-      await PushNotifications.register();
-      const token = await Promise.race([
-        tokenPromise,
-        new Promise<null>((res) => setTimeout(() => res(null), 10000)),
-      ]);
-      if (!token) return { ok: false, reason: "register_failed" };
-      const saved = await saveNativePushToken({ data: { token } });
-      return saved.ok ? { ok: true } : { ok: false, reason: "save_failed", detail: saved.error };
-    } finally {
-      try { await regHandle.remove(); } catch { /* noop */ }
-      try { await errHandle.remove(); } catch { /* noop */ }
+    let perm = await PushNotifications.checkPermissions();
+    if (perm.receive !== "granted") {
+      if (!options.prompt) return { ok: false, reason: "not_granted" };
+      perm = await PushNotifications.requestPermissions();
+      if (perm.receive !== "granted") return { ok: false, reason: "not_granted" };
     }
+
+    // Reuse the already-captured token (idempotent save) instead of re-registering
+    // — the second register() would never re-emit the token on iOS.
+    if (cachedNativeToken) {
+      const saved = await saveNativePushToken({ data: { token: cachedNativeToken } });
+      return saved.ok ? { ok: true } : { ok: false, reason: "save_failed", detail: saved.error };
+    }
+
+    // First registration this launch: register() and wait for the persistent
+    // listener to capture the token (the plugin's register() resolves before the
+    // token arrives). Resolve immediately on a terminal registrationError; fail
+    // closed at 10s otherwise.
+    await PushNotifications.register();
+    const token = await new Promise<string | null>((resolve) => {
+      const started = Date.now();
+      const poll = setInterval(() => {
+        if (cachedNativeToken) { clearInterval(poll); resolve(cachedNativeToken); }
+        else if (lastNativeRegistrationError) { clearInterval(poll); resolve(null); }
+        else if (Date.now() - started >= 10000) { clearInterval(poll); resolve(null); }
+      }, 50);
+    });
+    if (!token) {
+      return { ok: false, reason: "register_failed", detail: lastNativeRegistrationError ?? "Timed out waiting for Apple to issue a device token." };
+    }
+    const saved = await saveNativePushToken({ data: { token } });
+    return saved.ok ? { ok: true } : { ok: false, reason: "save_failed", detail: saved.error };
   } catch (err) {
     return { ok: false, reason: "error", detail: err instanceof Error ? err.message : String(err) };
   }

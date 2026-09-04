@@ -20,16 +20,18 @@ export const secureSession = {
 };
 
 export type NativeSetupState = { native: boolean; connected: boolean; push: 'unknown' | 'granted' | 'denied' | 'saved' | 'error'; location: 'unknown' | 'granted' | 'denied' | 'error' };
-/** Register APNS/FCM token through the existing authenticated subscription gate.
- * The server stores the opaque token durably; a native push delivery adapter can
- * consume the native:// endpoint later without changing the contractor session. */
+/** READ-ONLY notification permission status (NO prompt, NO register). The
+ * "Allow notifications" card drives the real permission prompt + APNs
+ * registration through ensureNativePushRegistration; this status strip must
+ * never fire the iOS prompt or register at boot. A boot-time register() leaves
+ * the device already-registered, so the user's later tap register() never
+ * re-emits the token and hangs for the full 10s timeout. */
 export async function registerPush() {
   if (!isNative()) return { granted: typeof Notification !== 'undefined' && Notification.permission === 'granted' } as const;
-  let p = await PushNotifications.checkPermissions();
-  if (p.receive === 'prompt') p = await PushNotifications.requestPermissions();
-  if (p.receive !== 'granted') return { granted: false as const, reason: 'permission_denied' };
-  await PushNotifications.register();
-  return { granted: true as const };
+  const p = await PushNotifications.checkPermissions();
+  return p.receive === 'granted'
+    ? { granted: true as const }
+    : { granted: false as const, reason: 'permission_denied' };
 }
 export async function saveNativePushToken(token: string) {
   if (!isNative() || !token) return { ok: false as const, error: 'Native push is unavailable.' };
