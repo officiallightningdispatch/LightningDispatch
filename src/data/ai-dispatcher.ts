@@ -1064,7 +1064,23 @@ export async function geocodeLookupOnce(
     if (!pos || typeof pos !== "object" || !addr || typeof addr !== "object") return null;
     const lat = Number(pos.lat);
     const lng = Number(pos.lon);
-    const score = Number(r0.score);
+    // TomTom Search returns TWO confidence fields with incompatible scales:
+    //   - `score`        = the "search relevance" ranking (a ~0-15 logarithmic
+    //                      weight; low even for exact point-address hits), and
+    //   - `matchConfidence.score` = a 0-1 confidence for the BEST match.
+    // The validated-out floor (GEOCODE_SCORE_FLOOR = 40) was calibrated for a
+    // 0-100 confidence scale, so it must be fed matchConfidence.score x 100.
+    // Reading the `score` field as if it were 0-100 caused every exact hit to
+    // land at ~10-16 and be rejected ("geocode score 12.39 < floor 40") --
+    // stranding every address-resolved motor-club offer in escalated_expired.
+    // Fall back to `score` only when matchConfidence is absent/malformed.
+    const matchConfidence = r0.matchConfidence as Record<string, unknown> | undefined;
+    const confidenceScore = matchConfidence && typeof matchConfidence === "object"
+      ? Number(matchConfidence.score)
+      : Number.NaN;
+    const score = Number.isFinite(confidenceScore)
+      ? confidenceScore * 100
+      : Number(r0.score);
     if (!Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(score)) return null;
     return {
       lat,
