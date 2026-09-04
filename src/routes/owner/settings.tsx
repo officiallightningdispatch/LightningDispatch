@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { Plug, X, CheckCircle2, AlertTriangle, RefreshCw, Radar, CarFront, UserRound, Unlink, Link2 } from "lucide-react";
+import { Plug, X, CheckCircle2, AlertTriangle, RefreshCw, Radar, CarFront, UserRound, Unlink, Link2, Trash2 } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { AppShell } from "~/components/app-shell";
 import { AiToggle } from "~/components/ai-dispatcher-views";
@@ -31,6 +31,7 @@ function OwnerSettings() {
     <div className="mt-6"><TirePlugRateCard /></div>
     <div className="mt-6"><BatteryRatesCard /></div>
     <div className="mt-6"><BatteryPriceBookCard /></div>
+    <div className="mt-6"><OwnerDeleteAccountCard /></div>
     <div className="mt-6"><Link to="/owner/batteries" className="text-sm font-semibold text-brand-600 underline">Battery compatibility reviews</Link></div>
     {open&&<div className="fixed inset-0 z-50 grid place-items-center bg-ink-950/40 p-4" role="dialog" aria-modal="true" aria-labelledby="towbook-title"><Card className="w-full max-w-md p-6"><div className="flex items-start justify-between gap-4"><div><span className="grid size-10 place-items-center rounded-xl bg-brand-50 text-brand-600"><Plug className="size-5"/></span><h2 id="towbook-title" className="mt-4 text-xl font-bold">Connect Towbook</h2></div><button className="grid size-11 place-items-center rounded-xl text-ink-400 hover:bg-ink-50" aria-label="Close" onClick={()=>setOpen(false)}><X className="size-5"/></button></div><p className="mt-4 text-sm leading-relaxed text-ink-600">Enter your Towbook login once. Your password is used only to establish an encrypted session and is never stored.</p><form onSubmit={submit} className="mt-5 space-y-4"><label className="block text-sm font-semibold">Towbook username<input required type="text" value={username} onChange={e=>setUsername(e.target.value)} placeholder="e.g. mjohnson — often your email" className="mt-1 h-11 w-full rounded-xl border border-ink-200 px-3"/></label><label className="block text-sm font-semibold">Towbook password<input required type="password" value={password} onChange={e=>setPassword(e.target.value)} className="mt-1 h-11 w-full rounded-xl border border-ink-200 px-3"/></label>{error&&<p className="flex gap-2 rounded-xl bg-danger-50 p-3 text-sm text-danger-700"><AlertTriangle className="size-4 shrink-0"/>{error}</p>}<Button type="submit" className="w-full" loading={pending}>Connect securely</Button></form></Card></div>}
   </AppShell>;
@@ -352,4 +353,24 @@ function BatteryPriceBookCard() {
   const save=async(p:Product, patch:Partial<Product>)=>{const next={...p,...patch};const r=await upsertBatteryProduct({data:{id:next.id,groupSize:next.groupSize,retailCents:next.retailCents,availability:next.availability as "in_stock"|"limited"|"unavailable"|"special_order",active:next.active,imageKey:next.imageKey,warrantyYears:next.warrantyYears,freeReplacementYears:next.freeReplacementYears}});if(r.ok)setProducts(xs=>xs.map(x=>x.id===p.id?r.product:x));setMessage(r.ok?`Saved GROUP ${p.groupSize}.`:r.message);};
   const add=async()=>{const group=newGroup.trim().toUpperCase();if(!group){setMessage("Enter a battery group size.");return}setAdding(true);const r=await upsertBatteryProduct({data:{groupSize:group,retailCents:0,availability:"special_order",active:false,imageKey:null,warrantyYears:3,freeReplacementYears:3}});setAdding(false);if(r.ok){setProducts(xs=>[...xs,r.product]);setNewGroup("");setMessage(`Added GROUP ${group}.`)}else setMessage(r.message)};
   return <Card className="p-6 sm:p-8"><p className="text-xs font-bold uppercase tracking-wider text-ink-500">Lightning Gold Battery</p><h2 className="mt-1 text-xl font-bold">Price book</h2><p className="mt-1 text-sm text-ink-500">Manage customer retail price, availability, active status, and warranty terms. Changes are audited and apply to future sales.</p>{!loaded?<div className="mt-5 h-12 animate-pulse rounded-xl bg-ink-100"/>:<><div className="mt-5 space-y-3">{products.map(p=><div key={p.id} className="grid gap-3 rounded-xl border border-ink-100 p-3 sm:grid-cols-2 lg:grid-cols-4 lg:items-end"><p className="font-bold">GROUP {p.groupSize}<span className="block text-xs font-normal text-ink-500">LIGHTNING GOLD BATTERY</span></p><label className="text-sm font-semibold">Retail ($)<input aria-label={`Retail GROUP ${p.groupSize}`} type="number" min="0" step="0.01" defaultValue={(p.retailCents/100).toFixed(2)} onBlur={e=>void save(p,{retailCents:Math.round(Number(e.target.value)*100)})} className="mt-1 h-10 w-full rounded-lg border border-ink-200 px-2" /></label><label className="text-sm font-semibold">Availability<select value={p.availability} onChange={e=>void save(p,{availability:e.target.value})} className="mt-1 h-10 w-full rounded-lg border border-ink-200 px-2"><option value="in_stock">In stock</option><option value="limited">Limited</option><option value="unavailable">Unavailable</option><option value="special_order">Special order</option></select></label><label className="text-sm font-semibold">Warranty years<input type="number" min="0" max="20" value={p.warrantyYears} onChange={e=>setProducts(xs=>xs.map(x=>x.id===p.id?{...x,warrantyYears:Number(e.target.value)}:x))} onBlur={e=>void save(p,{warrantyYears:Number(e.target.value)})} className="mt-1 h-10 w-full rounded-lg border border-ink-200 px-2" /></label><label className="text-sm font-semibold">Free replacement years<input type="number" min="0" max="20" value={p.freeReplacementYears} onChange={e=>setProducts(xs=>xs.map(x=>x.id===p.id?{...x,freeReplacementYears:Number(e.target.value)}:x))} onBlur={e=>void save(p,{freeReplacementYears:Number(e.target.value)})} className="mt-1 h-10 w-full rounded-lg border border-ink-200 px-2" /></label><label className="flex items-center gap-2 text-sm font-semibold"><input type="checkbox" checked={p.active} onChange={e=>void save(p,{active:e.target.checked})} /> Active</label></div>)}</div><div className="mt-5 flex flex-col gap-2 sm:flex-row sm:items-end"><label className="text-sm font-semibold">Add group size<input value={newGroup} onChange={e=>setNewGroup(e.target.value)} placeholder="e.g. 25 or 31" className="mt-1 h-10 w-full rounded-lg border border-ink-200 px-2" /></label><Button onClick={()=>void add()} loading={adding}>Add group</Button></div></>}{message&&<p className="mt-3 rounded-xl bg-success-50 p-3 text-sm text-success-700">{message}</p>}</Card>;
+}
+
+/** Owner-portal account deletion (Apple App Store requirement). The owner's
+ *  account is the business org root — it is NEVER deletable from inside the
+ *  app (the server refuses it regardless). This card explains the guard and
+ *  points to the manual email fallback. */
+function OwnerDeleteAccountCard() {
+  return (
+    <Card className="p-6 sm:p-8">
+      <p className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-ink-500">
+        <Trash2 className="size-4" /> Account deletion
+      </p>
+      <h2 className="mt-1 text-xl font-bold">Delete this account</h2>
+      <p className="mt-1 text-sm leading-relaxed text-ink-500">
+        This is the business owner account — deleting it would destroy the organization, so it can't be
+        deleted from inside the app. To request deletion, email{" "}
+        <a className="font-semibold text-brand-600 underline" href="mailto:lightroad29@gmail.com">lightroad29@gmail.com</a>.
+      </p>
+    </Card>
+  );
 }

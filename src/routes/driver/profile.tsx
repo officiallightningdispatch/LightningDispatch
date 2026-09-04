@@ -1,11 +1,12 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { BadgeCheck, CalendarClock, Camera, ChevronRight, Crown, FileText, LifeBuoy, LogOut, Truck, User, Wallet } from "lucide-react";
+import { BadgeCheck, CalendarClock, Camera, ChevronRight, Crown, FileText, LifeBuoy, LogOut, Trash2, Truck, User, Wallet, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { AppShell } from "~/components/app-shell";
 import { DriverToolbar } from "~/components/driver-queue";
 import { resizeImageToJpeg } from "~/components/driver-photos-ui";
-import { Avatar, Card } from "~/components/ui";
+import { Avatar, Button, Card } from "~/components/ui";
 import { authStatus } from "~/data/auth";
+import { deleteMyAccount } from "~/data/account-deletion";
 import { driverLogout, driverProfile, type DriverProfileResult } from "~/data/driver-auth";
 import { getMyProfilePhoto, uploadMyProfilePhoto } from "~/data/driver-profile-photo";
 import { getMyPayoutMethod, PAYOUT_RAIL_LABELS, type MyPayoutMethod } from "~/data/payouts";
@@ -34,6 +35,33 @@ function ProfileView() {
   const signOut = async () => {
     await driverLogout(); // best-effort checkout so we're not left "online"
     void nav({ to: "/login", replace: true });
+  };
+  // Account deletion (Apple App Store requirement). A contractor deletes their
+  // account from inside the app; the server anonymizes the row, removes
+  // personal data (docs/photos/location/handles/sessions), retains payroll/tax
+  // records, and destroys the session. Owner/admin accounts are refused
+  // server-side (never nuke the business org).
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState("");
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const staffAccount = Boolean(user?.user && (user.user.role === "owner" || user.user.role === "admin" || user.user.role === "dispatcher"));
+  const onDeleteAccount = async () => {
+    if (deleteBusy) return;
+    if (deleteConfirm.trim() !== "DELETE") {
+      setDeleteError("Type DELETE to confirm — this permanently removes your personal data.");
+      return;
+    }
+    setDeleteBusy(true);
+    setDeleteError(null);
+    const r = await deleteMyAccount();
+    setDeleteBusy(false);
+    if (r.ok) {
+      // Session rows are gone server-side; route to the signed-out surface.
+      void nav({ to: "/deleted", replace: true });
+      return;
+    }
+    setDeleteError(r.message);
   };
   const name = profile?.ok ? profile.name : user?.user?.name ?? "Driver";
   // Internal @towbook.driver placeholder addresses are never shown to drivers
@@ -222,6 +250,66 @@ function ProfileView() {
           >
             <LogOut className="size-4" /> Sign out
           </button>
+          {staffAccount ? (
+            <Card className="p-4">
+              <p className="flex items-center gap-2 text-sm font-semibold text-ink-600">
+                <Trash2 className="size-4 text-ink-400" /> Delete account
+              </p>
+              <p className="mt-1 text-sm leading-relaxed text-ink-500">
+                This is the business owner account and can't be deleted from inside the app. To request deletion,
+                email <a className="font-semibold text-brand-600 underline" href="mailto:lightroad29@gmail.com">lightroad29@gmail.com</a>.
+              </p>
+            </Card>
+          ) : (
+            <button
+              type="button"
+              onClick={() => { setDeleteOpen(true); setDeleteError(null); setDeleteConfirm(""); }}
+              className="flex w-full items-center justify-center gap-2 rounded-2xl border border-ink-200 px-4 py-3 text-sm font-semibold text-ink-500 transition-colors hover:bg-ink-50"
+            >
+              <Trash2 className="size-4" /> Delete account
+            </button>
+          )}
+        </div>
+      )}
+      {deleteOpen && !staffAccount && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-ink-950/40 p-4" role="dialog" aria-modal="true" aria-labelledby="delete-account-title">
+          <Card className="w-full max-w-md p-6">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <span className="grid size-10 place-items-center rounded-xl bg-danger-50 text-danger-600"><Trash2 className="size-5" /></span>
+                <h2 id="delete-account-title" className="mt-4 text-xl font-bold">Delete account</h2>
+              </div>
+              <button className="grid size-11 place-items-center rounded-xl text-ink-400 hover:bg-ink-50" aria-label="Close" onClick={() => setDeleteOpen(false)} disabled={deleteBusy}><X className="size-5" /></button>
+            </div>
+            <p className="mt-4 text-sm leading-relaxed text-ink-600">
+              This permanently removes your profile, uploaded documents, job photos, profile photo, and location history.
+              Payroll and tax records the business is required to keep are retained.
+            </p>
+            <p className="mt-3 text-sm leading-relaxed text-ink-600">
+              Type <strong>DELETE</strong> to confirm, or email{" "}
+              <a className="font-semibold text-brand-600 underline" href="mailto:lightroad29@gmail.com">lightroad29@gmail.com</a>{" "}
+              to request deletion manually.
+            </p>
+            <input
+              type="text"
+              value={deleteConfirm}
+              onChange={(e) => setDeleteConfirm(e.target.value)}
+              placeholder="Type DELETE"
+              disabled={deleteBusy}
+              className="mt-4 h-11 w-full rounded-xl border border-ink-200 px-3 text-sm"
+              aria-label="Type DELETE to confirm"
+            />
+            {deleteError && <p className="mt-3 rounded-xl bg-danger-50 p-3 text-sm text-danger-600" role="alert">{deleteError}</p>}
+            <Button
+              type="button"
+              variant="danger"
+              className="mt-4 w-full"
+              loading={deleteBusy}
+              onClick={() => void onDeleteAccount()}
+            >
+              Delete my account
+            </Button>
+          </Card>
         </div>
       )}
     </AppShell>
