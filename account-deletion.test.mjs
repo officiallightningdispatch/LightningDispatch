@@ -81,14 +81,14 @@ await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES
 
 // Personal data rows to be REMOVED on deletion:
 await q`INSERT INTO contractor_profiles(org_id, user_id, payrate_cents, phone, vehicle_desc, profile_photo_key)
-  VALUES(${ORG}, ${DRIVER}, 1600, '203-555-0100', '2020 Ford F-250', 'profile-photos/${ORG}/${DRIVER}/avatar')`;
+  VALUES(${ORG}, ${DRIVER}, 1600, '203-555-0100', '2020 Ford F-250', ${`profile-photos/${ORG}/${DRIVER}/avatar`})`;
 await q`INSERT INTO contractor_doc_types(id, org_id, name, requires_expiry) VALUES(${DOC_TYPE}, ${ORG}, 'Driver License', TRUE)`;
 await q`INSERT INTO contractor_documents(id, org_id, contractor_id, doc_type_id, storage_key, file_name, uploaded_by_user_id)
-  VALUES(${`${DRIVER}-doc`}, ${ORG}, ${DRIVER}, ${DOC_TYPE}, 'docs/${ORG}/${DRIVER}/license.jpg', 'license.jpg', ${DRIVER})`;
+  VALUES(${`${DRIVER}-doc`}, ${ORG}, ${DRIVER}, ${DOC_TYPE}, ${`docs/${ORG}/${DRIVER}/license.jpg`}, 'license.jpg', ${DRIVER})`;
 await q`INSERT INTO contractor_doc_selfies(id, org_id, contractor_id, doc_type_id, storage_key, uploaded_by_user_id)
-  VALUES(${`${DRIVER}-selfie`}, ${ORG}, ${DRIVER}, ${DOC_TYPE}, 'docs/${ORG}/${DRIVER}/selfie.jpg', ${DRIVER})`;
+  VALUES(${`${DRIVER}-selfie`}, ${ORG}, ${DRIVER}, ${DOC_TYPE}, ${`docs/${ORG}/${DRIVER}/selfie.jpg`}, ${DRIVER})`;
 await q`INSERT INTO job_photos(id, org_id, job_id, phase, side, storage_key, uploaded_by_user_id)
-  VALUES(${`${DRIVER}-photo`}, ${ORG}, 'some-job', 'arrival', 'front', 'photos/${ORG}/${DRIVER}/front.jpg', ${DRIVER})`;
+  VALUES(${`${DRIVER}-photo`}, ${ORG}, 'some-job', 'arrival', 'front', ${`photos/${ORG}/${DRIVER}/front.jpg`}, ${DRIVER})`;
 await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, latitude, longitude)
   VALUES(${`${DRIVER}-loc`}, ${ORG}, ${DRIVER}, ${T_DRIVER}, 41.2, -73.2)`;
 await q`INSERT INTO payout_methods(id, org_id, contractor_id, rail, handle) VALUES(${`${DRIVER}-pm`}, ${ORG}, ${DRIVER}, 'cash_app', '$delme')`;
@@ -105,7 +105,7 @@ await q`INSERT INTO payout_records(id, org_id, period_id, contractor_id, rail, h
 await q`INSERT INTO completion_tips(id, org_id, job_id, driver_id, driver_towbook_id, amount_cents, status)
   VALUES(${`${DRIVER}-tip`}, ${ORG}, ${JOB}, ${DRIVER}, ${T_DRIVER}, 500, 'paid')`;
 await q`INSERT INTO contractor_form_submissions(id, org_id, contractor_id, doc_type_id, form_kind, pdf_storage_key, payload)
-  VALUES(${FORM}, ${ORG}, ${DRIVER}, ${DOC_TYPE}, 'w9', 'forms/${ORG}/${DRIVER}/w9.pdf', '{}')`;
+  VALUES(${FORM}, ${ORG}, ${DRIVER}, ${DOC_TYPE}, 'w9', ${`forms/${ORG}/${DRIVER}/w9.pdf`}, '{}')`;
 
 /* ------------------------- 1) contractor self-deletion ------------------------- */
 const res = await deleteMyAccountCore(driverUser, { b2StableDir: "/tmp/qa-no-real-b2" });
