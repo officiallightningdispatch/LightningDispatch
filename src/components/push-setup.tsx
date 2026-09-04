@@ -41,6 +41,7 @@ import {
   ensureNativePushRegistration,
   ensurePushSubscription,
   isNativeShell,
+  nativePushFailureCopy,
   notificationSupportStatus,
   notificationsSupported,
   playStrikeAsset,
@@ -50,6 +51,7 @@ import {
   pushSetupFailureCopy,
   recordAsk,
   registerServiceWorker,
+  type NativePushFailureReason,
   type NotificationSupportStatus,
   type PushBrowserTruth,
   type PushSetupFailureReason,
@@ -73,7 +75,7 @@ export function PushPermissionCard() {
     return support === "ios_not_installed" || support === "webview";
   });
   const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState<{ reason: PushSetupFailureReason; message: string } | null>(null);
+  const [failure, setFailure] = useState<{ reason: PushSetupFailureReason | NativePushFailureReason; message: string } | null>(null);
   const [native, setNative] = useState(false);
   useEffect(() => {
     let alive = true;
@@ -132,7 +134,10 @@ export function PushPermissionCard() {
       toast("Notifications are off for Lightning Dispatch in iOS Settings — you can re-enable them there anytime.");
       setVisible(false);
     } else {
-      setFailure({ reason: "subscribe_failed", message: "Couldn't turn on alerts on this phone. Try again." });
+      // 2026-09: surface the REAL reason (and the APNs/server detail where
+      // present) instead of the old one-size-fits-all message, so the owner's
+      // next physical-device tap shows exactly WHY it failed.
+      setFailure({ reason: res.reason, message: nativePushFailureCopy(res.reason, res.detail) });
     }
     setBusy(false);
   };
@@ -237,7 +242,11 @@ export function PushNotificationSetup() {
     preloadStrikeAsset();
     const boot = async () => {
       if (await isNativeShell()) {
-        await ensureNativePushRegistration();
+        // Boot: re-register only when permission is ALREADY granted. NEVER fire
+        // the iOS permission dialog here — the prompt is reserved for the
+        // explicit "Allow notifications" tap. A not-yet-granted device simply
+        // returns not_granted and the card stays up for the user to tap.
+        await ensureNativePushRegistration({ prompt: false });
         return;
       }
       if (!notificationsSupported()) return;

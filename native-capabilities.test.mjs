@@ -27,13 +27,21 @@ describe('native contractor bridge', () => {
   });
 
   test('push permission and token registration save diagnostics', async () => {
-    state.native = true; state.platform = 'ios'; state.pushAfter = { receive: 'granted' };
+    state.native = true; state.platform = 'ios'; state.push = { receive: 'granted' };
+    // registerPush is READ-ONLY now: it reports granted WITHOUT registering.
     expect(await bridge.registerPush()).toEqual({ granted: true });
-    expect(state.registered).toBe(true);
+    expect(state.registered).toBe(undefined);
     state.savePush = async () => ({ ok: false, error: 'Sign in as a driver first.' });
     expect(await bridge.saveNativePushToken('abc')).toEqual({ ok: false, error: 'Sign in as a driver first.' });
     state.savePush = async () => { throw new Error('session expired'); };
     expect(await bridge.saveNativePushToken('abc')).toEqual({ ok: false, error: 'session expired' });
+  });
+
+  test('registerPush never prompts nor registers at boot (read-only status)', async () => {
+    state.native = true; state.platform = 'ios'; state.push = { receive: 'prompt' }; state.pushAfter = { receive: 'granted' };
+    const r = await bridge.registerPush();
+    expect(r).toEqual({ granted: false, reason: 'permission_denied' }); // prompt ≠ granted, and it did NOT request
+    expect(state.registered).toBe(undefined);
   });
 
   test('push permission denial and location permission denial are explicit', async () => {
