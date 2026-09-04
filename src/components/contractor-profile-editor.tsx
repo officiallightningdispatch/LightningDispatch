@@ -228,7 +228,7 @@ export function DocCompareSheet({
               type="date"
               value={expiryDraft}
               onChange={(e) => setExpiryDraft(e.target.value)}
-              className="h-11 w-full max-w-56 rounded-xl border border-ink-200 bg-surface px-3 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+              className="h-11 w-full max-w-full rounded-xl border border-ink-200 bg-surface px-3 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
             />
           </label>
         )}
@@ -242,7 +242,7 @@ export function DocCompareSheet({
                 maxLength={300}
                 rows={2}
                 placeholder="Reason shown to the contractor, e.g. the license photo is blurry"
-                className="h-auto w-full min-w-52 flex-1 rounded-xl border border-ink-200 bg-surface px-3 py-2 text-sm outline-none placeholder:text-ink-300 focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                className="h-auto w-full min-w-0 flex-1 rounded-xl border border-ink-200 bg-surface px-3 py-2 text-sm outline-none placeholder:text-ink-300 focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
               />
               <Button size="sm" loading={approving || !rejectNote.trim()} disabled={!rejectNote.trim()} onClick={() => void reject()}>Request reupload</Button>
               <Button size="sm" variant="secondary" disabled={approving} onClick={() => setRejecting(false)}>Cancel</Button>
@@ -821,7 +821,7 @@ function ScheduleSection({ detail, onSaved }: { detail: ContractorDetailRow; onS
               <ul className="mt-2 space-y-0.5">
                 {[...s.schedule].sort((a, b) => a.day - b.day).map((d) => (
                   <li key={d.day} className="text-xs text-ink-600">
-                    <span className="inline-block w-24 font-semibold">{DAY_LABELS[d.day - 1]}</span>
+                    <span className="inline-block w-20 font-semibold">{DAY_LABELS[d.day - 1]}</span>
                     {fmtTime(d.start)}–{fmtTime(d.end)}
                   </li>
                 ))}

@@ -477,12 +477,12 @@ function PaymentOverlay({ state, onClose, onStep, onState }: { state: BatteryAge
               <Check className="size-7" strokeWidth={3} />
             </span>
             <h2 className="mt-4 text-lg font-black text-ink-900">Battery paid — {money(sale?.totalCents)}</h2>
-            <p className="mx-auto mt-1 max-w-64 text-sm text-ink-500">
+            <p className="mx-auto mt-1 max-w-full text-sm text-ink-500">
               {state.rates.warehouseAddress
                 ? `Head to the warehouse: ${state.rates.warehouseAddress}.`
                 : "Head to the warehouse to pick up the battery."}
             </p>
-            <p className="mx-auto mt-2 max-w-64 text-xs text-ink-400">
+            <p className="mx-auto mt-2 max-w-full text-xs text-ink-400">
               The battery installation job is in your queue.
             </p>
             <Button className="mt-5 w-full" onClick={onClose}>Done — back to the job</Button>

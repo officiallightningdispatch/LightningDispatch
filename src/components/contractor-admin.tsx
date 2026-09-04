@@ -162,7 +162,7 @@ export function PayRateField({
           placeholder="75"
           aria-label="Payrate per job"
           disabled={saving}
-          className="w-16 bg-transparent px-1 text-sm font-bold tabular-nums text-brand-700 outline-none placeholder:text-ink-300"
+          className="w-14 min-w-0 bg-transparent px-1 text-sm font-bold tabular-nums text-brand-700 outline-none placeholder:text-ink-300"
         />
       </span>
       <Button size="sm" loading={saving} className="!px-2.5" title="Save rate" onClick={() => void save()}>
@@ -267,7 +267,7 @@ export function DocumentTypeEditorRow({
                 autoFocus
                 disabled={saving}
                 aria-label="Document type name"
-                className="h-9 w-full max-w-56 rounded-lg border border-ink-200 bg-surface px-2.5 text-sm font-medium outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                className="h-9 w-full min-w-0 rounded-lg border border-ink-200 bg-surface px-2.5 text-sm font-medium outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
               />
               <Button size="sm" loading={saving} className="!px-2.5" title="Save name" onClick={() => void submitRename()}>
                 <Check className="size-3.5" aria-hidden="true" />
