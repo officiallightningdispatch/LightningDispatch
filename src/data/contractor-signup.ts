@@ -11,11 +11,12 @@
 import { createServerFn } from "@tanstack/react-start";
 import type {
   ContractorApplicationRow,
+  ContractorApplicationWithUser,
   SignupCoreResult,
   ApplicationResult,
 } from "./contractor-signup-core";
 
-export type { ContractorApplicationRow, ApplicationResult };
+export type { ContractorApplicationRow, ContractorApplicationWithUser, ApplicationResult };
 
 const passthrough = (x: unknown) => x;
 
@@ -42,9 +43,9 @@ export const getMyApplicationStatus = createServerFn({ method: "GET" })
     return core.getMyApplicationStatusHandler();
   });
 
-/** Owner/admin: all applications for the org. */
+/** Owner/admin: all applications for the org, with applicant name + email. */
 export const listContractorApplications = createServerFn({ method: "GET" })
-  .handler(async (): Promise<ApplicationResult<ContractorApplicationRow[]>> => {
+  .handler(async (): Promise<ApplicationResult<ContractorApplicationWithUser[]>> => {
     const core = await import("./contractor-signup-core");
     return core.listContractorApplicationsHandler();
   });

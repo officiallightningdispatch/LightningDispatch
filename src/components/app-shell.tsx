@@ -1,5 +1,5 @@
 import { Link, useLocation } from "@tanstack/react-router";
-import { CarFront, Home, Inbox, Briefcase, DollarSign, Wrench, LayoutDashboard, List, LogOut, MoreHorizontal, Settings, User, UserRound, Users, History, BarChart3, Wallet, Bot, Map, UserCog, Zap, FileWarning, Bell, GraduationCap } from "lucide-react";
+import { CarFront, Home, Inbox, Briefcase, DollarSign, Wrench, LayoutDashboard, List, LogOut, MoreHorizontal, Settings, User, UserRound, Users, History, BarChart3, Wallet, Bot, Map, UserCog, Zap, FileWarning, Bell, GraduationCap, ClipboardList } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { authStatus, type AuthUser } from "~/data/auth";
 import { getMyProfilePhoto } from "~/data/driver-profile-photo";
@@ -52,6 +52,7 @@ const NAV: Record<Portal, PortalNav> = {
       { to: "/owner/active", label: "Active Jobs", icon: Briefcase },
       { to: "/owner/drivers", label: "Live Map", icon: Map },
       { to: "/owner/contractors", label: "Contractors", icon: UserCog },
+      { to: "/owner/applications", label: "Applications", icon: ClipboardList },
       { to: "/owner/history", label: "History", icon: History },
       { to: "/owner/metrics", label: "Metrics", icon: BarChart3 },
       { to: "/owner/claims", label: "Claims", icon: FileWarning },
@@ -63,8 +64,9 @@ const NAV: Record<Portal, PortalNav> = {
     ],
     // Bottom bar on phones — OWNER DECISION 2026-08-12 (locked): 5 primary
     // (Dashboard, Queue, Active, Contractors, Payments) + a "More" sheet
-    // holding Metrics, Claims, AI Dispatcher, Settings. Contractors stays on
-    // the rail (owner-directed). Live Map stays in the desktop sidebar only.
+    // holding Metrics, Applications, Claims, AI Dispatcher, Settings.
+    // Contractors stays on the rail (owner-directed). Live Map stays in the
+    // desktop sidebar only.
     mobile: [
       { to: "/owner", label: "Dashboard", icon: Home },
       { to: "/owner/queue", label: "Queue", icon: List },
@@ -75,6 +77,7 @@ const NAV: Record<Portal, PortalNav> = {
     // Secondary owner destinations — surfaced through the "More" bottom sheet.
     more: [
       { to: "/owner/metrics", label: "Metrics", icon: BarChart3 },
+      { to: "/owner/applications", label: "Applications", icon: ClipboardList },
       { to: "/owner/claims", label: "Claims", icon: FileWarning },
       { to: "/owner/ai-dispatcher", label: "AI Dispatcher", icon: Bot },
       { to: "/owner/settings", label: "Settings", icon: Settings },

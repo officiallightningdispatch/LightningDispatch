@@ -60,6 +60,13 @@ export type ContractorApplicationRow = {
   updatedAt: string;
 };
 
+/** Owner review row: the application plus the applicant's LD identity
+ *  (name + email joined from `users`) for the owner dashboard table. */
+export type ContractorApplicationWithUser = ContractorApplicationRow & {
+  applicantName: string | null;
+  applicantEmail: string | null;
+};
+
 export type SignupCoreResult = { ok: true; userId: string } | { ok: false; error: string };
 
 export type ApplicationErrorCode = "unauthorized" | "invalid_input" | "duplicate" | "not_found" | "database_error";
@@ -236,17 +243,27 @@ export async function submitContractorApplicationCore(actor: SignupActor, data: 
   return ok(mapRow(rows[0] as Record<string, unknown>));
 }
 
-/** Owner/admin: all applications for the org. */
-export async function listContractorApplicationsCore(actor: SignupActor): Promise<ApplicationResult<ContractorApplicationRow[]>> {
+/** Owner/admin: all applications for the org, with the applicant's LD name +
+ *  email joined from `users` for the owner review table. */
+export async function listContractorApplicationsCore(actor: SignupActor): Promise<ApplicationResult<ContractorApplicationWithUser[]>> {
   if (!OWNER_ROLES.includes(actor.role as (typeof OWNER_ROLES)[number])) {
     return err("unauthorized", "Owner access required.");
   }
   if (!configured()) return err("database_error", "Applications require database mode.");
   await ensure();
   const q = sql();
-  const rows = await q`SELECT id, org_id, user_id, status, tools, service_area, phone, notes, reviewer_user_id, reviewed_at, created_at, updated_at
-    FROM contractor_applications WHERE org_id = ${actor.orgId} ORDER BY created_at DESC, id ASC`;
-  return ok((rows as Record<string, unknown>[]).map(mapRow));
+  const rows = await q`SELECT a.id, a.org_id, a.user_id, a.status, a.tools, a.service_area, a.phone, a.notes,
+      a.reviewer_user_id, a.reviewed_at, a.created_at, a.updated_at,
+      u.name AS applicant_name, u.email AS applicant_email
+    FROM contractor_applications a
+    LEFT JOIN users u ON u.id = a.user_id
+    WHERE a.org_id = ${actor.orgId}
+    ORDER BY a.created_at DESC, a.id ASC`;
+  return ok((rows as Record<string, unknown>[]).map((r) => ({
+    ...mapRow(r),
+    applicantName: r.applicant_name != null ? String(r.applicant_name) : null,
+    applicantEmail: r.applicant_email != null ? String(r.applicant_email) : null,
+  })));
 }
 
 /** Owner/admin: move an application between states. Records reviewer_user_id
@@ -290,7 +307,7 @@ export async function getMyApplicationStatusHandler(): Promise<ApplicationResult
   if (!actor) return err("unauthorized", "Sign in first.");
   return getMyApplicationStatusCore(actor);
 }
-export async function listContractorApplicationsHandler(): Promise<ApplicationResult<ContractorApplicationRow[]>> {
+export async function listContractorApplicationsHandler(): Promise<ApplicationResult<ContractorApplicationWithUser[]>> {
   const actor = await resolveActor();
   if (!actor) return err("unauthorized", "Sign in first.");
   return listContractorApplicationsCore(actor);
