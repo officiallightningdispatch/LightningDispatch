@@ -152,11 +152,11 @@ export function EtaHero({ call }: { call: DriverCall }) {
         address={[call.pickupAddress, call.zip].filter(Boolean).join(", ")}
       />
       {hasEta && (
-        <div className="mt-2 h-1.5 w-36 overflow-hidden rounded-full bg-ink-100">
+        <div className="mt-2 h-1.5 w-full max-w-52 overflow-hidden rounded-full bg-ink-100">
           <div className="h-full rounded-full bg-brand-500 transition-[width] duration-1000 ease-linear" style={{ width: `${pct * 100}%` }} />
         </div>
       )}
-      <p className="mt-1.5 max-w-52 text-xs text-ink-500">
+      <p className="mt-1.5 max-w-full text-xs text-ink-500">
         {crossed
           ? "Look for the vehicle."
           : travelMin != null && sceneMin != null

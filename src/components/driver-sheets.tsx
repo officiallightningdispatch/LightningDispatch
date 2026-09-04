@@ -183,7 +183,7 @@ export function HomeSheet({
       ) : (
         <div className="py-4 text-center">
           <p className="font-bold text-ink-700">No offers right now</p>
-          <p className="mx-auto mt-1 max-w-60 text-sm text-ink-400">
+          <p className="mx-auto mt-1 max-w-full text-sm text-ink-400">
             The AI dispatcher offers jobs to available contractors — new offers land here automatically.
           </p>
         </div>

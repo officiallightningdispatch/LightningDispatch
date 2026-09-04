@@ -688,7 +688,7 @@ function MapMarker({ pin, px, py, zoom }: { pin: MapPin; px: number; py: number;
         <span className={`size-4 rounded-full border-[3px] border-white shadow-md ${fresh ? "bg-success-500" : "bg-ink-300"}`} />
       </span>
       {showLabel && (
-        <span className="absolute left-1/2 top-full mt-0.5 -translate-x-1/2 whitespace-nowrap rounded-md bg-white/95 px-1.5 py-0.5 text-[10px] font-bold text-ink-700 shadow-sm">
+        <span className="absolute left-1/2 top-full mt-0.5 max-w-28 -translate-x-1/2 truncate rounded-md bg-white/95 px-1.5 py-0.5 text-[10px] font-bold text-ink-700 shadow-sm">
           {pin.title}
         </span>
       )}
