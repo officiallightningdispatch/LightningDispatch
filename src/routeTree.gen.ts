@@ -9,6 +9,9 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as TermsRouteImport } from './routes/terms'
+import { Route as SupportRouteImport } from './routes/support'
+import { Route as PrivacyRouteImport } from './routes/privacy'
 import { Route as OwnerRouteImport } from './routes/owner'
 import { Route as OpsRouteImport } from './routes/ops'
 import { Route as LogoutRouteImport } from './routes/logout'
@@ -53,6 +56,21 @@ import { Route as OwnerContractorsIdRouteImport } from './routes/owner/contracto
 import { Route as DriverClaimsIdRouteImport } from './routes/driver/claims.$id'
 import { Route as DriverAcademyIdRouteImport } from './routes/driver/academy.$id'
 
+const TermsRoute = TermsRouteImport.update({
+  id: '/terms',
+  path: '/terms',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SupportRoute = SupportRouteImport.update({
+  id: '/support',
+  path: '/support',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PrivacyRoute = PrivacyRouteImport.update({
+  id: '/privacy',
+  path: '/privacy',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const OwnerRoute = OwnerRouteImport.update({
   id: '/owner',
   path: '/owner',
@@ -277,6 +295,9 @@ export interface FileRoutesByFullPath {
   '/logout': typeof LogoutRoute
   '/ops': typeof OpsRouteWithChildren
   '/owner': typeof OwnerRouteWithChildren
+  '/privacy': typeof PrivacyRoute
+  '/support': typeof SupportRoute
+  '/terms': typeof TermsRoute
   '/driver/active': typeof DriverActiveRoute
   '/driver/documents': typeof DriverDocumentsRoute
   '/driver/earnings': typeof DriverEarningsRoute
@@ -319,6 +340,9 @@ export interface FileRoutesByTo {
   '/403': typeof R403Route
   '/login': typeof LoginRoute
   '/logout': typeof LogoutRoute
+  '/privacy': typeof PrivacyRoute
+  '/support': typeof SupportRoute
+  '/terms': typeof TermsRoute
   '/driver/active': typeof DriverActiveRoute
   '/driver/documents': typeof DriverDocumentsRoute
   '/driver/earnings': typeof DriverEarningsRoute
@@ -363,6 +387,9 @@ export interface FileRoutesById {
   '/logout': typeof LogoutRoute
   '/ops': typeof OpsRouteWithChildren
   '/owner': typeof OwnerRouteWithChildren
+  '/privacy': typeof PrivacyRoute
+  '/support': typeof SupportRoute
+  '/terms': typeof TermsRoute
   '/driver/active': typeof DriverActiveRoute
   '/driver/documents': typeof DriverDocumentsRoute
   '/driver/earnings': typeof DriverEarningsRoute
@@ -410,6 +437,9 @@ export interface FileRouteTypes {
     | '/logout'
     | '/ops'
     | '/owner'
+    | '/privacy'
+    | '/support'
+    | '/terms'
     | '/driver/active'
     | '/driver/documents'
     | '/driver/earnings'
@@ -452,6 +482,9 @@ export interface FileRouteTypes {
     | '/403'
     | '/login'
     | '/logout'
+    | '/privacy'
+    | '/support'
+    | '/terms'
     | '/driver/active'
     | '/driver/documents'
     | '/driver/earnings'
@@ -495,6 +528,9 @@ export interface FileRouteTypes {
     | '/logout'
     | '/ops'
     | '/owner'
+    | '/privacy'
+    | '/support'
+    | '/terms'
     | '/driver/active'
     | '/driver/documents'
     | '/driver/earnings'
@@ -541,10 +577,34 @@ export interface RootRouteChildren {
   LogoutRoute: typeof LogoutRoute
   OpsRoute: typeof OpsRouteWithChildren
   OwnerRoute: typeof OwnerRouteWithChildren
+  PrivacyRoute: typeof PrivacyRoute
+  SupportRoute: typeof SupportRoute
+  TermsRoute: typeof TermsRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/terms': {
+      id: '/terms'
+      path: '/terms'
+      fullPath: '/terms'
+      preLoaderRoute: typeof TermsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/support': {
+      id: '/support'
+      path: '/support'
+      fullPath: '/support'
+      preLoaderRoute: typeof SupportRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/privacy': {
+      id: '/privacy'
+      path: '/privacy'
+      fullPath: '/privacy'
+      preLoaderRoute: typeof PrivacyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/owner': {
       id: '/owner'
       path: '/owner'
@@ -973,6 +1033,9 @@ const rootRouteChildren: RootRouteChildren = {
   LogoutRoute: LogoutRoute,
   OpsRoute: OpsRouteWithChildren,
   OwnerRoute: OwnerRouteWithChildren,
+  PrivacyRoute: PrivacyRoute,
+  SupportRoute: SupportRoute,
+  TermsRoute: TermsRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
