@@ -43,7 +43,7 @@ export async function getLocation(): Promise<Position | GeolocationPosition> { i
 export async function watchLocation(callback: (position: Position | GeolocationPosition) => void) {
   if (isNative()) {
     return Geolocation.watchPosition(
-      { enableHighAccuracy: true, timeout: 20_000, maximumAge: 0, minimumUpdateInterval: 5 * 60_000, interval: 5 * 60_000 },
+      { enableHighAccuracy: true, timeout: 20_000, maximumAge: 0, minimumUpdateInterval: 15_000, interval: 30_000 },
       (p, e) => { if (p) callback(p); else if (e) console.warn('location update', e); },
     );
   }
