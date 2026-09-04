@@ -69,7 +69,8 @@ const isPublicPath = (path: string) =>
   path === "/logout" ||
   path === "/privacy" ||
   path === "/terms" ||
-  path === "/support";
+  path === "/support" ||
+  path === "/deleted";
 
 function AuthGate({ children }: { children: ReactNode }) {
   const loc = useLocation(); const nav = useNavigate();

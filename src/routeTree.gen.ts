@@ -17,6 +17,7 @@ import { Route as OpsRouteImport } from './routes/ops'
 import { Route as LogoutRouteImport } from './routes/logout'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as DriverRouteImport } from './routes/driver'
+import { Route as DeletedRouteImport } from './routes/deleted'
 import { Route as R403RouteImport } from './routes/403'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as OwnerIndexRouteImport } from './routes/owner/index'
@@ -94,6 +95,11 @@ const LoginRoute = LoginRouteImport.update({
 const DriverRoute = DriverRouteImport.update({
   id: '/driver',
   path: '/driver',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DeletedRoute = DeletedRouteImport.update({
+  id: '/deleted',
+  path: '/deleted',
   getParentRoute: () => rootRouteImport,
 } as any)
 const R403Route = R403RouteImport.update({
@@ -290,6 +296,7 @@ const DriverAcademyIdRoute = DriverAcademyIdRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/403': typeof R403Route
+  '/deleted': typeof DeletedRoute
   '/driver': typeof DriverRouteWithChildren
   '/login': typeof LoginRoute
   '/logout': typeof LogoutRoute
@@ -338,6 +345,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/403': typeof R403Route
+  '/deleted': typeof DeletedRoute
   '/login': typeof LoginRoute
   '/logout': typeof LogoutRoute
   '/privacy': typeof PrivacyRoute
@@ -382,6 +390,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/403': typeof R403Route
+  '/deleted': typeof DeletedRoute
   '/driver': typeof DriverRouteWithChildren
   '/login': typeof LoginRoute
   '/logout': typeof LogoutRoute
@@ -432,6 +441,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/403'
+    | '/deleted'
     | '/driver'
     | '/login'
     | '/logout'
@@ -480,6 +490,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/403'
+    | '/deleted'
     | '/login'
     | '/logout'
     | '/privacy'
@@ -523,6 +534,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/403'
+    | '/deleted'
     | '/driver'
     | '/login'
     | '/logout'
@@ -572,6 +584,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   R403Route: typeof R403Route
+  DeletedRoute: typeof DeletedRoute
   DriverRoute: typeof DriverRouteWithChildren
   LoginRoute: typeof LoginRoute
   LogoutRoute: typeof LogoutRoute
@@ -638,6 +651,13 @@ declare module '@tanstack/react-router' {
       path: '/driver'
       fullPath: '/driver'
       preLoaderRoute: typeof DriverRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/deleted': {
+      id: '/deleted'
+      path: '/deleted'
+      fullPath: '/deleted'
+      preLoaderRoute: typeof DeletedRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/403': {
@@ -1028,6 +1048,7 @@ const OwnerRouteWithChildren = OwnerRoute._addFileChildren(OwnerRouteChildren)
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   R403Route: R403Route,
+  DeletedRoute: DeletedRoute,
   DriverRoute: DriverRouteWithChildren,
   LoginRoute: LoginRoute,
   LogoutRoute: LogoutRoute,
