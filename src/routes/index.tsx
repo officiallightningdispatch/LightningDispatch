@@ -1,6 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { LogIn, Zap } from "lucide-react";
 import { createFileRoute } from "@tanstack/react-router";
+import { LegalLinks } from "~/components/legal-page";
 export const Route=createFileRoute("/")({component:Landing});
 // Single-entry landing: ONE sign-in CTA. Roles are decided by the account
 // server-side; the login page routes each user to their own workspace. There is
@@ -38,6 +39,11 @@ function Landing(){
       <p className="mt-6 text-center text-sm leading-6 text-ink-400">
         Drivers&nbsp;·&nbsp;Dispatchers&nbsp;·&nbsp;Owners&nbsp;—&nbsp;one login routes you to your workspace.
       </p>
+
+      {/* Legal / support links — discoverable for review */}
+      <div className="mt-8 flex justify-center">
+        <LegalLinks />
+      </div>
     </div>
   </main>;
 }

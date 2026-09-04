@@ -62,12 +62,21 @@ function RootComponent() {
   );
 }
 
+const isPublicPath = (path: string) =>
+  path === "/" ||
+  path === "/login" ||
+  path === "/403" ||
+  path === "/logout" ||
+  path === "/privacy" ||
+  path === "/terms" ||
+  path === "/support";
+
 function AuthGate({ children }: { children: ReactNode }) {
   const loc = useLocation(); const nav = useNavigate();
   const [ready, setReady] = useState(false);
   useEffect(() => {
     let live = true;
-    const publicPath = loc.pathname === "/" || loc.pathname === "/login" || loc.pathname === "/403" || loc.pathname === "/logout";
+    const publicPath = isPublicPath(loc.pathname);
     // Public routes own their auth work. In particular, /login needs one status
     // check to decide whether to show first-run setup or redirect an existing
     // session; calling authStatus here as well created two concurrent status
