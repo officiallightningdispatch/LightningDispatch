@@ -1601,6 +1601,17 @@ try {
     const res = await tomtomGeocodeLookup("1441 MAIN ST, BRIDGEPORT CT 06606", "test-key-not-real", geoFetch);
     check("tomtomGeocodeLookup: parses raw result (score/position/freeformAddress)", res?.score === 96 && res?.lat === 41.19 && res?.lng === -73.15 && res?.freeformAddress === "1441 Main St, Bridgeport, CT 06606", JSON.stringify(res));
     check("tomtomGeocodeLookup: URL carries limit=3 + countrySet=US + adminDistrictSet=CT", geoCalls.length === 1 && geoCalls[0].includes("/search/2/geocode/1441%20MAIN%20ST%2C%20BRIDGEPORT%20CT%2006606.json") && geoCalls[0].includes("limit=3") && geoCalls[0].includes("countrySet=US") && geoCalls[0].includes("adminDistrictSet=CT"), geoCalls[0] ?? "");
+    // 2026-09-04 LIVE BUG (offer 330199481): TomTom returns a low relevance
+    // `score` (~14) alongside `matchConfidence.score` (0-1). The floor is
+    // calibrated for a 0-100 confidence, so the lookup must read
+    // matchConfidence.score x 100 (NOT the ~0-15 `score` field) -- otherwise
+    // every exact point-address hit is "validated-out" and the job is stranded.
+    const exactHit = await tomtomGeocodeLookup("2048 Kimbrook Dr, Round Rock, TX 78681, USA", "test-key-not-real", async () => jsonResponse(200, { results: [{ score: 14.5899276733, matchConfidence: { score: 1 }, position: { lat: 30.5345256, lon: -97.7086476 }, address: { freeformAddress: "2048 Kimbrook Drive, Round Rock, TX 78681" } }] }));
+    check("tomtomGeocodeLookup: exact point-address reads matchConfidence.score x100 (1 -> 100), ignoring low relevance score", exactHit?.score === 100 && exactHit?.lat === 30.5345256 && exactHit?.lng === -97.7086476, JSON.stringify(exactHit));
+    const partialHit = await tomtomGeocodeLookup("1441 I 35 N FRONTAGE RD, GEORGETOWN TX 78628", "test-key-not-real", async () => jsonResponse(200, { results: [{ score: 13.9311733246, matchConfidence: { score: 0.762 }, position: { lat: 30.6337, lon: -97.6773 }, address: { freeformAddress: "1441 North Interstate 35, Georgetown, TX 78628" } }] }));
+    check("tomtomGeocodeLookup: partial match scales matchConfidence.score (0.762 -> 76.2)", Math.abs((partialHit?.score ?? 0) - 76.2) < 0.001, JSON.stringify(partialHit));
+    const noConfidence = await tomtomGeocodeLookup("1441 MAIN ST, BRIDGEPORT CT 06606", "test-key-not-real", async () => jsonResponse(200, { results: [{ score: 88, position: { lat: 41.19, lon: -73.15 }, address: { freeformAddress: "1441 Main St, Bridgeport, CT 06606" } }] }));
+    check("tomtomGeocodeLookup: falls back to `score` when matchConfidence absent", noConfidence?.score === 88, JSON.stringify(noConfidence));
     const bad = await tomtomGeocodeLookup("X", "k", async () => jsonResponse(500, { error: "boom" }));
     check("tomtomGeocodeLookup: HTTP 500 → null (engine escalates, never guesses)", bad === null);
     const badBody = await tomtomGeocodeLookup("X", "k", async () => jsonResponse(200, { results: "junk" }));
