@@ -30,7 +30,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import {
   AlertTriangle, Banknote, CalendarDays, CircleDollarSign, Landmark, Loader2,
-  RefreshCcw, RefreshCw, Send, Wallet, Zap,
+  RefreshCcw, RefreshCw, Scale, Send, Wallet, Zap,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "~/components/app-shell";
@@ -56,6 +56,14 @@ import {
   type PaymentTxnRow,
   type TipLedgerRow,
 } from "~/data/payment-engine";
+import {
+  reconcileSquarePayments,
+  reconcileFailureMessage,
+  RECONCILE_KIND_LABELS,
+  RECONCILE_VERDICT_BADGE,
+  type ReconcileResult,
+  type ReconcileRow,
+} from "~/data/square-readback";
 
 export const Route = createFileRoute("/owner/money")({ component: MoneyView });
 
@@ -132,6 +140,11 @@ function MoneyView() {
   const [tipsBreakdown, setTipsBreakdown] = useState<TipLedgerRow[] | null>(null);
   const [tipsBreakdownLoading, setTipsBreakdownLoading] = useState(false);
   const [tipsBreakdownError, setTipsBreakdownError] = useState(false);
+  // Square reconciliation (owner-directed 2026-09-04, Slice 2): read-only
+  // read-back of locally-settled tips/tire-plugs/battery sales vs Square.
+  const [reconciling, setReconciling] = useState(false);
+  const [reconcileResult, setReconcileResult] = useState<ReconcileResult | null>(null);
+  const [reconcileError, setReconcileError] = useState<string | null>(null);
   // Bank rail micro-deposit recording (blocked card) — the owner sends a small
   // test deposit from their own bank app and records the amount here (the
   // driver confirms it; the amount is never shown to the contractor client).
@@ -164,6 +177,26 @@ function MoneyView() {
     const next = !tipsExpanded;
     setTipsExpanded(next);
     if (next && tipsBreakdown === null && !tipsBreakdownLoading) void loadTipsBreakdown();
+  };
+
+  const runReconcile = async () => {
+    if (reconciling) return;
+    setReconciling(true);
+    setReconcileError(null);
+    setReconcileResult(null);
+    try {
+      const res = await reconcileSquarePayments();
+      if (res.ok) {
+        setReconcileResult(res);
+        toast(`Square reconciliation complete — ${res.summary.totalLocalSettledCount} settled row${res.summary.totalLocalSettledCount === 1 ? "" : "s"} checked`);
+      } else {
+        setReconcileError(reconcileFailureMessage(res.code, res.message));
+      }
+    } catch (err) {
+      setReconcileError(err instanceof Error ? err.message : "Square reconciliation failed.");
+    } finally {
+      setReconciling(false);
+    }
   };
 
   const loadDetail = useCallback(async (periodId: string) => {
@@ -458,6 +491,14 @@ function MoneyView() {
 
         {/* ---------------------- battery sales (owner-spec'd 2026-08-13) ---------------------- */}
         <BatterySalesSection />
+
+        {/* ---------------------- Square reconciliation (owner-directed 2026-09-04) ---------------------- */}
+        <SquareReconciliationSection
+          reconciling={reconciling}
+          result={reconcileResult}
+          error={reconcileError}
+          onRun={() => void runReconcile()}
+        />
 
         {/* ------------------------- tip cash-outs ------------------------- */}
         <section aria-label="Tip cash-outs" className="space-y-3">
@@ -1272,3 +1313,137 @@ function BatterySalesSection() {
     </section>
   );
 }
+
+/* -------------------- Square reconciliation (owner-directed 2026-09-04) -------------------- */
+/** Read-only "Square as source of truth" read-back: the owner runs a sweep that
+ *  reconciles locally-settled tips / tire plugs / battery sales against Square's
+ *  own payment records. Fail-visible — a not-configured / unauthorized / error
+ *  result renders an explicit notice, never a fake success. */
+function SquareReconciliationSection({
+  reconciling,
+  result,
+  error,
+  onRun,
+}: {
+  reconciling: boolean;
+  result: ReconcileResult | null;
+  error: string | null;
+  onRun: () => void;
+}) {
+  const summary = result?.ok ? result.summary : null;
+  const rows = result?.ok ? result.rows : [];
+  return (
+    <section aria-label="Square reconciliation" className="space-y-3">
+      <div className="flex items-end justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="text-base font-bold text-ink-800">Square reconciliation</h2>
+          <p className="mt-0.5 text-xs text-ink-500">
+            Read-only check — every locally-settled tip, tire plug, and battery sale is pulled from Square&apos;s own records and flagged if Square disagrees (refunded, failed, missing, or a different amount).
+          </p>
+        </div>
+        <Button variant="secondary" loading={reconciling} disabled={reconciling} onClick={onRun}>
+          {reconciling ? "Running…" : (<><RefreshCw className="size-4" /> Run reconciliation</>)}
+        </Button>
+      </div>
+
+      {error && (
+        <Alert variant="danger">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <span>{error}</span>
+            <Button size="sm" variant="secondary" onClick={onRun}>Try again</Button>
+          </div>
+        </Alert>
+      )}
+
+      {reconciling && (
+        <div className="h-28 animate-pulse rounded-2xl bg-ink-100/70" aria-busy="true" aria-label="Running Square reconciliation" />
+      )}
+
+      {!reconciling && summary === null && !error && (
+        <EmptyState
+          icon={Scale}
+          title="No reconciliation run yet"
+          body="Run the check to compare your locally-settled payments against Square's records. It's read-only — nothing is charged or changed."
+          action={<Button variant="primary" size="sm" onClick={onRun}>Run reconciliation</Button>}
+        />
+      )}
+
+      {!reconciling && summary && (
+        <>
+          {/* summary cards */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+            <StatCard label="Locally settled" value={<span>{summary.totalLocalSettledCount}</span>} detail={money(summary.totalLocalAmountCents)} />
+            <StatCard label="Square confirmed" value={<span className="text-success-600">{summary.totalSquareConfirmed}</span>} detail={money(summary.totalSquareConfirmedAmountCents)} />
+            <StatCard label="Refunded" value={<span className="text-accent-600">{summary.totalRefunded}</span>} />
+            <StatCard label="Failed" value={<span className="text-danger-600">{summary.totalFailed}</span>} />
+            <StatCard label="Missing" value={<span className="text-accent-600">{summary.totalMissing}</span>} />
+            <StatCard label="Mismatch / read error" value={<span className={summary.totalMismatch + summary.totalReadError > 0 ? "text-danger-600" : ""}>{summary.totalMismatch + summary.totalReadError}</span>} detail={`${summary.totalMismatch} mismatch · ${summary.totalReadError} read error`} />
+          </div>
+
+          {/* per-driver breakdown */}
+          {summary.byDriver.length > 0 && (
+            <Card className="overflow-hidden">
+              <div className="border-b border-ink-100 bg-ink-50/50 px-4 py-3">
+                <h3 className="text-sm font-bold text-ink-700">By driver</h3>
+              </div>
+              <div className="divide-y divide-ink-100">
+                {summary.byDriver.map((d) => (
+                  <div key={d.driverId} className="grid grid-cols-2 gap-x-3 gap-y-1 px-4 py-3.5 sm:grid-cols-4">
+                    <p className="text-sm font-semibold text-ink-800">Driver {d.driverId}</p>
+                    <p className="text-xs tabular-nums text-ink-500">Local {d.localCount} · {money(d.localAmountCents)}</p>
+                    <p className="text-xs tabular-nums text-success-600">Confirmed {d.squareConfirmedCount} · {money(d.squareConfirmedAmountCents)}</p>
+                    <p className="text-xs tabular-nums text-ink-500">
+                      <span className="text-accent-600">{d.refundedCount} refunded</span>
+                      {" · "}<span className="text-danger-600">{d.failedCount} failed</span>
+                      {" · "}<span className="text-accent-600">{d.missingCount} missing</span>
+                      {" · "}<span className="text-danger-600">{d.mismatchCount} mismatch</span>
+                      {" · "}{d.readErrorCount} read error
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
+          {/* rows table */}
+          <Card className="overflow-hidden">
+            <div className="border-b border-ink-100 bg-ink-50/50 px-4 py-3">
+              <h3 className="text-sm font-bold text-ink-700">Rows <span className="ml-1 rounded-full bg-ink-100 px-2 py-0.5 text-xs font-bold tabular-nums text-ink-600">{rows.length}</span></h3>
+            </div>
+            {rows.length === 0 ? (
+              <p className="px-4 py-6 text-center text-sm text-ink-400">No locally-settled rows to reconcile yet.</p>
+            ) : (
+              <div className="divide-y divide-ink-100">
+                {rows.map((r) => (
+                  <ReconcileRowView key={`${r.kind}:${r.localRowId}`} row={r} />
+                ))}
+              </div>
+            )}
+          </Card>
+        </>
+      )}
+    </section>
+  );
+}
+
+function ReconcileRowView({ row }: { row: ReconcileRow }) {
+  const badge = RECONCILE_VERDICT_BADGE[row.match] ?? RECONCILE_VERDICT_BADGE.square_read_error;
+  return (
+    <div className="space-y-1 px-4 py-3.5">
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="rounded-lg bg-ink-100 px-2 py-1 text-[11px] font-bold uppercase tracking-wide text-ink-600">{RECONCILE_KIND_LABELS[row.kind] ?? row.kind}</span>
+        <p className="min-w-0 text-sm font-semibold text-ink-800">Driver {row.driverId}</p>
+        <span className="text-xs text-ink-400">Job {row.jobId || "—"}</span>
+        <StatusBadge className={badge.cls} dot={badge.dot}>{badge.label}</StatusBadge>
+      </div>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-0.5 text-[11px] tabular-nums text-ink-500">
+        <span>Local row {row.localRowId} · <span className="font-semibold">{row.localStatus}</span> · <span className="font-semibold text-ink-700">{money(row.localAmountCents)}</span></span>
+        <span className="break-all">Square {row.squarePaymentId || "—"}</span>
+        <span>Square status <span className="font-semibold">{row.squareStatus ?? "—"}</span></span>
+        <span>Square total <span className="font-semibold text-ink-700">{row.squareTotalAmountCents == null ? "—" : money(row.squareTotalAmountCents)}</span></span>
+      </div>
+      {row.message && <p className="text-[11px] leading-snug text-ink-500">{row.message}</p>}
+    </div>
+  );
+}
+
