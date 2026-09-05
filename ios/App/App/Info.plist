@@ -49,6 +49,8 @@
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>
 	<string>Main</string>
+	<key>NSMotionUsageDescription</key>
+	<string>Lightning Dispatch uses motion &amp; fitness data to detect when you are driving so it can capture your location more accurately for dispatch.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Lightning Dispatch uses your camera so you can take the required job photos: arrival, service, and completion, plus vehicle, profile, and document images.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
