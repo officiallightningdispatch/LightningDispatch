@@ -78,6 +78,27 @@ const dispatchInFlight = new Map<string, Promise<unknown>>();
 const TOWBOOK_INTERVAL_SYNC_MIN_MS = 10_000;
 const nextIntervalSyncAt = new Map<string, number>();
 
+/** Stale-active-jobs reconciliation sweep cadence: the CallWorkflow report is a
+ *  heavier transfer than the job list, so it runs at most hourly per org (the
+ *  non-terminal→terminal closure is idempotent and also runs on demand). */
+const nextStaleSweepAt = new Map<string, number>();
+
+/** Run the stale-active-jobs reconciliation sweep for an org on its own cadence.
+ *  Best-effort + fire-and-forget: a sweep failure never blocks the tick and is
+ *  never retried here (the next hourly fire re-attempts). The core module is
+ *  server-only (neon/towbook report client) — reached by dynamic import inside
+ *  this private server-only function, never statically imported. */
+async function maybeRunStaleSweep(orgId: string): Promise<void> {
+  const now = Date.now();
+  const dueAt = nextStaleSweepAt.get(orgId) ?? 0;
+  if (now < dueAt) return;
+  nextStaleSweepAt.set(orgId, now + 60 * 60_000);
+  try {
+    const { runStaleActiveJobsSweep } = await import("./stale-active-jobs-core");
+    await runStaleActiveJobsSweep(orgId);
+  } catch { /* best-effort — never block the tick */ }
+}
+
 /** One org's tick: auto-dispatch FIRST and INDEPENDENT of the Towbook job
  *  sync (resilience fix 2026-08-12 — a slow sync must never block offer
  *  handling). Each half is hard-timeout-wrapped; either timing out can never
@@ -114,6 +135,7 @@ async function runTick(orgId: string): Promise<void> {
       ? (nextIntervalSyncAt.set(orgId, now + TOWBOOK_INTERVAL_SYNC_MIN_MS), syncForOrg(orgId, "sync:interval"))
       : Promise.resolve(null);
     const nudges = processAssignmentNudges(orgId);
-    await Promise.allSettled([dispatch, sync, nudges]);
+    const staleSweep = maybeRunStaleSweep(orgId);
+    await Promise.allSettled([dispatch, sync, nudges, staleSweep]);
   } catch { /* best-effort — one org's failure never stops the loop */ }
 }
