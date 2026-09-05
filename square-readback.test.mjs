@@ -165,6 +165,23 @@ await q`INSERT INTO battery_sales(id, org_id, job_id, contractor_user_id, vin, v
   check("summary: local total = 1000+500+250+350+1000+4500+4500 = 12100", s !== null && s.totalLocalAmountCents === 12100, JSON.stringify(s));
   check("summary: square-confirmed total = 1000+1000 = 2000", s !== null && s.totalSquareConfirmedAmountCents === 2000, JSON.stringify(s));
   check("summary: per-driver row present for the driver", s !== null && s.byDriver.some((d) => d.driverId === DRIVER && d.localCount === 7), JSON.stringify(s?.byDriver));
+  check("summary: driver summary resolves real users.name", s !== null && s.byDriver.some((d) => d.driverId === DRIVER && d.driverName === "QA SR Driver"), JSON.stringify(s?.byDriver));
+  const driverRow = rows.find((r) => r.driverId === DRIVER);
+  check("row: resolves real users.name", driverRow !== undefined && driverRow.driverName === "QA SR Driver", JSON.stringify(driverRow));
+}
+
+/* ============ 1b) missing-name fallback (driverId without a users row) ============ */
+{
+  const ORPHAN = `qa-sr-orphan-${TAG}`;
+  await q`INSERT INTO completion_tips(id, org_id, job_id, driver_id, driver_towbook_id, amount_cents, currency, square_payment_id, status, attempt, idempotency_key) VALUES
+    ('sr-tip-orphan', ${ORG}, ${JOB}, ${ORPHAN}, NULL, 600, 'USD', 'pay-ok', 'paid', 1, 'sr-tip-orphan-key')`;
+  const res = await reconcileSquarePaymentsCore(OWNER_ACTOR, { fetchImpl: makeFetch() });
+  const row = res.ok ? res.rows.find((r) => r.localRowId === "sr-tip-orphan") : undefined;
+  check("missing-name: row exists with empty driverName (never fabricated)", row !== undefined && row.driverName === "", JSON.stringify(row));
+  const s = res.ok ? res.summary : null;
+  check("missing-name: byDriver summary carries empty driverName for orphan", s !== null && s.byDriver.some((d) => d.driverId === ORPHAN && d.driverName === ""), JSON.stringify(s?.byDriver));
+  check("missing-name: resolved name still intact alongside orphan", s !== null && s.byDriver.some((d) => d.driverId === DRIVER && d.driverName === "QA SR Driver"), JSON.stringify(s?.byDriver));
+  await q`DELETE FROM completion_tips WHERE id = 'sr-tip-orphan'`;
 }
 
 /* ============ 2) read endpoints (ListPayments / GetPayment / SearchOrders) ============ */

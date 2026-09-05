@@ -1389,7 +1389,7 @@ function SquareReconciliationSection({
               <div className="divide-y divide-ink-100">
                 {summary.byDriver.map((d) => (
                   <div key={d.driverId} className="grid grid-cols-2 gap-x-3 gap-y-1 px-4 py-3.5 sm:grid-cols-4">
-                    <p className="text-sm font-semibold text-ink-800">Driver {d.driverId}</p>
+                    <p className="text-sm font-semibold text-ink-800">{d.driverName || `Driver ${d.driverId}`}</p>
                     <p className="text-xs tabular-nums text-ink-500">Local {d.localCount} · {money(d.localAmountCents)}</p>
                     <p className="text-xs tabular-nums text-success-600">Confirmed {d.squareConfirmedCount} · {money(d.squareConfirmedAmountCents)}</p>
                     <p className="text-xs tabular-nums text-ink-500">
@@ -1432,7 +1432,7 @@ function ReconcileRowView({ row }: { row: ReconcileRow }) {
     <div className="space-y-1 px-4 py-3.5">
       <div className="flex flex-wrap items-center gap-3">
         <span className="rounded-lg bg-ink-100 px-2 py-1 text-[11px] font-bold uppercase tracking-wide text-ink-600">{RECONCILE_KIND_LABELS[row.kind] ?? row.kind}</span>
-        <p className="min-w-0 text-sm font-semibold text-ink-800">Driver {row.driverId}</p>
+        <p className="min-w-0 text-sm font-semibold text-ink-800">{row.driverName || `Driver ${row.driverId}`}</p>
         <span className="text-xs text-ink-400">Job {row.jobId || "—"}</span>
         <StatusBadge className={badge.cls} dot={badge.dot}>{badge.label}</StatusBadge>
       </div>
