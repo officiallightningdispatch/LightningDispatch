@@ -401,6 +401,39 @@ export async function getInstantCashoutStatusHandler(): Promise<StripePayoutResu
   return getInstantCashoutStatusCore(actor);
 }
 
+/* -------------------------- owner-side ledger read ------------------------- */
+
+/** Owner/admin actor (no contractor identity — owner surfaces read the whole
+ *  org's ledger). Mirrors the driver resolveActor but role-gates to owner/admin. */
+async function resolveOwnerActor(): Promise<{ orgId: string; actorUserId: string; actorRole: string } | null> {
+  if (!dbConfigured()) return null;
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u) return null;
+  if (u.role !== "owner" && u.role !== "admin") return null;
+  return { orgId: u.orgId, actorUserId: u.id, actorRole: u.role };
+}
+
+/** Owner/admin: read the Stripe payout ledger (instant + weekly), newest first.
+ *  Read-only — never a money move. Returns seroval-safe StripePayout rows. */
+export async function listStripePayoutsCore(actor: { orgId: string }): Promise<StripePayoutResult<StripePayout[]>> {
+  try {
+    await ensureDb();
+    if (!dbConfigured()) return err("database_error", "Database is not configured.");
+    const q = sql();
+    const rows = await q`SELECT * FROM stripe_payouts WHERE org_id=${actor.orgId} ORDER BY created_at DESC LIMIT 200`;
+    return ok((rows as Record<string, unknown>[]).map(rowToPayout));
+  } catch (e) {
+    return err("database_error", e instanceof Error ? e.message : "Unable to load the payout ledger.");
+  }
+}
+
+export async function listStripePayoutsHandler(): Promise<StripePayoutResult<StripePayout[]>> {
+  const actor = await resolveOwnerActor();
+  if (!actor) return err("unauthorized", "Sign in as the owner or an admin first.");
+  return listStripePayoutsCore(actor);
+}
+
 export async function requestInstantCashoutHandler(): Promise<StripePayoutResult<StripePayout>> {
   const actor = await resolveActor();
   if (!actor) return err("unauthorized", "Sign in as a driver first.");
