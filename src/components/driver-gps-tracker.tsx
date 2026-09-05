@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { pingDriverLocation } from "~/data/driver-gps";
-import { getLocation, isNative, onNativeAppState, startLocationUpdates, stopLocation } from "~/lib/native-capabilities";
+import { getLocation, isNative, onNativeAppState, startLocationUpdates, startMotionAssistedCapture, stopLocation } from "~/lib/native-capabilities";
 
 /**
  * A driver's location is a dispatch signal, not a job/GO signal. Keep one
@@ -175,9 +175,15 @@ async function start() {
           void flushUploadQueue();
         }
       });
+      // Motion-assisted capture is a best-effort ENHANCEMENT. This start() runs
+      // on a user-initiated action (the authenticated driver enters the portal),
+      // so it is a valid time to request Motion & Fitness. Denial or absence
+      // returns a no-op handle and the location watch above continues unchanged.
+      const motionHandle = await startMotionAssistedCapture(report);
       cleanup = () => {
         void stopLocation(watchId);
         void appStateListener.remove();
+        void motionHandle.stop();
       };
     } catch {
       running = false;

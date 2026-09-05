@@ -22,6 +22,7 @@ mock.module("./src/lib/native-capabilities.ts", () => ({
   getLocation: async () => { throw new Error("not used by the web tracker path"); },
   onNativeAppState: () => ({ remove: async () => {} }),
   startLocationUpdates: async () => "watch-1",
+  startMotionAssistedCapture: async () => ({ stop: async () => {} }),
   stopLocation: async () => {},
 }));
 mock.module("./src/data/driver-gps.ts", () => ({
