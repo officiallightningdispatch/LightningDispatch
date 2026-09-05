@@ -15,28 +15,34 @@ import {
   FileText,
   Inbox,
   Mail,
+  Paperclip,
   PenLine,
   RefreshCw,
   Search,
   Send,
+  Trash2,
   User as UserIcon,
+  Upload,
   XCircle,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { SignaturePad } from "~/components/driver-photos-ui";
 import { Button, Card, EmptyState, StatusBadge, useToast } from "~/components/ui";
 import {
   approveClaim,
   listClaims,
+  listClaimDocuments,
   listMyClaimSignRequests,
   prepareClaimForm,
   rejectClaim,
+  removeClaimDocument,
   researchClaim,
   scanClaims,
   sendClaim,
   signClaim,
+  uploadClaimDocument,
 } from "~/data/claims";
-import type { ClaimRow, ClaimStatus } from "~/data/claims";
+import type { ClaimDocument, ClaimRow, ClaimStatus } from "~/data/claims";
 
 /* ------------------------------ status meta ------------------------------ */
 
@@ -253,6 +259,64 @@ function ClaimDetail({
   const toast = useToast();
   const [signing, setSigning] = useState(false);
   const webFormOnly = claim.sendMethod === "web_form";
+  const [docs, setDocs] = useState<ClaimDocument[] | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [removing, setRemoving] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const canAttach = claim.status === "form_ready" || claim.status === "pending_approval" || claim.status === "approved";
+
+  useEffect(() => {
+    if (!canAttach) return;
+    let live = true;
+    void listClaimDocuments({ data: claim.id }).then((r) => {
+      if (live && r.ok) setDocs(r.data);
+    }).catch(() => { /* keep current list */ });
+    return () => { live = false; };
+  }, [claim.id, claim.status]);
+
+  const readAsDataUrl = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result ?? ""));
+      reader.onerror = () => reject(reader.error ?? new Error("read failed"));
+      reader.readAsDataURL(file);
+    });
+
+  const handleFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setUploading(true);
+    let failed = 0;
+    for (const file of Array.from(files)) {
+      try {
+        const dataUrl = await readAsDataUrl(file);
+        const r = await uploadClaimDocument({ data: { claimId: claim.id, dataUrl, fileName: file.name } });
+        if (r.ok) {
+          setDocs((prev) => (prev ? [...prev.filter((d) => d.id !== r.data.id), r.data] : [r.data]));
+        } else {
+          failed += 1;
+          toast(r.message ?? "Couldn't upload a document.");
+        }
+      } catch {
+        failed += 1;
+      }
+    }
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    if (failed === 0) toast("Document(s) attached.");
+    else toast(`${failed} file(s) couldn't be uploaded.`);
+    setUploading(false);
+  };
+
+  const removeDoc = async (docId: string) => {
+    setRemoving(docId);
+    const r = await removeClaimDocument({ data: { claimId: claim.id, documentId: docId } });
+    if (r.ok) {
+      setDocs((prev) => (prev ? prev.filter((d) => d.id !== docId) : prev));
+      toast("Document removed.");
+    } else {
+      toast(r.message ?? "Couldn't remove the document.");
+    }
+    setRemoving(null);
+  };
 
   const signOnBehalf = () => {
     if (!ownerSig) return;
@@ -277,6 +341,50 @@ function ClaimDetail({
       </div>
 
       <ClaimStatementCard claim={claim} />
+
+      {canAttach && (
+        <div className="space-y-2 rounded-xl border border-ink-100 bg-white p-3">
+          <div className="flex items-center justify-between gap-2">
+            <p className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-ink-400">
+              <Paperclip className="size-3.5" aria-hidden="true" /> Supporting documents
+            </p>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".jpg,.jpeg,.png,.webp,.pdf"
+              multiple
+              className="hidden"
+              onChange={(e) => void handleFiles(e.target.files)}
+            />
+            <Button size="sm" variant="secondary" loading={uploading} onClick={() => fileInputRef.current?.click()}>
+              <Upload className="size-4" aria-hidden="true" /> Add documents
+            </Button>
+          </div>
+          {docs && docs.length > 0 ? (
+            <ul className="space-y-1.5">
+              {docs.map((d) => (
+                <li key={d.id} className="flex items-center gap-2 rounded-lg bg-ink-50 px-2.5 py-1.5 text-xs">
+                  <FileText className="size-3.5 shrink-0 text-ink-400" aria-hidden="true" />
+                  <span className="min-w-0 flex-1 truncate font-medium text-ink-700">
+                    {d.fileName ?? "document"} <span className="text-ink-400">({(d.sizeBytes / 1024).toFixed(1)} KB)</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void removeDoc(d.id)}
+                    disabled={removing === d.id}
+                    className="grid size-6 shrink-0 place-items-center rounded-md text-ink-400 transition-colors hover:bg-danger-50 hover:text-danger-600 disabled:opacity-50"
+                    aria-label={`Remove ${d.fileName ?? "document"}`}
+                  >
+                    <Trash2 className="size-3.5" aria-hidden="true" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-[11px] text-ink-400">No documents attached yet — they'll be sent with the reply email.</p>
+          )}
+        </div>
+      )}
 
       {claim.status === "form_ready" || claim.status === "researched" || claim.status === "new" ? <SendTargetCard claim={claim} /> : null}
 

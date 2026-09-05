@@ -1943,6 +1943,27 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE UNIQUE INDEX IF NOT EXISTS contractor_profiles_stripe_account_idx
       ON contractor_profiles(org_id, stripe_account_id) WHERE stripe_account_id IS NOT NULL`;
   }],
+  // 95 (2026-09-05): supporting documents for damage-claim email replies
+  // (owner-directed 2026-09-05: "upload button to submit documents with the
+  // email reply"). One row per uploaded file (scene photos, evidence, reports);
+  // owner/admin-only, attached to the same reply email as the signature PNG.
+  // Numbered ABOVE the prod MAX observed at branch time (94).
+  [95, async (q) => {
+    await q`CREATE TABLE IF NOT EXISTS damage_claim_documents (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      claim_id TEXT NOT NULL REFERENCES damage_claims(id) ON DELETE CASCADE,
+      storage_key TEXT NOT NULL,
+      file_name TEXT,
+      mime TEXT NOT NULL DEFAULT 'application/octet-stream',
+      size_bytes INTEGER NOT NULL DEFAULT 0,
+      uploaded_by_user_id TEXT,
+      uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    await q`CREATE INDEX IF NOT EXISTS damage_claim_documents_org_claim_idx ON damage_claim_documents(org_id, claim_id)`;
+    await q`CREATE INDEX IF NOT EXISTS damage_claim_documents_claim_idx ON damage_claim_documents(claim_id)`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

@@ -8,7 +8,7 @@
  */
 import { createServerFn } from "@tanstack/react-start";
 import type { ClaimResult, ClaimRow } from "./claims-core";
-export type { ClaimResult, ClaimRow, ClaimStatus } from "./claims-core";
+export type { ClaimResult, ClaimRow, ClaimStatus, ClaimDocument } from "./claims-core";
 const passthrough = (x: unknown) => x;
 
 /** Owner/admin: run the read-only Gmail scan → detect → upsert claim records. */
@@ -93,4 +93,28 @@ export const getClaimSignatureFile = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const core = await import("./claims-core");
     return core.getClaimSignatureFileHandler(data, {});
+  });
+
+/** Owner/admin: upload a supporting document to a claim (B2 + row). */
+export const uploadClaimDocument = createServerFn({ method: "POST" })
+  .validator(passthrough)
+  .handler(async ({ data }) => {
+    const core = await import("./claims-core");
+    return core.uploadClaimDocumentHandler(data, {});
+  });
+
+/** Owner/admin: list a claim's supporting documents. */
+export const listClaimDocuments = createServerFn({ method: "POST" })
+  .validator(passthrough)
+  .handler(async ({ data }) => {
+    const core = await import("./claims-core");
+    return core.listClaimDocumentsHandler(data);
+  });
+
+/** Owner/admin: remove a supporting document from a claim. */
+export const removeClaimDocument = createServerFn({ method: "POST" })
+  .validator(passthrough)
+  .handler(async ({ data }) => {
+    const core = await import("./claims-core");
+    return core.removeClaimDocumentHandler(data, {});
   });
