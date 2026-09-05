@@ -1100,7 +1100,10 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
     // every later compute/recompute excludes it, in every period).
     const coveredPaid = await q`SELECT DISTINCT tid AS id
       FROM tip_cashouts tc, jsonb_array_elements_text(tc.covered_tip_ids) tid
-      WHERE tc.org_id=${actor.orgId} AND tc.status='paid'`;
+      WHERE tc.org_id=${actor.orgId} AND tc.status='paid'
+      UNION SELECT DISTINCT sid AS id
+      FROM stripe_payouts sp, jsonb_array_elements_text(sp.covered_tip_ids) sid
+      WHERE sp.org_id=${actor.orgId} AND sp.status <> 'failed'`;
     const coveredTipIds = (coveredPaid as Record<string, unknown>[]).map((r) => String(r.id));
     const tipRows = coveredTipIds.length
       ? await q`
@@ -1116,7 +1119,8 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
           WHERE org_id=${actor.orgId} AND status='paid'
             AND created_at >= ${iso(startsAt)} AND created_at < ${iso(endsAt)}
           GROUP BY driver_id`;
-    const coveredTire = await q`SELECT DISTINCT tid AS id FROM tip_cashouts tc, jsonb_array_elements_text(tc.covered_tire_plug_ids) tid WHERE tc.org_id=${actor.orgId} AND tc.status='paid'`;
+    const coveredTire = await q`SELECT DISTINCT tid AS id FROM tip_cashouts tc, jsonb_array_elements_text(tc.covered_tire_plug_ids) tid WHERE tc.org_id=${actor.orgId} AND tc.status='paid'
+      UNION SELECT DISTINCT sid AS id FROM stripe_payouts sp, jsonb_array_elements_text(sp.covered_tire_plug_ids) sid WHERE sp.org_id=${actor.orgId} AND sp.status <> 'failed'`;
     const coveredTireIds = (coveredTire as Record<string, unknown>[]).map((r) => String(r.id));
     const tireRows = coveredTireIds.length ? await q`
       SELECT contractor_user_id, COALESCE(SUM(amount_cents),0)::int AS cents FROM tire_plug_transactions

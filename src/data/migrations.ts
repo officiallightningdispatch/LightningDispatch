@@ -1964,6 +1964,36 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE INDEX IF NOT EXISTS damage_claim_documents_org_claim_idx ON damage_claim_documents(org_id, claim_id)`;
     await q`CREATE INDEX IF NOT EXISTS damage_claim_documents_claim_idx ON damage_claim_documents(claim_id)`;
   }],
+  // 96 (2026-09-06): Stripe Connect automated payouts — immutable payout ledger
+  // (automated-payouts Slice 2a, owner-approved 2026-09-03). One row per Stripe
+  // Transfer attempt: idempotency_key is UNIQUE per org (the double-transfer
+  // guard); covered_tip_ids / covered_tire_plug_ids snapshot EXACTLY which
+  // underlying rows this payout consumes (mirrors tip_cashouts so the manual and
+  // Stripe flows can never double-cover the same tip/plug). kind is
+  // 'instant_cashout' now, 'weekly_payout' arrives in Slice 2b. status lifecycle
+  // pending → succeeded | failed; the row is APPEND-ONLY. Numbered ABOVE the
+  // prod MAX observed at branch time (95).
+  [96, async (q) => {
+    await q`CREATE TABLE IF NOT EXISTS stripe_payouts (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      contractor_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      stripe_account_id TEXT NOT NULL,
+      amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+      kind TEXT NOT NULL CHECK (kind IN ('instant_cashout','weekly_payout')),
+      status TEXT NOT NULL CHECK (status IN ('pending','succeeded','failed')),
+      idempotency_key TEXT NOT NULL,
+      stripe_transfer_id TEXT,
+      covered_tip_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+      covered_tire_plug_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+      failure_message TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS stripe_payouts_org_idempotency_uidx ON stripe_payouts(org_id, idempotency_key)`;
+    await q`CREATE INDEX IF NOT EXISTS stripe_payouts_org_contractor_created_idx ON stripe_payouts(org_id, contractor_id, created_at)`;
+    await q`CREATE INDEX IF NOT EXISTS stripe_payouts_org_status_created_idx ON stripe_payouts(org_id, status, created_at)`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

@@ -120,24 +120,35 @@ export async function availableTipsCore(orgId: string, driverId: string): Promis
     FROM tire_plug_transactions WHERE org_id=${orgId} AND contractor_user_id=${driverId} AND status='paid'`;
   const cash = await q`SELECT COALESCE(SUM(amount_cents),0)::int AS total
     FROM tip_cashouts WHERE org_id=${orgId} AND contractor_id=${driverId}`;
+  // Stripe Connect instant cash-outs consume tips through stripe_payouts (Slice
+  // 2a). Rows that moved (or are in-flight to move) money RESERVE their covered
+  // rows exactly like a manual cash-out; FAILED transfers release them again.
+  const stripe = await q`SELECT COALESCE(SUM(amount_cents),0)::int AS total
+    FROM stripe_payouts WHERE org_id=${orgId} AND contractor_id=${driverId} AND status <> 'failed'`;
   // Count only rows still available, not every historical paid row. This keeps
   // the driver-facing count aligned with the server-computed amount after a
   // requested cash-out reserves its covered snapshot.
   const uncoveredTips = await q`SELECT COUNT(*)::int AS cnt FROM completion_tips ct
     WHERE ct.org_id=${orgId} AND ct.driver_id=${driverId} AND ct.status='paid'
       AND NOT EXISTS (SELECT 1 FROM tip_cashouts tc, jsonb_array_elements_text(tc.covered_tip_ids) tid
-        WHERE tc.org_id=ct.org_id AND tid=ct.id)`;
+        WHERE tc.org_id=ct.org_id AND tid=ct.id)
+      AND NOT EXISTS (SELECT 1 FROM stripe_payouts sp, jsonb_array_elements_text(sp.covered_tip_ids) sid
+        WHERE sp.org_id=ct.org_id AND sid=ct.id AND sp.status <> 'failed')`;
   const uncoveredPlugs = await q`SELECT COUNT(*)::int AS cnt FROM tire_plug_transactions t
     WHERE t.org_id=${orgId} AND t.contractor_user_id=${driverId} AND t.status='paid'
       AND NOT EXISTS (SELECT 1 FROM tip_cashouts tc, jsonb_array_elements_text(tc.covered_tire_plug_ids) tid
-        WHERE tc.org_id=t.org_id AND tid=t.id)`;
-  const totalCents = Number(paid[0]?.total ?? 0) + Number(plugs[0]?.total ?? 0) - Number(cash[0]?.total ?? 0);
+        WHERE tc.org_id=t.org_id AND tid=t.id)
+      AND NOT EXISTS (SELECT 1 FROM stripe_payouts sp, jsonb_array_elements_text(sp.covered_tire_plug_ids) sid
+        WHERE sp.org_id=t.org_id AND sid=t.id AND sp.status <> 'failed')`;
+  const totalCents = Number(paid[0]?.total ?? 0) + Number(plugs[0]?.total ?? 0) - Number(cash[0]?.total ?? 0) - Number(stripe[0]?.total ?? 0);
   return { totalCents: Math.max(0, totalCents), tipCount: Number(uncoveredTips[0]?.cnt ?? 0) + Number(uncoveredPlugs[0]?.cnt ?? 0) };
 }
 
-/** Oldest paid tips NOT already covered by a cash-out (requested or paid),
- *  oldest-first — the exact tip rows a new request would cover. */
-async function uncoveredTipRowsCore(orgId: string, driverId: string): Promise<{ id: string; amountCents: number }[]> {
+/** Oldest paid tips NOT already covered by a cash-out (requested or paid) OR a
+ *  non-failed Stripe payout (Slice 2a), oldest-first — the exact tip rows a new
+ *  request would cover. Exported for stripe-payouts-core so the instant
+ *  cash-out amount is the same server-authoritative pool the manual flow uses. */
+export async function uncoveredTipRowsCore(orgId: string, driverId: string): Promise<{ id: string; amountCents: number }[]> {
   const q = await db();
   const rows = await q`
     SELECT ct.id, ct.amount_cents
@@ -147,7 +158,31 @@ async function uncoveredTipRowsCore(orgId: string, driverId: string): Promise<{ 
         SELECT 1 FROM tip_cashouts tc, jsonb_array_elements_text(tc.covered_tip_ids) tid
         WHERE tc.org_id = ct.org_id AND tid = ct.id
       )
+      AND NOT EXISTS (
+        SELECT 1 FROM stripe_payouts sp, jsonb_array_elements_text(sp.covered_tip_ids) sid
+        WHERE sp.org_id = ct.org_id AND sid = ct.id AND sp.status <> 'failed'
+      )
     ORDER BY ct.created_at ASC, ct.id ASC`;
+  return (rows as Record<string, unknown>[]).map((r) => ({ id: String(r.id), amountCents: Number(r.amount_cents ?? 0) }));
+}
+
+/** Oldest paid tire-plug transactions NOT already covered by a cash-out OR a
+ *  non-failed Stripe payout, oldest-first. Exported for stripe-payouts-core. */
+export async function uncoveredTirePlugRowsCore(orgId: string, driverId: string): Promise<{ id: string; amountCents: number }[]> {
+  const q = await db();
+  const rows = await q`
+    SELECT t.id, t.amount_cents
+    FROM tire_plug_transactions t
+    WHERE t.org_id=${orgId} AND t.contractor_user_id=${driverId} AND t.status='paid'
+      AND NOT EXISTS (
+        SELECT 1 FROM tip_cashouts tc, jsonb_array_elements_text(tc.covered_tire_plug_ids) tid
+        WHERE tc.org_id = t.org_id AND tid = t.id
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM stripe_payouts sp, jsonb_array_elements_text(sp.covered_tire_plug_ids) sid
+        WHERE sp.org_id = t.org_id AND sid = t.id AND sp.status <> 'failed'
+      )
+    ORDER BY t.paid_at ASC, t.id ASC`;
   return (rows as Record<string, unknown>[]).map((r) => ({ id: String(r.id), amountCents: Number(r.amount_cents ?? 0) }));
 }
 
@@ -213,8 +248,7 @@ export async function submitTipCashoutCore(user: { orgId: string; id: string; ac
     const avail = await availableTipsCore(user.orgId, user.id);
     if (avail.totalCents <= 0) return err("invalid_input", "No tips available to cash out right now.");
     const uncovered = await uncoveredTipRowsCore(user.orgId, user.id);
-    const plugRows = await q`SELECT t.id, t.amount_cents FROM tire_plug_transactions t WHERE t.org_id=${user.orgId} AND t.contractor_user_id=${user.id} AND t.status='paid' AND NOT EXISTS (SELECT 1 FROM tip_cashouts tc, jsonb_array_elements_text(tc.covered_tire_plug_ids) tid WHERE tc.org_id=t.org_id AND tid=t.id) ORDER BY t.paid_at ASC, t.id ASC`;
-    const uncoveredPlugs = (plugRows as Record<string, unknown>[]).map((r) => ({ id: String(r.id), amountCents: Number(r.amount_cents ?? 0) }));
+    const uncoveredPlugs = await uncoveredTirePlugRowsCore(user.orgId, user.id);
     // Walk oldest-first until the covered set sums EXACTLY to available.
     const coveredIds: string[] = []; const coveredPlugIds: string[] = [];
     let sum = 0;
@@ -367,14 +401,20 @@ export async function markTipCashoutPaidCore(actor: TipCashoutActor, data: unkno
   }
 }
 
-/** Core helper for computePaydayCore: the tip ids covered by PAID cash-outs
- *  in this org — those tips must NEVER appear in a payday manifest again. */
+/** Core helper for computePaydayCore: the tip ids covered by PAID cash-outs OR
+ *  non-failed Stripe payouts in this org — those tips must NEVER appear in a
+ *  payday manifest again. Mirrors the Stripe covered-tip set so the manual and
+ *  automated flows can never double-cover the same tip. */
 export async function paidCashoutCoveredTipIdsCore(orgId: string): Promise<Set<string>> {
   await ensure();
   const q = await db();
   const rows = await q`
     SELECT DISTINCT tid AS id
     FROM tip_cashouts tc, jsonb_array_elements_text(tc.covered_tip_ids) tid
-    WHERE tc.org_id=${orgId} AND tc.status='paid'`;
+    WHERE tc.org_id=${orgId} AND tc.status='paid'
+    UNION
+    SELECT DISTINCT sid AS id
+    FROM stripe_payouts sp, jsonb_array_elements_text(sp.covered_tip_ids) sid
+    WHERE sp.org_id=${orgId} AND sp.status <> 'failed'`;
   return new Set((rows as Record<string, unknown>[]).map((r) => String(r.id)));
 }
