@@ -20,6 +20,7 @@ import { Banknote, ChevronLeft, Clock, Landmark, Lock, Mail, Plus, Smartphone, W
 import { useEffect, useState } from "react";
 import { AppShell } from "~/components/app-shell";
 import { BankLinkCard } from "~/components/bank-link-card";
+import { InstantCashoutCard } from "~/components/instant-cashout-card";
 import { DriverToolbar } from "~/components/driver-queue";
 import { Button, Card } from "~/components/ui";
 import {
@@ -306,6 +307,16 @@ function PayoutView() {
               </p>
               <div className="mt-3 border-t border-ink-100 pt-3">
                 <BankLinkCard />
+              </div>
+            </Card>
+
+            <Card className="p-4">
+              <p className="text-sm font-bold text-ink-800">Instant cash-out</p>
+              <p className="mt-1 text-xs leading-relaxed text-ink-500">
+                Cash out your tips instantly once your bank is linked and the owner enables automated payouts.
+              </p>
+              <div className="mt-3 border-t border-ink-100 pt-3">
+                <InstantCashoutCard />
               </div>
             </Card>
 

@@ -336,3 +336,14 @@ export async function previewWeeklyPayoutsCore(
     return err("database_error", e instanceof Error ? e.message : "Unable to preview weekly payouts.");
   }
 }
+
+/* -------------------------- owner-side handler -------------------------- */
+
+/** Owner/admin actor for the read-only preview (role-gated in the facade; the
+ *  core stays a pure pass-through so hermetic tests can call it directly). */
+export async function previewWeeklyPayoutsHandler(
+  actor: { orgId: string },
+  records: WeeklyPayoutRecordInput[],
+): Promise<StripePayoutResult<WeeklyPayoutPreview>> {
+  return previewWeeklyPayoutsCore(actor.orgId, records);
+}

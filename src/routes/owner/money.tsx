@@ -37,6 +37,7 @@ import { AppShell } from "~/components/app-shell";
 import { formatCents } from "~/components/contractor-admin";
 import { Alert, Avatar, BoardSkeleton, Button, Card, EmptyState, StatCard, StatusBadge, useToast } from "~/components/ui";
 import { OwnerPayoutMethodEditor } from "~/components/owner-payout-method";
+import { StripePayoutsSection } from "~/components/stripe-payouts-section";
 import {
   computePayday, editPayoutMethod, formatEtDate, getContractorPayoutMethod, getMoneyOverview, getPayPeriodDetail, listPayPeriods, markPayoutPaid,
   payPeriodLabel, rejectPayoutMethod, setBankDeposit, verifyPayoutMethod,
@@ -88,13 +89,14 @@ const timeLabel = (iso: string | null) => {
 
 /** Owner Payments screen in-page sub-tabs (presentation-only reorg, owner
  *  directive 2026-09-04). No URL routing, no role switching — pure state. */
-type MoneyTab = "overview" | "club-charges" | "tips" | "square-recon" | "battery-sales";
+type MoneyTab = "overview" | "club-charges" | "tips" | "square-recon" | "battery-sales" | "stripe-payouts";
 const MONEY_TABS: { id: MoneyTab; label: string }[] = [
   { id: "overview", label: "Overview / Payday manifest" },
   { id: "club-charges", label: "Club charges" },
   { id: "tips", label: "Tips" },
   { id: "square-recon", label: "Square reconciliation" },
   { id: "battery-sales", label: "Battery sales" },
+  { id: "stripe-payouts", label: "Stripe payouts" },
 ];
 
 function PaymentBreakdown({ record }: { record: PayoutRecord }) {
@@ -523,6 +525,9 @@ function MoneyView() {
 
         {/* ---------------------- battery sales (owner-spec'd 2026-08-13) ---------------------- */}
         {activeTab === "battery-sales" && <BatterySalesSection />}
+
+        {/* ------------------- Stripe payouts (automated-payouts Slice 3) ------------------- */}
+        {activeTab === "stripe-payouts" && <StripePayoutsSection records={detail?.records ?? []} />}
 
         {/* ---------------------- Square reconciliation (owner-directed 2026-09-04) ---------------------- */}
         {activeTab === "square-recon" && (
