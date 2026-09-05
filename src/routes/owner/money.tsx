@@ -86,6 +86,17 @@ const timeLabel = (iso: string | null) => {
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 };
 
+/** Owner Payments screen in-page sub-tabs (presentation-only reorg, owner
+ *  directive 2026-09-04). No URL routing, no role switching — pure state. */
+type MoneyTab = "overview" | "club-charges" | "tips" | "square-recon" | "battery-sales";
+const MONEY_TABS: { id: MoneyTab; label: string }[] = [
+  { id: "overview", label: "Overview / Payday manifest" },
+  { id: "club-charges", label: "Club charges" },
+  { id: "tips", label: "Tips" },
+  { id: "square-recon", label: "Square reconciliation" },
+  { id: "battery-sales", label: "Battery sales" },
+];
+
 function PaymentBreakdown({ record }: { record: PayoutRecord }) {
   const goa = record.goaJobCount * 1000;
   const standardJobs = Math.max(0, record.jobCount - record.goaJobCount);
@@ -135,8 +146,9 @@ function MoneyView() {
   const [tireLedger, setTireLedger] = useState<TirePlugLedgerRow[] | null>(null);
   const [markingTireId, setMarkingTireId] = useState<string | null>(null);
   const [markingCashoutId, setMarkingCashoutId] = useState<string | null>(null);
-  // Top Tips KPI disclosure: load the real ledger only when the owner opens it.
-  const [tipsExpanded, setTipsExpanded] = useState(false);
+  // In-page sub-tab (presentation-only). The Tips tab loads the real ledger
+  // lazily the first time it is opened, exactly as the old inline disclosure did.
+  const [activeTab, setActiveTab] = useState<MoneyTab>("overview");
   const [tipsBreakdown, setTipsBreakdown] = useState<TipLedgerRow[] | null>(null);
   const [tipsBreakdownLoading, setTipsBreakdownLoading] = useState(false);
   const [tipsBreakdownError, setTipsBreakdownError] = useState(false);
@@ -173,10 +185,9 @@ function MoneyView() {
     else setTipsBreakdownError(true);
   }, []);
 
-  const toggleTips = () => {
-    const next = !tipsExpanded;
-    setTipsExpanded(next);
-    if (next && tipsBreakdown === null && !tipsBreakdownLoading) void loadTipsBreakdown();
+  const selectTab = (tab: MoneyTab) => {
+    setActiveTab(tab);
+    if (tab === "tips" && tipsBreakdown === null && !tipsBreakdownLoading) void loadTipsBreakdown();
   };
 
   const runReconcile = async () => {
@@ -409,9 +420,7 @@ function MoneyView() {
           <button
             type="button"
             className="min-h-[92px] rounded-2xl text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-500"
-            aria-expanded={tipsExpanded}
-            aria-controls="tips-breakdown"
-            onClick={toggleTips}
+            onClick={() => selectTab("tips")}
           >
             <StatCard
               label="Tips"
@@ -419,16 +428,6 @@ function MoneyView() {
               detail={`${overview.tipsCount} paid tips — attributed to drivers${(cashouts?.openTotalCents ?? 0) > 0 ? ` · ${money(cashouts!.openTotalCents)} in open cash-outs` : ""}`}
             />
           </button>
-          <Card className="p-4 sm:col-span-3">
-            <div className="flex items-center justify-between gap-3">
-              <div><p className="text-xs font-bold uppercase tracking-wide text-ink-400">This week&apos;s tips</p><p className="text-2xl font-bold tabular-nums text-success-600">{money(overview.weeklyTipsCents)}</p></div>
-              <p className="text-xs text-ink-500">{overview.weeklyTipCount} paid tip{overview.weeklyTipCount === 1 ? "" : "s"} · Mon–Sun</p>
-            </div>
-            <div className="mt-3 divide-y divide-ink-100 border-t border-ink-100">
-              {overview.weeklyTipsByDriver.map((d) => <div key={d.driverId} className="flex items-center justify-between py-2 text-sm"><span className="font-semibold text-ink-700">{d.driverName}</span><span className="tabular-nums font-bold text-success-600">{money(d.tipsCents)} <span className="text-xs font-normal text-ink-400">({d.tipCount})</span></span></div>)}
-              {overview.weeklyTipsByDriver.length === 0 && <p className="py-2 text-xs text-ink-400">No paid tips this week.</p>}
-            </div>
-          </Card>
           <StatCard
             label="Payouts due"
             value={<span className="text-brand-700">{money(overview.payoutsDueCents)}</span>}
@@ -440,8 +439,41 @@ function MoneyView() {
           />
         </div>
 
-        {tipsExpanded && (
-          <section id="tips-breakdown" aria-label="Tips breakdown" className="-mt-2">
+        {/* in-page sub-tabs (presentation-only) */}
+        <div role="tablist" aria-label="Payments sections" className="flex flex-wrap gap-2 border-b border-ink-200 pb-3">
+          {MONEY_TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === t.id}
+              onClick={() => selectTab(t.id)}
+              className={`rounded-full px-3.5 py-1.5 text-xs font-bold transition-colors ${
+                activeTab === t.id
+                  ? "bg-brand-600 text-white"
+                  : "bg-ink-100 text-ink-600 hover:bg-ink-200"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {activeTab === "tips" && (
+          <Card className="p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div><p className="text-xs font-bold uppercase tracking-wide text-ink-400">This week&apos;s tips</p><p className="text-2xl font-bold tabular-nums text-success-600">{money(overview.weeklyTipsCents)}</p></div>
+              <p className="text-xs text-ink-500">{overview.weeklyTipCount} paid tip{overview.weeklyTipCount === 1 ? "" : "s"} · Mon–Sun</p>
+            </div>
+            <div className="mt-3 divide-y divide-ink-100 border-t border-ink-100">
+              {overview.weeklyTipsByDriver.map((d) => <div key={d.driverId} className="flex items-center justify-between py-2 text-sm"><span className="font-semibold text-ink-700">{d.driverName}</span><span className="tabular-nums font-bold text-success-600">{money(d.tipsCents)} <span className="text-xs font-normal text-ink-400">({d.tipCount})</span></span></div>)}
+              {overview.weeklyTipsByDriver.length === 0 && <p className="py-2 text-xs text-ink-400">No paid tips this week.</p>}
+            </div>
+          </Card>
+        )}
+
+        {activeTab === "tips" && (
+          <section id="tips-breakdown" aria-label="Tips breakdown">
             {tipsBreakdownLoading ? (
               <div className="h-40 animate-pulse rounded-2xl bg-ink-100/70" aria-busy="true" aria-label="Loading tips breakdown" />
             ) : tipsBreakdownError ? (
@@ -490,17 +522,20 @@ function MoneyView() {
         )}
 
         {/* ---------------------- battery sales (owner-spec'd 2026-08-13) ---------------------- */}
-        <BatterySalesSection />
+        {activeTab === "battery-sales" && <BatterySalesSection />}
 
         {/* ---------------------- Square reconciliation (owner-directed 2026-09-04) ---------------------- */}
-        <SquareReconciliationSection
-          reconciling={reconciling}
-          result={reconcileResult}
-          error={reconcileError}
-          onRun={() => void runReconcile()}
-        />
+        {activeTab === "square-recon" && (
+          <SquareReconciliationSection
+            reconciling={reconciling}
+            result={reconcileResult}
+            error={reconcileError}
+            onRun={() => void runReconcile()}
+          />
+        )}
 
         {/* ------------------------- tip cash-outs ------------------------- */}
+        {activeTab === "tips" && (
         <section aria-label="Tip cash-outs" className="space-y-3">
           <div className="flex items-end justify-between gap-3">
             <div className="min-w-0">
@@ -562,10 +597,15 @@ function MoneyView() {
             </Card>
           )}
         </section>
+        )}
 
+        {/* ------------------------- tire-plug ledger (overview: manual-payout workflow) ------------------------- */}
+        {activeTab === "overview" && (
         <section aria-label="Tire-plug ledger" className="space-y-3"><div><h2 className="text-base font-bold text-ink-800">Tire-plug requests</h2><p className="mt-0.5 text-xs text-ink-500">Send the contractor $45 outside Lightning Dispatch, then mark the request paid.</p></div>{tireLedger === null ? <div className="h-20 animate-pulse rounded-2xl bg-ink-100/70" /> : tireLedger.length === 0 ? <EmptyState icon={Zap} title="No tire-plug requests yet" body="Accepted tire-plug charges appear here after completion." /> : <Card className="divide-y divide-ink-100">{tireLedger.map((r) => <div key={r.id} className="flex flex-wrap items-center gap-3 px-4 py-3.5"><Avatar name={r.contractorName} className="size-9" /><div className="min-w-0 flex-1"><p className="text-sm font-semibold text-ink-800">{r.contractorName}</p><p className="text-xs text-ink-400">Tire plug · {new Date(r.createdAt).toLocaleDateString()}</p></div><div className="text-right"><p className="text-sm font-bold">{money(r.amountCents)}</p><StatusBadge className={r.status === "paid" ? "bg-success-100 text-success-700" : "bg-info-100 text-info-700"}>{r.status}</StatusBadge></div>{r.status !== "paid" && <Button size="md" variant="primary" loading={markingTireId === r.id} onClick={async () => { setMarkingTireId(r.id); await markTirePlugPaid({ data: { transactionId: r.id } }); setMarkingTireId(null); void loadCashouts(); }}>Mark paid</Button>}</div>)}</Card>}</section>
+        )}
 
         {/* payday manifest */}
+        {activeTab === "overview" && (
         <section aria-label="Payday manifest" className="space-y-3">
           <div className="flex items-end justify-between gap-3">
             <div className="min-w-0">
@@ -859,11 +899,10 @@ function MoneyView() {
             </Card>
           )}
         </section>
+        )}
 
-        {/* ------------------------- payment engine ------------------------- */}
-        <div className="border-t border-ink-200 pt-5">
-          <PaymentsSection />
-        </div>
+        {/* ------------------------- club charges / payment engine ------------------------- */}
+        {activeTab === "club-charges" && <PaymentsSection />}
       </div>
     </AppShell>
   );
