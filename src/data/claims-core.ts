@@ -46,8 +46,9 @@
  * Imported ONLY by the client-safe facade (src/data/claims.ts) and hermetic
  * tests — never by client-reachable modules (client-graph rule).
  */
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { loadB2Config, authorizeAccount, putObject, getObject } from "./b2-client";
+import { loadB2Config, authorizeAccount, putObject, getObject, deleteObject } from "./b2-client";
 import type { SmtpMessage } from "./smtp-client";
 import type { MailEnvelopeWithSource } from "./club-mail";
 
@@ -106,6 +107,20 @@ export type ClaimRow = {
   resolvedReason: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+/** Seroval-safe supporting-document row crossed to the client (owner-side). */
+export type ClaimDocument = {
+  id: string;
+  orgId: string;
+  claimId: string;
+  storageKey: string;
+  fileName: string | null;
+  mime: string;
+  sizeBytes: number;
+  uploadedByUserId: string | null;
+  uploadedAt: string;
+  createdAt: string;
 };
 
 /* --------------------------- company detection --------------------------- */
@@ -550,21 +565,33 @@ export async function researchClaimCore(actor: ClaimActor, claimId: unknown, opt
   if (claim.status !== "new" && claim.status !== "researched") return err("invalid_state", `Claim is ${claim.status} — research already complete.`);
 
   const facts: Record<string, unknown> = { ...claim.research };
-  // App-data fact: link the dispatch job by PO/reference (Agero PO # → towbook_job_id).
+  // App-data fact: link the dispatch job by PO/reference. The Agero "PO #"
+  // lives in dispatch_jobs.raw_json->>'purchaseOrderNumber' (towbook_job_id is
+  // the Towbook global call id — a DIFFERENT number). Match by PO FIRST, keep
+  // towbook_job_id as a legacy fallback for historical rows.
   const ref = String(claim.research.referenceNumber ?? claim.claimNumber ?? "");
   let jobId: string | null = claim.jobId;
   let jobFacts: Record<string, unknown> | null = null;
   if (ref) {
-    const jobRows = await q`SELECT id, towbook_job_id, customer_name, service_type, pickup, status, completed_at FROM dispatch_jobs WHERE org_id=${actor.orgId} AND towbook_job_id=${ref} LIMIT 1`;
+    const byPo = await q`SELECT id, towbook_job_id, customer_name, service_type, pickup, status, completed_at FROM dispatch_jobs WHERE org_id=${actor.orgId} AND raw_json->>'purchaseOrderNumber'=${ref} ORDER BY id LIMIT 1`;
+    const jobRows = byPo.length ? byPo : await q`SELECT id, towbook_job_id, customer_name, service_type, pickup, status, completed_at FROM dispatch_jobs WHERE org_id=${actor.orgId} AND towbook_job_id=${ref} ORDER BY id LIMIT 1`;
     if (jobRows.length) {
       const j = jobRows[0] as Record<string, unknown>;
       jobId = String(j.id);
-      jobFacts = { jobId: jobId, matchedBy: "towbook_job_id (PO/reference)", jobStatus: String(j.status ?? ""), completedAt: j.completed_at ? new Date(String(j.completed_at)).toISOString() : null };
-      if (!claim.driverUserId) {
-        // Assign the job's driver so the urgent notification has a target.
-        // simpler: jobs carry assigned_driver_towbook_id → match users
-        const byTowbook = await q`SELECT u.id FROM users u JOIN organization_memberships m ON m.user_id=u.id WHERE m.org_id=${actor.orgId} AND u.towbook_driver_id=(SELECT assigned_driver_towbook_id FROM dispatch_jobs WHERE id=${jobId}) AND u.deactivated_at IS NULL LIMIT 1`.catch(() => []);
-        if (byTowbook.length) await q`UPDATE damage_claims SET driver_user_id=${String((byTowbook[0] as Record<string, unknown>).id)} WHERE id=${v.data}`;
+      const matchedBy = byPo.length ? "purchaseOrderNumber (PO)" : "towbook_job_id (legacy fallback)";
+      jobFacts = { jobId: jobId, matchedBy, jobStatus: String(j.status ?? ""), completedAt: j.completed_at ? new Date(String(j.completed_at)).toISOString() : null };
+      // Assign the COMPLETING driver from the matched job's
+      // assigned_driver_towbook_id → users.towbook_driver_id (authoritative —
+      // override any stale/wrong pre-existing assignment).
+      const byTowbook = await q`SELECT u.id FROM users u JOIN organization_memberships m ON m.user_id=u.id WHERE m.org_id=${actor.orgId} AND u.towbook_driver_id=(SELECT assigned_driver_towbook_id FROM dispatch_jobs WHERE id=${jobId}) AND u.deactivated_at IS NULL LIMIT 1`.catch(() => []);
+      if (byTowbook.length) {
+        const resolvedDriverId = String((byTowbook[0] as Record<string, unknown>).id);
+        if (claim.driverUserId !== resolvedDriverId) {
+          await q`UPDATE damage_claims SET driver_user_id=${resolvedDriverId}, updated_at=NOW() WHERE id=${v.data}`;
+          await audit(q, actor.orgId, actor, "damage_claim_driver_assigned", v.data, { driverUserId: resolvedDriverId, source: "job_completing_driver", previousDriverUserId: claim.driverUserId ?? null });
+          facts.driverAssignedBy = "job_completing_driver";
+          facts.driverAssignmentChanged = true;
+        }
       }
     }
   }
@@ -740,6 +767,122 @@ export async function assignClaimDriverCore(actor: ClaimActor, data: unknown): P
   return row ? ok(row) : err("not_found", "Claim not found.");
 }
 
+/* ------------------------------- claim documents ------------------------------- */
+
+const CLAIM_DOC_MIME_ALLOWLIST = ["image/jpeg", "image/png", "image/webp", "application/pdf"] as const;
+const CLAIM_DOC_EXT: Record<string, string> = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "application/pdf": "pdf" };
+
+/** Doc-specific data-url decoder mirroring contractor-admin-core's
+ *  decodeDocumentDataUrl — images + PDF, nothing else. Owner-side evidence
+ *  uploads (scene photos, reports, etc.) attached to the claim reply email. */
+function decodeClaimDocumentDataUrl(dataUrl: string): { bytes: Uint8Array; mime: string } | null {
+  const m = /^data:([a-zA-Z0-9.+-]+\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl.trim());
+  if (!m) return null;
+  const mime = m[1].toLowerCase();
+  if (!(CLAIM_DOC_MIME_ALLOWLIST as readonly string[]).includes(mime)) return null;
+  try {
+    return { bytes: new Uint8Array(Buffer.from(m[2], "base64")), mime };
+  } catch { return null; }
+}
+
+function mapClaimDocument(r: Record<string, unknown>): ClaimDocument {
+  const str = (v: unknown) => (v == null ? null : String(v));
+  const num = (v: unknown) => (v == null ? 0 : Number(v));
+  return {
+    id: str(r.id)!,
+    orgId: str(r.org_id)!,
+    claimId: str(r.claim_id)!,
+    storageKey: str(r.storage_key) ?? "",
+    fileName: str(r.file_name),
+    mime: str(r.mime) ?? "",
+    sizeBytes: num(r.size_bytes),
+    uploadedByUserId: str(r.uploaded_by_user_id),
+    uploadedAt: new Date(String(r.uploaded_at)).toISOString(),
+    createdAt: new Date(String(r.created_at)).toISOString(),
+  };
+}
+
+export async function listClaimDocumentsCore(actor: ClaimActor, claimId: unknown): Promise<ClaimResult<ClaimDocument[]>> {
+  if (!configured()) return err("database_error", "Database not configured.");
+  if (actor.role !== "owner" && actor.role !== "admin") return err("unauthorized", "Owner access required.");
+  const v = z.string().min(1).max(128).safeParse(claimId);
+  if (!v.success) return err("invalid_input", "Claim id is required.");
+  const q = await db();
+  const claim = await claimRow(q, actor.orgId, v.data);
+  if (!claim) return err("not_found", "Claim not found.");
+  const rows = await q`SELECT * FROM damage_claim_documents WHERE org_id=${actor.orgId} AND claim_id=${v.data} ORDER BY uploaded_at ASC, id ASC`;
+  return ok(rows.map((r) => mapClaimDocument(r as Record<string, unknown>)));
+}
+
+export async function uploadClaimDocumentCore(
+  actor: ClaimActor,
+  data: unknown,
+  opts: { fetchImpl?: typeof fetch; b2StableDir?: string } = {},
+): Promise<ClaimResult<ClaimDocument>> {
+  if (!configured()) return err("database_error", "Database not configured.");
+  if (actor.role !== "owner" && actor.role !== "admin") return err("unauthorized", "Owner access required.");
+  const v = z.object({ claimId: z.string().min(1).max(128), dataUrl: z.string().min(20).max(20_000_000), fileName: z.string().trim().max(200).optional().or(z.literal("")) }).safeParse(data);
+  if (!v.success) return err("invalid_input", v.error.issues[0]?.message ?? "Invalid document upload.");
+  const decoded = decodeClaimDocumentDataUrl(v.data.dataUrl);
+  if (!decoded) return err("invalid_input", "That file type isn't supported — use JPG, PNG, WebP or PDF.");
+  if (decoded.bytes.length > 12 * 1024 * 1024) return err("invalid_input", "The file is too large (max 12 MB).");
+  const q = await db();
+  const claim = await claimRow(q, actor.orgId, v.data.claimId);
+  if (!claim) return err("not_found", "Claim not found.");
+  const ext = CLAIM_DOC_EXT[decoded.mime];
+  const key = `ld-claims/${actor.orgId}/${v.data.claimId}/docs/${randomUUID()}.${ext}`;
+  let b2;
+  try {
+    const config = await loadB2Config(undefined, { stableDir: opts.b2StableDir });
+    const auth = await authorizeAccount({ keyId: config.keyId, applicationKey: config.applicationKey, fetchImpl: opts.fetchImpl });
+    b2 = { config, s3ApiUrl: auth.s3ApiUrl };
+  } catch (e) {
+    return err("b2_not_configured", e instanceof Error ? e.message : "Document storage isn't connected.");
+  }
+  const put = await putObject({ config: b2.config, s3ApiUrl: b2.s3ApiUrl, key, bytes: decoded.bytes, contentType: decoded.mime, fetchImpl: opts.fetchImpl });
+  if (!put.ok) return err("b2_failed", `Document storage rejected the upload (HTTP ${put.status ?? "error"}). Try again.`);
+  const fileName = v.data.fileName && v.data.fileName.trim() ? v.data.fileName.trim() : null;
+  const id = randomUUID();
+  try {
+    await q`INSERT INTO damage_claim_documents(id, org_id, claim_id, storage_key, file_name, mime, size_bytes, uploaded_by_user_id)
+      VALUES(${id}, ${actor.orgId}, ${v.data.claimId}, ${key}, ${fileName}, ${decoded.mime}, ${decoded.bytes.length}, ${actor.id})`;
+  } catch (e) {
+    // Best-effort rollback of the orphaned B2 object — never masks the error.
+    try { await deleteObject({ config: b2.config, s3ApiUrl: b2.s3ApiUrl, key, fetchImpl: opts.fetchImpl }); } catch { /* ignore */ }
+    return err("database_error", e instanceof Error ? e.message : "Unable to save the document.");
+  }
+  await audit(q, actor.orgId, actor, "damage_claim_document_uploaded", v.data.claimId, { documentId: id, storageKey: key, fileName, mime: decoded.mime, sizeBytes: decoded.bytes.length });
+  const rows = await q`SELECT * FROM damage_claim_documents WHERE id=${id} LIMIT 1`;
+  return rows.length ? ok(mapClaimDocument(rows[0] as Record<string, unknown>)) : err("not_found", "Document not found after upload.");
+}
+
+export async function removeClaimDocumentCore(
+  actor: ClaimActor,
+  data: unknown,
+  opts: { fetchImpl?: typeof fetch; b2StableDir?: string } = {},
+): Promise<ClaimResult<{ removed: boolean }>> {
+  if (!configured()) return err("database_error", "Database not configured.");
+  if (actor.role !== "owner" && actor.role !== "admin") return err("unauthorized", "Owner access required.");
+  const v = z.object({ claimId: z.string().min(1).max(128), documentId: z.string().min(1).max(128) }).safeParse(data);
+  if (!v.success) return err("invalid_input", "Claim and document ids are required.");
+  const q = await db();
+  const claim = await claimRow(q, actor.orgId, v.data.claimId);
+  if (!claim) return err("not_found", "Claim not found.");
+  const rows = await q`SELECT id, storage_key FROM damage_claim_documents WHERE org_id=${actor.orgId} AND claim_id=${v.data.claimId} AND id=${v.data.documentId} LIMIT 1`;
+  if (!rows.length) return ok({ removed: false });
+  const storageKey = String((rows[0] as Record<string, unknown>).storage_key ?? "");
+  await q`DELETE FROM damage_claim_documents WHERE org_id=${actor.orgId} AND claim_id=${v.data.claimId} AND id=${v.data.documentId}`;
+  if (storageKey) {
+    try {
+      const config = await loadB2Config(undefined, { stableDir: opts.b2StableDir });
+      const auth = await authorizeAccount({ keyId: config.keyId, applicationKey: config.applicationKey, fetchImpl: opts.fetchImpl });
+      await deleteObject({ config, s3ApiUrl: auth.s3ApiUrl, key: storageKey, fetchImpl: opts.fetchImpl });
+    } catch { /* best-effort blob cleanup — the row is gone regardless */ }
+  }
+  await audit(q, actor.orgId, actor, "damage_claim_document_removed", v.data.claimId, { documentId: v.data.documentId, storageKey });
+  return ok({ removed: true });
+}
+
 /* ------------------------------- send core ------------------------------- */
 
 /** Injectable transport — tests pass a mock that records the message;
@@ -784,13 +927,34 @@ export async function sendClaimCore(actor: ClaimActor, claimId: unknown, opts: S
 
   // Fetch the signed signature from B2 → base64 for the email attachment.
   let signatureB64: string | null = null;
+  let b2Auth: { config: Awaited<ReturnType<typeof loadB2Config>>; s3ApiUrl: string } | null = null;
   try {
     const config = await loadB2Config(undefined, { stableDir: opts.stableDir });
     const auth = await authorizeAccount({ keyId: config.keyId, applicationKey: config.applicationKey, fetchImpl: opts.fetchImpl });
+    b2Auth = { config, s3ApiUrl: auth.s3ApiUrl };
     const got = await getObject({ config, s3ApiUrl: auth.s3ApiUrl, key: claim.signatureStorageKey, fetchImpl: opts.fetchImpl });
     if (got.ok && got.bytes) signatureB64 = Buffer.from(got.bytes).toString("base64");
   } catch { signatureB64 = null; }
   if (!signatureB64) return err("b2_failed", "Could not read the signed form from storage — nothing was sent.");
+
+  // Fetch the uploaded supporting documents and attach them alongside the
+  // signature. A missing blob skips the document but never blocks the send.
+  const docAttachments: SmtpMessage["attachments"] = [];
+  if (b2Auth) {
+    const docRows = await q`SELECT storage_key, file_name, mime FROM damage_claim_documents WHERE org_id=${actor.orgId} AND claim_id=${v.data} ORDER BY uploaded_at ASC, id ASC`;
+    for (const d of docRows as Record<string, unknown>[]) {
+      const storageKey = String(d.storage_key ?? "");
+      const fileName = d.file_name != null ? String(d.file_name) : null;
+      const mime = String(d.mime ?? "application/octet-stream");
+      if (!storageKey) continue;
+      try {
+        const got = await getObject({ config: b2Auth.config, s3ApiUrl: b2Auth.s3ApiUrl, key: storageKey, fetchImpl: opts.fetchImpl });
+        if (got.ok && got.bytes) {
+          docAttachments.push({ filename: fileName || `claim-document-${docAttachments.length + 1}`, contentType: mime, base64: Buffer.from(got.bytes).toString("base64"), inline: false });
+        }
+      } catch { /* skip unreadable document */ }
+    }
+  }
 
   const { loadGmailConfig } = await import("./club-mail");
   let from: string;
@@ -801,7 +965,8 @@ export async function sendClaimCore(actor: ClaimActor, claimId: unknown, opts: S
     return err("gmail_not_configured", e instanceof Error ? e.message : "The owner's Gmail isn't configured for sending.");
   }
   const msg = buildClaimEmail({ from, to, claim });
-  msg.attachments = msg.attachments?.map((a) => (a.filename.includes("signature") ? { ...a, base64: signatureB64! } : a)) ?? [];
+  msg.attachments = (msg.attachments ?? []).map((a) => (a.filename.includes("signature") ? { ...a, base64: signatureB64! } : a));
+  if (docAttachments.length) msg.attachments = [...(msg.attachments ?? []), ...docAttachments];
 
   if (opts.dryRun) {
     return ok({ preview: { to, subject: msg.subject, textPreview: msg.text.slice(0, 500) } });
@@ -975,4 +1140,19 @@ export async function getClaimSignatureFileHandler(data: unknown, opts?: { fetch
   const actor = (await resolveOwnerActor()) ?? (await resolveDriverActor());
   if (!actor) return err("unauthorized", "Owner or driver access required.");
   return getClaimSignatureFileCore(actor, data, opts ?? {});
+}
+export async function uploadClaimDocumentHandler(data: unknown, opts?: { fetchImpl?: typeof fetch; b2StableDir?: string }) {
+  const actor = await resolveOwnerActor();
+  if (!actor) return err("unauthorized", "Owner access required.");
+  return uploadClaimDocumentCore(actor, data, opts ?? {});
+}
+export async function listClaimDocumentsHandler(data: unknown) {
+  const actor = await resolveOwnerActor();
+  if (!actor) return err("unauthorized", "Owner access required.");
+  return listClaimDocumentsCore(actor, data);
+}
+export async function removeClaimDocumentHandler(data: unknown, opts?: { fetchImpl?: typeof fetch; b2StableDir?: string }) {
+  const actor = await resolveOwnerActor();
+  if (!actor) return err("unauthorized", "Owner access required.");
+  return removeClaimDocumentCore(actor, data, opts ?? {});
 }

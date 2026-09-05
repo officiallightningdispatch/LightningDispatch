@@ -26,6 +26,7 @@ const {
   scanClaimsCore, researchClaimCore, prepareClaimFormCore, signClaimCore,
   approveClaimCore, rejectClaimCore, sendClaimCore, listClaimsCore,
   listMyClaimSignRequestsCore, assignClaimDriverCore, buildClaimEmail,
+  uploadClaimDocumentCore, listClaimDocumentsCore, removeClaimDocumentCore,
 } = await import("./src/data/claims-core.ts");
 const { ensureSchema } = await import("./src/data/migrations.ts");
 const { assertQaOrg } = await import("./src/data/db-guard.ts");
@@ -56,6 +57,7 @@ const cleanup = async () => {
   await q`DELETE FROM status_events WHERE org_id IN (${ORG}, ${ORG2})`;
   await q`DELETE FROM job_completions WHERE org_id IN (${ORG}, ${ORG2})`;
   await q`DELETE FROM completion_tips WHERE org_id IN (${ORG}, ${ORG2})`;
+  await q`DELETE FROM damage_claim_documents WHERE org_id IN (${ORG}, ${ORG2})`;
   await q`DELETE FROM damage_claims WHERE org_id IN (${ORG}, ${ORG2})`;
   await q`DELETE FROM dispatch_jobs WHERE org_id IN (${ORG}, ${ORG2})`;
   await q`DELETE FROM organization_memberships WHERE org_id IN (${ORG}, ${ORG2})`;
@@ -79,8 +81,10 @@ await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES
   (${ORG}, ${OWNER}, 'owner'), (${ORG}, ${ADMIN}, 'admin'),
   (${ORG}, ${DRIVER}, 'contractor'), (${ORG}, ${OTHER}, 'contractor'),
   (${ORG2}, ${OTHER2}, 'owner')`;
-await q`INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, phone, lat, lng, area, service_type, status, created_at, completed_at, assigned_driver_towbook_id)
-  VALUES(${JOB_ID}, ${ORG}, ${"111136703"}, ${"Carly Feiner"}, ${"9145550101"}, 41.1, -73.5, ${"CT"}, ${"Tire Change"}, 'completed', NOW(), NOW(), ${DRIVER_TB})`;
+// DISTINCT towbook_job_id vs the PO number: the PO lives in raw_json->
+// 'purchaseOrderNumber' (a different number than the Towbook global call id).
+await q`INSERT INTO dispatch_jobs(id, org_id, towbook_job_id, customer_name, phone, lat, lng, area, service_type, status, created_at, completed_at, assigned_driver_towbook_id, raw_json)
+  VALUES(${JOB_ID}, ${ORG}, ${"281178567"}, ${"Carly Feiner"}, ${"9145550101"}, 41.1, -73.5, ${"CT"}, ${"Tire Change"}, 'completed', NOW(), NOW(), ${DRIVER_TB}, ${JSON.stringify({ purchaseOrderNumber: "111136703" })}::jsonb)`;
 
 /* ---- mock B2 fetch (authorize + S3 PUT/GET in-memory) ---- */
 function makeFetch() {
@@ -101,6 +105,11 @@ function makeFetch() {
         if ((init?.method ?? "GET") === "PUT") {
           const key = decodeURIComponent(new URL(u).pathname.replace(/^\//, ""));
           objects.set(key, Buffer.from(init.body));
+          return resp(200, { json: {} });
+        }
+        if ((init?.method ?? "GET") === "DELETE") {
+          const key = decodeURIComponent(new URL(u).pathname.replace(/^\//, ""));
+          objects.delete(key);
           return resp(200, { json: {} });
         }
         const key = decodeURIComponent(new URL(u).pathname.replace(/^\//, ""));
@@ -194,9 +203,14 @@ const ageroId = scan.data.claims.find((c) => c.company === "Agero").id;
 const sixtId = scan.data.claims.find((c) => c.company === "Sixt").id;
 
 /* ================= RESEARCH ================= */
+// Pre-seed a WRONG driver on the claim: research must OVERRIDE it with the
+// completing driver resolved from the matched job's assigned_driver_towbook_id.
+await q`UPDATE damage_claims SET driver_user_id=${OTHER} WHERE id=${ageroId}`;
 const researched = await researchClaimCore(ACTOR, ageroId, { connectImpl: () => Promise.resolve(makeMailbox(mailMsgs)) });
 check("research: Agero → researched", researched.ok && researched.data.status === "researched", JSON.stringify(researched.data?.status));
-check("research: job linked by PO + driver auto-assigned", researched.ok && researched.data.jobId === JOB_ID && researched.data.driverUserId === DRIVER, JSON.stringify({ jobId: researched.data?.jobId, driver: researched.data?.driverUserId }));
+check("research: job linked by PO (purchaseOrderNumber) + driver auto-assigned", researched.ok && researched.data.jobId === JOB_ID && researched.data.driverUserId === DRIVER, JSON.stringify({ jobId: researched.data?.jobId, driver: researched.data?.driverUserId }));
+check("research: matchedBy records purchaseOrderNumber (PO)", researched.ok && String(researched.data.research?.job?.matchedBy) === "purchaseOrderNumber (PO)", JSON.stringify(researched.data?.research?.job));
+check("research: completing driver OVERRIDES pre-seeded wrong driver", researched.ok && researched.data.driverUserId === DRIVER && researched.data.driverUserId !== OTHER, JSON.stringify({ driver: researched.data?.driverUserId }));
 
 /* ================= PREPARE ================= */
 const prepared = await prepareClaimFormCore(ACTOR, { claimId: ageroId });
@@ -234,6 +248,20 @@ check("approve: owner approves → approved", approve.ok && approve.data.status 
 check("approve: admin can approve too", (await approveClaimCore(ADMIN_ACTOR, sixtId)).ok);
 check("approve: dispatcher refused", !(await approveClaimCore(DISPATCHER, ageroId)).ok);
 
+/* ================= CLAIM DOCUMENTS (upload → list → send → remove) ================= */
+const PNG_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+const PDF_DATA_URL = `data:application/pdf;base64,${Buffer.from("%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\n%%EOF").toString("base64")}`;
+const upPdf = await uploadClaimDocumentCore(ACTOR, { claimId: ageroId, dataUrl: PDF_DATA_URL, fileName: "scene-report.pdf" }, { fetchImpl: b2.fetch });
+check("documents: PDF uploads (B2 + row)", upPdf.ok && upPdf.data.mime === "application/pdf" && upPdf.data.fileName === "scene-report.pdf" && b2.objects.has(`qa-bucket/${upPdf.data.storageKey}`), JSON.stringify(upPdf));
+const upPng = await uploadClaimDocumentCore(ACTOR, { claimId: ageroId, dataUrl: PNG_DATA_URL, fileName: "scene-photo.png" }, { fetchImpl: b2.fetch });
+check("documents: PNG uploads (B2 + row)", upPng.ok && upPng.data.mime === "image/png" && b2.objects.has(`qa-bucket/${upPng.data.storageKey}`), JSON.stringify(upPng));
+const docsList = await listClaimDocumentsCore(ACTOR, ageroId);
+check("documents: list returns both", docsList.ok && docsList.data.length === 2, JSON.stringify(docsList.data?.map((d) => d.fileName)));
+check("documents: wrong-org owner refused (list)", !(await listClaimDocumentsCore(WRONG_ORG_ACTOR, ageroId)).ok);
+check("documents: driver actor refused (list)", !(await listClaimDocumentsCore(DRIVER_ACTOR, ageroId)).ok);
+check("documents: wrong-org owner refused (upload)", !(await uploadClaimDocumentCore(WRONG_ORG_ACTOR, { claimId: ageroId, dataUrl: PNG_DATA_URL, fileName: "x.png" }, { fetchImpl: b2.fetch })).ok);
+check("documents: driver actor refused (upload)", !(await uploadClaimDocumentCore(DRIVER_ACTOR, { claimId: ageroId, dataUrl: PNG_DATA_URL, fileName: "x.png" }, { fetchImpl: b2.fetch })).ok);
+
 /* ================= SEND (mocked transport) ================= */
 let sentMessages = [];
 const dryRun = await sendClaimCore(ACTOR, ageroId, { sendImpl: async () => { throw new Error("dryRun must not send"); }, dryRun: true, fetchImpl: b2.fetch });
@@ -241,7 +269,7 @@ check("send: dryRun does not send or change status", dryRun.ok && dryRun.data.pr
 const send = await sendClaimCore(ACTOR, ageroId, { sendImpl: async (m) => { sentMessages.push(m); return { ok: true, response: "250 OK" }; }, fetchImpl: b2.fetch });
 check("send: approved + email method → sent", send.ok && send.data.status === "sent", JSON.stringify(send));
 check("send: one audited message to company", sentMessages.length === 1 && sentMessages[0].to[0] === "DamageTeam@Agero.com");
-check("send: signature attached", sentMessages[0].attachments?.length === 1 && sentMessages[0].attachments[0].base64 !== "PENDING");
+check("send: signature + documents attached", sentMessages[0].attachments?.length === 3 && sentMessages[0].attachments.some((a) => a.filename.includes("signature")) && sentMessages[0].attachments.every((a) => a.base64 !== "PENDING"), JSON.stringify(sentMessages[0].attachments?.map((a) => a.filename)));
 const sentRow = (await listClaimsCore(ACTOR)).data.find((c) => c.id === ageroId);
 check("send: sent_at + send_to recorded", sentRow.sentAt != null && sentRow.sendTo === "DamageTeam@Agero.com");
 let wfCalled = false;
@@ -255,6 +283,13 @@ check("send: wrong-org owner refused", !(await sendClaimCore(WRONG_ORG_ACTOR, ag
 const rejected = await rejectClaimCore(ACTOR, { claimId: sixtId, reason: "owner review" });
 check("reject: closes claim", rejected.ok && rejected.data.status === "closed", JSON.stringify(rejected));
 
+/* ================= CLAIM DOCUMENT REMOVE ================= */
+check("documents: wrong-org owner refused (remove)", !(await removeClaimDocumentCore(WRONG_ORG_ACTOR, { claimId: ageroId, documentId: upPdf.data.id }, { fetchImpl: b2.fetch })).ok);
+const removedPdf = await removeClaimDocumentCore(ACTOR, { claimId: ageroId, documentId: upPdf.data.id }, { fetchImpl: b2.fetch });
+check("documents: remove deletes the row (and B2 blob)", removedPdf.ok && removedPdf.data.removed === true && !b2.objects.has(`qa-bucket/${upPdf.data.storageKey}`), JSON.stringify(removedPdf));
+const docsAfterRemove = await listClaimDocumentsCore(ACTOR, ageroId);
+check("documents: list reflects removal (1 remains)", docsAfterRemove.ok && docsAfterRemove.data.length === 1, JSON.stringify(docsAfterRemove.data?.map((d) => d.fileName)));
+
 /* ================= EMAIL COMPOSITION (pure) ================= */
 const email = buildClaimEmail({ from: "lightroad29@gmail.com", to: "DamageTeam@Agero.com", claim: sentRow });
 check("buildClaimEmail: subject carries claim number", email.subject.includes("2026-07-5643800"));
@@ -263,7 +298,7 @@ check("buildClaimEmail: statement in body", email.text.includes("does not reflec
 /* ================= AUDIT ================= */
 const auditRows = await q`SELECT action FROM audit_log WHERE org_id=${ORG} AND entity_type='damage_claim' ORDER BY occurred_at`;
 const actions = auditRows.map((r) => r.action);
-for (const want of ["damage_claim_detected", "damage_claim_researched", "damage_claim_form_prepared", "damage_claim_signed", "damage_claim_approved", "damage_claim_sent"]) {
+for (const want of ["damage_claim_detected", "damage_claim_researched", "damage_claim_form_prepared", "damage_claim_signed", "damage_claim_approved", "damage_claim_sent", "damage_claim_driver_assigned", "damage_claim_document_uploaded", "damage_claim_document_removed"]) {
   check(`audit: ${want} recorded`, actions.includes(want), actions.join(","));
 }
 } finally {
@@ -279,7 +314,8 @@ const leftover = await q`SELECT
   (SELECT count(*) FROM organization_memberships WHERE org_id LIKE 'qa-claims%') AS mems,
   (SELECT count(*) FROM dispatch_jobs WHERE org_id LIKE 'qa-claims%') AS jobs,
   (SELECT count(*) FROM status_events WHERE org_id LIKE 'qa-claims%') AS events,
-  (SELECT count(*) FROM completion_tips WHERE org_id LIKE 'qa-claims%') AS tips`;
-check("cleanup: zero QA rows", Number(leftover[0].claims) === 0 && Number(leftover[0].audit) === 0 && Number(leftover[0].orgs) === 0 && Number(leftover[0].users) === 0 && Number(leftover[0].mems) === 0 && Number(leftover[0].jobs) === 0 && Number(leftover[0].events) === 0 && Number(leftover[0].tips) === 0, JSON.stringify(leftover[0]));
+  (SELECT count(*) FROM completion_tips WHERE org_id LIKE 'qa-claims%') AS tips,
+  (SELECT count(*) FROM damage_claim_documents WHERE org_id LIKE 'qa-claims%') AS claim_docs`;
+check("cleanup: zero QA rows", Number(leftover[0].claims) === 0 && Number(leftover[0].audit) === 0 && Number(leftover[0].orgs) === 0 && Number(leftover[0].users) === 0 && Number(leftover[0].mems) === 0 && Number(leftover[0].jobs) === 0 && Number(leftover[0].events) === 0 && Number(leftover[0].tips) === 0 && Number(leftover[0].claim_docs) === 0, JSON.stringify(leftover[0]));
 console.log(`\nclaims.test.mjs: ${checks.length}/${checks.length} passed`);
 console.log(`cleanup: ${JSON.stringify(leftover[0])}`);
