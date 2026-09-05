@@ -692,6 +692,39 @@ export async function getDriverPayPeriodSummaryCore(actor: PayoutActor, towbookD
     const tireRows = await q`SELECT amount_cents, paid_at FROM tire_plug_transactions WHERE org_id=${actor.orgId} AND contractor_user_id=${actor.id} AND status='paid'`;
     const batteryRows = await q`SELECT amount_cents, earned_at FROM battery_payouts WHERE org_id=${actor.orgId} AND contractor_user_id=${actor.id} AND earned_at IS NOT NULL`;
     const { computeBusyBonus, jobAssignmentMs, jobCompletedMs, BUSY_BONUS_PER_JOB_CENTS } = await import("./busy-bonus-core");
+    // Authoritative per-driver completed counts come from the Towbook
+    // CallWorkflow report population — the SAME reconcile + groupReportPayableRows
+    // path the owner manifest (computePaydayCore) uses. We only ever read the
+    // persisted exact-period snapshot (loadTowbookSnapshot); we NEVER fetch the
+    // live Towbook API here (slow + rate-limited on every earnings load).
+    // dispatch_jobs stays the last-resort fallback (the local makeCard path).
+    const orgDispatchRows = await q`SELECT id, towbook_job_id, assigned_driver_towbook_id, raw_json, manually_reassigned_at
+      FROM dispatch_jobs WHERE org_id=${actor.orgId}`;
+    const jobsById = new Map<string, Record<string, unknown>>();
+    for (const row of orgDispatchRows as Record<string, unknown>[]) jobsById.set(String(row.id), row);
+    const paidBatteryJobs = await q`SELECT install_job_id FROM battery_sales
+      WHERE org_id=${actor.orgId} AND status='paid' AND completed_at IS NOT NULL`;
+    const paidBatteryIds = new Set((paidBatteryJobs as Record<string, unknown>[]).map((row) => String(row.install_job_id)));
+    const reportUsers = (await q`SELECT u.id AS user_id, u.name, u.towbook_driver_id, cp.payrate_cents
+      FROM users u
+      JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${actor.orgId}
+      LEFT JOIN contractor_profiles cp ON cp.org_id=${actor.orgId} AND cp.user_id=u.id
+      WHERE u.towbook_driver_id IS NOT NULL` as Record<string, unknown>[]).map((r) => ({
+        userId: String(r.user_id), name: String(r.name ?? ""), towbookDriverId: String(r.towbook_driver_id),
+        payrateCents: r.payrate_cents != null ? Number(r.payrate_cents) : null,
+      }));
+    const reportCountFor = async (b: PeriodBoundaries): Promise<{ jobCount: number; goaCount: number } | null> => {
+      let rows: CallWorkflowRow[] | null = null;
+      try {
+        const snapshot = await loadTowbookSnapshot(actor.orgId, callWorkflowWindowForPeriod(b.startsAt, b.endsAt));
+        if (snapshot) rows = snapshot.rows;
+      } catch { rows = null; }
+      if (!rows || rows.length === 0) return null;
+      const reconciliation = reconcileCallWorkflow(rows, orgDispatchRows as Array<Record<string, unknown>>);
+      const attribution = groupReportPayableRows(reconciliation.rows, reportUsers, jobsById, paidBatteryIds);
+      const group = attribution.groups.find((g) => g.tb_id === towbookDriverId);
+      return group ? { jobCount: group.job_count, goaCount: group.goa_count } : null;
+    };
     const makeCard = (b: PeriodBoundaries): DriverPayPeriodCard => {
       const start = b.startsAt.getTime(), end = b.endsAt.getTime();
       let jobCount = 0, goaCount = 0, unknown = 0;
@@ -723,8 +756,11 @@ export async function getDriverPayPeriodSummaryCore(actor: PayoutActor, towbookD
       FROM payout_records pr JOIN pay_periods pp ON pp.org_id=pr.org_id AND pp.id=pr.period_id
       WHERE pr.org_id=${actor.orgId} AND pr.contractor_id=${actor.id}
         AND pp.starts_at IN (${iso(currentB.startsAt)}, ${iso(previousB.startsAt)})`;
+    const manifestSeenStarts = new Set<number>();
     for (const r of manifestRows as Record<string, unknown>[]) {
-      const target = new Date(String(r.starts_at)).getTime() === currentB.startsAt.getTime() ? current : previous;
+      const startMs = new Date(String(r.starts_at)).getTime();
+      manifestSeenStarts.add(startMs);
+      const target = startMs === currentB.startsAt.getTime() ? current : previous;
       target.jobCount = Number(r.job_count ?? target.jobCount);
       target.goaJobCount = Number(r.goa_job_count ?? target.goaJobCount);
       target.payrateCents = r.payrate_cents != null ? Number(r.payrate_cents) : 0;
@@ -734,6 +770,14 @@ export async function getDriverPayPeriodSummaryCore(actor: PayoutActor, towbookD
       target.batteryPayoutCents = Number(r.battery_payout_cents ?? target.batteryPayoutCents);
       target.busyBonusCents = Number(r.busy_bonus_cents ?? target.busyBonusCents);
       target.totalCents = Number(r.total_cents ?? target.totalCents);
+    }
+    if (!manifestSeenStarts.has(currentB.startsAt.getTime())) {
+      const rc = await reportCountFor(currentB);
+      if (rc) { current.jobCount = rc.jobCount; current.goaJobCount = rc.goaCount; current.grossCents = current.goaJobCount * 1000 + Math.max(0, current.jobCount - current.goaJobCount) * current.payrateCents; current.totalCents = current.grossCents + current.tipsCents + current.tirePlugCents + current.batteryPayoutCents + current.busyBonusCents; }
+    }
+    if (!manifestSeenStarts.has(previousB.startsAt.getTime())) {
+      const rc = await reportCountFor(previousB);
+      if (rc) { previous.jobCount = rc.jobCount; previous.goaJobCount = rc.goaCount; previous.grossCents = previous.goaJobCount * 1000 + Math.max(0, previous.jobCount - previous.goaJobCount) * previous.payrateCents; previous.totalCents = previous.grossCents + previous.tipsCents + previous.tirePlugCents + previous.batteryPayoutCents + previous.busyBonusCents; }
     }
     const diagnostics = { unknownCompletionTimeRows: Number((allRows as Record<string, unknown>[]).filter((r) => String(r.status) === "completed" && authoritativeCompletionMs(r.raw_json) == null).length) };
     return ok({ current, previous, diagnostics });

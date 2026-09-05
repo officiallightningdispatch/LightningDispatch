@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "~/components/app-shell";
 import { DriverEmptyState, DriverToolbar, QueueSkeleton } from "~/components/driver-queue";
 import { JobFeedbackPanel } from "~/components/driver-issues";
+import { InstantCashoutCard } from "~/components/instant-cashout-card";
 import { Button, Card, useToast } from "~/components/ui";
 import { driverEarnings, driverLogout, type DriverEarningsResult } from "~/data/driver-auth";
 import { formatEtDate, getMyPayoutMethod, PAYOUT_RAIL_LABELS } from "~/data/payouts";
@@ -186,6 +187,11 @@ function EarningsView() {
           {/* Immediate tip cash-out (owner-directed 2026-08-12) — ONE TAP.
               Server-computed amount; states handled in the shared panel. */}
           <TipCashoutPanel onSubmitted={() => toast("Cash-out requested — the owner pays it from the Payments tab.")} />
+
+          {/* Stripe Connect instant cash-out (automated payouts, owner-gated).
+              Non-blocking; gate-off state renders "coming soon" until the
+              owner enables automated payouts. */}
+          <InstantCashoutCard />
 
           {/* Pay periods (feature batch 8): current open week + last closed
               week — earnings = rate × completed + tips, Mon→Sun. */}
