@@ -83,6 +83,9 @@ export type ReconcileRow = {
   localRowId: string;
   jobId: string;
   driverId: string;
+  /** Display-only: the driver's real `users.name`, or "" when no user row is
+   *  found. Never keyed on — `driverId` remains the grouping/identity key. */
+  driverName: string;
   localStatus: string;
   localAmountCents: number;
   squarePaymentId: string;
@@ -97,6 +100,9 @@ export type ReconcileRow = {
 
 export type ReconcileDriverSummary = {
   driverId: string;
+  /** Display-only: the driver's real `users.name`, or "" when no user row is
+   *  found. The summary grouping stays keyed on `driverId`. */
+  driverName: string;
   localCount: number;
   squareConfirmedCount: number;
   localAmountCents: number;
@@ -355,6 +361,20 @@ export async function reconcileSquarePaymentsCore(
     });
   }
 
+  // Resolve display names for every distinct driver id (users.id). Display-only:
+  // grouping stays keyed on driverId; a missing row falls back to "" and the UI
+  // shows "Driver {id}". Never fabricated.
+  const distinctDriverIds = [...new Set(localRows.map((r) => r.driverId).filter((x) => x))];
+  const nameById = new Map<string, string>();
+  if (distinctDriverIds.length > 0) {
+    const nameRows = await q`SELECT id, name FROM users WHERE id = ANY(${distinctDriverIds})`;
+    for (const n of nameRows as Record<string, unknown>[]) {
+      const id = String(n.id ?? "");
+      const name = String(n.name ?? "");
+      if (id && name) nameById.set(id, name);
+    }
+  }
+
   // Dedupe payment ids (the same Square payment can appear on multiple local rows).
   const uniqueIds = [...new Set(localRows.map((r) => r.squarePaymentId).filter((x) => x))];
   const paymentsById = new Map<string, SquareGetPaymentResult>();
@@ -399,6 +419,7 @@ export async function reconcileSquarePaymentsCore(
       localRowId: lr.localRowId,
       jobId: lr.jobId,
       driverId: lr.driverId,
+      driverName: nameById.get(lr.driverId) ?? "",
       localStatus: lr.localStatus,
       localAmountCents: lr.localAmountCents,
       squarePaymentId: lr.squarePaymentId,
@@ -416,7 +437,8 @@ export async function reconcileSquarePaymentsCore(
   const driverMap = new Map<string, ReconcileDriverSummary>();
   const bump = (driverId: string, field: keyof ReconcileDriverSummary, by: number) => {
     const d = driverMap.get(driverId) ?? {
-      driverId, localCount: 0, squareConfirmedCount: 0, localAmountCents: 0, squareConfirmedAmountCents: 0,
+      driverId, driverName: nameById.get(driverId) ?? "",
+      localCount: 0, squareConfirmedCount: 0, localAmountCents: 0, squareConfirmedAmountCents: 0,
       refundedCount: 0, failedCount: 0, missingCount: 0, readErrorCount: 0, mismatchCount: 0,
     };
     (d as unknown as Record<string, unknown>)[field] = (Number((d as unknown as Record<string, unknown>)[field]) + by);
