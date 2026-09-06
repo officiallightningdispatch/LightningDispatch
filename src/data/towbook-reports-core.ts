@@ -158,7 +158,15 @@ export function reconcileCallWorkflow(rows: CallWorkflowRow[], jobs: Array<Recor
       classification,
       payableCents: cents,
       ...(job?.id != null ? { jobId: String(job.id) } : {}),
-      ...(job?.assigned_driver_towbook_id != null ? { towbookDriverId: String(job.assigned_driver_towbook_id) } : {}),
+      // Authoritative driver attribution: prefer the dispatch ledger's assigned
+      // id when the row joined a dispatch job; otherwise carry the report's own
+      // `driverId` (present on EVERY completed CallWorkflow row) so a completed
+      // row that has no local dispatch job still resolves to its contractor.
+      ...(job?.assigned_driver_towbook_id != null
+        ? { towbookDriverId: String(job.assigned_driver_towbook_id) }
+        : r.driverId != null
+          ? { towbookDriverId: String(r.driverId) }
+          : {}),
       ...(reason ? { reason } : {}),
     });
   }

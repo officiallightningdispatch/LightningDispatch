@@ -199,7 +199,6 @@ function EarningsView() {
             <DriverPaymentBreakdown title="This pay period" card={payPeriods.current} />
             <DriverPaymentBreakdown title="Last pay period" card={payPeriods.previous} />
           </div>}
-          {payPeriods?.diagnostics.unknownCompletionTimeRows ? <p role="status" className="text-xs text-amber-700">Some completed Towbook rows have no parseable completion time and were held out of payday totals; owner review is required.</p> : null}
 
           <Link
             to="/driver/payout"
