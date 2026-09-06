@@ -4,11 +4,50 @@
  *
  * Controlled snap: the page owns `snapIndex` (so tapping the map can expand
  * the sheet), the sheet owns the drag gesture. Snap fractions are viewport
- * heights (e.g. [0.38, 0.78]); the sheet floats ABOVE the bottom tab bar
- * (bottom-16) and never covers it. On md+ the sheet becomes a static card in
- * flow (desktop "map + sheet" column look) and dragging is disabled.
+ * heights (e.g. [0.38, 0.78]); the sheet floats ABOVE the bottom tab bar and
+ * never covers it. On md+ the sheet becomes a static card in flow (desktop
+ * "map + sheet" column look) and dragging is disabled.
+ *
+ * The mobile bottom offset accounts for the FULL tab-bar height including the
+ * iOS safe area: 44px content (min-h-11) + 8px padding (p-1) + safe-area, i.e.
+ * calc(3.25rem + env(safe-area-inset-bottom)). The drag clamp uses the same
+ * total (NAV_BAR_CONTENT_PX + measured safe-area) so dragging can never pull
+ * the sheet over the nav row.
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
+
+/** Nav-bar content height above the safe area: 44px (min-h-11) + 8px (p-1) = 52px.
+ *  The safe-area portion is added at runtime via env(safe-area-inset-bottom) and
+ *  its JS measurement (see safeAreaInsetBottomPx). */
+const NAV_BAR_CONTENT_PX = 52;
+
+let safeAreaMeasured = false;
+let cachedSafeAreaPx = 0;
+/** Read the real iOS bottom safe-area inset in px (0 elsewhere). Measured once
+ *  per page via a hidden probe using env(safe-area-inset-bottom), so the drag
+ *  clamp matches the CSS `bottom` offset exactly on every iPhone size. */
+function safeAreaInsetBottomPx(): number {
+  if (typeof window === "undefined" || typeof document === "undefined") return 0;
+  if (!safeAreaMeasured) {
+    safeAreaMeasured = true;
+    try {
+      const probe = document.createElement("div");
+      probe.style.cssText =
+        "position:absolute;visibility:hidden;pointer-events:none;height:env(safe-area-inset-bottom);";
+      document.body.appendChild(probe);
+      cachedSafeAreaPx = probe.getBoundingClientRect().height || 0;
+      probe.remove();
+    } catch {
+      cachedSafeAreaPx = 0;
+    }
+  }
+  return cachedSafeAreaPx;
+}
+
+/** Total bottom offset the sheet must sit above, in px (matches the CSS). */
+function navBarTotalOffsetPx(): number {
+  return NAV_BAR_CONTENT_PX + safeAreaInsetBottomPx();
+}
 
 export function DriverBottomSheet({
   snapPoints,
@@ -53,7 +92,7 @@ export function DriverBottomSheet({
     const g = gestureRef.current;
     if (!g) return;
     const next = g.startPx + (e.clientY - g.startY);
-    const maxPx = window.innerHeight - 72; // keep above the tab bar
+    const maxPx = window.innerHeight - navBarTotalOffsetPx(); // keep above the full tab bar (incl. safe area)
     setDragPx(Math.max(120, Math.min(maxPx, next)));
   };
   const onHandlePointerUp = (_e: React.PointerEvent<HTMLDivElement>) => {
@@ -86,9 +125,17 @@ export function DriverBottomSheet({
       className={`rounded-t-3xl bg-surface shadow-[0_-8px_24px_rgba(14,14,17,0.10)] ${
         isDesktop
           ? "static mx-auto mb-8 mt-4 w-full max-w-3xl rounded-2xl shadow-card"
-          : "fixed inset-x-0 bottom-16 z-30"
+          : "fixed inset-x-0 z-30"
       } ${className}`}
-      style={isDesktop ? undefined : { height: mobileHeight, transition: dragPx != null ? "none" : "height .25s ease" }}
+      style={
+        isDesktop
+          ? undefined
+          : {
+              height: mobileHeight,
+              bottom: `calc(${NAV_BAR_CONTENT_PX}px + env(safe-area-inset-bottom))`,
+              transition: dragPx != null ? "none" : "height .25s ease",
+            }
+      }
     >
       <div
         role="button"

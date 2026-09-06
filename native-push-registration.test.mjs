@@ -48,7 +48,7 @@ mock.module('./src/data/push.ts', () => ({
   deletePushSubscription: async () => ({ ok: true }),
 }));
 
-const { nativePushFailureCopy, ensureNativePushRegistration } = await import('./src/lib/push-client.ts');
+const { nativePushFailureCopy, ensureNativePushRegistration, nativePushPermissionState } = await import('./src/lib/push-client.ts');
 
 describe('nativePushFailureCopy — driver-readable, reason-specific', () => {
   test('each reason has a DISTINCT message (no one-size-fits-all collapse)', () => {
@@ -65,6 +65,24 @@ describe('nativePushFailureCopy — driver-readable, reason-specific', () => {
   });
   test('no detail → no parenthetical suffix', () => {
     expect(nativePushFailureCopy('save_failed')).not.toContain('(');
+  });
+});
+
+describe('nativePushPermissionState — real OS-state read for the permission card', () => {
+  test('reports granted/denied/prompt from checkPermissions (never prompts nor registers)', async () => {
+    state.perm = 'granted';
+    expect(await nativePushPermissionState()).toBe('granted');
+    state.perm = 'denied';
+    expect(await nativePushPermissionState()).toBe('denied');
+    state.perm = 'prompt';
+    expect(await nativePushPermissionState()).toBe('prompt');
+    expect(state.requestCount).toBe(0);
+    expect(state.registerCount).toBe(0);
+  });
+  test('not native → "web"', async () => {
+    state.native = false;
+    expect(await nativePushPermissionState()).toBe('web');
+    state.native = true;
   });
 });
 

@@ -339,6 +339,33 @@ export async function isNativeShell(): Promise<boolean> {
   }
 }
 
+export type NativePushPermissionState = "granted" | "denied" | "prompt" | "web";
+
+/** READ-ONLY raw native notification permission state (NO prompt, NO register).
+ * The "Allow notifications" card gates its visibility on the REAL OS state so a
+ * device that already granted (token already saved server-side) or already
+ * denied never re-shows the card on a fresh Home mount. Distinct from
+ * ensureNativePushRegistration() which is the prompt/register path. Fails
+ * closed: a read error is reported as "denied" (never "prompt"), so a broken
+ * plugin read can never resurrect the card. Returns "web" when not native. */
+export async function nativePushPermissionState(): Promise<NativePushPermissionState> {
+  if (typeof window === "undefined") return "web";
+  let Capacitor, PushNotifications;
+  try {
+    ({ Capacitor } = await import("@capacitor/core"));
+    ({ PushNotifications } = await import("@capacitor/push-notifications"));
+  } catch {
+    return "web";
+  }
+  if (!Capacitor.isNativePlatform()) return "web";
+  try {
+    const p = await PushNotifications.checkPermissions();
+    return p.receive === "granted" ? "granted" : p.receive === "denied" ? "denied" : "prompt";
+  } catch {
+    return "denied";
+  }
+}
+
 export type NativePushFailureReason = "not_native" | "not_granted" | "register_failed" | "save_failed" | "error";
 
 export type NativePushSetupResult =
