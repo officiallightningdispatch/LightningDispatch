@@ -58,8 +58,11 @@ export type ReportPaydayUser = { userId: string; name: string; towbookDriverId: 
 export type ReportPaydayGroup = { tb_id: string; job_count: number; goa_count: number };
 
 /** Attribute authoritative report rows to LD users. Matched rows use the
- * dispatch assignment id; unmatched rows use an exact normalized contractor
- * name. Zero or multiple name matches are excluded and returned for review. */
+ * report/dispatch driver id (dispatchEntryId → towbook_job_id →
+ * assigned_driver_towbook_id, then the report's own `driverId`); rows whose id
+ * has no LD user fall back to an exact normalized contractor name. Zero or
+ * multiple name matches are excluded and returned for review as a named,
+ * per-driver diagnostic (driver name + towbookDriverId + how many rows). */
 export function groupReportPayableRows(
   rows: ReconciliationResult["rows"],
   users: ReportPaydayUser[],
@@ -76,24 +79,37 @@ export function groupReportPayableRows(
     userByReportName.set(key, existing);
   }
   const grouped = new Map<string, ReportPaydayGroup>();
-  const unresolved: string[] = [];
+  // Per-driver unresolved tally (name + towbookDriverId → count + why), so the
+  // owner sees WHICH driver could not be matched and HOW MANY rows, instead of
+  // the rows silently vanishing.
+  const unresolvedByDriver = new Map<string, { driver: string; towbookDriverId: string; count: number; why: string }>();
   for (const row of rows) {
     if (row.classification !== "completed" && row.classification !== "goa") continue;
     if (row.jobId && paidBatteryIds.has(row.jobId)) continue;
     const job = row.jobId ? jobsById.get(row.jobId) : undefined;
     const towbookId = row.towbookDriverId ?? String(job?.assigned_driver_towbook_id ?? "");
     let user = towbookId ? userByTb.get(towbookId) : undefined;
-    if (!user && !row.jobId) {
-      const matches = userByReportName.get(normalizeReportDriverName(row.driver)) ?? [];
+    let why = "";
+    if (!user) {
+      // Exact-name fallback applies to ANY unresolved row — not only rows with
+      // no dispatch job — so a completed row that itemizes to a job but whose
+      // driver id has no LD user still resolves by name before being excluded.
+      const nameKey = normalizeReportDriverName(row.driver);
+      const matches = nameKey ? userByReportName.get(nameKey) ?? [] : [];
       if (matches.length === 1) user = matches[0];
       else {
-        const why = matches.length === 0 ? "no exact LD contractor name match" : `${matches.length} exact LD contractor name matches`;
-        unresolved.push(`${row.key} (${row.driver}): ${why}`);
-        continue;
+        why = matches.length === 0
+          ? (towbookId ? "no LD contractor has this driver id" : "no exact LD contractor name match")
+          : `${matches.length} exact LD contractor name matches`;
       }
     }
     if (!user) {
-      unresolved.push(`${row.key} (${row.driver}): no LD contractor for Towbook driver ${towbookId || "(missing)"}`);
+      const driverName = row.driver || "(missing driver name)";
+      const uKey = `${driverName}\u0000${towbookId}`;
+      const existing = unresolvedByDriver.get(uKey) ?? { driver: driverName, towbookDriverId: towbookId, count: 0, why };
+      existing.count++;
+      if (!existing.why) existing.why = why;
+      unresolvedByDriver.set(uKey, existing);
       continue;
     }
     const group = grouped.get(user.towbookDriverId) ?? { tb_id: user.towbookDriverId, job_count: 0, goa_count: 0 };
@@ -101,6 +117,9 @@ export function groupReportPayableRows(
     if (row.classification === "goa") group.goa_count++;
     grouped.set(user.towbookDriverId, group);
   }
+  const unresolved = [...unresolvedByDriver.values()].map((u) =>
+    `${u.driver} (driver id ${u.towbookDriverId || "missing"}): ${u.count} completed row${u.count === 1 ? "" : "s"} could not be matched — ${u.why}`,
+  );
   return { groups: [...grouped.values()], unresolved };
 }
 
@@ -1062,7 +1081,7 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
       const reportAttribution = groupReportPayableRows(reconciliation.rows, reportUsers, jobsById, paidBatteryIds);
       jobRows = reportAttribution.groups;
       if (reportAttribution.unresolved.length > 0) {
-        reportWarning = reportWarning ?? `CallWorkflow has ${reportAttribution.unresolved.length} payable report rows that could not be resolved to exactly one LD contractor by name; they remain excluded: ${reportAttribution.unresolved.join("; ")}`;
+        reportWarning = reportWarning ?? `CallWorkflow has ${reportAttribution.unresolved.length} driver${reportAttribution.unresolved.length === 1 ? "" : "s"} whose completed rows could not be resolved to an LD contractor and remain excluded: ${reportAttribution.unresolved.join("; ")}`;
       }
     } else {
       // Safe local fallback for hermetic QA environments without Towbook

@@ -162,6 +162,32 @@ await q`INSERT INTO completion_tips(id, org_id, job_id, driver_id, driver_towboo
   check("report unmatched multiple name match stays excluded", multiple.groups.length === 0 && multiple.unresolved.length === 1 && multiple.unresolved[0].includes("2 exact LD contractor name matches"), JSON.stringify(multiple));
 }
 
+/* -------- regression: empty-jobId report rows count by driverId --------- */
+{
+  // CallWorkflow rows carry a numeric `driver` name + `driverId` on every
+  // completed row. When the report row has NO itemized dispatch job (empty
+  // jobId — the 2026-09-06 regression), reconcileCallWorkflow must carry the
+  // report's own `driverId` into the reconciliation row so groupReportPayableRows
+  // attributes it to the correct contractor instead of silently dropping it.
+  const report = reconcileCallWorkflow(
+    [{ id: 281200822, driver: "Ai Dispatch GB", driverId: 721132, completed: "2026-08-26T12:00:00Z" }],
+    [],
+  );
+  const users = [{ userId: D1, name: "Ai Dispatch GB", towbookDriverId: "721132", payrateCents: 10000 }];
+  const grouped = groupReportPayableRows(report.rows, users, new Map(), new Set());
+  check("empty-jobId report row is attributed by report driverId", grouped.groups.length === 1 && grouped.groups[0].tb_id === "721132" && grouped.groups[0].job_count === 1 && grouped.unresolved.length === 0, JSON.stringify(grouped));
+
+  // Same completed row, but the driverId has NO LD user: it must NOT silently
+  // vanish — it must surface as a named per-driver diagnostic carrying the
+  // driver name + towbookDriverId + row count.
+  const scott = reconcileCallWorkflow(
+    Array.from({ length: 59 }, (_, i) => ({ id: 281300000 + i, driver: "Scott Henderson", driverId: 724388, completed: "2026-08-26T12:00:00Z" })),
+    [],
+  );
+  const scottAttr = groupReportPayableRows(scott.rows, users, new Map(), new Set());
+  check("unmatched report driver surfaces a named diagnostic (name + id + count)", scottAttr.groups.length === 0 && scottAttr.unresolved.length === 1 && scottAttr.unresolved[0].includes("Scott Henderson") && scottAttr.unresolved[0].includes("724388") && scottAttr.unresolved[0].includes("59 completed rows"), JSON.stringify(scottAttr));
+}
+
 /* ------------------------- listPayPeriods + gates ------------------------- */
 {
   const list = await listPayPeriodsCore(ACTOR);
