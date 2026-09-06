@@ -210,8 +210,16 @@ jobs:
             -exportOptionsPlist "$EXPORT_OPTIONS" \
             -exportPath "$EXPORT_DIR"
 
-          APP_PATH="$EXPORT_DIR/App.app"
-          [ -d "$APP_PATH" ] || { echo "ERROR: exported App.app not found at $APP_PATH"; exit 1; }
+          # `-exportArchive` with `method = app-store-connect` and NO `destination`
+          # writes a signed App.ipa (product name is `App`) — NOT an App.app folder.
+          # Locate it robustly (no hardcoded bundle name).
+          IPA_PATH="$(find "$EXPORT_DIR" -maxdepth 1 -name '*.ipa' -print -quit)"
+          [ -n "$IPA_PATH" ] || { echo "ERROR: exported .ipa not found under $EXPORT_DIR"; exit 1; }
+
+          # Unzip the .ipa into a temp dir so we can codesign-verify the app bundle.
+          unzip -o "$IPA_PATH" -d "$EXPORT_DIR/unzipped" >/dev/null
+          APP_PATH="$(find "$EXPORT_DIR/unzipped/Payload" -maxdepth 1 -name '*.app' -print -quit)"
+          [ -n "$APP_PATH" ] || { echo "ERROR: no .app bundle found in $EXPORT_DIR/unzipped/Payload"; exit 1; }
 
           # Extract the embedded code signature entitlements and FAIL the build if
           # `aps-environment` is absent. `codesign -d --entitlements :-` prints the
