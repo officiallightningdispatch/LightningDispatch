@@ -13,7 +13,18 @@ import { getLocation, isNative, onNativeAppState, startLocationUpdates, startMot
  * queues each real fix and retries it with backoff; the original capture time
  * is preserved so a delayed upload can never masquerade as a fresh location.
  */
-export type DriverGpsState = "idle" | "tracking" | "denied" | "unsupported" | "error";
+/**
+ * Driver-facing GPS diagnosis (2026-09). `error` was split into two honest,
+ * distinct states because the old label collapsed four unrelated failures:
+ *   - `no_fix`      — permission IS granted, but no valid position has been
+ *                     produced yet (watch/getCurrentPosition errored, or a
+ *                     (0,0)/non-finite fix was dropped). Retrying continues.
+ *   - `send_failed` — a real fix was captured but the `pingDriverLocation`
+ *                     upload was refused (non-auth) or the request threw. The
+ *                     fix is re-queued and retried with backoff.
+ * `denied` stays permission-specific; `unsupported` stays browser-specific.
+ */
+export type DriverGpsState = "idle" | "tracking" | "denied" | "unsupported" | "no_fix" | "send_failed";
 const WEB_CAPTURE_INTERVAL_MS = 5 * 60 * 1000;
 const RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000];
 /** Keep transiently failed fixes for 15 minutes, while dispatch still applies
@@ -66,7 +77,9 @@ function scheduleRetry() {
     // routing. Drop only expired queued evidence; newer fixes remain queued.
     queuedFixes = queuedFixes.filter((fix) => Date.now() - fix.capturedAt <= MAX_FIX_RETRY_AGE_MS);
     if (!queuedFixes.length) {
-      setState("error");
+      // A real fix was captured but never successfully delivered before it aged
+      // out of the dispatch freshness window — "position couldn't be sent".
+      setState("send_failed");
       return;
     }
   }
@@ -100,10 +113,12 @@ async function flushUploadQueue() {
       // the failure visible, while a later fresh fix can still try again.
       if (isAuthFailure(result.reason)) {
         retryAttempt = 0;
-        setState("error");
+        // Auth refusal is not a positioning failure — surface as a send failure
+        // so the driver knows the fix was acquired but couldn't be delivered.
+        setState("send_failed");
       } else if (running) {
         queuedFixes.unshift(fix);
-        setState("error");
+        setState("send_failed");
         scheduleRetry();
       }
     } else {
@@ -116,7 +131,7 @@ async function flushUploadQueue() {
     // look fresh and cannot weaken the dispatch freshness rule.
     if (running) {
       queuedFixes.unshift(fix);
-      setState("error");
+      setState("send_failed");
       scheduleRetry();
     }
   } finally {
@@ -129,7 +144,9 @@ function report(position: DriverPosition | GeolocationPosition) {
   if (!running) return;
   const c = position.coords;
   if (!Number.isFinite(c.latitude) || !Number.isFinite(c.longitude) || (c.latitude === 0 && c.longitude === 0)) {
-    setState("error");
+    // Permission is granted but the fix is invalid/not-yet-acquired — not a
+    // send failure (nothing was queued), not denied. Will keep retrying.
+    setState("no_fix");
     return;
   }
   const rawTimestamp = "timestamp" in position && typeof position.timestamp === "number" ? position.timestamp : Date.now();
@@ -149,7 +166,7 @@ function report(position: DriverPosition | GeolocationPosition) {
 
 function reportError(error: GeolocationPositionError | unknown) {
   if (typeof error === "object" && error !== null && "code" in error && Number((error as { code?: unknown }).code) === 1) setState("denied");
-  else if (state !== "tracking") setState("error");
+  else if (state !== "tracking") setState("no_fix");
 }
 
 async function start() {
@@ -157,7 +174,7 @@ async function start() {
   running = true;
   if (isNative()) {
     try {
-      const watchId = await startLocationUpdates(true, null, report);
+      const watchId = await startLocationUpdates(true, null, report, reportError);
       if (!watchId) {
         running = false;
         setState("denied");
@@ -187,7 +204,9 @@ async function start() {
       };
     } catch {
       running = false;
-      setState("error");
+      // A thrown native start() (watch/permission request) means no position was
+      // acquired — surface as a positioning failure, not a send failure.
+      setState("no_fix");
     }
     return;
   }
@@ -201,7 +220,7 @@ async function start() {
   try {
     watchId = navigator.geolocation.watchPosition(report, reportError, options);
   } catch {
-    setState("error");
+    setState("no_fix");
   }
   const capture = () => navigator.geolocation.getCurrentPosition(report, reportError, options);
   capture();

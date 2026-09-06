@@ -114,26 +114,40 @@ jobs:
           chmod 600 "$AUTH_KEY_PATH"
           echo "AUTH_KEY_PATH=$AUTH_KEY_PATH" >> "$GITHUB_ENV"
 
-      - name: Archive (unsigned — signing happens at export)
+      - name: Archive (signed — App Store distribution)
+        env:
+          APPLE_TEAM_ID: J55SPG373Q
         run: |
           set -euo pipefail
           ARCHIVE_PATH="$RUNNER_TEMP/LightningDispatch.xcarchive"
           echo "ARCHIVE_PATH=$ARCHIVE_PATH" >> "$GITHUB_ENV"
 
-          # Build an unsigned .xcarchive. Distribution signing happens later in the
-          # Export step, which is `method = app-store-connect` + manual signing with
-          # an explicit App Store provisioning profile (committed at ios/ci/) — no
-          # devices needed. Signing here would default to DEVELOPMENT and fail with
-          # "your team has no devices".
+          # Sign at ARCHIVE time with the Apple Distribution identity + the committed
+          # App Store profile (installed in the previous step), NOT unsigned.
+          #
+          # Why: archiving with CODE_SIGNING_ALLOWED=NO produces an .xcarchive whose
+          # .app has NO embedded entitlements, and `-exportArchive` re-signs from the
+          # entitlements CAPTURED IN THE ARCHIVE (archived-expanded-entitlements.xcent),
+          # not from a fresh CODE_SIGN_ENTITLEMENTS read. The old flow therefore dropped
+          # `aps-environment` from the final signed binary, and iOS refused APNs
+          # registration on-device with "no valid aps-environment entitlement".
+          #
+          # Signing here (manual, distribution identity + App Store profile) makes
+          # ProcessProductPackaging emit the expanded entitlements from
+          # App/App.entitlements (already set in project.pbxproj for both configs), and
+          # the later export re-signs preserving them. Manual + App Store profile means
+          # NO registered devices are required (that "your team has no devices" failure
+          # only applies to DEVELOPMENT-style automatic signing).
           xcodebuild \
             -project ios/App/App.xcodeproj \
             -scheme App \
             -configuration Release \
             -destination "generic/platform=iOS" \
             -archivePath "$ARCHIVE_PATH" \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="iPhone Distribution: Brittani Simms (J55SPG373Q)" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            PROVISIONING_PROFILE_SPECIFIER="Lightning Dispatch App Store" \
             archive
 
       - name: Generate ExportOptions.plist
@@ -153,7 +167,11 @@ jobs:
             '</plist>' > "$EXPORT_OPTIONS"
 
           /usr/libexec/PlistBuddy -c "Add :method string app-store-connect" "$EXPORT_OPTIONS"
-          /usr/libexec/PlistBuddy -c "Add :destination string upload" "$EXPORT_OPTIONS"
+          # NOTE: `destination` is intentionally NOT set here. Exporting WITHOUT it
+          # writes a local .ipa (App.ipa) we can codesign-verify for the
+          # `aps-environment` entitlement BEFORE uploading. The upload step below adds
+          # `destination = upload` to a copy of this plist so the same archive is
+          # exported again and streamed straight to TestFlight.
           /usr/libexec/PlistBuddy -c "Add :signingStyle string manual" "$EXPORT_OPTIONS"
           /usr/libexec/PlistBuddy -c "Add :teamID string $APPLE_TEAM_ID" "$EXPORT_OPTIONS"
           /usr/libexec/PlistBuddy -c "Add :provisioningProfiles dict" "$EXPORT_OPTIONS"
@@ -166,7 +184,7 @@ jobs:
           echo "--- ExportOptions.plist ---"
           cat "$EXPORT_OPTIONS"
 
-      - name: Export and upload to TestFlight
+      - name: Export locally + verify aps-environment entitlement
         env:
           APPLE_KEY_ID: RR25ZLU234
           APPLE_ISSUER_ID: c7ed6fd2-303c-4b68-9cc7-e43da3dfb5d7
@@ -176,25 +194,61 @@ jobs:
           mkdir -p "$EXPORT_DIR"
           echo "EXPORT_DIR=$EXPORT_DIR" >> "$GITHUB_ENV"
 
-          # `destination = upload` in ExportOptions.plist makes xcodebuild upload the
-          # exported .ipa directly to App Store Connect (TestFlight), authenticated
-          # with the App Store Connect API key. This is the current supported method;
-          # `xcrun altool` was removed in Xcode 16.
+          # Export WITHOUT `destination = upload` so a signed App.ipa lands locally.
+          # This is the SAME export path (manual signing + App Store profile) the
+          # upload step uses; verifying THIS binary proves the shipped binary carries
+          # `aps-environment`, which is what unblocks APNs registration on-device.
           xcodebuild \
             -exportArchive \
             -archivePath "$ARCHIVE_PATH" \
             -exportOptionsPlist "$EXPORT_OPTIONS" \
+            -exportPath "$EXPORT_DIR"
+
+          APP_PATH="$EXPORT_DIR/App.app"
+          [ -d "$APP_PATH" ] || { echo "ERROR: exported App.app not found at $APP_PATH"; exit 1; }
+
+          # Extract the embedded code signature entitlements and FAIL the build if
+          # `aps-environment` is absent. `codesign -d --entitlements :-` prints the
+          # signed entitlement plist (XML) to stdout on macOS.
+          ENTITLEMENTS="$(codesign -d --entitlements :- "$APP_PATH" 2>&1 || true)"
+          if ! printf '%s' "$ENTITLEMENTS" | grep -q 'aps-environment'; then
+            echo "ERROR: exported App.app is missing the aps-environment entitlement — APNs registration will fail on-device."
+            echo "--- entitlements embedded in the signed binary ---"
+            printf '%s' "$ENTITLEMENTS"
+            exit 1
+          fi
+          echo "Verified: aps-environment is embedded in the signed App.app."
+          printf '%s' "$ENTITLEMENTS" | grep 'aps-environment'
+
+          echo "Exported artifacts:"
+          ls -la "$EXPORT_DIR"
+
+      - name: Upload to TestFlight
+        env:
+          APPLE_KEY_ID: RR25ZLU234
+          APPLE_ISSUER_ID: c7ed6fd2-303c-4b68-9cc7-e43da3dfb5d7
+        run: |
+          set -euo pipefail
+          UPLOAD_OPTIONS="$RUNNER_TEMP/ExportOptions.upload.plist"
+          cp "$EXPORT_OPTIONS" "$UPLOAD_OPTIONS"
+          /usr/libexec/PlistBuddy -c "Add :destination string upload" "$UPLOAD_OPTIONS"
+
+          # `destination = upload` streams the exported .ipa straight to App Store
+          # Connect (TestFlight), authenticated with the App Store Connect API key.
+          # This is the current supported method; `xcrun altool` was removed in Xcode 16.
+          xcodebuild \
+            -exportArchive \
+            -archivePath "$ARCHIVE_PATH" \
+            -exportOptionsPlist "$UPLOAD_OPTIONS" \
             -exportPath "$EXPORT_DIR" \
             -authenticationKeyPath "$AUTH_KEY_PATH" \
             -authenticationKeyID "$APPLE_KEY_ID" \
             -authenticationKeyIssuerID "$APPLE_ISSUER_ID"
+          echo "Uploaded archive to TestFlight."
 
-          echo "Uploaded archive. Exported artifacts:"
-          ls -la "$EXPORT_DIR"
-
-      # `destination = upload` streams the .ipa straight to App Store Connect and
-      # leaves the export dir empty, so there is no local .ipa to archive. Keep this
-      # step non-fatal so a successful TestFlight upload reads as green.
+      # The local verification export above leaves an App.ipa on disk; archive it so
+      # the signed binary is inspectable after the run. (`destination = upload` streams
+      # the .ipa straight to App Store Connect and leaves the upload export dir empty.)
       - name: Upload .ipa as a workflow artifact
         uses: actions/upload-artifact@v4
         with:

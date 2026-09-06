@@ -52,7 +52,8 @@ const GPS_CHIP: Record<GpsState, { label: string; tone: string; icon: typeof Rad
   idle: { label: "Location sharing starts while you're signed in", tone: "bg-ink-50 text-ink-500", icon: Radar },
   denied: { label: "Location access is off — allow location for live tracking and auto-arrival", tone: "bg-amber-50 text-amber-800", icon: MapPin },
   unsupported: { label: "This browser can't provide location — tracking unavailable", tone: "bg-ink-50 text-ink-500", icon: MapPin },
-  error: { label: "Temporarily can't get your position — will keep retrying", tone: "bg-amber-50 text-amber-800", icon: MapPin },
+  no_fix: { label: "Couldn't get a GPS fix yet — will keep retrying", tone: "bg-amber-50 text-amber-800", icon: MapPin },
+  send_failed: { label: "Got your position, but it couldn't be sent — will keep retrying", tone: "bg-amber-50 text-amber-800", icon: MapPin },
 };
 export function GpsStatusChip({ state }: { state: GpsState }) {
   const meta = GPS_CHIP[state] ?? GPS_CHIP.idle;

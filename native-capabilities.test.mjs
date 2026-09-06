@@ -102,6 +102,20 @@ describe('native contractor bridge', () => {
     expect(state.motionRemoved).toBe(false);
   });
 
+  test('watchLocation surfaces native position errors through onError', async () => {
+    state.native = true;
+    const errors = [];
+    const handle = await bridge.watchLocation(() => {}, (e) => errors.push(e));
+    // The mock watchPosition stores the (position, error) callback as its 2nd arg.
+    const cb = state.watch[state.watch.length - 1];
+    cb(null, { code: 2, message: 'position unavailable' });
+    expect(errors).toHaveLength(1);
+    expect(errors[0].code).toBe(2);
+    expect(errors[0].message).toBe('position unavailable');
+    await bridge.stopLocation(handle);
+    expect(state.cleared).toBe('watch-1');
+  });
+
   test('motion-triggered capture is debounced', async () => {
     state.native = true; state.motionPermission = 'granted';
     const fixes = [];
