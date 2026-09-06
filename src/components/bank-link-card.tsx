@@ -4,6 +4,11 @@ import { Landmark, Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "~/components/ui";
 import { getBankLinkStatus, startBankLink } from "~/data/stripe-connect";
+import {
+  buildStripeConnectReturnUrl,
+  openStripeConnectUrl,
+  STRIPE_CONNECT_REFRESH_EVENT,
+} from "~/lib/stripe-connect-linking";
 
 /**
  * "Link your bank" (automated-payouts Slice 1) — the single point where a
@@ -15,6 +20,23 @@ export function BankLinkCard() {
   const [busy, setBusy] = useState(false);
   const [state, setState] = useState<"loading" | "not_configured" | "pending" | "linked">("loading");
   const [error, setError] = useState<string | null>(null);
+
+  const refresh = async () => {
+    const res = await getBankLinkStatus();
+    if (!res.ok) {
+      setState(res.code === "stripe_not_configured" ? "not_configured" : "loading");
+      if (res.code !== "stripe_not_configured") setError(res.message);
+      return;
+    }
+    setError(null);
+    if (res.data.onboardingStatus === "complete" || (res.data.chargesEnabled && res.data.payoutsEnabled)) {
+      setState("linked");
+    } else if (res.data.linked) {
+      setState("pending");
+    } else {
+      setState("not_configured");
+    }
+  };
 
   useEffect(() => {
     let stopped = false;
@@ -39,19 +61,35 @@ export function BankLinkCard() {
     };
   }, []);
 
+  // Re-read bank-link status when the native shell signals a Stripe Connect
+  // return (the deep-link handler also fires a fresh server read).
+  useEffect(() => {
+    const onRefresh = () => void refresh();
+    window.addEventListener(STRIPE_CONNECT_REFRESH_EVENT, onRefresh);
+    return () => window.removeEventListener(STRIPE_CONNECT_REFRESH_EVENT, onRefresh);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const onLink = async () => {
     if (busy) return;
     setBusy(true);
     setError(null);
+    const returnUrl = buildStripeConnectReturnUrl(window.location.origin);
     const res = await startBankLink({
-      data: { returnUrl: window.location.href, refreshUrl: window.location.href },
+      data: { returnUrl, refreshUrl: returnUrl },
     });
-    setBusy(false);
     if (!res.ok) {
+      setBusy(false);
       setError(res.message);
       return;
     }
-    window.location.assign(res.data.url);
+    try {
+      await openStripeConnectUrl(res.data.url);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't open your bank link — try again.");
+    } finally {
+      setBusy(false);
+    }
   };
 
   if (state === "loading") {

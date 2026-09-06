@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as TermsRouteImport } from './routes/terms'
 import { Route as SupportRouteImport } from './routes/support'
+import { Route as StripeConnectCompleteRouteImport } from './routes/stripe-connect-complete'
 import { Route as PrivacyRouteImport } from './routes/privacy'
 import { Route as OwnerRouteImport } from './routes/owner'
 import { Route as OpsRouteImport } from './routes/ops'
@@ -68,6 +69,11 @@ const TermsRoute = TermsRouteImport.update({
 const SupportRoute = SupportRouteImport.update({
   id: '/support',
   path: '/support',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const StripeConnectCompleteRoute = StripeConnectCompleteRouteImport.update({
+  id: '/stripe-connect-complete',
+  path: '/stripe-connect-complete',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PrivacyRoute = PrivacyRouteImport.update({
@@ -321,6 +327,7 @@ export interface FileRoutesByFullPath {
   '/ops': typeof OpsRouteWithChildren
   '/owner': typeof OwnerRouteWithChildren
   '/privacy': typeof PrivacyRoute
+  '/stripe-connect-complete': typeof StripeConnectCompleteRoute
   '/support': typeof SupportRoute
   '/terms': typeof TermsRoute
   '/driver/academy': typeof DriverAcademyRouteWithChildren
@@ -370,6 +377,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/logout': typeof LogoutRoute
   '/privacy': typeof PrivacyRoute
+  '/stripe-connect-complete': typeof StripeConnectCompleteRoute
   '/support': typeof SupportRoute
   '/terms': typeof TermsRoute
   '/driver/active': typeof DriverActiveRoute
@@ -420,6 +428,7 @@ export interface FileRoutesById {
   '/ops': typeof OpsRouteWithChildren
   '/owner': typeof OwnerRouteWithChildren
   '/privacy': typeof PrivacyRoute
+  '/stripe-connect-complete': typeof StripeConnectCompleteRoute
   '/support': typeof SupportRoute
   '/terms': typeof TermsRoute
   '/driver/academy': typeof DriverAcademyRouteWithChildren
@@ -474,6 +483,7 @@ export interface FileRouteTypes {
     | '/ops'
     | '/owner'
     | '/privacy'
+    | '/stripe-connect-complete'
     | '/support'
     | '/terms'
     | '/driver/academy'
@@ -523,6 +533,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/logout'
     | '/privacy'
+    | '/stripe-connect-complete'
     | '/support'
     | '/terms'
     | '/driver/active'
@@ -572,6 +583,7 @@ export interface FileRouteTypes {
     | '/ops'
     | '/owner'
     | '/privacy'
+    | '/stripe-connect-complete'
     | '/support'
     | '/terms'
     | '/driver/academy'
@@ -625,6 +637,7 @@ export interface RootRouteChildren {
   OpsRoute: typeof OpsRouteWithChildren
   OwnerRoute: typeof OwnerRouteWithChildren
   PrivacyRoute: typeof PrivacyRoute
+  StripeConnectCompleteRoute: typeof StripeConnectCompleteRoute
   SupportRoute: typeof SupportRoute
   TermsRoute: typeof TermsRoute
 }
@@ -643,6 +656,13 @@ declare module '@tanstack/react-router' {
       path: '/support'
       fullPath: '/support'
       preLoaderRoute: typeof SupportRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/stripe-connect-complete': {
+      id: '/stripe-connect-complete'
+      path: '/stripe-connect-complete'
+      fullPath: '/stripe-connect-complete'
+      preLoaderRoute: typeof StripeConnectCompleteRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/privacy': {
@@ -1126,6 +1146,7 @@ const rootRouteChildren: RootRouteChildren = {
   OpsRoute: OpsRouteWithChildren,
   OwnerRoute: OwnerRouteWithChildren,
   PrivacyRoute: PrivacyRoute,
+  StripeConnectCompleteRoute: StripeConnectCompleteRoute,
   SupportRoute: SupportRoute,
   TermsRoute: TermsRoute,
 }
