@@ -55,6 +55,30 @@ export async function fetchCallWorkflow(window: ReportWindow): Promise<{ rows: C
   if (!r.ok) throw new TowbookReportError("report_failed", `Towbook CallWorkflow failed (${r.status}).`);
   const raw = await r.json().catch(() => null); return { rows: responseRows(raw), raw };
 }
+const driverActivityRows = (body: unknown): DriverActivityRow[] => {
+  const rows = responseRows(body) as unknown[];
+  const out: DriverActivityRow[] = [];
+  for (const r of rows) {
+    if (!r || typeof r !== "object") continue;
+    const o = r as Record<string, unknown>;
+    const id = Number(o.id);
+    if (!Number.isFinite(id)) continue;
+    out.push({ id, name: String(o.name ?? ""), callCount: Number(o.callCount ?? 0) || 0, ...(o.totalInvoice != null ? { totalInvoice: Number(o.totalInvoice) } : {}) });
+  }
+  return out;
+};
+/** Fetch the Towbook Driver Activity report (authoritative weekly per-driver
+ * job count). Same Bearer auth as fetchCallWorkflow; reportType DriverActivity.
+ * `reportData[].id` is the Towbook driver ID — join by id, NEVER by name. */
+export async function fetchDriverActivity(window: ReportWindow): Promise<{ rows: DriverActivityRow[]; raw: unknown }> {
+  const token = await bearer();
+  const body = { dateStart: window.start, dateEnd: window.end, impounds: "0", reportType: "DriverActivity", version: "2.0" };
+  let r: Response;
+  try { r = await fetch(`${endpoint}/reports`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json", accept: "application/json", "X-API-Use-UTC": "1", "X-Company": "all" }, body: JSON.stringify(body) }); }
+  catch { throw new TowbookReportError("report_failed", "Towbook Driver Activity request could not be reached."); }
+  if (!r.ok) throw new TowbookReportError("report_failed", `Towbook Driver Activity failed (${r.status}).`);
+  const raw = await r.json().catch(() => null); return { rows: driverActivityRows(raw), raw };
+}
 export type Classification = "completed" | "goa" | "cancelled" | "reassigned" | "unclassifiable";
 export type ReconciliationRow = {
   key: string;
@@ -85,6 +109,10 @@ export type ReconciliationResult = ReconciliationCounts & {
   diagnostics: string[];
 };
 export type DriverActivityAggregate = { name: string; callCount: number; totalInvoice?: number };
+/** One Driver Activity report row: `id` is the Towbook driver ID (the
+ * authoritative join key — join by id, NEVER by name), `callCount` is the
+ * authoritative weekly job count. */
+export type DriverActivityRow = { id: number; name: string; callCount: number; totalInvoice?: number };
 const emptyCounts = (): ReconciliationCounts => ({
   reportCount: 0,
   matchedCount: 0,
@@ -206,8 +234,8 @@ export function reconcileCallWorkflow(rows: CallWorkflowRow[], jobs: Array<Recor
     diagnostics,
   };
 }
-export async function saveTowbookSnapshot(orgId: string, window: ReportWindow, raw: unknown, source: "server" | "manual-paste" = "server") {
-  const q = sql(); const id = randomUUID(); await q`INSERT INTO towbook_report_snapshots(id,org_id,report_type,period_start,period_end,data,source) VALUES(${id},${orgId},'CallWorkflow',${window.start.slice(0,10)},${window.end.slice(0,10)},${raw},${source})`; return id;
+export async function saveTowbookSnapshot(orgId: string, window: ReportWindow, raw: unknown, source: "server" | "manual-paste" = "server", reportType: "CallWorkflow" | "DriverActivity" = "CallWorkflow") {
+  const q = sql(); const id = randomUUID(); await q`INSERT INTO towbook_report_snapshots(id,org_id,report_type,period_start,period_end,data,source) VALUES(${id},${orgId},${reportType},${window.start.slice(0,10)},${window.end.slice(0,10)},${raw},${source})`; return id;
 }
 
 /** The CallWorkflow endpoint accepts ET wall-clock dates for a closed payday.
@@ -223,15 +251,28 @@ export function callWorkflowWindowForPeriod(startsAt: Date, endsAt: Date): Repor
 /** Load the most recent exact-period server snapshot. It is a fallback when a
  * report rerun cannot be reached; computePaydayCore normally reruns and saves
  * the report first so every payday has a fresh authoritative snapshot. */
-export async function loadTowbookSnapshot(orgId: string, window: ReportWindow): Promise<{ rows: CallWorkflowRow[]; raw: unknown } | null> {
+export async function loadTowbookSnapshot(orgId: string, window: ReportWindow, reportType: "CallWorkflow" | "DriverActivity" = "CallWorkflow"): Promise<{ rows: CallWorkflowRow[]; raw: unknown } | null> {
   const q = sql();
   const snapshots = await q`SELECT data FROM towbook_report_snapshots
-    WHERE org_id=${orgId} AND report_type='CallWorkflow'
+    WHERE org_id=${orgId} AND report_type=${reportType}
       AND period_start=${window.start.slice(0, 10)} AND period_end=${window.end.slice(0, 10)}
     ORDER BY created_at DESC LIMIT 1`;
   if (!snapshots.length) return null;
   const raw = (snapshots[0] as Record<string, unknown>).data;
   try { return { rows: responseRows(raw), raw }; } catch { return null; }
+}
+
+/** Load the most recent exact-period Driver Activity snapshot and parse it into
+ * typed rows (id/callCount). Mirrors loadTowbookSnapshot for CallWorkflow. */
+export async function loadDriverActivitySnapshot(orgId: string, window: ReportWindow): Promise<{ rows: DriverActivityRow[]; raw: unknown } | null> {
+  const q = sql();
+  const snapshots = await q`SELECT data FROM towbook_report_snapshots
+    WHERE org_id=${orgId} AND report_type='DriverActivity'
+      AND period_start=${window.start.slice(0, 10)} AND period_end=${window.end.slice(0, 10)}
+    ORDER BY created_at DESC LIMIT 1`;
+  if (!snapshots.length) return null;
+  const raw = (snapshots[0] as Record<string, unknown>).data;
+  try { return { rows: driverActivityRows(raw), raw }; } catch { return null; }
 }
 
 export async function getReconciliationCore(orgId: string, window: ReportWindow, rows?: CallWorkflowRow[]) {
