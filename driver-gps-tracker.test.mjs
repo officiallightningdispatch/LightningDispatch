@@ -125,4 +125,27 @@ const reset = () => { state.fail = true; state.pings = []; watchCb = null; captu
   unsub();
 }
 
+/* 4. Distinct diagnostics: an invalid (0,0) fix surfaces as `no_fix` (position
+   problem), while a captured-but-undeliverable fix surfaces as `send_failed`
+   (upload problem) — not one collapsed "error". */
+{
+  reset();
+  let lastState = null;
+  const unsub = tracker.subscribe((next) => { lastState = next; });
+
+  // (a) a non-finite / (0,0) fix is a POSITION failure, not a send failure.
+  watchCb({ coords: { latitude: 0, longitude: 0, accuracy: 10, speed: 0 }, timestamp: Date.now() });
+  await tick();
+  ok(lastState === "no_fix", `invalid fix surfaces as no_fix (got ${lastState})`);
+  ok(state.pings.length === 0, "an invalid fix is never queued for upload");
+
+  // (b) a real fix that fails to upload is a SEND failure.
+  watchCb(pos(41.4, Date.now()));
+  await tick(); // upload fails → queued + retry scheduled
+  ok(lastState === "send_failed", `undeliverable real fix surfaces as send_failed (got ${lastState})`);
+  ok(state.pings.length === 1, "the real fix was attempted once");
+
+  unsub();
+}
+
 console.log(`driver-gps-tracker.test.mjs: ${n} assertions passed`);

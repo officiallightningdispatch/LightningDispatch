@@ -43,14 +43,20 @@ export async function saveNativePushToken(token: string) {
 }
 export async function requestLocation() { if (!isNative()) return typeof navigator !== 'undefined' && !!navigator.geolocation; const p = await Geolocation.requestPermissions(); return p.location === 'granted'; }
 export async function getLocation(): Promise<Position | GeolocationPosition> { if (isNative()) return Geolocation.getCurrentPosition(); return new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, reject)); }
-export async function watchLocation(callback: (position: Position | GeolocationPosition) => void) {
+export async function watchLocation(
+  callback: (position: Position | GeolocationPosition) => void,
+  onError?: (error: unknown) => void,
+) {
   if (isNative()) {
     return Geolocation.watchPosition(
       { enableHighAccuracy: true, timeout: 20_000, maximumAge: 0, minimumUpdateInterval: 15_000, interval: 30_000 },
-      (p, e) => { if (p) callback(p); else if (e) console.warn('location update', e); },
+      (p, e) => {
+        if (p) callback(p);
+        else if (e) { if (onError) onError(e); else console.warn('location update', e); }
+      },
     );
   }
-  const id = navigator.geolocation.watchPosition(callback, console.warn, { enableHighAccuracy: true, timeout: 20_000, maximumAge: 0 });
+  const id = navigator.geolocation.watchPosition(callback, onError ?? console.warn, { enableHighAccuracy: true, timeout: 20_000, maximumAge: 0 });
   return String(id);
 }
 export async function stopLocation(watchId: string | null | undefined) { if (!watchId) return; if (isNative()) await Geolocation.clearWatch({ id: watchId }); else navigator.geolocation.clearWatch(Number(watchId)); }
@@ -67,6 +73,7 @@ export async function startLocationUpdates(
   enabled: boolean,
   jobTowbookId?: string | null,
   onPosition?: (position: Position | GeolocationPosition) => void,
+  onError?: (error: unknown) => void,
 ) {
   if (!enabled || !(await requestLocation())) return null;
   return watchLocation((p: Position | GeolocationPosition) => {
@@ -84,7 +91,7 @@ export async function startLocationUpdates(
         jobTowbookId: jobTowbookId ?? null,
       },
     });
-  });
+  }, onError);
 }
 /** Motion & Fitness is an ENHANCEMENT to location capture, never a gate.
  * @capacitor/motion is backed by the web DeviceMotionEvent/DeviceOrientationEvent

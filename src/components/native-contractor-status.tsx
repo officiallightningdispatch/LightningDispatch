@@ -21,12 +21,12 @@ export function NativeContractorStatus({ contractorOnline: _contractorOnline }: 
     return () => { live = false; void Promise.resolve(tokenListener).then((h) => h.remove()); void Promise.resolve(net).then((h) => h.remove()); };
   }, []);
   if (!isNative()) return null;
-  const location = gps === 'tracking' ? 'active' : gps === 'denied' ? 'blocked' : gps === 'error' ? 'error' : 'idle';
+  const location = gps === 'tracking' ? 'active' : gps === 'denied' ? 'blocked' : gps === 'no_fix' ? 'no fix yet' : gps === 'send_failed' ? 'not sent' : 'idle';
   return <div className="mx-3 mt-2 rounded-xl border border-ink-200 bg-surface px-3 py-2 text-[11px] text-ink-600" role="status" aria-label="Native app status">
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-semibold">
       <span className={connected ? 'text-emerald-700' : 'text-amber-700'}>{connected ? '● Connected' : '● Offline'}</span>
       <span className={push === 'ready' ? 'text-emerald-700' : push === 'blocked' ? 'text-amber-700' : ''}>Alerts: {push === 'ready' ? 'ready' : push === 'blocked' ? 'permission needed' : push}</span>
-      <span className={location === 'active' ? 'text-emerald-700' : location === 'blocked' ? 'text-amber-700' : ''}>Location: {location === 'active' ? 'sharing while signed in' : location === 'idle' ? 'starting' : location}</span>
+      <span className={location === 'active' ? 'text-emerald-700' : location === 'blocked' || location === 'no fix yet' || location === 'not sent' ? 'text-amber-700' : ''}>Location: {location === 'active' ? 'sharing while signed in' : location === 'idle' ? 'starting' : location}</span>
     </div>
   </div>;
 }
