@@ -94,18 +94,50 @@ export async function startLocationUpdates(
   }, onError);
 }
 /** Motion & Fitness is an ENHANCEMENT to location capture, never a gate.
- * @capacitor/motion is backed by the web DeviceMotionEvent/DeviceOrientationEvent
- * APIs (no native pod), so on iOS its access is surfaced through
- * `DeviceMotionEvent.requestPermission()` and the prompt copy comes from the
- * Info.plist key `NSMotionUsageDescription`. Accelerometer/orientation data does
- * NOT change GPS math — Core Motion's step/activity classifier is not exposed
- * here. What motion genuinely buys us is the ability to trigger FRESHER
- * high-accuracy GPS fixes when the device is physically moving, and waste less
- * battery while it is still. It is never allowed to block or regress the
- * existing GPS pipeline. */
+ * @capacitor/motion ships WEB-ONLY (dist/ only — no ios/ or android/ source),
+ * so its `accel` listener does nothing on native and `DeviceMotionEvent.requestPermission()`
+ * (a Safari-only API absent from WKWebView) falls through — the iOS "Motion &
+ * Fitness" prompt NEVER fires. The REAL prompt is fired by CoreMotion
+ * activity/step access (CMMotionActivityManager / CMPedometer), which we reach
+ * through a tiny native bridge (ios/App/App/MotionPermissionBridge.swift).
+ * Motion genuinely buys us the ability to trigger FRESHER high-accuracy GPS
+ * fixes when the device is physically moving. It is never allowed to block or
+ * regress the existing GPS pipeline. */
 export async function requestMotionPermission(): Promise<boolean> {
   if (!isNative()) return true; // web: no-op, never blocks
   try {
+    // Native: prefer the minimal CoreMotion bridge (WKScriptMessageHandler →
+    // CMMotionActivityManager), which is what actually fires the prompt.
+    const wk = (globalThis as unknown as {
+      webkit?: { messageHandlers?: { ldMotionPermission?: { postMessage: (m: { requestId: string }) => void } } };
+    }).webkit;
+    if (wk?.messageHandlers?.ldMotionPermission?.postMessage) {
+      const status = await new Promise<string>((resolve) => {
+        const requestId = `ldmotion-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const win = globalThis as unknown as { __ldMotionPermissionCallback?: (id: string, status: string) => void };
+        const prev = win.__ldMotionPermissionCallback;
+        const timer = setTimeout(() => {
+          if (win.__ldMotionPermissionCallback === handler) win.__ldMotionPermissionCallback = prev;
+          resolve("unavailable");
+        }, 15000);
+        const handler = (id: string, status: string) => {
+          if (id !== requestId) return;
+          clearTimeout(timer);
+          if (win.__ldMotionPermissionCallback === handler) win.__ldMotionPermissionCallback = prev;
+          resolve(status);
+        };
+        win.__ldMotionPermissionCallback = handler;
+        try {
+          wk.messageHandlers!.ldMotionPermission!.postMessage({ requestId });
+        } catch {
+          clearTimeout(timer);
+          win.__ldMotionPermissionCallback = prev;
+          resolve("unavailable");
+        }
+      });
+      return status === "granted";
+    }
+    // Web fallback (Safari home-screen installs) — kept for completeness.
     const DeviceMotionEventCtor = (globalThis as { DeviceMotionEvent?: { requestPermission?: () => Promise<string> } }).DeviceMotionEvent;
     if (typeof DeviceMotionEventCtor?.requestPermission === 'function') {
       return (await DeviceMotionEventCtor.requestPermission()) === 'granted';

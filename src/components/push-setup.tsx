@@ -42,6 +42,7 @@ import {
   ensurePushSubscription,
   isNativeShell,
   nativePushFailureCopy,
+  nativePushPermissionState,
   notificationSupportStatus,
   notificationsSupported,
   playStrikeAsset,
@@ -69,21 +70,42 @@ export function PushPermissionCard() {
   const [support, setSupport] = useState<NotificationSupportStatus>(() =>
     typeof window === "undefined" ? "unsupported" : notificationSupportStatus(),
   );
-  const [visible, setVisible] = useState(() => {
-    if (typeof window === "undefined") return false;
-    if (support === "supported") return Notification.permission === "default" && asksRemaining() > 0;
-    return support === "ios_not_installed" || support === "webview";
-  });
+  const [visible, setVisible] = useState(false);
+  // Web initial visibility is computed synchronously; native visibility is
+  // gated on the REAL OS permission state read asynchronously on mount, so the
+  // card never flashes on a device that already granted (or was denied) — see
+  // the useEffect below. Starts hidden (loading) to avoid that flash.
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<{ reason: PushSetupFailureReason | NativePushFailureReason; message: string } | null>(null);
   const [native, setNative] = useState(false);
+  const [nativeChecked, setNativeChecked] = useState(false);
   useEffect(() => {
     let alive = true;
-    void isNativeShell().then((v) => { if (alive) setNative(v); });
+    void (async () => {
+      const isNat = await isNativeShell();
+      if (!alive) return;
+      setNative(isNat);
+      if (isNat) {
+        // Native: re-check the REAL permission on every mount. granted/denied →
+        // permanently hidden; only "prompt" (with asks remaining) shows the card.
+        const state = await nativePushPermissionState();
+        if (!alive) return;
+        setVisible(state === "prompt" && asksRemaining() > 0);
+      } else {
+        // Web: mirror the existing synchronous logic (permission default + asks
+        // remaining for "supported"; the iOS/webview guidance otherwise).
+        if (support === "supported") {
+          setVisible(Notification.permission === "default" && asksRemaining() > 0);
+        } else {
+          setVisible(support === "ios_not_installed" || support === "webview");
+        }
+      }
+      setNativeChecked(true);
+    })();
     return () => { alive = false; };
   }, []);
 
-  if (!visible) return null;
+  if (!visible || !nativeChecked) return null;
 
   const allow = async () => {
     setBusy(true);
@@ -125,6 +147,7 @@ export function PushPermissionCard() {
   const nativeAllow = async () => {
     setBusy(true);
     setFailure(null);
+    recordAsk(); // native asks are capped like web (persisted, 3 total)
     const res = await ensureNativePushRegistration();
     if (res.ok) {
       playStrikeAsset();
@@ -175,8 +198,7 @@ export function PushPermissionCard() {
         <div className="min-w-0 flex-1">
           <p className="text-sm font-bold text-ink-900">Get job offers the moment they're assigned</p>
           <p className="mt-1 text-xs leading-snug text-ink-500" aria-live="polite">
-            Lightning Dispatch sends one alert per new job — the job type, location, and your ETA — with a single
-            lightning strike. You'll hear it, see it, and be ready before the owner even calls.
+            Turn on alerts to hear and see each new job offer the moment it's assigned.
           </p>
         </div>
       </div>

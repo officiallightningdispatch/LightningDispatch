@@ -13,11 +13,21 @@ import Capacitor
 /// half-on. This keeps the gesture idempotent in both directions and removes
 /// the stuck-zoomed state the owner saw on TestFlight.
 final class AppViewController: CAPBridgeViewController {
+    private var motionPermissionBridge: MotionPermissionBridge?
+
     override func capacitorDidLoad() {
         super.capacitorDidLoad()
         // Runs after `webView` is set but before the page is loaded. Disabling
         // the recognizer here (instead of relying on Capacitor's
         // scrollViewWillBeginZooming callback) means a pinch never zooms at all.
         webView?.scrollView.pinchGestureRecognizer?.isEnabled = false
+
+        // Register the tiny CoreMotion bridge that fires the iOS "Motion &
+        // Fitness" permission prompt (the web-only @capacitor/motion plugin
+        // never fires it). The bridge is registered once, before page load.
+        if let webView = webView {
+            motionPermissionBridge = MotionPermissionBridge(webView: webView)
+        }
     }
 }
+
