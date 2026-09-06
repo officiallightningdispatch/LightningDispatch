@@ -138,16 +138,22 @@ jobs:
           # the later export re-signs preserving them. Manual + App Store profile means
           # NO registered devices are required (that "your team has no devices" failure
           # only applies to DEVELOPMENT-style automatic signing).
+          #
+          # Signing settings (CODE_SIGN_STYLE=Manual, CODE_SIGN_IDENTITY,
+          # DEVELOPMENT_TEAM, PROVISIONING_PROFILE_SPECIFIER) are set on the App
+          # target's Release build configuration in
+          # ios/App/App.xcodeproj/project.pbxproj — NOT passed on this command line.
+          # A command-line PROVISIONING_PROFILE_SPECIFIER is a GLOBAL build-setting
+          # override that propagates to every target, including the Capacitor SPM
+          # package IONCameraLib, which does not support provisioning profiles and
+          # fails the archive with "does not support provisioning profiles" (exit 65).
+          # Scoping the profile to the App target keeps SPM targets on automatic.
           xcodebuild \
             -project ios/App/App.xcodeproj \
             -scheme App \
             -configuration Release \
             -destination "generic/platform=iOS" \
             -archivePath "$ARCHIVE_PATH" \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="iPhone Distribution: Brittani Simms (J55SPG373Q)" \
-            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
-            PROVISIONING_PROFILE_SPECIFIER="Lightning Dispatch App Store" \
             archive
 
       - name: Generate ExportOptions.plist
