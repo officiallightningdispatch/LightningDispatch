@@ -70,6 +70,7 @@ const isPublicPath = (path: string) =>
   path === "/privacy" ||
   path === "/terms" ||
   path === "/support" ||
+  path === "/stripe-connect-complete" ||
   path === "/deleted";
 
 function AuthGate({ children }: { children: ReactNode }) {

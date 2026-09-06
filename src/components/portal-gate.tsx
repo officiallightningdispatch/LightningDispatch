@@ -2,6 +2,7 @@ import { useLocation, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, type ReactNode } from "react";
 import { authStatus, type AuthUser, type Role } from "~/data/auth";
 import { DriverGpsTracker } from "~/components/driver-gps-tracker";
+import { StripeConnectReturnHandler } from "~/components/stripe-connect-return-handler";
 
 export function GateSkeleton() {
   return (
@@ -55,7 +56,10 @@ export function PortalGate({ children, roles, allowDriverIdentity }: { children:
 }
 export const DriverGate = ({ children }: { children: ReactNode }) => (
   <PortalGate roles={["contractor"]} allowDriverIdentity>
-    <DriverGpsTracker>{children}</DriverGpsTracker>
+    <DriverGpsTracker>
+      <StripeConnectReturnHandler />
+      {children}
+    </DriverGpsTracker>
   </PortalGate>
 );
 // Owner is the boss: owner + admin have full access to the ops workspace too.
