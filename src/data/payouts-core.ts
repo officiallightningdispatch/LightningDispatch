@@ -30,11 +30,14 @@ import { z } from "zod";
 import {
   callWorkflowWindowForPeriod,
   fetchCallWorkflow,
+  fetchDriverActivity,
+  loadDriverActivitySnapshot,
   loadTowbookSnapshot,
   reconcileCallWorkflow,
   saveTowbookSnapshot,
   type ReconciliationResult,
   type CallWorkflowRow,
+  type DriverActivityRow,
 } from "./towbook-reports-core.ts";
 
 /* --------------------------------- helpers --------------------------------- */
@@ -534,6 +537,8 @@ export type PayPeriodDetail = {
     reassignedCount?: number;
     unmatchedCount?: number;
     unitemizedCount?: number;
+    /** Number of Driver Activity report rows used (authoritative job-count source). */
+    driverActivityRowCount?: number;
     reconciliationWarning?: string | null;
   };
 };
@@ -1025,20 +1030,42 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
     let authoritativeReport: ReconciliationResult | null = null;
     let authoritativeRows: CallWorkflowRow[] = [];
     let reportWarning: string | null = null;
+    let driverActivity: DriverActivityRow[] | null = null;
+    let driverActivityRowCount = 0;
     const qaOrg = /^(qa-|test-)/i.test(actor.orgId);
     if (!qaOrg) {
+      // Driver Activity is the AUTHORITATIVE weekly job-count source (owner
+      // 2026-09-06). Try it first; CallWorkflow remains the fallback only when
+      // both the live fetch and an exact-period snapshot are unavailable.
       try {
-        const fetched = await fetchCallWorkflow(reportWindow);
-        authoritativeRows = fetched.rows;
-        try { await saveTowbookSnapshot(actor.orgId, reportWindow, fetched.raw); } catch { reportWarning = "CallWorkflow ran, but the report snapshot could not be saved; the current computation still used its rows."; }
+        const fetched = await fetchDriverActivity(reportWindow);
+        driverActivity = fetched.rows;
+        driverActivityRowCount = fetched.rows.length;
+        try { await saveTowbookSnapshot(actor.orgId, reportWindow, fetched.raw, "server", "DriverActivity"); } catch { /* best-effort snapshot */ }
       } catch (reportError) {
         try {
-          const snapshot = await loadTowbookSnapshot(actor.orgId, reportWindow);
+          const snapshot = await loadDriverActivitySnapshot(actor.orgId, reportWindow);
           if (snapshot) {
-            authoritativeRows = snapshot.rows;
-            reportWarning = `Towbook report rerun unavailable; using the latest exact-period snapshot (${reportError instanceof Error ? reportError.message : "report unavailable"}).`;
+            driverActivity = snapshot.rows;
+            driverActivityRowCount = snapshot.rows.length;
+            reportWarning = `Towbook Driver Activity rerun unavailable; using the latest exact-period snapshot (${reportError instanceof Error ? reportError.message : "report unavailable"}).`;
           }
-        } catch { /* fall through to the local-only QA fallback */ }
+        } catch { /* fall through to the CallWorkflow fallback */ }
+      }
+      if (!driverActivity) {
+        try {
+          const fetched = await fetchCallWorkflow(reportWindow);
+          authoritativeRows = fetched.rows;
+          try { await saveTowbookSnapshot(actor.orgId, reportWindow, fetched.raw); } catch { reportWarning = "CallWorkflow ran, but the report snapshot could not be saved; the current computation still used its rows."; }
+        } catch (reportError) {
+          try {
+            const snapshot = await loadTowbookSnapshot(actor.orgId, reportWindow);
+            if (snapshot) {
+              authoritativeRows = snapshot.rows;
+              reportWarning = `Towbook report rerun unavailable; using the latest exact-period snapshot (${reportError instanceof Error ? reportError.message : "report unavailable"}).`;
+            }
+          } catch { /* fall through to the local-only QA fallback */ }
+        }
       }
     }
     if (authoritativeRows.length > 0 || !qaOrg) authoritativeReport = reconcileCallWorkflow(authoritativeRows, []);
@@ -1050,7 +1077,31 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
         /reassign/i.test(key) && (child != null && child !== false && child !== "" && child !== 0) || hasReassignmentEvidence(child));
     };
     let jobRows: Array<{ tb_id: string; job_count: number; goa_count: number }>;
-    if (authoritativeReport) {
+    if (driverActivity) {
+      // Authoritative Driver Activity job counts. Join each report row's `id`
+      // to an LD user by users.towbook_driver_id. goa_count is ALWAYS 0: the
+      // owner multiplies callCount by payrate directly (no GOA flat-$10 path).
+      const ldTbIds = new Set((await q`SELECT u.towbook_driver_id
+        FROM users u
+        JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${actor.orgId}
+        WHERE u.towbook_driver_id IS NOT NULL` as Record<string, unknown>[]).map((r) => String(r.towbook_driver_id)));
+      const daGroups = new Map<string, { tb_id: string; job_count: number; goa_count: number }>();
+      const unresolved: string[] = [];
+      for (const row of driverActivity) {
+        const tb = String(row.id);
+        if (!ldTbIds.has(tb)) {
+          unresolved.push(`${row.name || "(unnamed driver)"} (driver id ${tb}): callCount ${row.callCount} has no LD contractor and remains excluded`);
+          continue;
+        }
+        const g = daGroups.get(tb) ?? { tb_id: tb, job_count: 0, goa_count: 0 };
+        g.job_count += row.callCount;
+        daGroups.set(tb, g);
+      }
+      jobRows = [...daGroups.values()];
+      if (unresolved.length > 0) {
+        reportWarning = reportWarning ?? `Driver Activity has ${unresolved.length} driver${unresolved.length === 1 ? "" : "s"} without a matching LD contractor (excluded from job counts): ${unresolved.join("; ")}`;
+      }
+    } else if (authoritativeReport) {
       // Reconcile against every dispatch row (not only locally completed rows),
       // joining dispatchEntryId → towbook_job_id, then id/callNumber fallbacks.
       // A report completion therefore itemizes even when raw_json completionTime
@@ -1363,7 +1414,18 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
           jsonb_build_object('window', ${`${iso(startsAt)}..${iso(endsAt)}`}::text, 'summary', ${masked}::text), 'owner-money'`;
     } catch { /* best-effort audit */ }
 
-    const reconciliationDiagnostics = authoritativeReport ? {
+    const reconciliationDiagnostics: NonNullable<PayPeriodDetail["diagnostics"]> = driverActivity ? {
+      unknownCompletionTimeRows,
+      reportCount: driverActivityRowCount,
+      matchedCount: 0,
+      matchedPayableCount: 0,
+      reassignedCount: 0,
+      unmatchedCount: 0,
+      unitemizedCount: 0,
+      driverActivityRowCount,
+      reconciliationWarning: reportWarning,
+    } : authoritativeReport ? {
+      unknownCompletionTimeRows,
       reportCount: authoritativeReport.reportCount,
       matchedCount: authoritativeReport.matchedCount,
       matchedPayableCount: authoritativeReport.matchedPayableCount,
@@ -1372,9 +1434,10 @@ export async function computePaydayCore(actor: PayoutActor, periodId: string): P
       unitemizedCount: authoritativeReport.unitemizedCount,
       reconciliationWarning: reportWarning,
     } : {
-      reconciliationWarning: "No authoritative CallWorkflow report or exact-period snapshot was available; this computation used the local QA fallback.",
+      unknownCompletionTimeRows,
+      reconciliationWarning: "No authoritative Driver Activity / CallWorkflow report or exact-period snapshot was available; this computation used the local QA fallback.",
     };
-    const diagnostics = { unknownCompletionTimeRows, ...reconciliationDiagnostics };
+    const diagnostics = { ...reconciliationDiagnostics };
     const detail = await getPayPeriodDetailCore(actor, periodId);
     if (detail.ok && detail.data) {
       detail.data.diagnostics = diagnostics;
