@@ -37,8 +37,35 @@ const GLOBAL_STARTED_MARKER = "__ld_background_sync_started__";
 
 let started = false;
 
+/** One dispatch tick for ALL connected orgs: the interval body extracted into
+ *  an idempotent, externally-invokable function so a scheduled/cron trigger can
+ *  drive the AI dispatcher even when nobody is logged in and the live site has
+ *  slept (the in-process interval dies with the process). Runs the SAME
+ *  per-org `runTick` fan-out as the boot loop — idempotency comes entirely from
+ *  the existing per-org in-flight guards + `last_sync_at` gating, never from
+ *  new dispatch semantics. Returns the number of orgs ticked (0 when there is
+ *  no database or no due orgs); never throws (best-effort, like the loop). */
+export async function runOneTickForAllOrgs(): Promise<number> {
+  try {
+    if (!process.env.DATABASE_URL) return 0;
+    const rows = await sqlWithTimeout(SYNC_TICK_TIMEOUT_MS)`SELECT org_id FROM towbook_sessions WHERE session_kind='owner' AND status='connected' AND encrypted_session <> '' AND (last_sync_at IS NULL OR last_sync_at < NOW() - INTERVAL '3 seconds')`;
+    for (const r of rows) {
+      const orgId = String(r.org_id);
+      // Fire-and-forget per org: the per-org guards inside dedupe overlap.
+      void runTick(orgId);
+    }
+    return rows.length;
+  } catch {
+    // best-effort — one query failure never stops the loop and never fails the
+    // endpoint's JSON contract; the caller reports 0 ticked.
+    return 0;
+  }
+}
+
 /** Start the 3s loop exactly once per process (across module copies).
- *  Best-effort: the interval queries the DB only when DATABASE_URL is set. */
+ *  Best-effort: the interval queries the DB only when DATABASE_URL is set.
+ *  Kept as the local-dev / long-lived-host fallback; the HTTP cron path calls
+ *  runOneTickForAllOrgs() directly so both share the one tick body above. */
 export function startBackgroundSync(): void {
   const g = globalThis as Record<string, unknown>;
   if (started || g[GLOBAL_STARTED_MARKER]) return;
@@ -46,17 +73,7 @@ export function startBackgroundSync(): void {
   g[GLOBAL_STARTED_MARKER] = true;
 
   const timer = globalThis.setInterval(() => {
-    void (async () => {
-      try {
-        if (!process.env.DATABASE_URL) return;
-        const rows = await sqlWithTimeout(SYNC_TICK_TIMEOUT_MS)`SELECT org_id FROM towbook_sessions WHERE session_kind='owner' AND status='connected' AND encrypted_session <> '' AND (last_sync_at IS NULL OR last_sync_at < NOW() - INTERVAL '3 seconds')`;
-        for (const r of rows) {
-          const orgId = String(r.org_id);
-          // Fire-and-forget per org: the per-org guards inside dedupe overlap.
-          void runTick(orgId);
-        }
-      } catch { /* best-effort — one query failure never stops the loop */ }
-    })();
+    void runOneTickForAllOrgs();
   }, 3_000);
   const t = timer as unknown as { unref?: () => void };
   if (typeof t.unref === "function") t.unref();

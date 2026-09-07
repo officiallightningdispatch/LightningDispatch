@@ -98,7 +98,54 @@ const serverFnsFetch: typeof fetch = (input, init) => {
   );
 };
 
+// The cron dispatch-tick endpoint is a server-only concern (it dynamic-imports
+// background-sync → ai-dispatcher → node:crypto, which must never enter the
+// client bundle). `dispatchTickCron` is a REQUEST-level middleware, not a plain
+// export: only createStartHandler's request resolver ever calls it (server
+// side), so the client graph never follows its dynamic import. It runs BEFORE
+// the server-function CSRF/cors middleware so a scheduled GET/POST with only a
+// shared-secret header is never CSRF-blocked.
+const dispatchTickCron = createMiddleware().server(async (ctx) => {
+  const url = new URL(ctx.request.url);
+  if (url.pathname !== "/api/cron/dispatch-tick") return ctx.next();
+
+  // Shared-secret guard: the trigger must send the CRON_SECRET value. Timing-safe
+  // compare; 401 on mismatch (or when the env var is unset — fail closed).
+  const expected = process.env.CRON_SECRET;
+  const provided = ctx.request.headers.get("x-cron-secret") ?? "";
+  const digest = (s: string) => {
+    let h = 5381;
+    for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+    return h >>> 0;
+  };
+  const expectedHash = digest(expected ?? "");
+  const providedHash = digest(provided);
+  const lengthOk = expected != null && expected.length === provided.length;
+  if (!lengthOk || expectedHash !== providedHash) {
+    return new Response(
+      JSON.stringify({ ok: false, error: "unauthorized" }),
+      { status: 401, headers: { "content-type": "application/json" } },
+    );
+  }
+
+  // Dynamic import INSIDE the handler body: server-only graph is loaded lazily
+  // and never statically reachable from the client bundle.
+  const { runOneTickForAllOrgs } = await import("./data/background-sync");
+  try {
+    const orgs = await runOneTickForAllOrgs();
+    return new Response(JSON.stringify({ ok: true, orgs }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  } catch {
+    return new Response(JSON.stringify({ ok: false, error: "tick_failed" }), {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    });
+  }
+});
+
 export const startInstance = createStart(() => ({
-  requestMiddleware: [serverFnCors, serverFnCsrf],
+  requestMiddleware: [dispatchTickCron, serverFnCors, serverFnCsrf],
   serverFns: { fetch: serverFnsFetch },
 }));
