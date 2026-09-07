@@ -48,8 +48,14 @@ const TOOL_OPTIONS = [
   { key: "heavy_tow", label: "Heavy tow" },
 ] as const;
 
-function Login(){ const nav=useNavigate(); const search=useSearch({from:"/login" as any}) as {next?:string}; const [first,setFirst]=useState(false); const [mode,setMode]=useState<"signin"|"signup">("signin"); const [name,setName]=useState(""); const [identifier,setIdentifier]=useState(""); const [password,setPassword]=useState(""); const [phone,setPhone]=useState(""); const [serviceArea,setServiceArea]=useState(""); const [tools,setTools]=useState<string[]>([]); const [error,setError]=useState(""); const [driverNotice,setDriverNotice]=useState(""); const [busy,setBusy]=useState(false); const [checking,setChecking]=useState(true); const geo = useGeoFix();
- useEffect(()=>{void authStatus().then((s)=>{if(s.mode==="database" && s.user) void nav({to:s.user.role==="contractor"?"/driver":s.user.role==="dispatcher"?"/ops":"/owner",replace:true}); else if(s.mode==="database") setFirst(!!s.needsOwner);}).catch(()=>{ /* keep login available when auth check fails */ }).finally(()=>setChecking(false));},[nav]);
+function Login(){ const nav=useNavigate(); const search=useSearch({from:"/login" as any}) as {next?:string}; const [first,setFirst]=useState(false); const [mode,setMode]=useState<"signin"|"signup">("signin"); const [name,setName]=useState(""); const [identifier,setIdentifier]=useState(""); const [password,setPassword]=useState(""); const [phone,setPhone]=useState(""); const [serviceArea,setServiceArea]=useState(""); const [tools,setTools]=useState<string[]>([]); const [error,setError]=useState(""); const [driverNotice,setDriverNotice]=useState(""); const [busy,setBusy]=useState(false); const geo = useGeoFix();
+ // The form renders immediately — authStatus must never block it (owner defect
+ // 2026-09-06: the full-screen "Loading…" spinner hid the form for the whole
+ // serverless cold-start on the native app's first open). authStatus only
+ // redirects an ALREADY-signed-in user in the background; if it never resolves
+ // (or fails) the form stays usable. "first" (owner bootstrap) only flips on
+ // once the check resolves — the default sign-in form is always the first paint.
+ useEffect(()=>{let live=true; void authStatus().then((s)=>{if(!live)return; if(s.mode==="database" && s.user) void nav({to:s.user.role==="contractor"?"/driver":s.user.role==="dispatcher"?"/ops":"/owner",replace:true}); else if(s.mode==="database") setFirst(!!s.needsOwner);}).catch(()=>{ /* keep login available when auth check fails */ }); return ()=>{live=false;};},[nav]);
  // One login routes every role to its own workspace — the server decides the role.
  const portal=(role:string)=>role==="contractor"?"/driver":role==="dispatcher"?"/ops":"/owner";
  const toggleTool=(key:string)=>setTools(t=>t.includes(key)?t.filter(k=>k!==key):[...t,key]);
@@ -79,7 +85,6 @@ function Login(){ const nav=useNavigate(); const search=useSearch({from:"/login"
    if(!a.ok){setError(a.message);return;}
    void nav({to:"/driver",replace:true});
  } catch (err) { setError(err instanceof Error ? err.message : "Unable to create your account. Please try again."); } finally { setBusy(false); }}
- if(checking) return <main className="grid min-h-dvh place-items-center bg-canvas px-4"><div className="flex flex-col items-center gap-3" role="status" aria-live="polite"><div className="size-8 animate-spin rounded-full border-2 border-brand-500 border-t-transparent motion-reduce:animate-none" aria-hidden="true" /><p className="text-sm font-medium text-ink-400">Loading…</p></div></main>;
  return <main className="grid min-h-dvh place-items-center bg-canvas px-4"><Card className="w-full max-w-md p-7"><div className="mb-7"><p className="text-xs font-bold uppercase tracking-[.18em] text-brand-600">Lightning Dispatch OS</p><h1 className="mt-2 text-2xl font-bold text-ink-800">{first?"Create owner account":mode==="signup"?"Become a contractor":"Welcome back"}</h1><p className="mt-2 text-sm text-ink-400">{first?"Set the owner credentials for your organization.":mode==="signup"?"Tell us about you and the services you provide. We'll review your application and get back to you.":"Sign in with your Lightning Dispatch login — one account for drivers, dispatchers, and owners."}</p></div>
  {mode==="signup"&&!first?<form onSubmit={submitSignup} className="space-y-4">
    <label className="block text-sm font-semibold text-ink-700">Full name<input required value={name} onChange={e=>setName(e.target.value)} className="mt-1 h-11 w-full rounded-xl border border-ink-200 px-3" /></label>

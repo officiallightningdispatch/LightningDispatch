@@ -30,6 +30,11 @@ export interface Contractor {
   rating: number;
   completedJobCount: number;
   responseTimeHistoryMinutes: number[];
+  /** Towbook driver id (users.towbook_driver_id) for roster rows that carry one.
+   *  Lets jobDriverName resolve a driver's name from `assigned_driver_towbook_id`
+   *  when the sync captured the id but not the display name (owner "Unassigned"
+   *  defect 2026-09-06). Absent for pure owner/admin rows and legacy seed rows. */
+  towbookDriverId?: string;
 }
 
 export interface Job {

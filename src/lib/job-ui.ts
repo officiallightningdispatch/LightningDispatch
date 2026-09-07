@@ -142,10 +142,17 @@ export function fmtDuration(fromIso: string | undefined, toIso: string | undefin
  *  AI dispatcher / Towbook assigned (assignedDriverName, captured at sync from
  *  the raw call — the fix for the dashboard/history "UNASSIGNED" bug) or the
  *  legacy manual assign (assignedContractorId → dispatch_contractors name).
+ *  When the sync captured only the Towbook driver id (assignedDriverTowbookId)
+ *  and no display name, resolve the name from the roster by that id — the
+ *  "Unassigned" defect 2026-09-06 (terminal jobs whose name did not resolve).
  *  Pure + client-safe so the UI and hermetic tests share one truth. Null when
- *  the job has no assignment (UI renders "Unassigned"). */
-export function jobDriverName(job: { assignedDriverName?: string; assignedContractorId?: string }, contractors: Contractor[]): string | null {
+ *  the job has no resolvable assignment (UI renders "Unassigned"). */
+export function jobDriverName(job: { assignedDriverName?: string; assignedContractorId?: string; assignedDriverTowbookId?: string }, contractors: Contractor[]): string | null {
   if (job.assignedDriverName && job.assignedDriverName.trim() !== "") return job.assignedDriverName.trim();
+  if (job.assignedDriverTowbookId) {
+    const byTowbook = contractors.find((x) => x.towbookDriverId != null && String(x.towbookDriverId) === String(job.assignedDriverTowbookId));
+    if (byTowbook) return byTowbook.name;
+  }
   if (job.assignedContractorId) {
     const c = contractors.find((x) => x.id === job.assignedContractorId);
     if (c) return c.name;

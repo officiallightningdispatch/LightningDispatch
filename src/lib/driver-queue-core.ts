@@ -50,3 +50,17 @@ export function normalizeDutyType(value: unknown): QueueCall["dutyType"] {
 }
 
 export const queueIsActive = (statusId: number) => ACTIVE.has(statusId);
+
+/** Poll cadence for the driver queue. Base interval between healthy polls; a
+ *  transient HTTP failure backs off (doubling) up to a ceiling so a dead
+ *  Towbook connection is not hammered every tick (owner "error loop" defect
+ *  2026-09-06). A success resets to the base. */
+export const QUEUE_POLL_BASE_MS = 20_000;
+export const QUEUE_POLL_BACKOFF_MAX_MS = 300_000;
+/** Compute the delay before the NEXT poll from the current consecutive failure
+ *  count. Pure so the backoff behavior is hermetically testable. */
+export function nextQueuePollDelayMs(consecutiveFailures: number): number {
+  if (consecutiveFailures <= 0) return QUEUE_POLL_BASE_MS;
+  const base = QUEUE_POLL_BASE_MS * Math.pow(2, Math.min(consecutiveFailures, 4));
+  return Math.min(base, QUEUE_POLL_BACKOFF_MAX_MS);
+}

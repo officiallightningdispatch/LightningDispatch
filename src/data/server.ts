@@ -117,6 +117,9 @@ export async function listRosterContractors(orgId: string, contractorId?: string
       rating: 0,
       completedJobCount: Number(r.completed_job_count ?? 0),
       responseTimeHistoryMinutes: [],
+      // Carry the Towbook driver id so jobDriverName can fall back to name lookup
+      // by assigned_driver_towbook_id (owner "Unassigned" defect 2026-09-06).
+      towbookDriverId: r.towbook_driver_id != null ? String(r.towbook_driver_id) : undefined,
     };
   });
 }

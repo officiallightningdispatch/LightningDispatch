@@ -8,7 +8,7 @@
  */
 import { useNavigate } from "@tanstack/react-router";
 import { Check, LogOut, MapPin, Navigation, Radar, RefreshCw, ThumbsUp, Truck, Unplug, X } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { BatterySalesAgent, isJumpstartService } from "~/components/battery-agent-ui";
 import { TirePlugOffer } from "~/components/tire-plug-ui";
 import { JobDetailDisclosure } from "~/components/job-detail";
@@ -16,7 +16,7 @@ import { JobPhotoFlow } from "~/components/driver-photos-ui";
 import { DriverNotificationBanners, SoundToggle } from "~/components/notify-banners";
 import { Button, Card, useToast } from "~/components/ui";
 import { driverJobAction, driverJobs, driverLogout, driverReconnect, driverReconnectContext, type DriverCall } from "~/data/driver-auth";
-import { orderDriverQueue } from "~/lib/driver-queue-core";
+import { orderDriverQueue, nextQueuePollDelayMs } from "~/lib/driver-queue-core";
 import { preferredEtaIso } from "~/lib/driver-eta-core";
 import { PUSH_RECEIVED_MESSAGE_TYPE } from "~/lib/push-received";
 import { useDriverGpsState, type DriverGpsState } from "~/components/driver-gps-tracker";
@@ -85,6 +85,15 @@ export function useDriverQueue() {
   const [reconnectOpen, setReconnectOpen] = useState(false);
   const [driverLocation, setDriverLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const gpsState = useDriverGps(calls);
+  // Poll-loop bookkeeping (owner "error loop" defect 2026-09-06): track the
+  // last-surfaced error (so an identical message is never re-written each
+  // tick), the number of in-flight requests (so we never stack concurrent
+  // loads), consecutive transient failures (backoff), and the pending backoff
+  // timeout handle. Refs avoid re-running the load callback on every tick.
+  const errorRef = useRef("");
+  const failCountRef = useRef(0);
+  const inFlightRef = useRef(0);
+  const pollTimerRef = useRef<number | null>(null);
   useEffect(() => {
     if (typeof navigator === "undefined" || !navigator.geolocation) return;
     const watch = navigator.geolocation.watchPosition(
@@ -95,17 +104,64 @@ export function useDriverQueue() {
     return () => navigator.geolocation.clearWatch(watch);
   }, []);
   const load = useCallback(async (quiet = false) => {
+    // Never stack concurrent queue loads (poll + push + manual refresh can fire
+    // in the same tick). A re-entrant call while one is in flight is a no-op.
+    if (inFlightRef.current > 0) return;
+    inFlightRef.current += 1;
     if (!quiet) setLoading(true);
-    const r = await driverJobs();
-    if (r.ok) { setCalls(orderDriverQueue(r.calls, driverLocation)); setAllCalls(r.calls); setError(""); setExpired(false); }
-    else { if (r.expired) setExpired(true); setError(r.message); }
-    setLoading(false);
+    // Whether to schedule the next poll after this load settles. An expired
+    // session cannot self-heal, so the silent retry loop stops there; the
+    // reconnect flow (or a manual refresh) calls load() again to resume.
+    let reschedule = true;
+    try {
+      const r = await driverJobs();
+      if (r.ok) {
+        setCalls(orderDriverQueue(r.calls, driverLocation));
+        setAllCalls(r.calls);
+        // Success clears any prior error/expired surface and resets the backoff.
+        errorRef.current = "";
+        failCountRef.current = 0;
+        setError("");
+        setExpired(false);
+      } else {
+        // (a) Don't re-render an IDENTICAL error banner every tick: the surface
+        // already shows this exact message, so skip the redundant state write
+        // (which is what produced the observed loop of repeated banners). A new/
+        // changed message still updates once.
+        if (r.message !== errorRef.current) {
+          errorRef.current = r.message;
+          setError(r.message);
+        }
+        if (r.expired) {
+          // (b) Expired session → surface the reconnect prompt ONCE. `expired` is
+          // a boolean: once true it stays until a successful reload (or an action
+          // clears it), so a poll never mints a fresh banner.
+          setExpired(true);
+          reschedule = false;
+        } else {
+          // (c) Transient HTTP failure → back off instead of hammering every 20s.
+          failCountRef.current += 1;
+        }
+      }
+    } finally {
+      inFlightRef.current -= 1;
+      setLoading(false);
+    }
+    // Single source of truth for the next tick: success → base interval, a
+    // transient failure → doubling backoff, expired → no further auto-poll.
+    if (pollTimerRef.current !== null) window.clearTimeout(pollTimerRef.current);
+    pollTimerRef.current = null;
+    if (reschedule) {
+      pollTimerRef.current = window.setTimeout(() => {
+        pollTimerRef.current = null;
+        void load(true);
+      }, nextQueuePollDelayMs(failCountRef.current));
+    }
   }, [driverLocation]);
   useEffect(() => {
     void load();
-    const t = setInterval(() => void load(true), 20000); // fallback safety net
     if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
-      return () => clearInterval(t);
+      return () => { if (pollTimerRef.current !== null) window.clearTimeout(pollTimerRef.current); pollTimerRef.current = null; };
     }
     const onPushReceived = (event: MessageEvent) => {
       const data = event.data as { type?: unknown } | null | undefined;
@@ -114,7 +170,8 @@ export function useDriverQueue() {
     };
     navigator.serviceWorker.addEventListener("message", onPushReceived);
     return () => {
-      clearInterval(t);
+      if (pollTimerRef.current !== null) window.clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
       navigator.serviceWorker.removeEventListener("message", onPushReceived);
     };
   }, [load]);

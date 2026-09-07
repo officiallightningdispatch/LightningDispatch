@@ -74,6 +74,17 @@
   body {
     @apply bg-canvas text-ink-900 antialiased;
   }
+  /* iOS auto-zoom fix (owner defect 2026-09-06): Safari/WebKit zooms any
+   * focused input whose computed font-size is under 16px. Many inputs are
+   * children of `text-sm`/`text-xs` labels and inherit 14px, so the native app
+   * zoomed on focus. Force every form control to a minimum 16px font-size —
+   * the canonical site-wide fix; explicit per-input `text-*` utilities stay
+   * overridden by this base rule so no input can fall below 16px. */
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
   * {
     @apply border-ink-100;
   }
