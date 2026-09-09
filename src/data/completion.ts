@@ -11,8 +11,9 @@
  * before).
  */
 import { createServerFn } from "@tanstack/react-start";
-import type { CompletionCaptureStatus } from "./completion-core";
+import type { CompletionCaptureStatus, SurveyRatingsResult } from "./completion-core";
 export type { CompletionCaptureStatus, CompletionTip, TipStatus } from "./completion-core";
+export type { ContractorSurveyRating, OwnerSurveyRow, SurveyRatingsResult } from "./completion-core";
 
 const passthrough = (x: unknown) => x;
 
@@ -58,6 +59,13 @@ export const getCompletionCapture = createServerFn({ method: "POST" }).validator
 export const getAllCompletionCaptures = createServerFn({ method: "GET" }).handler(async (): Promise<CompletionCaptureStatus[]> => {
   const core = await import("./completion-core");
   return core.allCompletionCapturesHandler();
+});
+
+/** REAL customer-survey aggregation + per-job drill-down. Owner/admin/dispatcher
+ *  → whole org; contractor → own rated jobs only. Backend only (Part 2 wires UI). */
+export const getSurveyRatings = createServerFn({ method: "GET" }).handler(async (): Promise<SurveyRatingsResult> => {
+  const core = await import("./completion-core");
+  return core.surveyRatingsHandler();
 });
 
 /** Is the owner's Square account wired? Drives whether the tip block renders. */

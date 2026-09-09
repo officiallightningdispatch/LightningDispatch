@@ -95,6 +95,37 @@ export type CompletionCaptureStatus = {
   status: "none" | "captured" | "tip_link_created" | "tip_paid";
 };
 
+/** Per-contractor REAL survey aggregation (never the legacy seed
+ *  dispatch_contractors.rating). contractorId/towbookDriverId are the resolved
+ *  driver identity; null only for a rated job with no attributable contractor. */
+export type ContractorSurveyRating = {
+  contractorId: string | null;
+  towbookDriverId: string | null;
+  averageRating: number | null;
+  ratingCount: number;
+};
+
+/** One rated job for owner verification (drill-down). capturedAt is the
+ *  job_completions.updated_at timestamp — the survey JSONB carries no time. */
+export type OwnerSurveyRow = {
+  jobId: string;
+  customerName: string;
+  serviceType: string;
+  completedAt: string | null;
+  driverId: string | null;
+  driverName: string | null;
+  towbookDriverId: string | null;
+  rating: number;
+  comment: string | null;
+  capturedAt: string;
+};
+
+/** REAL survey aggregation + per-job drill-down rows (Seroval-safe: no undefined). */
+export type SurveyRatingsResult = {
+  contractors: ContractorSurveyRating[];
+  rows: OwnerSurveyRow[];
+};
+
 /** One job's completion capture (or absence) — the driver UI + owner queue
  *  badge read this. Tip stays optional: no tip jsonb → fine. */
 export async function completionCaptureForJob(orgId: string, jobId: string): Promise<CompletionCaptureStatus> {
@@ -149,6 +180,108 @@ export async function allCompletionCapturesCore(orgId: string): Promise<Completi
     return out;
   } catch {
     return [];
+  }
+}
+
+/* ---------------------------- survey aggregation ---------------------------- */
+
+const surveyIso = (v: unknown): string | null => {
+  if (v == null) return null;
+  const d = v instanceof Date ? v : new Date(String(v));
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+};
+
+const round2 = (n: number): number => Math.round(n * 100) / 100;
+
+/** REAL customer-survey aggregation + per-job drill-down for the owner command
+ *  center / contractor record. Never reads the legacy dispatch_contractors.rating
+ *  or seed Contractor.rating — only job_completions.survey joined to the assigned
+ *  driver. Permission mirrors getCompletionCaptureCore: owner/admin/dispatcher see
+ *  the whole org; a contractor sees only their own rated jobs. Driver attribution
+ *  precedence: (1) dispatch_jobs.assigned_driver_towbook_id → users.towbook_driver_id,
+ *  (2) dispatch_jobs.assigned_contractor_id → organization_memberships.contractor_id
+ *  (legacy) / organization_memberships.user_id (manual console assigns write
+ *  users.id for real orgs). Only ratings 1–5 are counted; the survey JSONB has no
+ *  timestamp, so capturedAt is job_completions.updated_at. */
+export async function surveyRatingsCore(user: { orgId: string; role: string; id: string }): Promise<SurveyRatingsResult> {
+  const empty: SurveyRatingsResult = { contractors: [], rows: [] };
+  const isManager = user.role === "owner" || user.role === "admin" || user.role === "dispatcher";
+  const isContractor = user.role === "contractor";
+  if (!isManager && !isContractor) return empty;
+  try {
+    await ensure();
+    const q = await db();
+    // Attribution joins: u_tb resolves the primary Towbook signal
+    // (users.towbook_driver_id is globally unique); m/u_ct resolve the legacy
+    // contractor_id / manual users.id fallback (org-scoped).
+
+    const aggRows = await q`SELECT
+        COALESCE(u_tb.id, u_ct.id) AS contractor_id,
+        COALESCE(u_tb.towbook_driver_id, u_ct.towbook_driver_id) AS towbook_driver_id,
+        AVG((jc.survey->>'rating')::int)::float8 AS avg_rating,
+        COUNT(*)::int AS rating_count
+      FROM job_completions jc
+      JOIN dispatch_jobs dj ON dj.org_id = jc.org_id AND dj.id = jc.job_id
+      LEFT JOIN users u_tb ON u_tb.towbook_driver_id = dj.assigned_driver_towbook_id
+      LEFT JOIN organization_memberships m ON m.org_id = dj.org_id AND m.role = 'contractor'
+        AND (m.contractor_id = dj.assigned_contractor_id OR m.user_id = dj.assigned_contractor_id)
+      LEFT JOIN users u_ct ON u_ct.id = m.user_id
+      WHERE jc.org_id = ${user.orgId}
+        AND jsonb_typeof(jc.survey->'rating') = 'number'
+        AND (jc.survey->>'rating')::int BETWEEN 1 AND 5
+        AND (NOT ${isContractor} OR COALESCE(u_tb.id, u_ct.id) = ${user.id})
+      GROUP BY 1, 2
+      ORDER BY rating_count DESC, avg_rating DESC NULLS LAST`;
+
+    const rowRows = await q`SELECT
+        jc.job_id,
+        dj.customer_name,
+        dj.service_type,
+        dj.completed_at,
+        COALESCE(u_tb.id, u_ct.id) AS driver_id,
+        COALESCE(u_tb.name, u_ct.name) AS driver_name,
+        COALESCE(u_tb.towbook_driver_id, u_ct.towbook_driver_id) AS towbook_driver_id,
+        (jc.survey->>'rating')::int AS rating,
+        jc.survey->>'comment' AS comment,
+        jc.updated_at AS captured_at
+      FROM job_completions jc
+      JOIN dispatch_jobs dj ON dj.org_id = jc.org_id AND dj.id = jc.job_id
+      LEFT JOIN users u_tb ON u_tb.towbook_driver_id = dj.assigned_driver_towbook_id
+      LEFT JOIN organization_memberships m ON m.org_id = dj.org_id AND m.role = 'contractor'
+        AND (m.contractor_id = dj.assigned_contractor_id OR m.user_id = dj.assigned_contractor_id)
+      LEFT JOIN users u_ct ON u_ct.id = m.user_id
+      WHERE jc.org_id = ${user.orgId}
+        AND jsonb_typeof(jc.survey->'rating') = 'number'
+        AND (jc.survey->>'rating')::int BETWEEN 1 AND 5
+        AND (NOT ${isContractor} OR COALESCE(u_tb.id, u_ct.id) = ${user.id})
+      ORDER BY jc.updated_at DESC`;
+
+    const contractors: ContractorSurveyRating[] = (aggRows as Record<string, unknown>[]).map((r) => {
+      const avg = r.avg_rating != null ? Number(r.avg_rating) : null;
+      return {
+        contractorId: r.contractor_id != null ? String(r.contractor_id) : null,
+        towbookDriverId: r.towbook_driver_id != null ? String(r.towbook_driver_id) : null,
+        averageRating: avg != null && Number.isFinite(avg) ? round2(avg) : null,
+        ratingCount: r.rating_count != null ? Number(r.rating_count) : 0,
+      };
+    });
+
+    const rows: OwnerSurveyRow[] = (rowRows as Record<string, unknown>[]).map((r) => ({
+      jobId: String(r.job_id),
+      customerName: String(r.customer_name ?? ""),
+      serviceType: String(r.service_type ?? ""),
+      completedAt: surveyIso(r.completed_at),
+      driverId: r.driver_id != null ? String(r.driver_id) : null,
+      driverName: r.driver_name != null ? String(r.driver_name) : null,
+      towbookDriverId: r.towbook_driver_id != null ? String(r.towbook_driver_id) : null,
+      rating: Number(r.rating),
+      comment: r.comment != null ? String(r.comment) : null,
+      capturedAt: surveyIso(r.captured_at) ?? "",
+    }));
+
+    return { contractors, rows };
+  } catch {
+    return empty;
   }
 }
 
@@ -554,6 +687,16 @@ export async function allCompletionCapturesHandler(): Promise<CompletionCaptureS
   const u = await currentUser();
   if (!u || (u.role !== "owner" && u.role !== "admin" && u.role !== "dispatcher")) return [];
   return allCompletionCapturesCore(u.orgId);
+}
+
+/** REAL survey aggregation + drill-down for the owner command center / contractor
+ *  record. Owner/admin/dispatcher → whole org; contractor → own rated jobs only. */
+export async function surveyRatingsHandler(): Promise<SurveyRatingsResult> {
+  if (!configured()) return { contractors: [], rows: [] };
+  const { currentUser } = await import("./auth-server");
+  const u = await currentUser();
+  if (!u) return { contractors: [], rows: [] };
+  return surveyRatingsCore({ orgId: u.orgId, role: u.role, id: u.id });
 }
 
 export async function isSquareConfiguredHandler(): Promise<{ configured: boolean }> {
