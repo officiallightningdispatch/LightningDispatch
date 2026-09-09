@@ -25,6 +25,7 @@ import { Route as OwnerIndexRouteImport } from './routes/owner/index'
 import { Route as OpsIndexRouteImport } from './routes/ops/index'
 import { Route as DriverIndexRouteImport } from './routes/driver/index'
 import { Route as OwnerSettingsRouteImport } from './routes/owner/settings'
+import { Route as OwnerRatingsRouteImport } from './routes/owner/ratings'
 import { Route as OwnerQueueRouteImport } from './routes/owner/queue'
 import { Route as OwnerPerformanceRouteImport } from './routes/owner/performance'
 import { Route as OwnerNotificationsRouteImport } from './routes/owner/notifications'
@@ -139,6 +140,11 @@ const DriverIndexRoute = DriverIndexRouteImport.update({
 const OwnerSettingsRoute = OwnerSettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => OwnerRoute,
+} as any)
+const OwnerRatingsRoute = OwnerRatingsRouteImport.update({
+  id: '/ratings',
+  path: '/ratings',
   getParentRoute: () => OwnerRoute,
 } as any)
 const OwnerQueueRoute = OwnerQueueRouteImport.update({
@@ -357,6 +363,7 @@ export interface FileRoutesByFullPath {
   '/owner/notifications': typeof OwnerNotificationsRoute
   '/owner/performance': typeof OwnerPerformanceRoute
   '/owner/queue': typeof OwnerQueueRoute
+  '/owner/ratings': typeof OwnerRatingsRoute
   '/owner/settings': typeof OwnerSettingsRoute
   '/driver/': typeof DriverIndexRoute
   '/ops/': typeof OpsIndexRoute
@@ -404,6 +411,7 @@ export interface FileRoutesByTo {
   '/owner/notifications': typeof OwnerNotificationsRoute
   '/owner/performance': typeof OwnerPerformanceRoute
   '/owner/queue': typeof OwnerQueueRoute
+  '/owner/ratings': typeof OwnerRatingsRoute
   '/owner/settings': typeof OwnerSettingsRoute
   '/driver': typeof DriverIndexRoute
   '/ops': typeof OpsIndexRoute
@@ -458,6 +466,7 @@ export interface FileRoutesById {
   '/owner/notifications': typeof OwnerNotificationsRoute
   '/owner/performance': typeof OwnerPerformanceRoute
   '/owner/queue': typeof OwnerQueueRoute
+  '/owner/ratings': typeof OwnerRatingsRoute
   '/owner/settings': typeof OwnerSettingsRoute
   '/driver/': typeof DriverIndexRoute
   '/ops/': typeof OpsIndexRoute
@@ -513,6 +522,7 @@ export interface FileRouteTypes {
     | '/owner/notifications'
     | '/owner/performance'
     | '/owner/queue'
+    | '/owner/ratings'
     | '/owner/settings'
     | '/driver/'
     | '/ops/'
@@ -560,6 +570,7 @@ export interface FileRouteTypes {
     | '/owner/notifications'
     | '/owner/performance'
     | '/owner/queue'
+    | '/owner/ratings'
     | '/owner/settings'
     | '/driver'
     | '/ops'
@@ -613,6 +624,7 @@ export interface FileRouteTypes {
     | '/owner/notifications'
     | '/owner/performance'
     | '/owner/queue'
+    | '/owner/ratings'
     | '/owner/settings'
     | '/driver/'
     | '/ops/'
@@ -754,6 +766,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/owner/settings'
       preLoaderRoute: typeof OwnerSettingsRouteImport
+      parentRoute: typeof OwnerRoute
+    }
+    '/owner/ratings': {
+      id: '/owner/ratings'
+      path: '/ratings'
+      fullPath: '/owner/ratings'
+      preLoaderRoute: typeof OwnerRatingsRouteImport
       parentRoute: typeof OwnerRoute
     }
     '/owner/queue': {
@@ -1110,6 +1129,7 @@ interface OwnerRouteChildren {
   OwnerNotificationsRoute: typeof OwnerNotificationsRoute
   OwnerPerformanceRoute: typeof OwnerPerformanceRoute
   OwnerQueueRoute: typeof OwnerQueueRoute
+  OwnerRatingsRoute: typeof OwnerRatingsRoute
   OwnerSettingsRoute: typeof OwnerSettingsRoute
   OwnerIndexRoute: typeof OwnerIndexRoute
   OwnerZonesIndexRoute: typeof OwnerZonesIndexRoute
@@ -1129,6 +1149,7 @@ const OwnerRouteChildren: OwnerRouteChildren = {
   OwnerNotificationsRoute: OwnerNotificationsRoute,
   OwnerPerformanceRoute: OwnerPerformanceRoute,
   OwnerQueueRoute: OwnerQueueRoute,
+  OwnerRatingsRoute: OwnerRatingsRoute,
   OwnerSettingsRoute: OwnerSettingsRoute,
   OwnerIndexRoute: OwnerIndexRoute,
   OwnerZonesIndexRoute: OwnerZonesIndexRoute,
