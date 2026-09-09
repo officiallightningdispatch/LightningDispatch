@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { BadgeCheck, CalendarClock, Camera, ChevronRight, Crown, FileText, LifeBuoy, LogOut, Trash2, Truck, User, Wallet, X } from "lucide-react";
+import { BadgeCheck, CalendarClock, Camera, ChevronRight, Crown, FileText, LifeBuoy, LogOut, Star, Trash2, Truck, User, Wallet, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { AppShell } from "~/components/app-shell";
 import { DriverToolbar } from "~/components/driver-queue";
@@ -10,6 +10,7 @@ import { deleteMyAccount } from "~/data/account-deletion";
 import { driverLogout, driverProfile, type DriverProfileResult } from "~/data/driver-auth";
 import { getMyProfilePhoto, uploadMyProfilePhoto } from "~/data/driver-profile-photo";
 import { getMyPayoutMethod, PAYOUT_RAIL_LABELS, type MyPayoutMethod } from "~/data/payouts";
+import { getSurveyRatings } from "~/data/completion";
 
 /**
  * /driver/profile — the driver's account card: dispatch identity, login, and
@@ -46,6 +47,22 @@ function ProfileView() {
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const staffAccount = Boolean(user?.user && (user.user.role === "owner" || user.user.role === "admin" || user.user.role === "dispatcher"));
+  /** Contractor's OWN average rating + survey count (read-only). `getSurveyRatings`
+   *  already scopes to the caller's own jobs for a contractor; owners/admins in
+   *  driver view get the WHOLE org, so the card is only rendered for real
+   *  contractors (staffAccount === false). */
+  const [myRating, setMyRating] = useState<{ averageRating: number | null; ratingCount: number } | null>(null);
+  useEffect(() => {
+    if (staffAccount) return;
+    let live = true;
+    void getSurveyRatings()
+      .then((res) => {
+        const mine = res.contractors[0];
+        if (live) setMyRating(mine ? { averageRating: mine.averageRating, ratingCount: mine.ratingCount } : null);
+      })
+      .catch(() => { if (live) setMyRating(null); });
+    return () => { live = false; };
+  }, [staffAccount]);
   const onDeleteAccount = async () => {
     if (deleteBusy) return;
     if (deleteConfirm.trim() !== "DELETE") {
@@ -149,6 +166,26 @@ function ProfileView() {
           </Card>
           {photoError && (
             <p className="rounded-xl border border-danger-200 bg-danger-50 px-3 py-2 text-xs font-semibold text-danger-600" role="alert">{photoError}</p>
+          )}
+          {!staffAccount && (
+            <Card className="flex items-center gap-3 p-4">
+              <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-accent-50 text-accent-600">
+                <Star className="size-5" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-bold text-ink-800">My rating</p>
+                <p className="text-xs text-ink-500">
+                  {myRating && myRating.averageRating != null
+                    ? `${myRating.ratingCount} customer survey${myRating.ratingCount === 1 ? "" : "s"}`
+                    : "No customer ratings yet"}
+                </p>
+              </div>
+              {myRating?.averageRating != null && (
+                <p className="shrink-0 text-xl font-extrabold tabular-nums text-ink-900">
+                  {myRating.averageRating.toFixed(2)}
+                </p>
+              )}
+            </Card>
           )}
           <Link
             to="/driver/documents"
