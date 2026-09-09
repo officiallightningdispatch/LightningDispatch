@@ -40,32 +40,46 @@ import { towbookLogin, TOWBOOK_ORIGIN } from "./towbook-login";
  *    like every other audit write.
  */
 
-const STABLE_SECRETS_DIR = join(dirname(findSiteRoot(import.meta.url)), ".secrets");
-/** Owner's stored Towbook credentials — sibling of the site root, OUTSIDE the
- *  repo and the build output (the same publish-proof path towbook-key.ts uses
- *  for the session key). Never hardcoded; resolved from this module's URL. */
-const OWNER_USERNAME_FILE = join(STABLE_SECRETS_DIR, "towbook-owner-username");
-const OWNER_PASSWORD_FILE = join(STABLE_SECRETS_DIR, "towbook-owner-password");
+const SITE_ROOT = findSiteRoot(import.meta.url);
+/** Stable, publish-proof dir: sibling of the site root, OUTSIDE the repo and the
+ *  build output (the same publish-proof path towbook-key.ts uses for the
+ *  session key). Never hardcoded; resolved from this module's URL. */
+const STABLE_SECRETS_DIR = join(dirname(SITE_ROOT), ".secrets");
+/** Artifact fallbacks (mirror square-client.ts / b2-client.ts / towbook-key.ts):
+ *  the hosted live deployment (…ctonew.app, a CloudFront snapshot of dist/)
+ *  cannot read the machine-local sibling dir, so the build embeds creds at
+ *  <site-root>/dist/.secrets (preferred over the source-tree .secrets, which
+ *  only local source runs would have). Without these, the payday report fetch
+ *  (bearer() → readOwnerCreds) throws credentials_unavailable on the live host
+ *  and the weekly manifest silently computes to zero contractors. */
+const ARTIFACT_DIRS = [join(SITE_ROOT, "dist", ".secrets"), join(SITE_ROOT, ".secrets")];
 
 export type OwnerCreds = { username: string; password: string };
 
-/** Read the owner's stored Towbook credentials from the stable .secrets dir.
- *  Returns null when either file is missing or empty — the caller then keeps
- *  today's no-recovery behavior (escalation + alert). The password value is
- *  never logged and never leaves this module except into towbookLogin. */
-export async function readOwnerCreds(): Promise<OwnerCreds | null> {
-  try {
-    const [username, password] = await Promise.all([
-      readFile(OWNER_USERNAME_FILE, "utf8"),
-      readFile(OWNER_PASSWORD_FILE, "utf8"),
-    ]);
-    const u = username.trim();
-    const p = password.trim();
-    if (!u || !p) return null;
-    return { username: u, password: p };
-  } catch {
+/** Read the owner's stored Towbook credentials, trying the stable dir first and
+ *  then the artifact fallbacks (dist/.secrets for the live host). Returns null
+ *  when either value is missing or empty in every candidate — the caller then
+ *  keeps today's no-recovery behavior (escalation + alert). The password value
+ *  is never logged and never leaves this module except into towbookLogin.
+ *  `opts.dirs` is test-only: hermetic tests pin an explicit candidate list so
+ *  they can never accidentally resolve the real production creds. */
+export async function readOwnerCreds(opts: { dirs?: string[] } = {}): Promise<OwnerCreds | null> {
+  const dirs = opts.dirs ?? [STABLE_SECRETS_DIR, ...ARTIFACT_DIRS];
+  const readFirst = async (name: string): Promise<string | null> => {
+    for (const dir of dirs) {
+      try {
+        const value = (await readFile(join(dir, name), "utf8")).trim();
+        if (value) return value;
+      } catch { /* try the next candidate */ }
+    }
     return null;
-  }
+  };
+  const [username, password] = await Promise.all([
+    readFirst("towbook-owner-username"),
+    readFirst("towbook-owner-password"),
+  ]);
+  if (!username || !password) return null;
+  return { username, password };
 }
 
 export type RecoveryResult =

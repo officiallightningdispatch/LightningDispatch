@@ -35,7 +35,7 @@ DEST_DIR="$SITE_ROOT/dist/.secrets"
 mkdir -p "$DEST_DIR" || { echo "prepare-secrets: cannot create $DEST_DIR — build continues without embedded creds" >&2; exit 0; }
 
 # name -> which runtime consumer needs it (for the log line only)
-names=(b2-key-id b2-application-key b2-bucket-name tomtom.key push-vapid-public.key push-vapid-private.key gmail-address gmail-app-password square-access-token square-application-id square-location-id towbook.key bank.key)
+names=(b2-key-id b2-application-key b2-bucket-name tomtom.key push-vapid-public.key push-vapid-private.key gmail-address gmail-app-password square-access-token square-application-id square-location-id towbook.key towbook-owner-username towbook-owner-password bank.key)
 copied=0
 missing=0
 for name in "${names[@]}"; do
