@@ -125,7 +125,7 @@ export type LoginCoreResult =
 export async function loginCore(identifier: string, password: string): Promise<LoginCoreResult> {
   await ensureAuthSchema();
   const ident = identifier.trim().toLowerCase();
-  const rows = await sql()`SELECT u.id,u.password_hash,u.email,u.deactivated_at,m.role FROM users u LEFT JOIN organization_memberships m ON m.user_id=u.id WHERE LOWER(u.login_handle)=${ident} OR LOWER(u.email)=${ident}`;
+  const rows = await sql()`SELECT u.id,u.password_hash,u.email,u.deactivated_at,u.towbook_driver_id,u.towbook_user_id,m.role FROM users u LEFT JOIN organization_memberships m ON m.user_id=u.id WHERE LOWER(u.login_handle)=${ident} OR LOWER(u.email)=${ident}`;
   const hit = rows[0] as Record<string, unknown> | undefined;
   if (!hit) return { ok: false, error: "Invalid username or password.", reason: "unknown_identifier" };
   // Deactivated rows get NO access on any path — refused BEFORE password
@@ -140,9 +140,12 @@ export async function loginCore(identifier: string, password: string): Promise<L
   // hash) — their real credentials live in Towbook, so the login form must fall
   // through to the Towbook driver sign-in on EVERY sign-in, never block with
   // "invalid_password". Marked by the derived @towbook.driver / @towbook.manager
-  // email domains (only ever written by those two upserts); a manager's row is
-  // role 'owner', so the role check alone would wrongly STOP here.
-  if (role === "contractor" || /@towbook\.(driver|manager)$/i.test(email)) {
+  // email domains (only ever written by those two upserts) or a linked Towbook
+  // identity. Public applicants also have role 'contractor', but have a normal
+  // email and no Towbook ids; they must be allowed to use their LD password.
+  const isTowbookIdentity = /@towbook\.(driver|manager)$/i.test(email)
+    || hit.towbook_driver_id != null || hit.towbook_user_id != null;
+  if (isTowbookIdentity) {
     return { ok: false, error: "Invalid username or password.", reason: "contractor_account" };
   }
   if (!verify(password, String(hit.password_hash))) return { ok: false, error: "Invalid username or password.", reason: "invalid_password" };

@@ -2,7 +2,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { Check, ChevronLeft, ChevronRight, ShieldCheck, Truck } from "lucide-react";
 import { useState } from "react";
 import { Button, Card } from "~/components/ui";
-import { signupContractor, submitContractorApplication, type ApplicationResult, type ContractorApplicationRow } from "~/data/contractor-signup";
+import { applyContractor } from "~/data/contractor-signup";
 
 export const Route = createFileRoute("/apply")({ component: Apply });
 
@@ -30,14 +30,13 @@ function Apply() {
   async function submit(e:React.FormEvent) {
     e.preventDefault(); setBusy(true); setError("");
     try {
-      const account = await signupContractor({data:{name:form.name,email:form.email,password:form.password}});
-      if (!account.ok) { setError(account.error); setStep(1); return; }
-      const application = await submitContractorApplication({data:{
+      const application = await applyContractor({data:{
+        name:form.name, email:form.email, password:form.password,
         phone:form.phone, tools:form.tools, serviceArea:`${form.city}, ${form.state.toUpperCase()} ${form.zip}`,
         experienceYears:Number(form.experienceYears), vehicleDescription:`${form.year} ${form.make} ${form.model}, ${form.color}`,
         ageConfirmed:form.ageConfirmed, workAuthorized:form.workAuthorized,
         independentContractorAgreed:form.independentContractorAgreed, backgroundCheckConsented:form.backgroundCheckConsented,
-      }}) as ApplicationResult<ContractorApplicationRow>;
+      }});
       if (!application.ok) { setError(application.message); return; }
       void nav({to:"/driver/onboarding",replace:true});
     } catch (e) { setError(e instanceof Error ? String(e) : "Unable to submit your application. Please try again."); }

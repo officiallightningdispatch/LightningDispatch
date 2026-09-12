@@ -209,6 +209,48 @@ export async function signupContractorHandler(data: unknown): Promise<SignupCore
   return res;
 }
 
+/** Public application entry point. Account creation and application persistence
+ *  happen in one server request, so the application never depends on a session
+ *  cookie from an earlier request. Both payloads are validated before any row
+ *  is written, and a failed application insert removes the newly-created user
+ *  (membership cascades) so the applicant can safely retry. */
+export async function applyContractorCore(
+  data: unknown,
+  orgId: string = PRODUCTION_ORG_ID,
+): Promise<ApplicationResult<ContractorApplicationRow>> {
+  const signup = signupSchema.safeParse(data);
+  if (!signup.success) {
+    return err("invalid_input", "Enter your name, a valid email, and a password of at least 10 characters.");
+  }
+  const application = applicationSchema.safeParse(data ?? {});
+  if (!application.success) return err("invalid_input", "Invalid application details.");
+
+  const account = await signupContractorCore(signup.data, orgId);
+  if (!account.ok) {
+    const code = /already registered/i.test(account.error) ? "duplicate" : "database_error";
+    return err(code, account.error);
+  }
+
+  const result = await submitContractorApplicationCore(
+    { orgId, id: account.userId, role: "contractor" },
+    application.data,
+  );
+  if (!result.ok) {
+    await sql()`DELETE FROM users WHERE id = ${account.userId}`.catch(() => {});
+  }
+  return result;
+}
+
+/** Request-runtime wrapper: persist the complete application first, then start
+ *  the new applicant's session in the same response. */
+export async function applyContractorHandler(data: unknown): Promise<ApplicationResult<ContractorApplicationRow>> {
+  const result = await applyContractorCore(data);
+  if (result.ok) {
+    try { await startSession(result.data.userId); } catch { /* application is safely stored; applicant can sign in */ }
+  }
+  return result;
+}
+
 /* ------------------------------ applications ------------------------------ */
 const OWNER_ROLES = ["owner", "admin"] as const;
 

@@ -15,6 +15,7 @@ const q = neon(process.env.DATABASE_URL);
 process.env.TOWBOOK_SESSION_KEY = Buffer.alloc(32, 9).toString("base64");
 const {
   signupContractorCore,
+  applyContractorCore,
   submitContractorApplicationCore,
   getMyApplicationStatusCore,
   listContractorApplicationsCore,
@@ -34,6 +35,7 @@ const ORG = `qa-signup-${TAG}`;
 const OWNER = `qa-signup-owner-${TAG}`;
 const email = (u) => `${u}-${randomUUID()}@lightning.test`;
 const CONTRACTOR_EMAIL = `qa-signup-driver-${randomUUID()}@lightning.test`;
+const ATOMIC_EMAIL = `qa-signup-atomic-${randomUUID()}@lightning.test`;
 
 const OWNER_ACTOR = { orgId: ORG, id: OWNER, role: "owner" };
 
@@ -53,6 +55,25 @@ async function setup() {
   await q`INSERT INTO organization_memberships(org_id, user_id, role) VALUES(${ORG}, ${OWNER}, 'owner')`;
 }
 await setup();
+
+/* ============== 0) atomic public application: account + application ============== */
+{
+  const applied = await applyContractorCore({
+    name: "Atomic Applicant", email: ATOMIC_EMAIL, password: "correct horse battery staple",
+    tools: ["jump_start"], serviceArea: "New Haven, CT", phone: "203-555-0199",
+    experienceYears: 2, vehicleDescription: "2021 Toyota Tacoma, black",
+    ageConfirmed: true, workAuthorized: true, independentContractorAgreed: true, backgroundCheckConsented: true,
+  }, ORG);
+  check("atomic apply: account and submitted application are created together",
+    applied.ok === true && applied.data.status === "submitted" && applied.data.userId,
+    JSON.stringify(applied));
+  const rows = await q`SELECT u.email, m.role, a.status FROM users u
+    JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${ORG}
+    JOIN contractor_applications a ON a.user_id=u.id AND a.org_id=${ORG}
+    WHERE LOWER(u.email)=${ATOMIC_EMAIL}`;
+  check("atomic apply: persisted user, contractor membership, and application",
+    rows.length === 1 && rows[0].role === "contractor" && rows[0].status === "submitted", JSON.stringify(rows));
+}
 
 /* ==================== 1) signup: user + membership + hashing ==================== */
 let contractorId;
