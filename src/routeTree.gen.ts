@@ -9,107 +9,64 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as TermsRouteImport } from './routes/terms'
-import { Route as SupportRouteImport } from './routes/support'
-import { Route as StripeConnectCompleteRouteImport } from './routes/stripe-connect-complete'
-import { Route as PrivacyRouteImport } from './routes/privacy'
-import { Route as OwnerRouteImport } from './routes/owner'
-import { Route as OpsRouteImport } from './routes/ops'
-import { Route as LogoutRouteImport } from './routes/logout'
-import { Route as LoginRouteImport } from './routes/login'
-import { Route as DriverRouteImport } from './routes/driver'
-import { Route as DeletedRouteImport } from './routes/deleted'
-import { Route as R403RouteImport } from './routes/403'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as OwnerIndexRouteImport } from './routes/owner/index'
-import { Route as OpsIndexRouteImport } from './routes/ops/index'
+import { Route as R403RouteImport } from './routes/403'
+import { Route as ApplyRouteImport } from './routes/apply'
+import { Route as DeletedRouteImport } from './routes/deleted'
+import { Route as DriverRouteImport } from './routes/driver'
+import { Route as LoginRouteImport } from './routes/login'
+import { Route as LogoutRouteImport } from './routes/logout'
+import { Route as OpsRouteImport } from './routes/ops'
+import { Route as OwnerRouteImport } from './routes/owner'
+import { Route as PrivacyRouteImport } from './routes/privacy'
+import { Route as StripeConnectCompleteRouteImport } from './routes/stripe-connect-complete'
+import { Route as SupportRouteImport } from './routes/support'
+import { Route as TermsRouteImport } from './routes/terms'
 import { Route as DriverIndexRouteImport } from './routes/driver/index'
-import { Route as OwnerSettingsRouteImport } from './routes/owner/settings'
-import { Route as OwnerRatingsRouteImport } from './routes/owner/ratings'
-import { Route as OwnerQueueRouteImport } from './routes/owner/queue'
-import { Route as OwnerPerformanceRouteImport } from './routes/owner/performance'
-import { Route as OwnerNotificationsRouteImport } from './routes/owner/notifications'
-import { Route as OwnerMoneyRouteImport } from './routes/owner/money'
-import { Route as OwnerMetricsRouteImport } from './routes/owner/metrics'
-import { Route as OwnerHistoryRouteImport } from './routes/owner/history'
-import { Route as OwnerDriversRouteImport } from './routes/owner/drivers'
-import { Route as OwnerContractorsRouteImport } from './routes/owner/contractors'
-import { Route as OwnerClaimsRouteImport } from './routes/owner/claims'
-import { Route as OwnerBatteriesRouteImport } from './routes/owner/batteries'
-import { Route as OwnerApplicationsRouteImport } from './routes/owner/applications'
-import { Route as OwnerAiDispatcherRouteImport } from './routes/owner/ai-dispatcher'
-import { Route as OwnerActiveRouteImport } from './routes/owner/active'
-import { Route as OpsHistoryRouteImport } from './routes/ops/history'
-import { Route as OpsContractorsRouteImport } from './routes/ops/contractors'
-import { Route as OpsActiveRouteImport } from './routes/ops/active'
-import { Route as DriverServicesRouteImport } from './routes/driver/services'
-import { Route as DriverScheduleRouteImport } from './routes/driver/schedule'
-import { Route as DriverProfileRouteImport } from './routes/driver/profile'
-import { Route as DriverPayoutRouteImport } from './routes/driver/payout'
-import { Route as DriverOffersRouteImport } from './routes/driver/offers'
-import { Route as DriverMetricsRouteImport } from './routes/driver/metrics'
-import { Route as DriverHelpRouteImport } from './routes/driver/help'
-import { Route as DriverEarningsRouteImport } from './routes/driver/earnings'
-import { Route as DriverDocumentsRouteImport } from './routes/driver/documents'
-import { Route as DriverActiveRouteImport } from './routes/driver/active'
 import { Route as DriverAcademyRouteImport } from './routes/driver/academy'
-import { Route as OwnerZonesIndexRouteImport } from './routes/owner/zones.index'
-import { Route as OwnerMetricsIndexRouteImport } from './routes/owner/metrics.index'
-import { Route as OwnerContractorsIndexRouteImport } from './routes/owner/contractors.index'
+import { Route as DriverActiveRouteImport } from './routes/driver/active'
+import { Route as DriverDocumentsRouteImport } from './routes/driver/documents'
+import { Route as DriverEarningsRouteImport } from './routes/driver/earnings'
+import { Route as DriverHelpRouteImport } from './routes/driver/help'
+import { Route as DriverMetricsRouteImport } from './routes/driver/metrics'
+import { Route as DriverOffersRouteImport } from './routes/driver/offers'
+import { Route as DriverOnboardingRouteImport } from './routes/driver/onboarding'
+import { Route as DriverPayoutRouteImport } from './routes/driver/payout'
+import { Route as DriverProfileRouteImport } from './routes/driver/profile'
+import { Route as DriverScheduleRouteImport } from './routes/driver/schedule'
+import { Route as DriverServicesRouteImport } from './routes/driver/services'
+import { Route as OpsIndexRouteImport } from './routes/ops/index'
+import { Route as OpsActiveRouteImport } from './routes/ops/active'
+import { Route as OpsContractorsRouteImport } from './routes/ops/contractors'
+import { Route as OpsHistoryRouteImport } from './routes/ops/history'
+import { Route as OwnerIndexRouteImport } from './routes/owner/index'
+import { Route as OwnerActiveRouteImport } from './routes/owner/active'
+import { Route as OwnerAiDispatcherRouteImport } from './routes/owner/ai-dispatcher'
+import { Route as OwnerApplicationsRouteImport } from './routes/owner/applications'
+import { Route as OwnerBatteriesRouteImport } from './routes/owner/batteries'
+import { Route as OwnerClaimsRouteImport } from './routes/owner/claims'
+import { Route as OwnerContractorsRouteImport } from './routes/owner/contractors'
+import { Route as OwnerDriversRouteImport } from './routes/owner/drivers'
+import { Route as OwnerHistoryRouteImport } from './routes/owner/history'
+import { Route as OwnerMetricsRouteImport } from './routes/owner/metrics'
+import { Route as OwnerMoneyRouteImport } from './routes/owner/money'
+import { Route as OwnerNotificationsRouteImport } from './routes/owner/notifications'
+import { Route as OwnerPerformanceRouteImport } from './routes/owner/performance'
+import { Route as OwnerQueueRouteImport } from './routes/owner/queue'
+import { Route as OwnerRatingsRouteImport } from './routes/owner/ratings'
+import { Route as OwnerSettingsRouteImport } from './routes/owner/settings'
 import { Route as DriverAcademyIndexRouteImport } from './routes/driver/academy.index'
-import { Route as OwnerMetricsIdRouteImport } from './routes/owner/metrics.$id'
-import { Route as OwnerContractorsIdRouteImport } from './routes/owner/contractors.$id'
-import { Route as DriverClaimsIdRouteImport } from './routes/driver/claims.$id'
 import { Route as DriverAcademyIdRouteImport } from './routes/driver/academy.$id'
+import { Route as DriverClaimsIdRouteImport } from './routes/driver/claims.$id'
+import { Route as OwnerContractorsIndexRouteImport } from './routes/owner/contractors.index'
+import { Route as OwnerContractorsIdRouteImport } from './routes/owner/contractors.$id'
+import { Route as OwnerMetricsIndexRouteImport } from './routes/owner/metrics.index'
+import { Route as OwnerMetricsIdRouteImport } from './routes/owner/metrics.$id'
+import { Route as OwnerZonesIndexRouteImport } from './routes/owner/zones.index'
 
-const TermsRoute = TermsRouteImport.update({
-  id: '/terms',
-  path: '/terms',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const SupportRoute = SupportRouteImport.update({
-  id: '/support',
-  path: '/support',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const StripeConnectCompleteRoute = StripeConnectCompleteRouteImport.update({
-  id: '/stripe-connect-complete',
-  path: '/stripe-connect-complete',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const PrivacyRoute = PrivacyRouteImport.update({
-  id: '/privacy',
-  path: '/privacy',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const OwnerRoute = OwnerRouteImport.update({
-  id: '/owner',
-  path: '/owner',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const OpsRoute = OpsRouteImport.update({
-  id: '/ops',
-  path: '/ops',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const LogoutRoute = LogoutRouteImport.update({
-  id: '/logout',
-  path: '/logout',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const LoginRoute = LoginRouteImport.update({
-  id: '/login',
-  path: '/login',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const DriverRoute = DriverRouteImport.update({
-  id: '/driver',
-  path: '/driver',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const DeletedRoute = DeletedRouteImport.update({
-  id: '/deleted',
-  path: '/deleted',
+const IndexRoute = IndexRouteImport.update({
+  id: '/',
+  path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const R403Route = R403RouteImport.update({
@@ -117,164 +74,64 @@ const R403Route = R403RouteImport.update({
   path: '/403',
   getParentRoute: () => rootRouteImport,
 } as any)
-const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
+const ApplyRoute = ApplyRouteImport.update({
+  id: '/apply',
+  path: '/apply',
   getParentRoute: () => rootRouteImport,
 } as any)
-const OwnerIndexRoute = OwnerIndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => OwnerRoute,
+const DeletedRoute = DeletedRouteImport.update({
+  id: '/deleted',
+  path: '/deleted',
+  getParentRoute: () => rootRouteImport,
 } as any)
-const OpsIndexRoute = OpsIndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => OpsRoute,
+const DriverRoute = DriverRouteImport.update({
+  id: '/driver',
+  path: '/driver',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LogoutRoute = LogoutRouteImport.update({
+  id: '/logout',
+  path: '/logout',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const OpsRoute = OpsRouteImport.update({
+  id: '/ops',
+  path: '/ops',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const OwnerRoute = OwnerRouteImport.update({
+  id: '/owner',
+  path: '/owner',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PrivacyRoute = PrivacyRouteImport.update({
+  id: '/privacy',
+  path: '/privacy',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const StripeConnectCompleteRoute = StripeConnectCompleteRouteImport.update({
+  id: '/stripe-connect-complete',
+  path: '/stripe-connect-complete',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SupportRoute = SupportRouteImport.update({
+  id: '/support',
+  path: '/support',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TermsRoute = TermsRouteImport.update({
+  id: '/terms',
+  path: '/terms',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const DriverIndexRoute = DriverIndexRouteImport.update({
   id: '/',
   path: '/',
-  getParentRoute: () => DriverRoute,
-} as any)
-const OwnerSettingsRoute = OwnerSettingsRouteImport.update({
-  id: '/settings',
-  path: '/settings',
-  getParentRoute: () => OwnerRoute,
-} as any)
-const OwnerRatingsRoute = OwnerRatingsRouteImport.update({
-  id: '/ratings',
-  path: '/ratings',
-  getParentRoute: () => OwnerRoute,
-} as any)
-const OwnerQueueRoute = OwnerQueueRouteImport.update({
-  id: '/queue',
-  path: '/queue',
-  getParentRoute: () => OwnerRoute,
-} as any)
-const OwnerPerformanceRoute = OwnerPerformanceRouteImport.update({
-  id: '/performance',
-  path: '/performance',
-  getParentRoute: () => OwnerRoute,
-} as any)
-const OwnerNotificationsRoute = OwnerNotificationsRouteImport.update({
-  id: '/notifications',
-  path: '/notifications',
-  getParentRoute: () => OwnerRoute,
-} as any)
-const OwnerMoneyRoute = OwnerMoneyRouteImport.update({
-  id: '/money',
-  path: '/money',
-  getParentRoute: () => OwnerRoute,
-} as any)
-const OwnerMetricsRoute = OwnerMetricsRouteImport.update({
-  id: '/metrics',
-  path: '/metrics',
-  getParentRoute: () => OwnerRoute,
-} as any)
-const OwnerHistoryRoute = OwnerHistoryRouteImport.update({
-  id: '/history',
-  path: '/history',
-  getParentRoute: () => OwnerRoute,
-} as any)
-const OwnerDriversRoute = OwnerDriversRouteImport.update({
-  id: '/drivers',
-  path: '/drivers',
-  getParentRoute: () => OwnerRoute,
-} as any)
-const OwnerContractorsRoute = OwnerContractorsRouteImport.update({
-  id: '/contractors',
-  path: '/contractors',
-  getParentRoute: () => OwnerRoute,
-} as any)
-const OwnerClaimsRoute = OwnerClaimsRouteImport.update({
-  id: '/claims',
-  path: '/claims',
-  getParentRoute: () => OwnerRoute,
-} as any)
-const OwnerBatteriesRoute = OwnerBatteriesRouteImport.update({
-  id: '/batteries',
-  path: '/batteries',
-  getParentRoute: () => OwnerRoute,
-} as any)
-const OwnerApplicationsRoute = OwnerApplicationsRouteImport.update({
-  id: '/applications',
-  path: '/applications',
-  getParentRoute: () => OwnerRoute,
-} as any)
-const OwnerAiDispatcherRoute = OwnerAiDispatcherRouteImport.update({
-  id: '/ai-dispatcher',
-  path: '/ai-dispatcher',
-  getParentRoute: () => OwnerRoute,
-} as any)
-const OwnerActiveRoute = OwnerActiveRouteImport.update({
-  id: '/active',
-  path: '/active',
-  getParentRoute: () => OwnerRoute,
-} as any)
-const OpsHistoryRoute = OpsHistoryRouteImport.update({
-  id: '/history',
-  path: '/history',
-  getParentRoute: () => OpsRoute,
-} as any)
-const OpsContractorsRoute = OpsContractorsRouteImport.update({
-  id: '/contractors',
-  path: '/contractors',
-  getParentRoute: () => OpsRoute,
-} as any)
-const OpsActiveRoute = OpsActiveRouteImport.update({
-  id: '/active',
-  path: '/active',
-  getParentRoute: () => OpsRoute,
-} as any)
-const DriverServicesRoute = DriverServicesRouteImport.update({
-  id: '/services',
-  path: '/services',
-  getParentRoute: () => DriverRoute,
-} as any)
-const DriverScheduleRoute = DriverScheduleRouteImport.update({
-  id: '/schedule',
-  path: '/schedule',
-  getParentRoute: () => DriverRoute,
-} as any)
-const DriverProfileRoute = DriverProfileRouteImport.update({
-  id: '/profile',
-  path: '/profile',
-  getParentRoute: () => DriverRoute,
-} as any)
-const DriverPayoutRoute = DriverPayoutRouteImport.update({
-  id: '/payout',
-  path: '/payout',
-  getParentRoute: () => DriverRoute,
-} as any)
-const DriverOffersRoute = DriverOffersRouteImport.update({
-  id: '/offers',
-  path: '/offers',
-  getParentRoute: () => DriverRoute,
-} as any)
-const DriverMetricsRoute = DriverMetricsRouteImport.update({
-  id: '/metrics',
-  path: '/metrics',
-  getParentRoute: () => DriverRoute,
-} as any)
-const DriverHelpRoute = DriverHelpRouteImport.update({
-  id: '/help',
-  path: '/help',
-  getParentRoute: () => DriverRoute,
-} as any)
-const DriverEarningsRoute = DriverEarningsRouteImport.update({
-  id: '/earnings',
-  path: '/earnings',
-  getParentRoute: () => DriverRoute,
-} as any)
-const DriverDocumentsRoute = DriverDocumentsRouteImport.update({
-  id: '/documents',
-  path: '/documents',
-  getParentRoute: () => DriverRoute,
-} as any)
-const DriverActiveRoute = DriverActiveRouteImport.update({
-  id: '/active',
-  path: '/active',
   getParentRoute: () => DriverRoute,
 } as any)
 const DriverAcademyRoute = DriverAcademyRouteImport.update({
@@ -282,50 +139,206 @@ const DriverAcademyRoute = DriverAcademyRouteImport.update({
   path: '/academy',
   getParentRoute: () => DriverRoute,
 } as any)
-const OwnerZonesIndexRoute = OwnerZonesIndexRouteImport.update({
-  id: '/zones/',
-  path: '/zones/',
+const DriverActiveRoute = DriverActiveRouteImport.update({
+  id: '/active',
+  path: '/active',
+  getParentRoute: () => DriverRoute,
+} as any)
+const DriverDocumentsRoute = DriverDocumentsRouteImport.update({
+  id: '/documents',
+  path: '/documents',
+  getParentRoute: () => DriverRoute,
+} as any)
+const DriverEarningsRoute = DriverEarningsRouteImport.update({
+  id: '/earnings',
+  path: '/earnings',
+  getParentRoute: () => DriverRoute,
+} as any)
+const DriverHelpRoute = DriverHelpRouteImport.update({
+  id: '/help',
+  path: '/help',
+  getParentRoute: () => DriverRoute,
+} as any)
+const DriverMetricsRoute = DriverMetricsRouteImport.update({
+  id: '/metrics',
+  path: '/metrics',
+  getParentRoute: () => DriverRoute,
+} as any)
+const DriverOffersRoute = DriverOffersRouteImport.update({
+  id: '/offers',
+  path: '/offers',
+  getParentRoute: () => DriverRoute,
+} as any)
+const DriverOnboardingRoute = DriverOnboardingRouteImport.update({
+  id: '/onboarding',
+  path: '/onboarding',
+  getParentRoute: () => DriverRoute,
+} as any)
+const DriverPayoutRoute = DriverPayoutRouteImport.update({
+  id: '/payout',
+  path: '/payout',
+  getParentRoute: () => DriverRoute,
+} as any)
+const DriverProfileRoute = DriverProfileRouteImport.update({
+  id: '/profile',
+  path: '/profile',
+  getParentRoute: () => DriverRoute,
+} as any)
+const DriverScheduleRoute = DriverScheduleRouteImport.update({
+  id: '/schedule',
+  path: '/schedule',
+  getParentRoute: () => DriverRoute,
+} as any)
+const DriverServicesRoute = DriverServicesRouteImport.update({
+  id: '/services',
+  path: '/services',
+  getParentRoute: () => DriverRoute,
+} as any)
+const OpsIndexRoute = OpsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => OpsRoute,
+} as any)
+const OpsActiveRoute = OpsActiveRouteImport.update({
+  id: '/active',
+  path: '/active',
+  getParentRoute: () => OpsRoute,
+} as any)
+const OpsContractorsRoute = OpsContractorsRouteImport.update({
+  id: '/contractors',
+  path: '/contractors',
+  getParentRoute: () => OpsRoute,
+} as any)
+const OpsHistoryRoute = OpsHistoryRouteImport.update({
+  id: '/history',
+  path: '/history',
+  getParentRoute: () => OpsRoute,
+} as any)
+const OwnerIndexRoute = OwnerIndexRouteImport.update({
+  id: '/',
+  path: '/',
   getParentRoute: () => OwnerRoute,
 } as any)
-const OwnerMetricsIndexRoute = OwnerMetricsIndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => OwnerMetricsRoute,
+const OwnerActiveRoute = OwnerActiveRouteImport.update({
+  id: '/active',
+  path: '/active',
+  getParentRoute: () => OwnerRoute,
 } as any)
-const OwnerContractorsIndexRoute = OwnerContractorsIndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => OwnerContractorsRoute,
+const OwnerAiDispatcherRoute = OwnerAiDispatcherRouteImport.update({
+  id: '/ai-dispatcher',
+  path: '/ai-dispatcher',
+  getParentRoute: () => OwnerRoute,
+} as any)
+const OwnerApplicationsRoute = OwnerApplicationsRouteImport.update({
+  id: '/applications',
+  path: '/applications',
+  getParentRoute: () => OwnerRoute,
+} as any)
+const OwnerBatteriesRoute = OwnerBatteriesRouteImport.update({
+  id: '/batteries',
+  path: '/batteries',
+  getParentRoute: () => OwnerRoute,
+} as any)
+const OwnerClaimsRoute = OwnerClaimsRouteImport.update({
+  id: '/claims',
+  path: '/claims',
+  getParentRoute: () => OwnerRoute,
+} as any)
+const OwnerContractorsRoute = OwnerContractorsRouteImport.update({
+  id: '/contractors',
+  path: '/contractors',
+  getParentRoute: () => OwnerRoute,
+} as any)
+const OwnerDriversRoute = OwnerDriversRouteImport.update({
+  id: '/drivers',
+  path: '/drivers',
+  getParentRoute: () => OwnerRoute,
+} as any)
+const OwnerHistoryRoute = OwnerHistoryRouteImport.update({
+  id: '/history',
+  path: '/history',
+  getParentRoute: () => OwnerRoute,
+} as any)
+const OwnerMetricsRoute = OwnerMetricsRouteImport.update({
+  id: '/metrics',
+  path: '/metrics',
+  getParentRoute: () => OwnerRoute,
+} as any)
+const OwnerMoneyRoute = OwnerMoneyRouteImport.update({
+  id: '/money',
+  path: '/money',
+  getParentRoute: () => OwnerRoute,
+} as any)
+const OwnerNotificationsRoute = OwnerNotificationsRouteImport.update({
+  id: '/notifications',
+  path: '/notifications',
+  getParentRoute: () => OwnerRoute,
+} as any)
+const OwnerPerformanceRoute = OwnerPerformanceRouteImport.update({
+  id: '/performance',
+  path: '/performance',
+  getParentRoute: () => OwnerRoute,
+} as any)
+const OwnerQueueRoute = OwnerQueueRouteImport.update({
+  id: '/queue',
+  path: '/queue',
+  getParentRoute: () => OwnerRoute,
+} as any)
+const OwnerRatingsRoute = OwnerRatingsRouteImport.update({
+  id: '/ratings',
+  path: '/ratings',
+  getParentRoute: () => OwnerRoute,
+} as any)
+const OwnerSettingsRoute = OwnerSettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => OwnerRoute,
 } as any)
 const DriverAcademyIndexRoute = DriverAcademyIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => DriverAcademyRoute,
 } as any)
-const OwnerMetricsIdRoute = OwnerMetricsIdRouteImport.update({
+const DriverAcademyIdRoute = DriverAcademyIdRouteImport.update({
   id: '/$id',
   path: '/$id',
-  getParentRoute: () => OwnerMetricsRoute,
-} as any)
-const OwnerContractorsIdRoute = OwnerContractorsIdRouteImport.update({
-  id: '/$id',
-  path: '/$id',
-  getParentRoute: () => OwnerContractorsRoute,
+  getParentRoute: () => DriverAcademyRoute,
 } as any)
 const DriverClaimsIdRoute = DriverClaimsIdRouteImport.update({
   id: '/claims/$id',
   path: '/claims/$id',
   getParentRoute: () => DriverRoute,
 } as any)
-const DriverAcademyIdRoute = DriverAcademyIdRouteImport.update({
+const OwnerContractorsIndexRoute = OwnerContractorsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => OwnerContractorsRoute,
+} as any)
+const OwnerContractorsIdRoute = OwnerContractorsIdRouteImport.update({
   id: '/$id',
   path: '/$id',
-  getParentRoute: () => DriverAcademyRoute,
+  getParentRoute: () => OwnerContractorsRoute,
+} as any)
+const OwnerMetricsIndexRoute = OwnerMetricsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => OwnerMetricsRoute,
+} as any)
+const OwnerMetricsIdRoute = OwnerMetricsIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => OwnerMetricsRoute,
+} as any)
+const OwnerZonesIndexRoute = OwnerZonesIndexRouteImport.update({
+  id: '/zones/',
+  path: '/zones/',
+  getParentRoute: () => OwnerRoute,
 } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/403': typeof R403Route
+  '/apply': typeof ApplyRoute
   '/deleted': typeof DeletedRoute
   '/driver': typeof DriverRouteWithChildren
   '/login': typeof LoginRoute
@@ -343,6 +356,7 @@ export interface FileRoutesByFullPath {
   '/driver/help': typeof DriverHelpRoute
   '/driver/metrics': typeof DriverMetricsRoute
   '/driver/offers': typeof DriverOffersRoute
+  '/driver/onboarding': typeof DriverOnboardingRoute
   '/driver/payout': typeof DriverPayoutRoute
   '/driver/profile': typeof DriverProfileRoute
   '/driver/schedule': typeof DriverScheduleRoute
@@ -380,6 +394,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/403': typeof R403Route
+  '/apply': typeof ApplyRoute
   '/deleted': typeof DeletedRoute
   '/login': typeof LoginRoute
   '/logout': typeof LogoutRoute
@@ -393,6 +408,7 @@ export interface FileRoutesByTo {
   '/driver/help': typeof DriverHelpRoute
   '/driver/metrics': typeof DriverMetricsRoute
   '/driver/offers': typeof DriverOffersRoute
+  '/driver/onboarding': typeof DriverOnboardingRoute
   '/driver/payout': typeof DriverPayoutRoute
   '/driver/profile': typeof DriverProfileRoute
   '/driver/schedule': typeof DriverScheduleRoute
@@ -429,6 +445,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/403': typeof R403Route
+  '/apply': typeof ApplyRoute
   '/deleted': typeof DeletedRoute
   '/driver': typeof DriverRouteWithChildren
   '/login': typeof LoginRoute
@@ -446,6 +463,7 @@ export interface FileRoutesById {
   '/driver/help': typeof DriverHelpRoute
   '/driver/metrics': typeof DriverMetricsRoute
   '/driver/offers': typeof DriverOffersRoute
+  '/driver/onboarding': typeof DriverOnboardingRoute
   '/driver/payout': typeof DriverPayoutRoute
   '/driver/profile': typeof DriverProfileRoute
   '/driver/schedule': typeof DriverScheduleRoute
@@ -485,6 +503,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/403'
+    | '/apply'
     | '/deleted'
     | '/driver'
     | '/login'
@@ -502,6 +521,7 @@ export interface FileRouteTypes {
     | '/driver/help'
     | '/driver/metrics'
     | '/driver/offers'
+    | '/driver/onboarding'
     | '/driver/payout'
     | '/driver/profile'
     | '/driver/schedule'
@@ -539,6 +559,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/403'
+    | '/apply'
     | '/deleted'
     | '/login'
     | '/logout'
@@ -552,6 +573,7 @@ export interface FileRouteTypes {
     | '/driver/help'
     | '/driver/metrics'
     | '/driver/offers'
+    | '/driver/onboarding'
     | '/driver/payout'
     | '/driver/profile'
     | '/driver/schedule'
@@ -587,6 +609,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/403'
+    | '/apply'
     | '/deleted'
     | '/driver'
     | '/login'
@@ -604,6 +627,7 @@ export interface FileRouteTypes {
     | '/driver/help'
     | '/driver/metrics'
     | '/driver/offers'
+    | '/driver/onboarding'
     | '/driver/payout'
     | '/driver/profile'
     | '/driver/schedule'
@@ -642,6 +666,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   R403Route: typeof R403Route
+  ApplyRoute: typeof ApplyRoute
   DeletedRoute: typeof DeletedRoute
   DriverRoute: typeof DriverRouteWithChildren
   LoginRoute: typeof LoginRoute
@@ -656,74 +681,11 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/terms': {
-      id: '/terms'
-      path: '/terms'
-      fullPath: '/terms'
-      preLoaderRoute: typeof TermsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/support': {
-      id: '/support'
-      path: '/support'
-      fullPath: '/support'
-      preLoaderRoute: typeof SupportRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/stripe-connect-complete': {
-      id: '/stripe-connect-complete'
-      path: '/stripe-connect-complete'
-      fullPath: '/stripe-connect-complete'
-      preLoaderRoute: typeof StripeConnectCompleteRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/privacy': {
-      id: '/privacy'
-      path: '/privacy'
-      fullPath: '/privacy'
-      preLoaderRoute: typeof PrivacyRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/owner': {
-      id: '/owner'
-      path: '/owner'
-      fullPath: '/owner'
-      preLoaderRoute: typeof OwnerRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/ops': {
-      id: '/ops'
-      path: '/ops'
-      fullPath: '/ops'
-      preLoaderRoute: typeof OpsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/logout': {
-      id: '/logout'
-      path: '/logout'
-      fullPath: '/logout'
-      preLoaderRoute: typeof LogoutRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/login': {
-      id: '/login'
-      path: '/login'
-      fullPath: '/login'
-      preLoaderRoute: typeof LoginRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/driver': {
-      id: '/driver'
-      path: '/driver'
-      fullPath: '/driver'
-      preLoaderRoute: typeof DriverRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/deleted': {
-      id: '/deleted'
-      path: '/deleted'
-      fullPath: '/deleted'
-      preLoaderRoute: typeof DeletedRouteImport
+    '/': {
+      id: '/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/403': {
@@ -733,228 +695,88 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof R403RouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/': {
-      id: '/'
-      path: '/'
-      fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
+    '/apply': {
+      id: '/apply'
+      path: '/apply'
+      fullPath: '/apply'
+      preLoaderRoute: typeof ApplyRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/owner/': {
-      id: '/owner/'
-      path: '/'
-      fullPath: '/owner/'
-      preLoaderRoute: typeof OwnerIndexRouteImport
-      parentRoute: typeof OwnerRoute
+    '/deleted': {
+      id: '/deleted'
+      path: '/deleted'
+      fullPath: '/deleted'
+      preLoaderRoute: typeof DeletedRouteImport
+      parentRoute: typeof rootRouteImport
     }
-    '/ops/': {
-      id: '/ops/'
-      path: '/'
-      fullPath: '/ops/'
-      preLoaderRoute: typeof OpsIndexRouteImport
-      parentRoute: typeof OpsRoute
+    '/driver': {
+      id: '/driver'
+      path: '/driver'
+      fullPath: '/driver'
+      preLoaderRoute: typeof DriverRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/logout': {
+      id: '/logout'
+      path: '/logout'
+      fullPath: '/logout'
+      preLoaderRoute: typeof LogoutRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/ops': {
+      id: '/ops'
+      path: '/ops'
+      fullPath: '/ops'
+      preLoaderRoute: typeof OpsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/owner': {
+      id: '/owner'
+      path: '/owner'
+      fullPath: '/owner'
+      preLoaderRoute: typeof OwnerRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/privacy': {
+      id: '/privacy'
+      path: '/privacy'
+      fullPath: '/privacy'
+      preLoaderRoute: typeof PrivacyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/stripe-connect-complete': {
+      id: '/stripe-connect-complete'
+      path: '/stripe-connect-complete'
+      fullPath: '/stripe-connect-complete'
+      preLoaderRoute: typeof StripeConnectCompleteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/support': {
+      id: '/support'
+      path: '/support'
+      fullPath: '/support'
+      preLoaderRoute: typeof SupportRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/terms': {
+      id: '/terms'
+      path: '/terms'
+      fullPath: '/terms'
+      preLoaderRoute: typeof TermsRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/driver/': {
       id: '/driver/'
       path: '/'
       fullPath: '/driver/'
       preLoaderRoute: typeof DriverIndexRouteImport
-      parentRoute: typeof DriverRoute
-    }
-    '/owner/settings': {
-      id: '/owner/settings'
-      path: '/settings'
-      fullPath: '/owner/settings'
-      preLoaderRoute: typeof OwnerSettingsRouteImport
-      parentRoute: typeof OwnerRoute
-    }
-    '/owner/ratings': {
-      id: '/owner/ratings'
-      path: '/ratings'
-      fullPath: '/owner/ratings'
-      preLoaderRoute: typeof OwnerRatingsRouteImport
-      parentRoute: typeof OwnerRoute
-    }
-    '/owner/queue': {
-      id: '/owner/queue'
-      path: '/queue'
-      fullPath: '/owner/queue'
-      preLoaderRoute: typeof OwnerQueueRouteImport
-      parentRoute: typeof OwnerRoute
-    }
-    '/owner/performance': {
-      id: '/owner/performance'
-      path: '/performance'
-      fullPath: '/owner/performance'
-      preLoaderRoute: typeof OwnerPerformanceRouteImport
-      parentRoute: typeof OwnerRoute
-    }
-    '/owner/notifications': {
-      id: '/owner/notifications'
-      path: '/notifications'
-      fullPath: '/owner/notifications'
-      preLoaderRoute: typeof OwnerNotificationsRouteImport
-      parentRoute: typeof OwnerRoute
-    }
-    '/owner/money': {
-      id: '/owner/money'
-      path: '/money'
-      fullPath: '/owner/money'
-      preLoaderRoute: typeof OwnerMoneyRouteImport
-      parentRoute: typeof OwnerRoute
-    }
-    '/owner/metrics': {
-      id: '/owner/metrics'
-      path: '/metrics'
-      fullPath: '/owner/metrics'
-      preLoaderRoute: typeof OwnerMetricsRouteImport
-      parentRoute: typeof OwnerRoute
-    }
-    '/owner/history': {
-      id: '/owner/history'
-      path: '/history'
-      fullPath: '/owner/history'
-      preLoaderRoute: typeof OwnerHistoryRouteImport
-      parentRoute: typeof OwnerRoute
-    }
-    '/owner/drivers': {
-      id: '/owner/drivers'
-      path: '/drivers'
-      fullPath: '/owner/drivers'
-      preLoaderRoute: typeof OwnerDriversRouteImport
-      parentRoute: typeof OwnerRoute
-    }
-    '/owner/contractors': {
-      id: '/owner/contractors'
-      path: '/contractors'
-      fullPath: '/owner/contractors'
-      preLoaderRoute: typeof OwnerContractorsRouteImport
-      parentRoute: typeof OwnerRoute
-    }
-    '/owner/claims': {
-      id: '/owner/claims'
-      path: '/claims'
-      fullPath: '/owner/claims'
-      preLoaderRoute: typeof OwnerClaimsRouteImport
-      parentRoute: typeof OwnerRoute
-    }
-    '/owner/batteries': {
-      id: '/owner/batteries'
-      path: '/batteries'
-      fullPath: '/owner/batteries'
-      preLoaderRoute: typeof OwnerBatteriesRouteImport
-      parentRoute: typeof OwnerRoute
-    }
-    '/owner/applications': {
-      id: '/owner/applications'
-      path: '/applications'
-      fullPath: '/owner/applications'
-      preLoaderRoute: typeof OwnerApplicationsRouteImport
-      parentRoute: typeof OwnerRoute
-    }
-    '/owner/ai-dispatcher': {
-      id: '/owner/ai-dispatcher'
-      path: '/ai-dispatcher'
-      fullPath: '/owner/ai-dispatcher'
-      preLoaderRoute: typeof OwnerAiDispatcherRouteImport
-      parentRoute: typeof OwnerRoute
-    }
-    '/owner/active': {
-      id: '/owner/active'
-      path: '/active'
-      fullPath: '/owner/active'
-      preLoaderRoute: typeof OwnerActiveRouteImport
-      parentRoute: typeof OwnerRoute
-    }
-    '/ops/history': {
-      id: '/ops/history'
-      path: '/history'
-      fullPath: '/ops/history'
-      preLoaderRoute: typeof OpsHistoryRouteImport
-      parentRoute: typeof OpsRoute
-    }
-    '/ops/contractors': {
-      id: '/ops/contractors'
-      path: '/contractors'
-      fullPath: '/ops/contractors'
-      preLoaderRoute: typeof OpsContractorsRouteImport
-      parentRoute: typeof OpsRoute
-    }
-    '/ops/active': {
-      id: '/ops/active'
-      path: '/active'
-      fullPath: '/ops/active'
-      preLoaderRoute: typeof OpsActiveRouteImport
-      parentRoute: typeof OpsRoute
-    }
-    '/driver/services': {
-      id: '/driver/services'
-      path: '/services'
-      fullPath: '/driver/services'
-      preLoaderRoute: typeof DriverServicesRouteImport
-      parentRoute: typeof DriverRoute
-    }
-    '/driver/schedule': {
-      id: '/driver/schedule'
-      path: '/schedule'
-      fullPath: '/driver/schedule'
-      preLoaderRoute: typeof DriverScheduleRouteImport
-      parentRoute: typeof DriverRoute
-    }
-    '/driver/profile': {
-      id: '/driver/profile'
-      path: '/profile'
-      fullPath: '/driver/profile'
-      preLoaderRoute: typeof DriverProfileRouteImport
-      parentRoute: typeof DriverRoute
-    }
-    '/driver/payout': {
-      id: '/driver/payout'
-      path: '/payout'
-      fullPath: '/driver/payout'
-      preLoaderRoute: typeof DriverPayoutRouteImport
-      parentRoute: typeof DriverRoute
-    }
-    '/driver/offers': {
-      id: '/driver/offers'
-      path: '/offers'
-      fullPath: '/driver/offers'
-      preLoaderRoute: typeof DriverOffersRouteImport
-      parentRoute: typeof DriverRoute
-    }
-    '/driver/metrics': {
-      id: '/driver/metrics'
-      path: '/metrics'
-      fullPath: '/driver/metrics'
-      preLoaderRoute: typeof DriverMetricsRouteImport
-      parentRoute: typeof DriverRoute
-    }
-    '/driver/help': {
-      id: '/driver/help'
-      path: '/help'
-      fullPath: '/driver/help'
-      preLoaderRoute: typeof DriverHelpRouteImport
-      parentRoute: typeof DriverRoute
-    }
-    '/driver/earnings': {
-      id: '/driver/earnings'
-      path: '/earnings'
-      fullPath: '/driver/earnings'
-      preLoaderRoute: typeof DriverEarningsRouteImport
-      parentRoute: typeof DriverRoute
-    }
-    '/driver/documents': {
-      id: '/driver/documents'
-      path: '/documents'
-      fullPath: '/driver/documents'
-      preLoaderRoute: typeof DriverDocumentsRouteImport
-      parentRoute: typeof DriverRoute
-    }
-    '/driver/active': {
-      id: '/driver/active'
-      path: '/active'
-      fullPath: '/driver/active'
-      preLoaderRoute: typeof DriverActiveRouteImport
       parentRoute: typeof DriverRoute
     }
     '/driver/academy': {
@@ -964,26 +786,222 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DriverAcademyRouteImport
       parentRoute: typeof DriverRoute
     }
-    '/owner/zones/': {
-      id: '/owner/zones/'
-      path: '/zones'
-      fullPath: '/owner/zones/'
-      preLoaderRoute: typeof OwnerZonesIndexRouteImport
+    '/driver/active': {
+      id: '/driver/active'
+      path: '/active'
+      fullPath: '/driver/active'
+      preLoaderRoute: typeof DriverActiveRouteImport
+      parentRoute: typeof DriverRoute
+    }
+    '/driver/documents': {
+      id: '/driver/documents'
+      path: '/documents'
+      fullPath: '/driver/documents'
+      preLoaderRoute: typeof DriverDocumentsRouteImport
+      parentRoute: typeof DriverRoute
+    }
+    '/driver/earnings': {
+      id: '/driver/earnings'
+      path: '/earnings'
+      fullPath: '/driver/earnings'
+      preLoaderRoute: typeof DriverEarningsRouteImport
+      parentRoute: typeof DriverRoute
+    }
+    '/driver/help': {
+      id: '/driver/help'
+      path: '/help'
+      fullPath: '/driver/help'
+      preLoaderRoute: typeof DriverHelpRouteImport
+      parentRoute: typeof DriverRoute
+    }
+    '/driver/metrics': {
+      id: '/driver/metrics'
+      path: '/metrics'
+      fullPath: '/driver/metrics'
+      preLoaderRoute: typeof DriverMetricsRouteImport
+      parentRoute: typeof DriverRoute
+    }
+    '/driver/offers': {
+      id: '/driver/offers'
+      path: '/offers'
+      fullPath: '/driver/offers'
+      preLoaderRoute: typeof DriverOffersRouteImport
+      parentRoute: typeof DriverRoute
+    }
+    '/driver/onboarding': {
+      id: '/driver/onboarding'
+      path: '/onboarding'
+      fullPath: '/driver/onboarding'
+      preLoaderRoute: typeof DriverOnboardingRouteImport
+      parentRoute: typeof DriverRoute
+    }
+    '/driver/payout': {
+      id: '/driver/payout'
+      path: '/payout'
+      fullPath: '/driver/payout'
+      preLoaderRoute: typeof DriverPayoutRouteImport
+      parentRoute: typeof DriverRoute
+    }
+    '/driver/profile': {
+      id: '/driver/profile'
+      path: '/profile'
+      fullPath: '/driver/profile'
+      preLoaderRoute: typeof DriverProfileRouteImport
+      parentRoute: typeof DriverRoute
+    }
+    '/driver/schedule': {
+      id: '/driver/schedule'
+      path: '/schedule'
+      fullPath: '/driver/schedule'
+      preLoaderRoute: typeof DriverScheduleRouteImport
+      parentRoute: typeof DriverRoute
+    }
+    '/driver/services': {
+      id: '/driver/services'
+      path: '/services'
+      fullPath: '/driver/services'
+      preLoaderRoute: typeof DriverServicesRouteImport
+      parentRoute: typeof DriverRoute
+    }
+    '/ops/': {
+      id: '/ops/'
+      path: '/'
+      fullPath: '/ops/'
+      preLoaderRoute: typeof OpsIndexRouteImport
+      parentRoute: typeof OpsRoute
+    }
+    '/ops/active': {
+      id: '/ops/active'
+      path: '/active'
+      fullPath: '/ops/active'
+      preLoaderRoute: typeof OpsActiveRouteImport
+      parentRoute: typeof OpsRoute
+    }
+    '/ops/contractors': {
+      id: '/ops/contractors'
+      path: '/contractors'
+      fullPath: '/ops/contractors'
+      preLoaderRoute: typeof OpsContractorsRouteImport
+      parentRoute: typeof OpsRoute
+    }
+    '/ops/history': {
+      id: '/ops/history'
+      path: '/history'
+      fullPath: '/ops/history'
+      preLoaderRoute: typeof OpsHistoryRouteImport
+      parentRoute: typeof OpsRoute
+    }
+    '/owner/': {
+      id: '/owner/'
+      path: '/'
+      fullPath: '/owner/'
+      preLoaderRoute: typeof OwnerIndexRouteImport
       parentRoute: typeof OwnerRoute
     }
-    '/owner/metrics/': {
-      id: '/owner/metrics/'
-      path: '/'
-      fullPath: '/owner/metrics/'
-      preLoaderRoute: typeof OwnerMetricsIndexRouteImport
-      parentRoute: typeof OwnerMetricsRoute
+    '/owner/active': {
+      id: '/owner/active'
+      path: '/active'
+      fullPath: '/owner/active'
+      preLoaderRoute: typeof OwnerActiveRouteImport
+      parentRoute: typeof OwnerRoute
     }
-    '/owner/contractors/': {
-      id: '/owner/contractors/'
-      path: '/'
-      fullPath: '/owner/contractors/'
-      preLoaderRoute: typeof OwnerContractorsIndexRouteImport
-      parentRoute: typeof OwnerContractorsRoute
+    '/owner/ai-dispatcher': {
+      id: '/owner/ai-dispatcher'
+      path: '/ai-dispatcher'
+      fullPath: '/owner/ai-dispatcher'
+      preLoaderRoute: typeof OwnerAiDispatcherRouteImport
+      parentRoute: typeof OwnerRoute
+    }
+    '/owner/applications': {
+      id: '/owner/applications'
+      path: '/applications'
+      fullPath: '/owner/applications'
+      preLoaderRoute: typeof OwnerApplicationsRouteImport
+      parentRoute: typeof OwnerRoute
+    }
+    '/owner/batteries': {
+      id: '/owner/batteries'
+      path: '/batteries'
+      fullPath: '/owner/batteries'
+      preLoaderRoute: typeof OwnerBatteriesRouteImport
+      parentRoute: typeof OwnerRoute
+    }
+    '/owner/claims': {
+      id: '/owner/claims'
+      path: '/claims'
+      fullPath: '/owner/claims'
+      preLoaderRoute: typeof OwnerClaimsRouteImport
+      parentRoute: typeof OwnerRoute
+    }
+    '/owner/contractors': {
+      id: '/owner/contractors'
+      path: '/contractors'
+      fullPath: '/owner/contractors'
+      preLoaderRoute: typeof OwnerContractorsRouteImport
+      parentRoute: typeof OwnerRoute
+    }
+    '/owner/drivers': {
+      id: '/owner/drivers'
+      path: '/drivers'
+      fullPath: '/owner/drivers'
+      preLoaderRoute: typeof OwnerDriversRouteImport
+      parentRoute: typeof OwnerRoute
+    }
+    '/owner/history': {
+      id: '/owner/history'
+      path: '/history'
+      fullPath: '/owner/history'
+      preLoaderRoute: typeof OwnerHistoryRouteImport
+      parentRoute: typeof OwnerRoute
+    }
+    '/owner/metrics': {
+      id: '/owner/metrics'
+      path: '/metrics'
+      fullPath: '/owner/metrics'
+      preLoaderRoute: typeof OwnerMetricsRouteImport
+      parentRoute: typeof OwnerRoute
+    }
+    '/owner/money': {
+      id: '/owner/money'
+      path: '/money'
+      fullPath: '/owner/money'
+      preLoaderRoute: typeof OwnerMoneyRouteImport
+      parentRoute: typeof OwnerRoute
+    }
+    '/owner/notifications': {
+      id: '/owner/notifications'
+      path: '/notifications'
+      fullPath: '/owner/notifications'
+      preLoaderRoute: typeof OwnerNotificationsRouteImport
+      parentRoute: typeof OwnerRoute
+    }
+    '/owner/performance': {
+      id: '/owner/performance'
+      path: '/performance'
+      fullPath: '/owner/performance'
+      preLoaderRoute: typeof OwnerPerformanceRouteImport
+      parentRoute: typeof OwnerRoute
+    }
+    '/owner/queue': {
+      id: '/owner/queue'
+      path: '/queue'
+      fullPath: '/owner/queue'
+      preLoaderRoute: typeof OwnerQueueRouteImport
+      parentRoute: typeof OwnerRoute
+    }
+    '/owner/ratings': {
+      id: '/owner/ratings'
+      path: '/ratings'
+      fullPath: '/owner/ratings'
+      preLoaderRoute: typeof OwnerRatingsRouteImport
+      parentRoute: typeof OwnerRoute
+    }
+    '/owner/settings': {
+      id: '/owner/settings'
+      path: '/settings'
+      fullPath: '/owner/settings'
+      preLoaderRoute: typeof OwnerSettingsRouteImport
+      parentRoute: typeof OwnerRoute
     }
     '/driver/academy/': {
       id: '/driver/academy/'
@@ -992,19 +1010,12 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DriverAcademyIndexRouteImport
       parentRoute: typeof DriverAcademyRoute
     }
-    '/owner/metrics/$id': {
-      id: '/owner/metrics/$id'
+    '/driver/academy/$id': {
+      id: '/driver/academy/$id'
       path: '/$id'
-      fullPath: '/owner/metrics/$id'
-      preLoaderRoute: typeof OwnerMetricsIdRouteImport
-      parentRoute: typeof OwnerMetricsRoute
-    }
-    '/owner/contractors/$id': {
-      id: '/owner/contractors/$id'
-      path: '/$id'
-      fullPath: '/owner/contractors/$id'
-      preLoaderRoute: typeof OwnerContractorsIdRouteImport
-      parentRoute: typeof OwnerContractorsRoute
+      fullPath: '/driver/academy/$id'
+      preLoaderRoute: typeof DriverAcademyIdRouteImport
+      parentRoute: typeof DriverAcademyRoute
     }
     '/driver/claims/$id': {
       id: '/driver/claims/$id'
@@ -1013,12 +1024,40 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DriverClaimsIdRouteImport
       parentRoute: typeof DriverRoute
     }
-    '/driver/academy/$id': {
-      id: '/driver/academy/$id'
+    '/owner/contractors/': {
+      id: '/owner/contractors/'
+      path: '/'
+      fullPath: '/owner/contractors/'
+      preLoaderRoute: typeof OwnerContractorsIndexRouteImport
+      parentRoute: typeof OwnerContractorsRoute
+    }
+    '/owner/contractors/$id': {
+      id: '/owner/contractors/$id'
       path: '/$id'
-      fullPath: '/driver/academy/$id'
-      preLoaderRoute: typeof DriverAcademyIdRouteImport
-      parentRoute: typeof DriverAcademyRoute
+      fullPath: '/owner/contractors/$id'
+      preLoaderRoute: typeof OwnerContractorsIdRouteImport
+      parentRoute: typeof OwnerContractorsRoute
+    }
+    '/owner/metrics/': {
+      id: '/owner/metrics/'
+      path: '/'
+      fullPath: '/owner/metrics/'
+      preLoaderRoute: typeof OwnerMetricsIndexRouteImport
+      parentRoute: typeof OwnerMetricsRoute
+    }
+    '/owner/metrics/$id': {
+      id: '/owner/metrics/$id'
+      path: '/$id'
+      fullPath: '/owner/metrics/$id'
+      preLoaderRoute: typeof OwnerMetricsIdRouteImport
+      parentRoute: typeof OwnerMetricsRoute
+    }
+    '/owner/zones/': {
+      id: '/owner/zones/'
+      path: '/zones'
+      fullPath: '/owner/zones/'
+      preLoaderRoute: typeof OwnerZonesIndexRouteImport
+      parentRoute: typeof OwnerRoute
     }
   }
 }
@@ -1045,6 +1084,7 @@ interface DriverRouteChildren {
   DriverHelpRoute: typeof DriverHelpRoute
   DriverMetricsRoute: typeof DriverMetricsRoute
   DriverOffersRoute: typeof DriverOffersRoute
+  DriverOnboardingRoute: typeof DriverOnboardingRoute
   DriverPayoutRoute: typeof DriverPayoutRoute
   DriverProfileRoute: typeof DriverProfileRoute
   DriverScheduleRoute: typeof DriverScheduleRoute
@@ -1061,6 +1101,7 @@ const DriverRouteChildren: DriverRouteChildren = {
   DriverHelpRoute: DriverHelpRoute,
   DriverMetricsRoute: DriverMetricsRoute,
   DriverOffersRoute: DriverOffersRoute,
+  DriverOnboardingRoute: DriverOnboardingRoute,
   DriverPayoutRoute: DriverPayoutRoute,
   DriverProfileRoute: DriverProfileRoute,
   DriverScheduleRoute: DriverScheduleRoute,
@@ -1160,6 +1201,7 @@ const OwnerRouteWithChildren = OwnerRoute._addFileChildren(OwnerRouteChildren)
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   R403Route: R403Route,
+  ApplyRoute: ApplyRoute,
   DeletedRoute: DeletedRoute,
   DriverRoute: DriverRouteWithChildren,
   LoginRoute: LoginRoute,

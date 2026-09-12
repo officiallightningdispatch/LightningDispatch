@@ -65,6 +65,7 @@ function RootComponent() {
 const isPublicPath = (path: string) =>
   path === "/" ||
   path === "/login" ||
+  path === "/apply" ||
   path === "/403" ||
   path === "/logout" ||
   path === "/privacy" ||

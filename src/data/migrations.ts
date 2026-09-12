@@ -1994,6 +1994,19 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`CREATE INDEX IF NOT EXISTS stripe_payouts_org_contractor_created_idx ON stripe_payouts(org_id, contractor_id, created_at)`;
     await q`CREATE INDEX IF NOT EXISTS stripe_payouts_org_status_created_idx ON stripe_payouts(org_id, status, created_at)`;
   }],
+  // 97: qualifications and eligibility captured by the public contractor
+  // application. Sensitive identity values remain in contractor_documents and
+  // contractor_form_submissions; this table intentionally stores no SSN or
+  // driver's-license number.
+  [97, async (q) => {
+    await q`ALTER TABLE contractor_applications ADD COLUMN IF NOT EXISTS experience_years INTEGER`;
+    await q`ALTER TABLE contractor_applications ADD COLUMN IF NOT EXISTS vehicle_description TEXT`;
+    await q`ALTER TABLE contractor_applications ADD COLUMN IF NOT EXISTS age_confirmed BOOLEAN NOT NULL DEFAULT FALSE`;
+    await q`ALTER TABLE contractor_applications ADD COLUMN IF NOT EXISTS work_authorized BOOLEAN NOT NULL DEFAULT FALSE`;
+    await q`ALTER TABLE contractor_applications ADD COLUMN IF NOT EXISTS independent_contractor_agreed BOOLEAN NOT NULL DEFAULT FALSE`;
+    await q`ALTER TABLE contractor_applications ADD COLUMN IF NOT EXISTS background_check_consented BOOLEAN NOT NULL DEFAULT FALSE`;
+    await q`ALTER TABLE contractor_applications ADD COLUMN IF NOT EXISTS agreements_accepted_at TIMESTAMPTZ`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();

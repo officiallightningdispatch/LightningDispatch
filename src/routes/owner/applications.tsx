@@ -30,8 +30,8 @@ type Status = ContractorApplicationWithUser["status"];
  *  contractor-signup-core.ts (interested/submitted/activated/waitlisted). */
 const STATUS_META: Record<Status, { label: string; className: string }> = {
   interested: { label: "Interested", className: "bg-ink-100 text-ink-600" },
-  submitted: { label: "Submitted", className: "bg-info-100 text-info-700" },
-  activated: { label: "Activated", className: "bg-success-100 text-success-700" },
+  submitted: { label: "Under review", className: "bg-info-100 text-info-700" },
+  activated: { label: "Approved", className: "bg-success-100 text-success-700" },
   waitlisted: { label: "Waitlisted", className: "bg-accent-100 text-accent-800" },
 };
 
@@ -44,7 +44,7 @@ const ACTIONS: Record<Status, { status: Status; label: string; variant?: "primar
     { status: "waitlisted", label: "Waitlist", variant: "secondary" },
   ],
   submitted: [
-    { status: "activated", label: "Activate", variant: "primary" },
+    { status: "activated", label: "Approve application", variant: "primary" },
     { status: "waitlisted", label: "Waitlist", variant: "secondary" },
   ],
   activated: [
@@ -53,7 +53,7 @@ const ACTIONS: Record<Status, { status: Status; label: string; variant?: "primar
   ],
   waitlisted: [
     { status: "submitted", label: "Move back to submitted", variant: "secondary" },
-    { status: "activated", label: "Activate", variant: "primary" },
+    { status: "activated", label: "Approve application", variant: "primary" },
   ],
 };
 
@@ -170,6 +170,9 @@ function ApplicationsView() {
                         <span className="font-semibold text-ink-600">Services:</span>{" "}
                         {a.tools.length ? a.tools.join(", ") : "—"}
                       </p>
+                      <p className="mt-1 text-xs text-ink-500"><span className="font-semibold text-ink-600">Experience:</span> {a.experienceYears == null ? "—" : `${a.experienceYears} year${a.experienceYears === 1 ? "" : "s"}`}</p>
+                      <p className="mt-1 text-xs text-ink-500"><span className="font-semibold text-ink-600">Vehicle:</span> {a.vehicleDescription || "—"}</p>
+                      <p className={`mt-1 text-xs font-semibold ${a.agreementsAcceptedAt ? "text-success-700" : "text-danger-600"}`}>Eligibility acknowledgements: {a.agreementsAcceptedAt ? `Completed ${formatDateTime(a.agreementsAcceptedAt)}` : "Incomplete"}</p>
                     </div>
                   </div>
 

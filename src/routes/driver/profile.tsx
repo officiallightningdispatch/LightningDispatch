@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { BadgeCheck, CalendarClock, Camera, ChevronRight, Crown, FileText, LifeBuoy, LogOut, Star, Trash2, Truck, User, Wallet, X } from "lucide-react";
+import { BadgeCheck, CalendarClock, Camera, ClipboardCheck, ChevronRight, Crown, FileText, LifeBuoy, LogOut, Star, Trash2, Truck, User, Wallet, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { AppShell } from "~/components/app-shell";
 import { DriverToolbar } from "~/components/driver-queue";
@@ -187,6 +187,14 @@ function ProfileView() {
               )}
             </Card>
           )}
+          <Link
+            to="/driver/onboarding"
+            className="flex items-center gap-3 rounded-2xl bg-surface p-4 ring-1 ring-ink-100 transition-colors duration-150 hover:bg-hover"
+          >
+            <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-brand-50 text-brand-600"><ClipboardCheck className="size-5" /></span>
+            <span className="min-w-0 flex-1"><span className="block text-sm font-bold text-ink-800">Onboarding Checklist</span><span className="block text-xs text-ink-500">Track your application, requirements, and approval</span></span>
+            <ChevronRight className="size-4 shrink-0 text-ink-400" />
+          </Link>
           <Link
             to="/driver/documents"
             className="flex items-center gap-3 rounded-2xl bg-surface p-4 ring-1 ring-ink-100 transition-colors duration-150 hover:bg-hover"
