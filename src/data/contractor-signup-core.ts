@@ -53,6 +53,13 @@ export type ContractorApplicationRow = {
   tools: string[];
   serviceArea: string | null;
   phone: string | null;
+  experienceYears: number | null;
+  vehicleDescription: string | null;
+  ageConfirmed: boolean;
+  workAuthorized: boolean;
+  independentContractorAgreed: boolean;
+  backgroundCheckConsented: boolean;
+  agreementsAcceptedAt: string | null;
   notes: string | null;
   reviewerUserId: string | null;
   reviewedAt: string | null;
@@ -102,6 +109,12 @@ const applicationSchema = z.object({
   tools: z.array(z.string()).max(50).default([]),
   serviceArea: z.string().trim().max(128).optional().default(""),
   phone: z.string().trim().max(64).optional().default(""),
+  experienceYears: z.coerce.number().int().min(0).max(80),
+  vehicleDescription: z.string().trim().min(5).max(240),
+  ageConfirmed: z.literal(true),
+  workAuthorized: z.literal(true),
+  independentContractorAgreed: z.literal(true),
+  backgroundCheckConsented: z.literal(true),
 });
 
 const setStatusSchema = z.object({
@@ -128,6 +141,13 @@ function mapRow(r: Record<string, unknown>): ContractorApplicationRow {
     tools,
     serviceArea: r.service_area != null ? String(r.service_area) : null,
     phone: r.phone != null ? String(r.phone) : null,
+    experienceYears: r.experience_years == null ? null : Number(r.experience_years),
+    vehicleDescription: r.vehicle_description != null ? String(r.vehicle_description) : null,
+    ageConfirmed: r.age_confirmed === true,
+    workAuthorized: r.work_authorized === true,
+    independentContractorAgreed: r.independent_contractor_agreed === true,
+    backgroundCheckConsented: r.background_check_consented === true,
+    agreementsAcceptedAt: r.agreements_accepted_at != null ? new Date(String(r.agreements_accepted_at)).toISOString() : null,
     notes: r.notes != null ? String(r.notes) : null,
     reviewerUserId: r.reviewer_user_id != null ? String(r.reviewer_user_id) : null,
     reviewedAt: r.reviewed_at != null ? new Date(String(r.reviewed_at)).toISOString() : null,
@@ -205,7 +225,7 @@ export async function getMyApplicationStatusCore(actor: SignupActor): Promise<Ap
   if (!configured()) return err("database_error", "Applications require database mode.");
   await ensure();
   const q = sql();
-  const rows = await q`SELECT id, org_id, user_id, status, tools, service_area, phone, notes, reviewer_user_id, reviewed_at, created_at, updated_at
+  const rows = await q`SELECT id, org_id, user_id, status, tools, service_area, phone, experience_years, vehicle_description, age_confirmed, work_authorized, independent_contractor_agreed, background_check_consented, agreements_accepted_at, notes, reviewer_user_id, reviewed_at, created_at, updated_at
     FROM contractor_applications WHERE org_id = ${actor.orgId} AND user_id = ${actor.id} LIMIT 1`;
   return ok(rows.length ? mapRow(rows[0] as Record<string, unknown>) : null);
 }
@@ -226,19 +246,29 @@ export async function submitContractorApplicationCore(actor: SignupActor, data: 
   )].sort();
   const serviceArea = parsed.data.serviceArea || null;
   const phone = parsed.data.phone || null;
+  const { experienceYears, vehicleDescription, ageConfirmed, workAuthorized,
+    independentContractorAgreed, backgroundCheckConsented } = parsed.data;
 
   const id = makeId();
   try {
     // One application per (org, user): re-submitting refreshes in place.
-    await q`INSERT INTO contractor_applications(id, org_id, user_id, status, tools, service_area, phone, updated_at)
-      VALUES(${id}, ${actor.orgId}, ${actor.id}, 'submitted', ${JSON.stringify(tools)}::jsonb, ${serviceArea}, ${phone}, NOW())
+    await q`INSERT INTO contractor_applications(id, org_id, user_id, status, tools, service_area, phone,
+        experience_years, vehicle_description, age_confirmed, work_authorized, independent_contractor_agreed,
+        background_check_consented, agreements_accepted_at, updated_at)
+      VALUES(${id}, ${actor.orgId}, ${actor.id}, 'submitted', ${JSON.stringify(tools)}::jsonb, ${serviceArea}, ${phone},
+        ${experienceYears}, ${vehicleDescription}, ${ageConfirmed}, ${workAuthorized}, ${independentContractorAgreed},
+        ${backgroundCheckConsented}, NOW(), NOW())
       ON CONFLICT (org_id, user_id) DO UPDATE SET
         status='submitted', tools=EXCLUDED.tools, service_area=EXCLUDED.service_area,
-        phone=EXCLUDED.phone, updated_at=NOW()`;
+        phone=EXCLUDED.phone, experience_years=EXCLUDED.experience_years,
+        vehicle_description=EXCLUDED.vehicle_description, age_confirmed=EXCLUDED.age_confirmed,
+        work_authorized=EXCLUDED.work_authorized, independent_contractor_agreed=EXCLUDED.independent_contractor_agreed,
+        background_check_consented=EXCLUDED.background_check_consented,
+        agreements_accepted_at=EXCLUDED.agreements_accepted_at, updated_at=NOW()`;
   } catch (e) {
     return err("database_error", e instanceof Error ? e.message : "Unable to submit your application.");
   }
-  const rows = await q`SELECT id, org_id, user_id, status, tools, service_area, phone, notes, reviewer_user_id, reviewed_at, created_at, updated_at
+  const rows = await q`SELECT id, org_id, user_id, status, tools, service_area, phone, experience_years, vehicle_description, age_confirmed, work_authorized, independent_contractor_agreed, background_check_consented, agreements_accepted_at, notes, reviewer_user_id, reviewed_at, created_at, updated_at
     FROM contractor_applications WHERE org_id = ${actor.orgId} AND user_id = ${actor.id} LIMIT 1`;
   return ok(mapRow(rows[0] as Record<string, unknown>));
 }
@@ -252,7 +282,9 @@ export async function listContractorApplicationsCore(actor: SignupActor): Promis
   if (!configured()) return err("database_error", "Applications require database mode.");
   await ensure();
   const q = sql();
-  const rows = await q`SELECT a.id, a.org_id, a.user_id, a.status, a.tools, a.service_area, a.phone, a.notes,
+  const rows = await q`SELECT a.id, a.org_id, a.user_id, a.status, a.tools, a.service_area, a.phone,
+      a.experience_years, a.vehicle_description, a.age_confirmed, a.work_authorized,
+      a.independent_contractor_agreed, a.background_check_consented, a.agreements_accepted_at, a.notes,
       a.reviewer_user_id, a.reviewed_at, a.created_at, a.updated_at,
       u.name AS applicant_name, u.email AS applicant_email
     FROM contractor_applications a
@@ -289,7 +321,7 @@ export async function setContractorApplicationStatusCore(actor: SignupActor, dat
   await q`UPDATE contractor_applications
     SET status = ${parsed.data.status}, reviewer_user_id = ${actor.id}, reviewed_at = NOW(), updated_at = NOW()
     WHERE id = ${parsed.data.applicationId} AND org_id = ${actor.orgId}`;
-  const updated = await q`SELECT id, org_id, user_id, status, tools, service_area, phone, notes, reviewer_user_id, reviewed_at, created_at, updated_at
+  const updated = await q`SELECT id, org_id, user_id, status, tools, service_area, phone, experience_years, vehicle_description, age_confirmed, work_authorized, independent_contractor_agreed, background_check_consented, agreements_accepted_at, notes, reviewer_user_id, reviewed_at, created_at, updated_at
     FROM contractor_applications WHERE id = ${parsed.data.applicationId} AND org_id = ${actor.orgId} LIMIT 1`;
   return ok(mapRow(updated[0] as Record<string, unknown>));
 }

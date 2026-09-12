@@ -95,9 +95,11 @@ let appId;
     tools: ["jump_start", "tow", "battery_install", "jump_start"],
     serviceArea: "Bridgeport, CT",
     phone: "203-555-0100",
+    experienceYears: 4, vehicleDescription: "2022 Ford F-150, white",
+    ageConfirmed: true, workAuthorized: true, independentContractorAgreed: true, backgroundCheckConsented: true,
   });
   check("app: submit ok, status submitted, tools normalized + deduped",
-    sub.ok === true && sub.data.status === "submitted" && sub.data.serviceArea === "Bridgeport, CT" && sub.data.phone === "203-555-0100",
+    sub.ok === true && sub.data.status === "submitted" && sub.data.serviceArea === "Bridgeport, CT" && sub.data.phone === "203-555-0100" && sub.data.experienceYears === 4 && sub.data.agreementsAcceptedAt !== null,
     JSON.stringify(sub));
   // normalizeServiceSelectionType maps "tow"→heavy_tow and "battery_install"→battery_standard; jump_start dedupes.
   check("app: tools canonicalized to [battery_standard, heavy_tow, jump_start]",

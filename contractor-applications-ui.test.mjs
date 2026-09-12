@@ -67,6 +67,8 @@ const submitted = await submitContractorApplicationCore(CONTRACTOR_ACTOR, {
   tools: ["jump_start", "tire_change", "lockout"],
   serviceArea: "New Haven, CT",
   phone: "203-555-0123",
+  experienceYears: 3, vehicleDescription: "2021 Ram 1500, black",
+  ageConfirmed: true, workAuthorized: true, independentContractorAgreed: true, backgroundCheckConsented: true,
 });
 check("seed: application submitted", submitted.ok === true && submitted.data.status === "submitted", JSON.stringify(submitted));
 const appId = submitted.ok ? submitted.data.id : null;
@@ -79,7 +81,7 @@ const appId = submitted.ok ? submitted.data.id : null;
   check("owner list: contains the application", Boolean(row), JSON.stringify(list));
   check("owner list: applicant name joined from users", row?.applicantName === CONTRACTOR_NAME, JSON.stringify(row));
   check("owner list: applicant email joined from users", row?.applicantEmail === CONTRACTOR_EMAIL, JSON.stringify(row));
-  check("owner list: core row fields present", Boolean(row && row.phone === "203-555-0123" && row.serviceArea === "New Haven, CT"), JSON.stringify(row));
+  check("owner list: core row fields present", Boolean(row && row.phone === "203-555-0123" && row.serviceArea === "New Haven, CT" && row.experienceYears === 3 && row.vehicleDescription === "2021 Ram 1500, black" && row.agreementsAcceptedAt), JSON.stringify(row));
   check("owner list: tools comma-join source is the array", Array.isArray(row?.tools) && row.tools.length === 3, JSON.stringify(row));
 }
 
