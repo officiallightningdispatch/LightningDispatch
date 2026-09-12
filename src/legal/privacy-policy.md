@@ -17,7 +17,7 @@ This policy applies to **contractors (drivers)** who use the Lightning Dispatch 
 ## 2. Information we collect
 
 **Information you provide directly:**
-- **Identity and contact information** — name, email address, phone number, and your Towbook driver identifier used to sign in.
+- **Identity and contact information** — name, email address, phone number, and your secure dispatch identifier used to sign in.
 - **Compliance and qualification documents** — government identification (e.g., Form I-9 and W-9 information), driver's license, insurance documents, and other qualification records you upload.
 - **Profile information** — profile photos, vehicle type and equipment details, and the services you choose to provide.
 - **Payment information** — bank or payout account details you provide to receive payments, and tip cash-out requests.
@@ -26,10 +26,10 @@ This policy applies to **contractors (drivers)** who use the Lightning Dispatch 
 - **Location data** — your device's GPS location while you are signed in and working, used to assign nearby jobs and estimate arrival times. We retain location history for a limited 24-hour window for dispatch purposes.
 - **Job activity** — jobs you accept, complete, or decline, job photos you take, and service notes.
 - **Device and technical information** — device type, operating system, and push-notification tokens used to send you job alerts.
-- **Session information** — your sign-in session with Towbook, stored encrypted, so the platform can synchronize job data.
+- **Session information** — your secure dispatch session, stored encrypted, so the platform can synchronize job data.
 
 **Information from third parties:**
-- **Towbook** — job details, completion status, and photos you submit through the Towbook system, which the platform synchronizes to manage dispatch and pay.
+- **Dispatch providers** — job details, completion status, and photos submitted through integrated dispatch systems, which the platform synchronizes to manage dispatch and pay.
 - **TomTom and mapping services** — geocoding and routing results used to locate jobs and calculate arrival times.
 - **NHTSA** — vehicle information returned from a Vehicle Identification Number (VIN) decode when a battery is being sold and installed.
 
@@ -51,7 +51,7 @@ We use the information we collect to:
 We do **not** sell your personal information. We share information only as needed to operate the platform:
 
 - **Service providers** — vendors that host our data (Neon/Postgres), store photos (Backblaze B2), process payments (Stripe and Square), deliver push notifications (Apple), and provide mapping/routing (TomTom). These providers may access data only to perform services on our behalf and are bound to protect it.
-- **Towbook** — job and photo data is synchronized with the Towbook platform you already use, as part of the service.
+- **Dispatch providers** — job and photo data is synchronized with integrated dispatch systems as part of the service.
 - **The business you contract with** — job activity, documents, and performance data are visible to the roadside-assistance business owner and their dispatchers, who manage your work.
 - **Legal and safety** — we may disclose information when required by law, court order, or regulation, or to protect the rights, property, or safety of our business, our contractors, or others.
 
@@ -71,7 +71,7 @@ We use industry-standard safeguards — including encryption in transit and at r
 - **Access and correction** — you may review and update your profile, documents, and service selections in the app at any time.
 - **Location** — you can stop sharing location by signing out of the app; note that location is required for dispatch to assign you jobs.
 - **Push notifications** — you can enable or disable push notifications in your device settings.
-- **Account deletion** — you may delete your Lightning Dispatch account and the data we hold about you at any time from within the app (see the "Delete Account" option in Settings). Deleting your Lightning Dispatch account removes your profile, documents, photos, location history, and other data we hold about you. It does **not** delete your separate Towbook account, which is controlled by Towbook and the business you contract with. We will complete deletion within 30 days, except for records we must retain by law (such as payroll and tax records), which are retained only for the legally required period.
+- **Account deletion** — you may delete your Lightning Dispatch account and the data we hold about you at any time from within the app (see the "Delete Account" option in Settings). Deleting your Lightning Dispatch account removes your profile, documents, photos, location history, and other data we hold about you. It does **not** delete accounts maintained by separate dispatch providers or the business you contract with. We will complete deletion within 30 days, except for records we must retain by law (such as payroll and tax records), which are retained only for the legally required period.
 
 ## 8. California and other state privacy rights
 

@@ -464,7 +464,7 @@ export async function pingHandler(data: unknown): Promise<PingResult> {
     const q = await db();
     const rows = await q`SELECT towbook_user_id FROM users WHERE id=${identity.userRowId}`;
     const towbookDriverId = identity.towbookDriverId;
-    if (!towbookDriverId) return { ok: false, reason: "Your account is not linked to a Towbook driver yet — reconnect." };
+    if (!towbookDriverId) return { ok: false, reason: "Your account is not connected to dispatch yet — reconnect." };
     const d = v.data;
     const towbookUserId = rows.length ? String(rows[0].towbook_user_id ?? "") : "";
     const jobRow = d.jobTowbookId

@@ -864,7 +864,7 @@ async function writeThrough(user: { orgId: string; towbookDriverId: string }, ac
     const pickupLng = Number.isFinite(wLng) && wLng !== 0 ? wLng : null;
     const assigned = assignedDriverFromRawCall(rawCall);
     await q`INSERT INTO dispatch_jobs(id, org_id, customer_name, phone, lat, lng, area, service_type, status, created_at, note, towbook_job_id, customer_phone, vehicle_desc, pickup, dropoff, towbook_status, raw_json, pickup_lat, pickup_lng, assigned_driver_towbook_id, assigned_driver_name, arrived_at)
-      VALUES(${newJobRowId}, ${user.orgId}, ${customer || `Towbook job ${callId}`}, '', 0, 0, ${pickup || "Unknown"}, 'flatbed_tow', ${mapped}, NOW(), '', ${callId}, '', ${vehicle}, ${pickup}, ${dropoff}, ${String(toStatus)}, ${JSON.stringify({ sourceUrl: "driver-portal", ...rawCall })}::jsonb, ${pickupLat}, ${pickupLng}, ${assigned.towbookId ?? user.towbookDriverId}, ${assigned.name}, CASE WHEN ${mapped}='arrived' THEN NOW() ELSE NULL END)`;
+      VALUES(${newJobRowId}, ${user.orgId}, ${customer || `Dispatch job ${callId}`}, '', 0, 0, ${pickup || "Unknown"}, 'flatbed_tow', ${mapped}, NOW(), '', ${callId}, '', ${vehicle}, ${pickup}, ${dropoff}, ${String(toStatus)}, ${JSON.stringify({ sourceUrl: "driver-portal", ...rawCall })}::jsonb, ${pickupLat}, ${pickupLng}, ${assigned.towbookId ?? user.towbookDriverId}, ${assigned.name}, CASE WHEN ${mapped}='arrived' THEN NOW() ELSE NULL END)`;
     await q`INSERT INTO status_events(id, org_id, job_id, from_status, to_status, actor_user_id, actor_role, note)
       SELECT gen_random_uuid()::text, ${user.orgId}, ${newJobRowId}, ${currentMapped}, ${mapped}, ${actor.userId}, ${actor.role}, ${note}`;
     await q`INSERT INTO audit_log(id, org_id, actor_user_id, actor_role, action, entity_type, entity_id, detail, request_id)
@@ -883,8 +883,11 @@ const passthrough = (x: unknown) => x;
  *  unreachable failure reads as a plain "try again in a moment". Only the
  *  towbook_unreachable classification is reworded; invalid_credentials ("Towbook
  *  rejected those credentials.") and blocked keep their raw copy. */
-export const driverSignInErrorCopy = (code: string | undefined, raw: string): string =>
-  code === "towbook_unreachable" ? "Towbook didn't respond — please try again in a moment." : raw;
+export const driverSignInErrorCopy = (code: string | undefined, _raw: string): string => {
+  if (code === "invalid_credentials") return "The dispatch username or password didn't match.";
+  if (code === "towbook_blocked") return "Dispatch sign-in is temporarily unavailable — please contact dispatch.";
+  return "The dispatch service didn't respond — please try again in a moment.";
+};
 
 export const driverLogin = createServerFn({ method: "POST" }).validator(passthrough).handler(async ({ data }) => {
   const v = z.object({

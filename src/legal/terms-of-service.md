@@ -12,17 +12,17 @@ By creating an account, signing in, or otherwise using the Platform, you agree t
 
 ## 1. Who may use the Platform
 
-- **Contractors (drivers)** are independent contractors who provide roadside-assistance services and use the contractor app to receive and manage jobs. You may use the contractor app only if you hold a valid Towbook driver account and are authorized by the business that dispatches work to you.
+- **Contractors (drivers)** are independent contractors who provide roadside-assistance services and use the contractor app to receive and manage jobs. You may use the contractor app only if you hold valid dispatch credentials and are authorized by the business that dispatches work to you.
 - **Owners and dispatchers** use the owner/operations portal to manage dispatch, contractors, payments, and compliance.
 - You must be at least 18 years old. By using the Platform you represent that you are 18 or older.
 
 ## 2. The nature of our service
 
-Lightning Dispatch is a software platform that helps a roadside-assistance business assign jobs to contractors, manage compliance and payments, and synchronize data with the Towbook platform you use. It does **not** employ contractors or direct their day-to-day work. The relationship between you and the business that dispatches work to you — including how much and when you are paid — is governed by your separate agreement with that business.
+Lightning Dispatch is a software platform that helps a roadside-assistance business assign jobs to contractors, manage compliance and payments, and synchronize data with integrated dispatch systems. It does **not** employ contractors or direct their day-to-day work. The relationship between you and the business that dispatches work to you — including how much and when you are paid — is governed by your separate agreement with that business.
 
 ## 3. Accounts and sign-in
 
-- You sign in using your existing Towbook credentials. Your account type determines which portal you access; access to the wrong portal is blocked.
+- You sign in using your Lightning Dispatch or authorized dispatch credentials. Your account type determines which portal you access; access to the wrong portal is blocked.
 - You are responsible for maintaining the confidentiality of your sign-in credentials and for all activity that occurs under your account.
 - You must provide accurate, current, and complete information, and keep it updated.
 - We may suspend or terminate accounts that violate these Terms or that pose a security or compliance risk.
@@ -41,23 +41,23 @@ You agree **not** to:
 
 - Job assignment is performed by the Platform's dispatch system using your device's live GPS location and your availability status.
 - **Location data** comes strictly from your device's current GPS fix as reported by the app. To receive location-based job assignments, you must keep location reporting enabled while working. If your device does not report a current location, you may be excluded from location-based dispatch.
-- **Availability** is determined by either your Towbook check-in or an active Lightning Dispatch session — either qualifies.
+- **Availability** is determined by your active Lightning Dispatch or secure dispatch session.
 - Estimated arrival times ("ETAs") are estimates based on routing, traffic, and service type, and are subject to change. They are not a guarantee of arrival time.
 
 ## 6. Payments
 
-- Payments to contractors are processed according to the payment rules and schedules set by the business you contract with. Where the Platform records earnings, tips, bonuses, or payouts, those figures reflect the business's records and the data synchronized from Towbook.
+- Payments to contractors are processed according to the payment rules and schedules set by the business you contract with. Where the Platform records earnings, tips, bonuses, or payouts, those figures reflect the business's records and synchronized dispatch data.
 - Tip cash-outs and other payout features are provided subject to the business's policies and applicable payment-provider terms (Stripe, Square).
 - You are responsible for the accuracy of your payout/bank account details. We are not liable for payments sent to incorrect account details you provided.
 
 ## 7. Your content and data
 
-- You retain ownership of photos, documents, and other content you upload. You grant us a non-exclusive, worldwide, royalty-free license to use, store, reproduce, and display that content solely to operate the Platform (including sharing job photos with Towbook and the business you contract with).
+- You retain ownership of photos, documents, and other content you upload. You grant us a non-exclusive, worldwide, royalty-free license to use, store, reproduce, and display that content solely to operate the Platform (including sharing job photos with integrated dispatch providers and the business you contract with).
 - You represent that you have the right to share any content you upload, and that it does not infringe any third party's rights.
 
 ## 8. Intellectual property
 
-The Platform and all of its software, design, and branding (including the "Lightning Dispatch" name and marks) are owned by Lightning Roadside Assistants LLC. You may not use our marks or copy our software without our written permission. Towbook is a trademark of its respective owner, and our use of it does not imply endorsement.
+The Platform and all of its software, design, and branding (including the "Lightning Dispatch" name and marks) are owned by Lightning Roadside Assistants LLC. You may not use our marks or copy our software without our written permission. Third-party names and trademarks belong to their respective owners, and integration does not imply endorsement.
 
 ## 9. Disclaimer of warranties
 
