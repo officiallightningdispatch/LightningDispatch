@@ -44,7 +44,24 @@ export default async function vercelHandler(
   try {
     const webRes = await fetchHandler.fetch(toWebRequest(req));
     res.statusCode = webRes.status;
-    webRes.headers.forEach((value, key) => res.setHeader(key, value));
+    // `Headers.forEach()` coalesces repeated headers. That is invalid for
+    // Set-Cookie: each cookie must remain a separate response header. In
+    // particular, startSession writes the live session cookie and then clears
+    // legacy cookies; joining those values prevents browsers from storing the
+    // new session on Vercel.
+    webRes.headers.forEach((value, key) => {
+      if (key.toLowerCase() !== "set-cookie") res.setHeader(key, value);
+    });
+    const responseHeaders = webRes.headers as Headers & {
+      getSetCookie?: () => string[];
+    };
+    const setCookies = responseHeaders.getSetCookie?.() ?? [];
+    if (setCookies.length) res.setHeader("set-cookie", setCookies);
+    else {
+      // Compatibility fallback for runtimes without Headers.getSetCookie().
+      const setCookie = webRes.headers.get("set-cookie");
+      if (setCookie) res.setHeader("set-cookie", setCookie);
+    }
     if (webRes.body) {
       const reader = webRes.body.getReader();
       for (;;) {
