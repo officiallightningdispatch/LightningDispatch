@@ -36,16 +36,16 @@ check("unknown identifier → driverLogin fallback fires",
 check("contractor account → driverLogin fallback fires (existing driver flow)",
   shouldFallThroughToDriverLogin({ ok: false, error: "Invalid username or password.", reason: "contractor_account" }) === true);
 /* ---------- driver sign-in copy: plain, no "interactive reconnect" ---------- */
-check("towbook_unreachable → plain copy, no reconnect hint",
-  driverSignInErrorCopy("towbook_unreachable", "Towbook could not be connected. Try again or use an interactive reconnect.") === "Towbook didn't respond — please try again in a moment.");
+check("towbook_unreachable → branded copy, no internal provider name",
+  driverSignInErrorCopy("towbook_unreachable", "Towbook could not be connected. Try again or use an interactive reconnect.") === "The dispatch service didn't respond — please try again in a moment.");
 check("towbook_unreachable (unexpected status) → plain copy",
-  driverSignInErrorCopy("towbook_unreachable", "Towbook responded with an unexpected status 502. Try again or use an interactive reconnect.") === "Towbook didn't respond — please try again in a moment.");
-check("invalid_credentials keeps raw copy (drivers see 'rejected those credentials')",
-  driverSignInErrorCopy("invalid_credentials", "Towbook rejected those credentials.") === "Towbook rejected those credentials.");
-check("towbook_blocked keeps raw copy",
-  driverSignInErrorCopy("towbook_blocked", "Towbook is blocking automated sign-in. Open Towbook in your browser once, then retry.") === "Towbook is blocking automated sign-in. Open Towbook in your browser once, then retry.");
-check("unknown/no code keeps raw copy",
-  driverSignInErrorCopy(undefined, "Driver sign-in failed. Try again.") === "Driver sign-in failed. Try again.");
+  driverSignInErrorCopy("towbook_unreachable", "Towbook responded with an unexpected status 502. Try again or use an interactive reconnect.") === "The dispatch service didn't respond — please try again in a moment.");
+check("invalid_credentials → branded credential copy",
+  driverSignInErrorCopy("invalid_credentials", "Towbook rejected those credentials.") === "The dispatch username or password didn't match.");
+check("towbook_blocked → branded support copy",
+  driverSignInErrorCopy("towbook_blocked", "Towbook is blocking automated sign-in. Open Towbook in your browser once, then retry.") === "Dispatch sign-in is temporarily unavailable — please contact dispatch.");
+check("unknown/no code → branded service copy",
+  driverSignInErrorCopy(undefined, "Driver sign-in failed. Try again.") === "The dispatch service didn't respond — please try again in a moment.");
 /* --------------------------------- summary --------------------------------- */
 const failed = checks.filter(([, ok]) => !ok);
 console.log(`login-fallback.test.mjs: ${checks.length - failed.length}/${checks.length} passed`);

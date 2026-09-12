@@ -262,7 +262,7 @@ function JobDetailBody({ detail }: { detail: JobDetail }) {
       {/* Towbook + ETA */}
       {(detail.towbookJobId || detail.purchaseOrderNumber || detail.arrivalETA || detail.quotedEtaMinutes != null) && (
         <div className="border-t border-ink-100 px-3 py-1.5">
-          <p className="pt-1 text-[11px] font-bold uppercase tracking-wider text-ink-400">Towbook</p>
+          <p className="pt-1 text-[11px] font-bold uppercase tracking-wider text-ink-400">Dispatch details</p>
           {detail.towbookJobId && <DetailRow label="Call #" value={<span className="font-mono">{detail.towbookJobId}</span>} />}
           {detail.purchaseOrderNumber && <DetailRow label="PO #" value={<span className="font-mono">{detail.purchaseOrderNumber}</span>} />}
           {detail.arrivalETA && <DetailRow label="ETA" value={fmtEtaClock(detail.arrivalETA)} />}

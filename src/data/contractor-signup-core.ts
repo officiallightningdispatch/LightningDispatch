@@ -244,11 +244,16 @@ export async function applyContractorCore(
 /** Request-runtime wrapper: persist the complete application first, then start
  *  the new applicant's session in the same response. */
 export async function applyContractorHandler(data: unknown): Promise<ApplicationResult<ContractorApplicationRow>> {
-  const result = await applyContractorCore(data);
-  if (result.ok) {
-    try { await startSession(result.data.userId); } catch { /* application is safely stored; applicant can sign in */ }
+  try {
+    const result = await applyContractorCore(data);
+    if (result.ok) {
+      try { await startSession(result.data.userId); } catch { /* application is safely stored; applicant can sign in */ }
+    }
+    return result;
+  } catch (error) {
+    console.error("[contractor-application] atomic submission failed", error);
+    return err("database_error", "We couldn't submit your application right now. Please refresh and try again.");
   }
-  return result;
 }
 
 /* ------------------------------ applications ------------------------------ */

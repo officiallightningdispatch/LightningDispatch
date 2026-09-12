@@ -707,8 +707,8 @@ async function recordUploadFailure(
     const names = await q`SELECT name FROM users WHERE id=${user.id} LIMIT 1`;
     const driverName = names.length ? String(names[0].name ?? "") : "";
     const reason = failures.length
-      ? `Completion for ${job.id} could not attach ${failures.length} photo${failures.length === 1 ? "" : "s"} to the Towbook PO: ${failures.map((f) => `${f.label} (HTTP ${f.status ?? "error"})`).join(", ")}`
-      : `Completion for ${job.id} could not be confirmed on Towbook: ${attempts.at(-1) ?? "unknown"}`;
+      ? `Completion for ${job.id} could not attach ${failures.length} photo${failures.length === 1 ? "" : "s"} to the dispatch record: ${failures.map((f) => `${f.label} (HTTP ${f.status ?? "error"})`).join(", ")}`
+      : `Completion for ${job.id} could not be confirmed by the dispatch system: ${attempts.at(-1) ?? "unknown"}`;
     await q`INSERT INTO ai_dispatcher_decisions(id, org_id, call_request_id, call_id, decision, escalated, driver_id, driver_name, eta_minutes, zone_distance_miles, reason, raw_response)
       VALUES(gen_random_uuid()::text, ${user.orgId}, ${`photo-upload-${job.towbookJobId ?? job.id}`}, ${job.towbookJobId}, 'escalated_photo_upload_failed', TRUE, ${user.towbookDriverId}, ${driverName}, NULL, NULL, ${reason}, ${JSON.stringify({ failures, attempts, ...extra })}::jsonb)
       ON CONFLICT DO NOTHING`;
