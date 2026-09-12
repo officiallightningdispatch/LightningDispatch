@@ -20,6 +20,14 @@ export type { ContractorApplicationRow, ContractorApplicationWithUser, Applicati
 
 const passthrough = (x: unknown) => x;
 
+/** Public: create the account and persist the complete application atomically. */
+export const applyContractor = createServerFn({ method: "POST" })
+  .validator(passthrough)
+  .handler(async ({ data }): Promise<ApplicationResult<ContractorApplicationRow>> => {
+    const core = await import("./contractor-signup-core");
+    return core.applyContractorHandler(data);
+  });
+
 /** Public: create an LD contractor account in the PROD org + start a session. */
 export const signupContractor = createServerFn({ method: "POST" })
   .validator(passthrough)
