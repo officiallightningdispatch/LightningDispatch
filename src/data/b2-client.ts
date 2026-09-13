@@ -30,8 +30,8 @@
  * error) — photo upload is a hard gate on completing a job, so a photo is
  * never silently dropped. Nothing is ever auto-generated.
  *
- * The S3 endpoint is discovered from B2's authorize endpoint
- * (POST https://api.backblazeb2.com/b2api/v3/b2_authorize_account) using the
+ * The S3 endpoint is discovered from B2's current authorize endpoint
+ * (GET https://api.backblazeb2.com/b2api/v4/b2_authorize_account) using the
  * application key itself — no region hardcoding; the result is cached briefly.
  */
 import { createHmac, createHash } from "node:crypto";
@@ -172,38 +172,64 @@ export function regionFromS3Url(s3ApiUrl: string): string {
 export type B2Authorized = { s3ApiUrl: string; bucketName: string | null };
 let cachedAuthorize: { at: number; value: B2Authorized } | null = null;
 
-/** POST /b2api/v3/b2_authorize_account with HTTP Basic (keyId:applicationKey)
+/** GET /b2api/v4/b2_authorize_account with HTTP Basic (keyId:applicationKey)
  *  → the S3 API URL + the bucket the key is allowed to touch. Cached ~10 min.
- *  Injectable fetchImpl for hermetic tests (no real B2 calls in tests). */
+ *  Injectable fetchImpl for hermetic tests (no real B2 calls in tests).
+ *
+ *  Backblaze v4 moved key restrictions under apiInfo.storageApi.allowed and
+ *  represents bucket access as allowed.buckets[]. A valid key can return HTTP
+ *  401 with code "unsupported" when called against an older API version, so
+ *  surface Backblaze's real error code/message instead of mislabeling every
+ *  401 as bad credentials. */
 export async function authorizeAccount(opts: { keyId: string; applicationKey: string; fetchImpl?: typeof fetch }): Promise<B2Authorized> {
   if (cachedAuthorize && Date.now() - cachedAuthorize.at < 10 * 60_000) return cachedAuthorize.value;
   const fetchImpl = opts.fetchImpl ?? globalThis.fetch;
   const basic = Buffer.from(`${opts.keyId}:${opts.applicationKey}`).toString("base64");
-  const res = await fetchImpl("https://api.backblazeb2.com/b2api/v3/b2_authorize_account", {
+  const res = await fetchImpl("https://api.backblazeb2.com/b2api/v4/b2_authorize_account", {
     method: "GET",
     headers: { authorization: `Basic ${basic}` },
     signal: AbortSignal.timeout(15000),
   });
+
   const text = await res.text();
   let body: unknown = text;
-  if (text) { try { body = JSON.parse(text); } catch { /* keep raw */ } }
-  if (!res.ok || !body || typeof body !== "object") {
-    throw new Error(`B2 authorize failed (HTTP ${res.status ?? "error"}) — check B2_KEY_ID / B2_APPLICATION_KEY.`);
+  if (text) {
+    try { body = JSON.parse(text); } catch { /* keep raw */ }
   }
+
+  if (!res.ok || !body || typeof body !== "object") {
+    const record = body && typeof body === "object" ? body as Record<string, unknown> : null;
+    const code = typeof record?.code === "string" ? record.code : null;
+    const message = typeof record?.message === "string" ? record.message : null;
+    const detail = [code, message].filter(Boolean).join(": ");
+    throw new Error(
+      `B2 authorize failed (HTTP ${res.status ?? "error"})${detail ? ` — ${detail}` : ""}.`
+    );
+  }
+
   const apiInfo = (body as Record<string, unknown>).apiInfo as Record<string, unknown> | undefined;
-  const allowed = (body as Record<string, unknown>).allowed as Record<string, unknown> | undefined;
-  // v3 shape nests the S3 endpoint under apiInfo.storageApi.s3ApiUrl; older
-  // shapes put it directly at apiInfo.s3ApiUrl. Account-wide keys return
-  // allowed.bucketName = null (the bucket comes from config), so only the S3
-  // endpoint is required here.
   const storageApi = (apiInfo?.storageApi ?? null) as Record<string, unknown> | null;
+  const allowed = (storageApi?.allowed ?? null) as Record<string, unknown> | null;
+
   const s3ApiUrl = typeof storageApi?.s3ApiUrl === "string" && storageApi.s3ApiUrl
     ? storageApi.s3ApiUrl
-    : typeof apiInfo?.s3ApiUrl === "string" && apiInfo.s3ApiUrl ? apiInfo.s3ApiUrl : null;
-  const bucketName = typeof allowed?.bucketName === "string" && allowed.bucketName ? allowed.bucketName : null;
+    : null;
+
+  // v4: bucket restrictions live at apiInfo.storageApi.allowed.buckets[].
+  // A key may be account-wide (null/empty restriction), in which case the
+  // configured B2_BUCKET_NAME remains the source of truth.
+  const buckets = Array.isArray(allowed?.buckets)
+    ? allowed!.buckets as Array<Record<string, unknown>>
+    : [];
+  const allowedNames = buckets
+    .map((b) => typeof b.name === "string" && b.name ? b.name : null)
+    .filter((v): v is string => Boolean(v));
+  const bucketName = allowedNames.length === 1 ? allowedNames[0] : null;
+
   if (!s3ApiUrl) {
     throw new Error("B2 authorize did not return an S3 endpoint — check the application key's capabilities.");
   }
+
   const value = { s3ApiUrl, bucketName };
   cachedAuthorize = { at: Date.now(), value };
   return value;
