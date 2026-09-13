@@ -202,8 +202,15 @@ export async function authorizeAccount(opts: { keyId: string; applicationKey: st
     const code = typeof record?.code === "string" ? record.code : null;
     const message = typeof record?.message === "string" ? record.message : null;
     const detail = [code, message].filter(Boolean).join(": ");
+    // Safe production diagnostic: never log the credentials themselves. The
+    // short SHA-256 fingerprints + lengths let us prove which Vercel values the
+    // function actually loaded and compare them to the Backblaze console.
+    const keyIdFingerprint = sha256Hex(opts.keyId).slice(0, 10);
+    const applicationKeyFingerprint = sha256Hex(opts.applicationKey).slice(0, 10);
     throw new Error(
-      `B2 authorize failed (HTTP ${res.status ?? "error"})${detail ? ` — ${detail}` : ""}.`
+      `B2 authorize failed (HTTP ${res.status ?? "error"})${detail ? ` — ${detail}` : ""}. ` +
+      `Loaded credential fingerprints: keyId=${keyIdFingerprint}/len${opts.keyId.length}, ` +
+      `applicationKey=${applicationKeyFingerprint}/len${opts.applicationKey.length}.`
     );
   }
 
