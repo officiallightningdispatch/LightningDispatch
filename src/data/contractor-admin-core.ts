@@ -1016,7 +1016,7 @@ const MY_SCHEDULE_SCHEMA = z.object({
  *  row id (resolveContractorActor resolves through the view-toggle resolver, so
  *  an owner in driver view manages their own contractor identity's schedule). */
 export async function getMyScheduleCore(actor: ContractorAdminActor): Promise<ContractorAdminResult<ContractorScheduleRow>> {
-  if (actor.role !== "contractor") return err("unauthorized", "Driver access required.");
+  if (actor.role !== "contractor") return err("unauthorized", "Contractor access required.");
   try {
     await ensure();
     const q = await db();
@@ -1035,7 +1035,7 @@ export async function getMyScheduleCore(actor: ContractorAdminActor): Promise<Co
  *  must clear it, or the driver's next declaration after the owner clears it
  *  applies). Audited ('contractor_schedule_set'). */
 export async function setMyScheduleCore(actor: ContractorAdminActor, data: unknown): Promise<ContractorAdminResult<ContractorScheduleRow>> {
-  if (actor.role !== "contractor") return err("unauthorized", "Driver access required.");
+  if (actor.role !== "contractor") return err("unauthorized", "Contractor access required.");
   const v = MY_SCHEDULE_SCHEMA.safeParse(data);
   if (!v.success) return err("invalid_input", v.error.issues[0]?.message ?? "Invalid schedule.");
   const seen = new Set<number>();
@@ -1106,7 +1106,7 @@ async function listContractorDocumentsUnchecked(actor: ContractorAdminActor, con
       const hasIdentity = ident.length > 0
         && (ident[0].towbook_driver_id != null || ident[0].linked_driver_user_id != null)
         && ident[0].deactivated_at == null;
-      if (!hasIdentity) return err("unauthorized", "Driver access required.");
+      if (!hasIdentity) return err("unauthorized", "Contractor access required.");
     }
     const rows = await q`SELECT t.id AS doc_type_id, t.name AS doc_type_name, t.requires_expiry, t.requires_facial_verification, t.form_kind, t.requires_notifications_location, t.sort_order,
         d.id AS doc_id, d.file_name, d.mime, d.size_bytes, d.expires_on, d.review_note, d.uploaded_at, d.uploaded_by_user_id, d.status AS stored_status,
@@ -1183,7 +1183,7 @@ export type UploadDocumentResult =
  *  same row (status resets to 'uploaded' — re-review required; review_note
  *  cleared; expires_on replaced unless re-entered). Audited. */
 export async function uploadMyDocumentCore(actor: ContractorAdminActor, data: unknown, opts: { fetchImpl?: typeof fetch; b2StableDir?: string } = {}): Promise<UploadDocumentResult> {
-  if (actor.role !== "contractor") return { ok: false, code: "unauthorized", message: "Driver access required." };
+  if (actor.role !== "contractor") return { ok: false, code: "unauthorized", message: "Contractor access required." };
   const v = UPLOAD_SCHEMA.safeParse(data);
   if (!v.success) return { ok: false, code: "invalid_input", message: v.error.issues[0]?.message ?? "Invalid upload." };
   const decoded = decodeDocumentDataUrl(v.data.dataUrl);
@@ -1249,7 +1249,7 @@ export type UploadSelfieResult =
  *  image/jpeg|png|webp); re-upload UPSERTs the same row + overwrites the same
  *  B2 object. Audited ('contractor_doc_selfie_uploaded'). */
 export async function uploadMySelfieCore(actor: ContractorAdminActor, data: unknown, opts: { fetchImpl?: typeof fetch; b2StableDir?: string } = {}): Promise<UploadSelfieResult> {
-  if (actor.role !== "contractor") return { ok: false, code: "unauthorized", message: "Driver access required." };
+  if (actor.role !== "contractor") return { ok: false, code: "unauthorized", message: "Contractor access required." };
   const v = SELFIE_SCHEMA.safeParse(data);
   if (!v.success) return { ok: false, code: "invalid_input", message: v.error.issues[0]?.message ?? "Invalid upload." };
   const decoded = decodeDocumentDataUrl(v.data.dataUrl);
@@ -1370,7 +1370,7 @@ export function deriveComplianceSnapshot(rows: readonly ComplianceReducerRow[]):
   return { required, approved, onFile, neededCount, pendingCount, neededNames, pendingNames };
 }
 export async function getMyComplianceCore(actor: ContractorAdminActor): Promise<ContractorAdminResult<MyCompliance>> {
-  if (actor.role !== "contractor") return err("unauthorized", "Driver access required.");
+  if (actor.role !== "contractor") return err("unauthorized", "Contractor access required.");
   try {
     await ensure();
     const q = await db();
@@ -1443,7 +1443,7 @@ export async function completeNotificationsLocationCore(
   actor: ContractorAdminActor,
   data: unknown,
 ): Promise<CompleteNotificationsLocationResult> {
-  if (actor.role !== "contractor") return err("unauthorized", "Driver access required.");
+  if (actor.role !== "contractor") return err("unauthorized", "Contractor access required.");
   const v = NOTIF_LOC_SCHEMA.safeParse(data);
   if (!v.success) return err("invalid_input", "We need a valid location fix to mark this complete.");
   // Geolocation-denied sentinel — never mark complete on a 0,0 fix (mirrors
@@ -1634,12 +1634,20 @@ async function resolveContractorActor(): Promise<ContractorAdminActor | null> {
   const { currentUser, effectiveDriverIdentity } = await import("./auth-server");
   const u = await currentUser();
   if (!u) return null;
+
+  // Applicants are contractor members before activation and intentionally do
+  // not have a dispatch-provider driver id yet. Onboarding documents belong to
+  // their Lightning Dispatch user row, so allow that row to act on its own
+  // paperwork without granting dispatch/offer access. Dispatch authorization
+  // continues to require effectiveDriverIdentity elsewhere.
+  if (u.role === "contractor" && !u.towbookDriverId) {
+    return { orgId: u.orgId, id: u.id, role: "contractor" };
+  }
+
   const identity = await effectiveDriverIdentity(u);
   if (!identity || identity.deactivated) return null;
   // Owner↔contractor view toggle: an owner/admin in driver view resolves to
-  // their effective driver identity — docs live on the linked driver's row
-  // (spec §2: contractor_documents.contractor_id = linked driver user row id,
-  // or own row id for shape a), so the actor id IS the driver's row id here.
+  // their effective driver identity — docs live on the linked driver's row.
   return { orgId: u.orgId, id: identity.userRowId, role: "contractor" };
 }
 
@@ -1736,19 +1744,19 @@ export async function setContractorContactHandler(data: unknown): Promise<Contra
 export async function getMyDocumentsHandler(): Promise<ContractorAdminResult<ContractorDocumentRow[]>> {
   if (!configured()) return DB_MODE_ERR("Documents");
   const actor = await resolveContractorActor();
-  if (!actor) return err("unauthorized", "Driver access required.");
+  if (!actor) return err("unauthorized", "Contractor access required.");
   return getMyDocumentsCore(actor);
 }
 export async function uploadMyDocumentHandler(data: unknown, opts?: { fetchImpl?: typeof fetch }): Promise<UploadDocumentResult> {
   if (!configured()) return { ok: false, code: "database_error", message: "Document uploads require database mode." };
   const actor = await resolveContractorActor();
-  if (!actor) return { ok: false, code: "unauthorized", message: "Driver access required." };
+  if (!actor) return { ok: false, code: "unauthorized", message: "Contractor access required." };
   return uploadMyDocumentCore(actor, data, opts);
 }
 export async function uploadMySelfieHandler(data: unknown, opts?: { fetchImpl?: typeof fetch }): Promise<UploadSelfieResult> {
   if (!configured()) return { ok: false, code: "database_error", message: "Selfie uploads require database mode." };
   const actor = await resolveContractorActor();
-  if (!actor) return { ok: false, code: "unauthorized", message: "Driver access required." };
+  if (!actor) return { ok: false, code: "unauthorized", message: "Contractor access required." };
   return uploadMySelfieCore(actor, data, opts);
 }
 export async function getSelfieFileHandler(data: unknown, opts?: { fetchImpl?: typeof fetch }): Promise<ContractorAdminResult<DocFilePayload>> {
@@ -1760,7 +1768,7 @@ export async function getSelfieFileHandler(data: unknown, opts?: { fetchImpl?: t
 export async function getMyComplianceHandler(): Promise<ContractorAdminResult<MyCompliance>> {
   if (!configured()) return DB_MODE_ERR("Compliance");
   const actor = await resolveContractorActor();
-  if (!actor) return err("unauthorized", "Driver access required.");
+  if (!actor) return err("unauthorized", "Contractor access required.");
   return getMyComplianceCore(actor);
 }
 export async function getComplianceGateHandler(): Promise<{ ok: true } | { ok: false; code: "docs_incomplete"; approved: number; required: number; message: string }> {
@@ -1777,7 +1785,7 @@ export async function getComplianceGateHandler(): Promise<{ ok: true } | { ok: f
 export async function completeNotificationsLocationHandler(data: unknown): Promise<CompleteNotificationsLocationResult> {
   if (!configured()) return err("database_error", "Notifications & Location requires database mode.");
   const actor = await resolveContractorActor();
-  if (!actor) return err("unauthorized", "Driver access required.");
+  if (!actor) return err("unauthorized", "Contractor access required.");
   return completeNotificationsLocationCore(actor, data);
 }
 export async function seedMandatedDocTypesHandler(): Promise<ContractorAdminResult<DocTypeRow[]>> {
@@ -1807,13 +1815,13 @@ export async function setContractorScheduleHandler(data: unknown): Promise<Contr
 export async function getMyScheduleHandler(): Promise<ContractorAdminResult<ContractorScheduleRow>> {
   if (!configured()) return DB_MODE_ERR("Schedule");
   const actor = await resolveContractorActor();
-  if (!actor) return err("unauthorized", "Driver access required.");
+  if (!actor) return err("unauthorized", "Contractor access required.");
   return getMyScheduleCore(actor);
 }
 export async function setMyScheduleHandler(data: unknown): Promise<ContractorAdminResult<ContractorScheduleRow>> {
   if (!configured()) return DB_MODE_ERR("Schedule");
   const actor = await resolveContractorActor();
-  if (!actor) return err("unauthorized", "Driver access required.");
+  if (!actor) return err("unauthorized", "Contractor access required.");
   return setMyScheduleCore(actor, data);
 }
 
@@ -1832,13 +1840,13 @@ export type { FormSubmissionView, SubmitFormResult, I9IdentityDocRow } from "./f
 
 export async function submitW9FormHandler(data: unknown): Promise<SubmitFormResult> {
   const actor = await resolveContractorActor();
-  if (!actor) return { ok: false, code: "unauthorized", message: "Driver access required." };
+  if (!actor) return { ok: false, code: "unauthorized", message: "Contractor access required." };
   return submitW9FormCore(actor, data);
 }
 
 export async function submitI9FormHandler(data: unknown): Promise<SubmitFormResult> {
   const actor = await resolveContractorActor();
-  if (!actor) return { ok: false, code: "unauthorized", message: "Driver access required." };
+  if (!actor) return { ok: false, code: "unauthorized", message: "Contractor access required." };
   return submitI9FormCore(actor, data);
 }
 
