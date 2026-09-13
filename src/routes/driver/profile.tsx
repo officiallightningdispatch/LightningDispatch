@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { BadgeCheck, CalendarClock, Camera, ClipboardCheck, ChevronRight, Crown, FileText, LifeBuoy, LogOut, Star, Trash2, Truck, User, Wallet, X } from "lucide-react";
+import { BadgeCheck, BarChart3, CalendarClock, Camera, ClipboardCheck, ChevronRight, Crown, FileText, GraduationCap, LifeBuoy, LogOut, Star, Trash2, Truck, User, Wallet, Wrench, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { AppShell } from "~/components/app-shell";
 import { DriverToolbar } from "~/components/driver-queue";
@@ -122,7 +122,7 @@ function ProfileView() {
     }
   };
   return (
-    <AppShell portal="driver" title="Profile" description="Your account details and sign-out.">
+    <AppShell portal="driver" title="Menu" description="Account, documents, services, earnings tools, and support.">
       <DriverToolbar loading={loading} onRefresh={() => undefined} onSignOut={() => void signOut()} />
       {loading ? (
         <div className="h-40 animate-pulse rounded-2xl bg-ink-100/70" aria-busy="true" />
@@ -204,8 +204,32 @@ function ProfileView() {
             </span>
             <span className="min-w-0 flex-1">
               <span className="block text-sm font-bold text-ink-800">Documents</span>
-              <span className="block text-xs text-ink-500">Upload required paperwork — W-9, I-9, license, insurance</span>
+              <span className="block text-xs text-ink-500">Tax form, automatic identity verification, and insurance</span>
             </span>
+            <ChevronRight className="size-4 shrink-0 text-ink-400" />
+          </Link>
+          <Link
+            to="/driver/services"
+            className="flex items-center gap-3 rounded-2xl bg-surface p-4 ring-1 ring-ink-100 transition-colors duration-150 hover:bg-hover"
+          >
+            <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-brand-50 text-brand-600"><Wrench className="size-5" /></span>
+            <span className="min-w-0 flex-1"><span className="block text-sm font-bold text-ink-800">Services</span><span className="block text-xs text-ink-500">Choose the roadside work you are equipped to perform</span></span>
+            <ChevronRight className="size-4 shrink-0 text-ink-400" />
+          </Link>
+          <Link
+            to="/driver/metrics"
+            className="flex items-center gap-3 rounded-2xl bg-surface p-4 ring-1 ring-ink-100 transition-colors duration-150 hover:bg-hover"
+          >
+            <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-brand-50 text-brand-600"><BarChart3 className="size-5" /></span>
+            <span className="min-w-0 flex-1"><span className="block text-sm font-bold text-ink-800">Metrics</span><span className="block text-xs text-ink-500">Performance, completion times, and service goals</span></span>
+            <ChevronRight className="size-4 shrink-0 text-ink-400" />
+          </Link>
+          <Link
+            to="/driver/academy"
+            className="flex items-center gap-3 rounded-2xl bg-surface p-4 ring-1 ring-ink-100 transition-colors duration-150 hover:bg-hover"
+          >
+            <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-brand-50 text-brand-600"><GraduationCap className="size-5" /></span>
+            <span className="min-w-0 flex-1"><span className="block text-sm font-bold text-ink-800">Lightning Academy</span><span className="block text-xs text-ink-500">Training and coaching</span></span>
             <ChevronRight className="size-4 shrink-0 text-ink-400" />
           </Link>
           <Link
