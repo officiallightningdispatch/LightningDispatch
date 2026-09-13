@@ -205,6 +205,8 @@ type FormWriteMeta = {
   taxIdValue: string | null;
   payload: Record<string, unknown>;
   identityDocs?: FormIdentityDoc[];
+  /** Self-certified forms (W-9) do not require a second owner approval step. */
+  autoVerify?: boolean;
 };
 
 async function connectB2(opts: { fetchImpl?: typeof fetch; b2StableDir?: string } = {}): Promise<{ b2: { config: Awaited<ReturnType<typeof loadB2Config>>; s3ApiUrl: string } } | { b2: null; error: string }> {
@@ -247,11 +249,12 @@ async function writeFormSubmission(actor: ContractorAdminActor, meta: FormWriteM
       }
     }
     const formFileName = `${meta.formKind === "i9" ? "Form I-9" : "Form W-9"} (completed).pdf`;
+    const docStatus = meta.autoVerify === true ? "verified" : "uploaded";
     await q`INSERT INTO contractor_documents(id, org_id, contractor_id, doc_type_id, storage_key, file_name, mime, size_bytes, status, expires_on, review_note, uploaded_by_user_id, updated_at)
-      VALUES(gen_random_uuid()::text, ${actor.orgId}, ${actor.id}, ${meta.docTypeId}, ${meta.pdfKey}, ${formFileName}, 'application/pdf', ${meta.pdfBytes.length}, 'uploaded', NULL, NULL, ${actor.id}, NOW())
+      VALUES(gen_random_uuid()::text, ${actor.orgId}, ${actor.id}, ${meta.docTypeId}, ${meta.pdfKey}, ${formFileName}, 'application/pdf', ${meta.pdfBytes.length}, ${docStatus}, NULL, NULL, ${actor.id}, NOW())
       ON CONFLICT (org_id, contractor_id, doc_type_id) DO UPDATE SET
         storage_key=EXCLUDED.storage_key, file_name=EXCLUDED.file_name, mime=EXCLUDED.mime,
-        size_bytes=EXCLUDED.size_bytes, status='uploaded', expires_on=NULL,
+        size_bytes=EXCLUDED.size_bytes, status=${docStatus}, expires_on=NULL,
         review_note=NULL, uploaded_by_user_id=EXCLUDED.uploaded_by_user_id, uploaded_at=NOW(), updated_at=NOW()`;
     await recordAudit(actor, "contractor_form_submitted", meta.docTypeId, {
       docTypeId: meta.docTypeId,
@@ -263,7 +266,7 @@ async function writeFormSubmission(actor: ContractorAdminActor, meta: FormWriteM
       // NOTE: deliberately NO payload and NO tax id — the SSN/EIN must never
       // appear in audit detail (owner-directed 2026-08-12).
     });
-    return { ok: true, docTypeId: meta.docTypeId, storageKey: meta.pdfKey, status: "uploaded" };
+    return { ok: true, docTypeId: meta.docTypeId, storageKey: meta.pdfKey, status: meta.autoVerify === true ? "verified" : "uploaded" };
   } catch (e) {
     return { ok: false, code: "database_error", message: e instanceof Error ? e.message : "Unable to save the form." };
   }
@@ -307,6 +310,7 @@ export async function submitW9FormCore(actor: ContractorAdminActor, data: unknow
       pdfBytes: buildW9Pdf(w9Values),
       taxIdValue: `${v.data.taxIdType}:${v.data.taxId}`,
       payload,
+      autoVerify: true,
     }, opts);
   } catch (e) {
     return { ok: false, code: "database_error", message: e instanceof Error ? e.message : "Unable to submit the W-9." };
