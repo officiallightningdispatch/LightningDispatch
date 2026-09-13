@@ -20,6 +20,7 @@ export const getProductionReadiness = createServerFn({ method: "GET" }).handler(
   const has = (name: string) => Boolean(process.env[name]?.trim());
   const checks: ReadinessCheck[] = [
     { key: "database", label: "Production database", ok: has("DATABASE_URL"), detail: has("DATABASE_URL") ? "Configured" : "Missing DATABASE_URL", required: true },
+    { key: "encryption", label: "Sensitive PII encryption key", ok: has("BANK_ENCRYPTION_KEY"), detail: has("BANK_ENCRYPTION_KEY") ? "AES-256-GCM key configured" : "Missing BANK_ENCRYPTION_KEY — tax IDs/bank data must not rely on ephemeral server storage", required: true },
     { key: "b2", label: "Encrypted document storage", ok: has("B2_KEY_ID") && has("B2_APPLICATION_KEY") && has("B2_BUCKET_NAME"), detail: has("B2_KEY_ID") && has("B2_APPLICATION_KEY") && has("B2_BUCKET_NAME") ? "Credentials present" : "Missing Backblaze B2 runtime variables", required: true },
     { key: "stripe", label: "Stripe Connect + Identity", ok: has("STRIPE_SECRET_KEY"), detail: has("STRIPE_SECRET_KEY") ? "Secret key configured" : "Missing STRIPE_SECRET_KEY", required: true },
     { key: "payouts", label: "Instant payouts", ok: (process.env.STRIPE_CONNECT_PAYOUTS_ENABLED ?? "").trim().toLowerCase() === "true", detail: (process.env.STRIPE_CONNECT_PAYOUTS_ENABLED ?? "").trim().toLowerCase() === "true" ? "Money-move gate enabled" : "STRIPE_CONNECT_PAYOUTS_ENABLED is not true", required: true },
