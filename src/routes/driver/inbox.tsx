@@ -41,12 +41,10 @@ function DriverInbox() {
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-bold text-ink-900">{statusText(call.statusId)}</p>
                 <p className="mt-0.5 truncate text-sm text-ink-600">
-                  {call.customer || call.vehicle || call.pickup || `Job #${call.id}`}
+                  {call.customerName || call.vehicle || call.serviceName || `Job #${call.callNumber || call.id}`}
                 </p>
-                {(call.pickup || call.dropoff) && (
-                  <p className="mt-1 line-clamp-2 text-xs text-ink-400">
-                    {[call.pickup, call.dropoff].filter(Boolean).join(" → ")}
-                  </p>
+                {call.pickupAddress && (
+                  <p className="mt-1 line-clamp-2 text-xs text-ink-400">{call.pickupAddress}</p>
                 )}
               </div>
             </Card>
