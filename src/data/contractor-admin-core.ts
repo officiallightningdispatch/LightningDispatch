@@ -1536,9 +1536,10 @@ export async function completeNotificationsLocationCore(
 
 /* ----------------------- mandated doc set seed (owner-directed) ----------------------- */
 
-/** The owner-mandated required doc set (2026-08-12): W-9, I-9, Driver's license
- *  with facial verification (license photo + live selfie pair, both required),
- *  and Insurance information. This SUPERSEDES the spec's original "suggestions,
+/** The owner-mandated independent-contractor doc set: W-9, Driver's license
+ *  with identity verification, Insurance information, and required device
+ *  permissions. Form I-9 remains supported for a future employee workflow but
+ *  is explicitly deactivated for the 1099 contractor path. This SUPERSEDES the spec's original "suggestions,
  *  never auto-seeded" stance: the set is auto-seeded for the PRODUCTION org at
  *  server boot (serve.ts) so the owner's real drivers see the mandated types on
  *  day one, and owner/admin can seed any org on demand from the Required-
@@ -1571,6 +1572,16 @@ export const MANDATED_DOC_TYPES: Array<{ name: string; requiresExpiry: boolean; 
 async function seedMandatedDocTypesUnsafe(orgId: string, auditActor?: ContractorAdminActor | null): Promise<DocTypeRow[]> {
   await ensure();
   const q = await db();
+
+  // 1099 contractor onboarding must not require Form I-9. Older deployments
+  // seeded it as an active required document, so merely removing it from
+  // MANDATED_DOC_TYPES would leave existing contractors permanently gated.
+  // Deactivate the legacy type in place (preserving any historical form rows)
+  // every time the idempotent production seed runs.
+  await q`UPDATE contractor_doc_types
+    SET active=FALSE
+    WHERE org_id=${orgId} AND LOWER(name)='i-9' AND active=TRUE`;
+
   const existing = await q`SELECT LOWER(name) AS n FROM contractor_doc_types WHERE org_id=${orgId}`;
   const have = new Set((existing as Record<string, unknown>[]).map((r) => String(r.n)));
   const added: DocTypeRow[] = [];
