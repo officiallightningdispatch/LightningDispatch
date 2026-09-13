@@ -1102,11 +1102,31 @@ async function listContractorDocumentsUnchecked(actor: ContractorAdminActor, con
       : await q`SELECT 1 FROM organization_memberships m WHERE m.org_id=${actor.orgId} AND m.user_id=${contractorId} AND (m.role='contractor' OR EXISTS (SELECT 1 FROM users u JOIN towbook_sessions ts ON ts.org_id=${actor.orgId} AND ts.towbook_driver_id=u.towbook_driver_id WHERE u.id=m.user_id AND u.towbook_driver_id IS NOT NULL)) LIMIT 1`;
     if (!member.length) return err("not_found", "That contractor isn't on this account.");
     if (self) {
-      const ident = await q`SELECT towbook_driver_id, linked_driver_user_id, deactivated_at FROM users WHERE id=${contractorId} LIMIT 1`;
+      // Applicants are already contractor members, but intentionally do not
+      // receive a dispatch-provider driver identity until owner activation.
+      // They must still be able to complete onboarding paperwork while their
+      // application is submitted/under review. Keep dispatch/offer gates tied
+      // to effectiveDriverIdentity elsewhere; this exception is documents-only.
+      const ident = await q`SELECT u.towbook_driver_id, u.linked_driver_user_id, u.deactivated_at,
+          m.role,
+          EXISTS (
+            SELECT 1 FROM contractor_applications a
+            WHERE a.org_id=${actor.orgId} AND a.user_id=u.id
+              AND a.status IN ('submitted','under_review','approved')
+          ) AS onboarding_applicant
+        FROM users u
+        JOIN organization_memberships m ON m.org_id=${actor.orgId} AND m.user_id=u.id
+        WHERE u.id=${contractorId} LIMIT 1`;
       const hasIdentity = ident.length > 0
         && (ident[0].towbook_driver_id != null || ident[0].linked_driver_user_id != null)
         && ident[0].deactivated_at == null;
-      if (!hasIdentity) return err("unauthorized", "Contractor access required.");
+      const isOnboardingApplicant = ident.length > 0
+        && ident[0].role === "contractor"
+        && ident[0].onboarding_applicant === true
+        && ident[0].deactivated_at == null;
+      if (!hasIdentity && !isOnboardingApplicant) {
+        return err("unauthorized", "Contractor access required.");
+      }
     }
     const rows = await q`SELECT t.id AS doc_type_id, t.name AS doc_type_name, t.requires_expiry, t.requires_facial_verification, t.form_kind, t.requires_notifications_location, t.sort_order,
         d.id AS doc_id, d.file_name, d.mime, d.size_bytes, d.expires_on, d.review_note, d.uploaded_at, d.uploaded_by_user_id, d.status AS stored_status,
