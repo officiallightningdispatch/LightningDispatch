@@ -9,6 +9,7 @@ import { getGeofenceSettingsFn, updateGeofenceSettings } from "~/data/driver-gps
 import { driverLinkStatus, linkDriverAccount, unlinkDriverAccount, type DriverLinkStatus } from "~/data/auth";
 import { tirePlugRate, setTirePlugRate } from "~/data/tire-plug";
 import { listBatteryProducts, upsertBatteryProduct } from "~/data/battery-pricebook";
+import { getProductionReadiness, type ProductionReadiness } from "~/data/production-readiness";
 
 export const Route = createFileRoute("/owner/settings")({ component: OwnerSettings });
 function OwnerSettings() {
@@ -26,6 +27,7 @@ function OwnerSettings() {
     <Card className="border-brand-200 bg-gradient-to-br from-brand-50/70 to-surface p-6 sm:p-8"><div className="flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between"><div className="flex gap-4"><span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-brand-500 text-white"><Plug className="size-6" /></span><div><p className="text-xs font-bold uppercase tracking-wider text-brand-700">Dispatch integration</p><h2 className="mt-1 text-xl font-bold">Towbook</h2><p className="mt-1 max-w-lg text-sm text-ink-500">Bring live roadside jobs into Lightning Dispatch and keep your queue current.</p>{status.connected&&<p className="mt-3 flex items-center gap-2 text-sm font-semibold text-success-700"><CheckCircle2 className="size-4"/>Connected{status.lastSyncAt&&` · Last sync ${new Date(status.lastSyncAt).toLocaleString()}`}</p>}</div></div><div className="flex shrink-0 flex-col gap-2 sm:items-end">{status.connected?<div className="flex gap-2"><Button variant="secondary" onClick={syncNow} loading={sync.pending}><RefreshCw className="size-4"/>Sync now</Button><Button variant="ghost" className="border border-ink-200" onClick={disconnect} loading={pending}>Disconnect</Button></div>:<Button className="shrink-0" onClick={()=>{setOpen(true);setError("")}}>Connect Towbook</Button>}</div></div>
     {lastShown&&<SyncResultLine result={lastShown}/>}
     {success&&<p className="mt-5 rounded-xl bg-success-50 p-3 text-sm text-success-700">Towbook connected securely. The background puller can now use this session.</p>}{error&&!open&&<p className="mt-5 flex gap-2 rounded-xl bg-danger-50 p-3 text-sm text-danger-700"><AlertTriangle className="size-4 shrink-0"/>{error}</p>}</Card>
+    <div className="mt-6"><ProductionReadinessCard /></div>
     <div className="mt-6"><DriverAccountCard /></div>
     <div className="mt-6"><GeofenceSettingsCard /></div>
     <div className="mt-6"><TirePlugRateCard /></div>
@@ -35,6 +37,51 @@ function OwnerSettings() {
     <div className="mt-6"><Link to="/owner/batteries" className="text-sm font-semibold text-brand-600 underline">Battery compatibility reviews</Link></div>
     {open&&<div className="fixed inset-0 z-50 grid place-items-center bg-ink-950/40 p-4" role="dialog" aria-modal="true" aria-labelledby="towbook-title"><Card className="w-full max-w-md p-6"><div className="flex items-start justify-between gap-4"><div><span className="grid size-10 place-items-center rounded-xl bg-brand-50 text-brand-600"><Plug className="size-5"/></span><h2 id="towbook-title" className="mt-4 text-xl font-bold">Connect Towbook</h2></div><button className="grid size-11 place-items-center rounded-xl text-ink-400 hover:bg-ink-50" aria-label="Close" onClick={()=>setOpen(false)}><X className="size-5"/></button></div><p className="mt-4 text-sm leading-relaxed text-ink-600">Enter your Towbook login once. Your password is used only to establish an encrypted session and is never stored.</p><form onSubmit={submit} className="mt-5 space-y-4"><label className="block text-sm font-semibold">Towbook username<input required type="text" value={username} onChange={e=>setUsername(e.target.value)} placeholder="e.g. mjohnson — often your email" className="mt-1 h-11 w-full rounded-xl border border-ink-200 px-3"/></label><label className="block text-sm font-semibold">Towbook password<input required type="password" value={password} onChange={e=>setPassword(e.target.value)} className="mt-1 h-11 w-full rounded-xl border border-ink-200 px-3"/></label>{error&&<p className="flex gap-2 rounded-xl bg-danger-50 p-3 text-sm text-danger-700"><AlertTriangle className="size-4 shrink-0"/>{error}</p>}<Button type="submit" className="w-full" loading={pending}>Connect securely</Button></form></Card></div>}
   </AppShell>;
+}
+
+function ProductionReadinessCard() {
+  const [state, setState] = useState<ProductionReadiness | null>(null);
+  const [loading, setLoading] = useState(true);
+  const refresh = async () => {
+    setLoading(true);
+    try { setState(await getProductionReadiness()); } finally { setLoading(false); }
+  };
+  useEffect(() => { void refresh(); }, []);
+  return (
+    <Card className="p-6 sm:p-8">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-bold uppercase tracking-wider text-ink-500">Launch readiness</p>
+          <h2 className="mt-1 text-xl font-bold">Production systems</h2>
+          <p className="mt-1 max-w-xl text-sm text-ink-500">Live configuration checks only — secret values are never displayed.</p>
+        </div>
+        <Button size="sm" variant="secondary" loading={loading} onClick={() => void refresh()}>
+          <RefreshCw className="size-4" /> Refresh
+        </Button>
+      </div>
+      {loading && !state ? (
+        <div className="mt-5 h-28 animate-pulse rounded-xl bg-ink-100/70" />
+      ) : state ? (
+        <>
+          <p className={`mt-4 inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-bold ${state.ready ? "bg-success-50 text-success-700" : "bg-danger-50 text-danger-700"}`}>
+            {state.ready ? <CheckCircle2 className="size-4" /> : <AlertTriangle className="size-4" />}
+            {state.ready ? "Core production services configured" : "Launch blockers remain"}
+          </p>
+          <div className="mt-4 grid gap-2 sm:grid-cols-2">
+            {state.checks.map((check) => (
+              <div key={check.key} className="flex items-start gap-2 rounded-xl border border-ink-100 p-3">
+                {check.ok ? <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-success-600" /> : <AlertTriangle className={`mt-0.5 size-4 shrink-0 ${check.required ? "text-danger-600" : "text-amber-600"}`} />}
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-ink-800">{check.label}{check.required ? "" : " · optional"}</p>
+                  <p className="break-words text-xs text-ink-500">{check.detail}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : null}
+    </Card>
+  );
 }
 
 /** One result line for a sync run — the fresh run after clicking Sync now, or the
