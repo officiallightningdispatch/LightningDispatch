@@ -22,6 +22,7 @@ import {
   type MyCompliance,
 } from "~/data/contractor-admin";
 import { driverLogout } from "~/data/driver-auth";
+import { getIdentityVerificationStatus, startIdentityVerification } from "~/data/identity-verification";
 import { PushSelfTestPanel } from "~/components/push-setup";
 import {
   ensureNativePushRegistration,
@@ -143,15 +144,57 @@ function DocumentsView() {
   const [nlSheet, setNlSheet] = useState<{ docTypeId: string; title: string } | null>(null);
   const [viewer, setViewer] = useState<{ title: string; file: DocFilePayload } | null>(null);
   const [viewerLoading, setViewerLoading] = useState(false);
+  const [identityStatus, setIdentityStatus] = useState<"not_started" | "requires_input" | "processing" | "verified" | "canceled" | "unknown">("not_started");
+  const [identityConfigured, setIdentityConfigured] = useState(true);
+  const [identityBusy, setIdentityBusy] = useState(false);
+  const [identityMessage, setIdentityMessage] = useState("");
+
+  const refreshIdentity = async () => {
+    try {
+      const r = await getIdentityVerificationStatus();
+      if (!r.ok) { setIdentityMessage(r.message); return false; }
+      setIdentityConfigured(r.data.configured);
+      setIdentityStatus(r.data.status);
+      setIdentityMessage(r.data.message ?? "");
+      return r.data.status === "verified";
+    } catch {
+      return false;
+    }
+  };
 
   const load = async () => {
     setLoading(true);
+    const verifiedNow = await refreshIdentity();
     const [d, c] = await Promise.all([getMyDocuments(), getMyCompliance()]);
     if (d.ok) { setRows(d.data); setError(""); } else setError(d.message);
     if (c.ok) setCompliance(c.data);
+    // Stripe can flip the license/selfie proof to verified during the status
+    // read immediately before these document reads; no owner review required.
+    if (verifiedNow) setIdentityStatus("verified");
     setLoading(false);
   };
   useEffect(() => { void load(); }, []);
+
+  const beginIdentityVerification = async () => {
+    setIdentityBusy(true);
+    setIdentityMessage("");
+    try {
+      const r = await startIdentityVerification({ data: { returnUrl: window.location.href } });
+      if (r.ok) {
+        window.location.assign(r.data.url);
+        return;
+      }
+      if (r.code === "already_verified") {
+        await load();
+        return;
+      }
+      setIdentityMessage(r.message);
+    } catch {
+      setIdentityMessage("Automatic identity verification could not be started — try again.");
+    } finally {
+      setIdentityBusy(false);
+    }
+  };
 
   const signOut = async () => {
     await driverLogout();
@@ -215,6 +258,17 @@ function DocumentsView() {
             )}
           </Card>
 
+          {identityMessage && (
+            <Card className="border border-accent-200 bg-accent-50 p-3">
+              <p className="text-xs font-medium text-accent-800">{identityMessage}</p>
+            </Card>
+          )}
+          {!identityConfigured && (
+            <Card className="border border-danger-200 bg-danger-50 p-3">
+              <p className="text-xs font-medium text-danger-700">Automatic identity verification is temporarily unavailable. Contact support before going online.</p>
+            </Card>
+          )}
+
           {/* per-type rows */}
           <div className="space-y-3">
             {rows.map((row) => (
@@ -226,14 +280,23 @@ function DocumentsView() {
                       <p className="mt-1"><DocStatusBadge status={row.status} /></p>
                       {row.docTypeName.toLowerCase().includes("license") && (
                         <p className="mt-2 text-[11px] leading-relaxed text-ink-500">
-                          {row.docTypeName.toLowerCase().includes("back")
-                            ? "Back scan: keep it flat and well lit; make the barcode and all text legible."
-                            : "Front photo: capture the entire card in focus with all text readable."}
+                          {row.status === "verified"
+                            ? "Identity verified automatically — no manual owner review is required."
+                            : row.docTypeName.toLowerCase().includes("front")
+                              ? "Secure verification checks your government ID and matches a live selfie automatically."
+                              : "The back of your license is collected automatically during the same secure identity check."}
                         </p>
                       )}
                     </div>
                     <div className="flex shrink-0 gap-2">
-                      {row.requiresNotificationsLocation ? (
+                      {row.docTypeName.toLowerCase().includes("driver's license") ? (
+                        row.status === "verified" ? null : row.docTypeName.toLowerCase().includes("front") ? (
+                          <Button size="sm" loading={identityBusy} disabled={!identityConfigured} onClick={() => void beginIdentityVerification()}>
+                            <Camera className="size-3.5" aria-hidden="true" />
+                            {identityStatus === "requires_input" ? "Continue verification" : identityStatus === "processing" ? "Checking…" : "Verify identity"}
+                          </Button>
+                        ) : null
+                      ) : row.requiresNotificationsLocation ? (
                         row.status === "verified" ? null : (
                           <Button size="sm" onClick={() => setNlSheet({ docTypeId: row.docTypeId, title: row.docTypeName })}>
                             <Bell className="size-3.5" aria-hidden="true" />
@@ -286,7 +349,7 @@ function DocumentsView() {
                   )}
                 </div>
 
-                {row.requiresFacialVerification && (
+                {row.requiresFacialVerification && !row.docTypeName.toLowerCase().includes("driver's license") && (
                   <div className="border-t border-ink-100 bg-ink-50/50 p-4">
                     <div className="flex items-center justify-between gap-2">
                       <div className="min-w-0">
