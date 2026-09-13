@@ -1541,7 +1541,9 @@ export async function completeNotificationsLocationCore(
  *  FORMS — the driver fills the form instead of uploading a photo. */
 export const MANDATED_DOC_TYPES: Array<{ name: string; requiresExpiry: boolean; requiresFacialVerification: boolean; formKind: FormKind | null; requiresNotificationsLocation?: boolean }> = [
   { name: "W-9", requiresExpiry: false, requiresFacialVerification: false, formKind: "w9" },
-  { name: "I-9", requiresExpiry: false, requiresFacialVerification: false, formKind: "i9" },
+  // I-9 is intentionally not mandated for the independent-contractor
+  // onboarding path. The existing I-9 form support remains available if the
+  // business later adds an employee workflow.
   { name: "Driver's License — Front", requiresExpiry: true, requiresFacialVerification: true, formKind: null },
   { name: "Driver's License — Back", requiresExpiry: true, requiresFacialVerification: false, formKind: null },
   { name: "Insurance information", requiresExpiry: true, requiresFacialVerification: false, formKind: null },
