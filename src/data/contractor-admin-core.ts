@@ -101,7 +101,7 @@ export type DocTypeRow = {
    *  docs are FILLABLE OFFICIAL FORMS, not uploads. 'i9' | 'w9' | null. */
   formKind: FormKind | null;
   /** SELF-COMPLETED permissions type (owner-directed 2026-08-13): the
-   *  "Notifications & Location" required item. The driver completes it by
+   *  "Notifications, Location & Motion" required item. The driver completes it by
    *  granting notifications + saving a push subscription + sharing a live GPS
    *  fix; the server verifies all three and flips the doc to 'verified' —
    *  counted by the SAME compliance gate as every other required type. */
@@ -1435,15 +1435,16 @@ export async function getComplianceGateCore(actor: ContractorAdminActor): Promis
   };
 }
 
-/* ---------------- Notifications & Location (self-completed, owner 2026-08-13) ---------------- */
+/* ---------------- Notifications, Location & Motion (self-completed, owner 2026-08-13) ---------------- */
 
 const NOTIF_LOC_SCHEMA = z.object({
   latitude: z.number().min(-90).max(90),
   longitude: z.number().min(-180).max(180),
   accuracy: z.number().min(0).max(100000).nullable().optional(),
+  motionGranted: z.literal(true),
 });
 
-/** The "Notifications & Location" REQUIRED item (owner-directed 2026-08-13):
+/** The "Notifications, Location & Motion" REQUIRED item (owner-directed 2026-08-13):
  *  the driver completes it IN the driver app — this endpoint verifies BOTH
  *  halves server-side before marking the doc verified:
  *    1. a REAL push subscription is saved for this contractor
@@ -1451,7 +1452,7 @@ const NOTIF_LOC_SCHEMA = z.object({
  *    2. a REAL geolocation fix captured in THIS call (stored as a
  *       driver_locations ping — the same table the owner live map reads).
  *  Only then is the contractor_documents row for the org's active
- *  "Notifications & Location" type flipped to 'verified' — the SAME status the
+ *  "Notifications, Location & Motion" type flipped to 'verified' — the SAME status the
  *  compliance gate requires from every required type, so going online stays
  *  blocked until it's done. No owner review (the proof is the rows, not a
  *  photo). Never throws; audited. */
@@ -1475,11 +1476,17 @@ export async function completeNotificationsLocationCore(
     await ensure();
     const q = await db();
     const types = await q`SELECT id FROM contractor_doc_types WHERE org_id=${actor.orgId} AND active=TRUE AND requires_notifications_location=TRUE ORDER BY created_at ASC LIMIT 1`;
-    if (!types.length) return err("not_found", "Notifications & Location isn't a required item on this account.");
+    if (!types.length) return err("not_found", "Notifications, Location & Motion isn't a required item on this account.");
     const docTypeId = String(types[0].id);
-    const subs = await q`SELECT COUNT(*)::int AS c FROM push_subscriptions WHERE org_id=${actor.orgId} AND user_id=${actor.id}`;
-    if (Number(subs[0]?.c ?? 0) === 0) {
+    const subs = await q`SELECT
+        (SELECT COUNT(*)::int FROM push_subscriptions WHERE org_id=${actor.orgId} AND user_id=${actor.id}) AS web_count,
+        (SELECT COUNT(*)::int FROM apns_device_tokens WHERE org_id=${actor.orgId} AND user_id=${actor.id}) AS apns_count`;
+    const pushCount = Number(subs[0]?.web_count ?? 0) + Number(subs[0]?.apns_count ?? 0);
+    if (pushCount === 0) {
       return err("invalid_input", "Enable notifications first — tap “Allow notifications” and make sure your phone confirms they're on.");
+    }
+    if (v.data.motionGranted !== true) {
+      return err("invalid_input", "Motion & Fitness permission is required on iPhone before you can go online.");
     }
     // Real GPS fix → real driver_locations ping (owner live map sees it too).
     await q`INSERT INTO driver_locations(id, org_id, driver_id, towbook_driver_id, job_id, latitude, longitude, accuracy)
@@ -1487,14 +1494,14 @@ export async function completeNotificationsLocationCore(
     // Flip the doc to verified (upsert — the unique (org, contractor, type) index).
     const id = `doc-${cryptoRandomId()}`;
     const rows = await q`INSERT INTO contractor_documents(id, org_id, contractor_id, doc_type_id, storage_key, file_name, mime, size_bytes, status, uploaded_by_user_id, uploaded_at, updated_at)
-      VALUES(${id}, ${actor.orgId}, ${actor.id}, ${docTypeId}, 'permissions://notifications-location', 'Notifications + location enabled', NULL, NULL, 'verified', ${actor.id}, NOW(), NOW())
+      VALUES(${id}, ${actor.orgId}, ${actor.id}, ${docTypeId}, 'permissions://notifications-location', 'Notifications + location + motion enabled', NULL, NULL, 'verified', ${actor.id}, NOW(), NOW())
       ON CONFLICT (org_id, contractor_id, doc_type_id) DO UPDATE SET
-        status='verified', storage_key='permissions://notifications-location', file_name='Notifications + location enabled', review_note=NULL, updated_at=NOW()
+        status='verified', storage_key='permissions://notifications-location', file_name='Notifications + location + motion enabled', review_note=NULL, updated_at=NOW()
       RETURNING id, doc_type_id, status, expires_on, review_note, uploaded_at, uploaded_by_user_id`;
     const row = rows[0] as Record<string, unknown>;
     await recordAudit(actor, "contractor_doc_verified", String(row.id), {
       docTypeId,
-      name: "Notifications & Location",
+      name: "Notifications, Location & Motion",
       via: "driver-self-complete",
       latitude: v.data.latitude,
       longitude: v.data.longitude,
@@ -1502,7 +1509,7 @@ export async function completeNotificationsLocationCore(
     const nameRows = await q`SELECT name FROM contractor_doc_types WHERE id=${docTypeId}`;
     const doc: ContractorDocumentRow = {
       docTypeId,
-      docTypeName: String(nameRows[0]?.name ?? "Notifications & Location"),
+      docTypeName: String(nameRows[0]?.name ?? "Notifications, Location & Motion"),
       requiresExpiry: false,
       requiresFacialVerification: false,
       formKind: null,
@@ -1510,7 +1517,7 @@ export async function completeNotificationsLocationCore(
       requiresNotificationsLocation: true,
       status: "verified",
       docId: String(row.id),
-      fileName: String(row.file_name ?? "Notifications + location enabled"),
+      fileName: String(row.file_name ?? "Notifications + location + motion enabled"),
       mime: null,
       sizeBytes: null,
       expiresOn: null,
@@ -1553,7 +1560,7 @@ export const MANDATED_DOC_TYPES: Array<{ name: string; requiresExpiry: boolean; 
   // GPS fix; completeNotificationsLocationCore verifies both server-side and
   // flips the doc to 'verified'. The SAME compliance gate enforces it — going
   // online is blocked until every required item, this one included, is done.
-  { name: "Notifications & Location", requiresExpiry: false, requiresFacialVerification: false, formKind: null, requiresNotificationsLocation: true },
+  { name: "Notifications, Location & Motion", requiresExpiry: false, requiresFacialVerification: false, formKind: null, requiresNotificationsLocation: true },
 ];
 
 /** Core seeding logic — throws on failure so callers decide how to surface it.
@@ -1799,13 +1806,13 @@ export async function getComplianceGateHandler(): Promise<{ ok: true } | { ok: f
   if (!actor) return { ok: true };
   return getComplianceGateCore(actor);
 }
-/** Driver completes the "Notifications & Location" required item (owner-directed
+/** Driver completes the "Notifications, Location & Motion" required item (owner-directed
  *  2026-08-13): grants notifications (push subscription saved) + shares a live
  *  GPS fix. The server verifies both and marks the doc verified — the SAME
  *  compliance gate then opens. Owner-in-driver-view resolves to the same
  *  effective driver. */
 export async function completeNotificationsLocationHandler(data: unknown): Promise<CompleteNotificationsLocationResult> {
-  if (!configured()) return err("database_error", "Notifications & Location requires database mode.");
+  if (!configured()) return err("database_error", "Notifications, Location & Motion requires database mode.");
   const actor = await resolveContractorActor();
   if (!actor) return err("unauthorized", "Contractor access required.");
   return completeNotificationsLocationCore(actor, data);
