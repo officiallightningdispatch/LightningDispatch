@@ -327,7 +327,7 @@ function DocumentsView() {
                   )}
                   {row.formKind && row.status === "uploaded" && (
                     <p className="mt-2 text-[11px] leading-relaxed text-ink-500">
-                      Your completed form is with the owner for review — it&apos;s not shown back to you after submission.
+                      Your completed form is securely stored. Sensitive tax information is never shown back to you after submission.
                     </p>
                   )}
                   {row.requiresNotificationsLocation && row.status !== "verified" && (
@@ -1011,8 +1011,8 @@ function W9FormSheet({ docTypeId, onClose, onSubmitted }: { docTypeId: string; o
         },
       });
       if (!r.ok) throw new Error(r.message);
-      toast("W-9 submitted — the owner will review it.");
-      onSubmitted("W-9 submitted — the owner will review it.");
+      toast("W-9 submitted and securely accepted.");
+      onSubmitted("W-9 submitted and securely accepted.");
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't submit the W-9 — try again.");
@@ -1106,7 +1106,7 @@ function W9FormSheet({ docTypeId, onClose, onSubmitted }: { docTypeId: string; o
             <Button variant="secondary" disabled={busy} onClick={onClose}>Cancel</Button>
           </div>
           <p className="text-center text-[11px] leading-relaxed text-ink-400">
-            Your completed official W-9 (PDF) is sent to the owner for review. It is not shown back to you after submission.
+            Your completed official W-9 (PDF) is securely stored for tax reporting. It is not shown back to you after submission.
           </p>
         </div>
       )}
