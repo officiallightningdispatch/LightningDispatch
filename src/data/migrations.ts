@@ -2007,6 +2007,18 @@ const migrations: Array<[number, (q: ReturnType<typeof sql>) => Promise<unknown>
     await q`ALTER TABLE contractor_applications ADD COLUMN IF NOT EXISTS background_check_consented BOOLEAN NOT NULL DEFAULT FALSE`;
     await q`ALTER TABLE contractor_applications ADD COLUMN IF NOT EXISTS agreements_accepted_at TIMESTAMPTZ`;
   }],
+  // 98 (2026-09-13): Stripe Identity document + matching-selfie verification.
+  // Store only Stripe session ids/status; Lightning Dispatch does not persist
+  // Stripe's captured government-ID or selfie images.
+  [98, async (q) => {
+    await q`ALTER TABLE contractor_profiles ADD COLUMN IF NOT EXISTS stripe_identity_session_id TEXT`;
+    await q`ALTER TABLE contractor_profiles ADD COLUMN IF NOT EXISTS stripe_identity_status TEXT`;
+    await q`ALTER TABLE contractor_profiles ADD COLUMN IF NOT EXISTS stripe_identity_verified_at TIMESTAMPTZ`;
+    await q`ALTER TABLE contractor_profiles ADD COLUMN IF NOT EXISTS stripe_identity_last_error TEXT`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS contractor_profiles_stripe_identity_session_idx
+      ON contractor_profiles(stripe_identity_session_id)
+      WHERE stripe_identity_session_id IS NOT NULL`;
+  }],
 ];
 export async function ensureSchema() {
   const q = sql();
