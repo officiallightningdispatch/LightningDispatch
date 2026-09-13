@@ -94,7 +94,7 @@ function useBannerStack(role: SoundRole) {
       const id = b.id.slice(4); const d = decisions.find((x) => x.id === id);
       const resolution = d ? reconcileEscalatedBanner(d) : null;
       if (!resolution) return b;
-      return { ...b, resolution, countdown: null, title: resolution === "claimed" ? "Offer claimed in Towbook" : "Offer expired — no action was recorded", body: "" };
+      return { ...b, resolution, countdown: null, title: resolution === "claimed" ? "Offer claimed" : "Offer expired — no action was recorded", body: "" };
     }));
   }, []);
 
