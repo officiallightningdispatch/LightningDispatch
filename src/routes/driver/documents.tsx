@@ -24,7 +24,10 @@ import {
 import { driverLogout } from "~/data/driver-auth";
 import { PushSelfTestPanel } from "~/components/push-setup";
 import {
+  ensureNativePushRegistration,
   ensurePushSubscription,
+  isNativeShell,
+  nativePushFailureCopy,
   notificationSupportStatus,
   pushSetupFailureCopy,
   type NotificationSupportStatus,
@@ -547,15 +550,34 @@ function NotificationsLocationSheet({ title, onClose, onDone }: { title: string;
     typeof window === "undefined" ? "unsupported" : notificationSupportStatus(),
   );
   const [recheckNote, setRecheckNote] = useState("");
+  const [native, setNative] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void isNativeShell().then((value) => { if (alive) setNative(value); });
+    return () => { alive = false; };
+  }, []);
 
   const allowNotifications = async () => {
     setError("");
     setRecheckNote("");
-    const status = notificationSupportStatus();
-    setSupport(status);
-    if (status !== "supported") return; // the guidance panel below teaches the fix
     setNotifState("busy");
     try {
+      if (native) {
+        const result = await ensureNativePushRegistration();
+        if (!result.ok) {
+          setNotifState("failed");
+          return setError(nativePushFailureCopy(result.reason, result.detail));
+        }
+        setNotifState("done");
+        return;
+      }
+
+      const status = notificationSupportStatus();
+      setSupport(status);
+      if (status !== "supported") {
+        setNotifState("idle");
+        return; // guidance panel below teaches the web/PWA fix
+      }
       if (Notification.permission !== "granted") {
         const perm = await Notification.requestPermission();
         if (perm !== "granted") {
@@ -571,7 +593,7 @@ function NotificationsLocationSheet({ title, onClose, onDone }: { title: string;
       setNotifState("done");
     } catch {
       setNotifState("failed");
-      setError(pushSetupFailureCopy("subscribe_failed"));
+      setError(native ? "We couldn't enable notifications on this device. Check iOS Settings and try again." : pushSetupFailureCopy("subscribe_failed"));
     }
   };
 
@@ -588,33 +610,54 @@ function NotificationsLocationSheet({ title, onClose, onDone }: { title: string;
     setRecheckNote("Still not available — make sure you opened Lightning Dispatch from the Home Screen icon (not Safari), then tap again.");
   };
 
-  const shareLocation = () => {
+  const submitLocation = async (latitude: number, longitude: number, accuracy: number | null) => {
+    if (latitude === 0 && longitude === 0) {
+      setLocState("failed");
+      return setError("Your location couldn't be read. Allow location for Lightning Dispatch in Settings, then try again.");
+    }
+    try {
+      const r = await completeNotificationsLocation({ data: { latitude, longitude, accuracy } });
+      if (!r.ok) {
+        setLocState("failed");
+        return setError(r.message);
+      }
+      setLocState("done");
+      onDone("Notifications & location are on — you're all set.");
+    } catch {
+      setLocState("failed");
+      setError("We couldn't finish setting this up — check your connection and try again.");
+    }
+  };
+
+  const shareLocation = async () => {
     setError("");
+    setLocState("busy");
+    if (native) {
+      try {
+        const { Geolocation } = await import("@capacitor/geolocation");
+        let permission = await Geolocation.checkPermissions();
+        if (permission.location !== "granted" && permission.coarseLocation !== "granted") {
+          permission = await Geolocation.requestPermissions();
+        }
+        if (permission.location !== "granted" && permission.coarseLocation !== "granted") {
+          setLocState("failed");
+          return setError("Location is off for Lightning Dispatch. Turn it on in iOS Settings, then tap again.");
+        }
+        const pos = await Geolocation.getCurrentPosition({ enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 });
+        await submitLocation(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy ?? null);
+        return;
+      } catch {
+        setLocState("failed");
+        return setError("We couldn't get your location from this device. Check Location Services in iOS Settings and try again.");
+      }
+    }
+
     if (typeof navigator === "undefined" || !navigator.geolocation) {
       setLocState("failed");
       return setError("Your browser doesn't support location sharing — use a recent Chrome, Safari or Edge.");
     }
-    setLocState("busy");
     navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        const { latitude, longitude, accuracy } = pos.coords;
-        if (latitude === 0 && longitude === 0) {
-          setLocState("failed");
-          return setError("Your location couldn't be read. Allow location for this site in your browser settings, then try again.");
-        }
-        try {
-          const r = await completeNotificationsLocation({ data: { latitude, longitude, accuracy: accuracy ?? null } });
-          if (!r.ok) {
-            setLocState("failed");
-            return setError(r.message);
-          }
-          setLocState("done");
-          onDone("Notifications & location are on — you're all set.");
-        } catch {
-          setLocState("failed");
-          setError("We couldn't finish setting this up — check your connection and try again.");
-        }
-      },
+      (pos) => { void submitLocation(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy ?? null); },
       () => {
         setLocState("failed");
         setError("We couldn't get your location. Allow location for this site in your browser settings, then tap again.");
@@ -656,7 +699,7 @@ function NotificationsLocationSheet({ title, onClose, onDone }: { title: string;
             generic "can't receive alerts" dead-end with actionable next steps —
             iOS teaches Add to Home Screen + re-check, webviews say use
             Safari/Chrome, old browsers get a plain unsupported message. */}
-        {support !== "supported" && notifState !== "done" && (
+        {!native && support !== "supported" && notifState !== "done" && (
           <div className="rounded-2xl border border-brand-200 bg-brand-50/60 p-4" role="status">
             {support === "ios_not_installed" && (
               <>
