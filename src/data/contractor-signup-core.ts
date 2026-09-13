@@ -36,7 +36,7 @@
 import { z } from "zod";
 import { sql } from "~/db";
 import { PRODUCTION_ORG_ID } from "./db-guard";
-import { ensureAuthSchema, hash, makeId, currentUser, startSession } from "./auth-server";
+import { ensureAuthSchema, hash, verify, makeId, currentUser, startSession } from "./auth-server";
 import { normalizeServiceSelectionType } from "./service-time-core";
 
 export const APPLICATION_STATUSES = ["interested", "submitted", "activated", "waitlisted"] as const;
@@ -85,15 +85,51 @@ const ok = <T>(data: T): ApplicationResult<T> => ({ ok: true, data });
 const err = (code: ApplicationErrorCode, message: string) => ({ ok: false as const, code, message });
 
 const configured = () => Boolean(process.env.DATABASE_URL);
-let schemaInit: Promise<void> | undefined;
-function ensure() {
+let applicationSchemaInit: Promise<void> | undefined;
+function ensureApplicationSchema() {
   if (!configured()) return Promise.resolve();
-  schemaInit ??= (async () => {
+  applicationSchemaInit ??= (async () => {
     await ensureAuthSchema();
-    const { ensureSchema } = await import("./migrations");
-    await ensureSchema();
+    const q = sql();
+    // Keep public applications independent from the app's full historical
+    // migration chain. Some old regional migrations read large repository
+    // datasets that are intentionally absent from the Vercel function bundle;
+    // onboarding only needs this one table and its additive columns.
+    await q`CREATE TABLE IF NOT EXISTS contractor_applications (
+      id TEXT PRIMARY KEY,
+      org_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      status TEXT NOT NULL DEFAULT 'submitted' CHECK (status IN ('interested','submitted','activated','waitlisted')),
+      tools JSONB NOT NULL DEFAULT '[]'::jsonb,
+      service_area TEXT,
+      phone TEXT,
+      experience_years INTEGER,
+      vehicle_description TEXT,
+      age_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+      work_authorized BOOLEAN NOT NULL DEFAULT FALSE,
+      independent_contractor_agreed BOOLEAN NOT NULL DEFAULT FALSE,
+      background_check_consented BOOLEAN NOT NULL DEFAULT FALSE,
+      agreements_accepted_at TIMESTAMPTZ,
+      notes TEXT,
+      reviewer_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      reviewed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`;
+    await q`ALTER TABLE contractor_applications ADD COLUMN IF NOT EXISTS experience_years INTEGER`;
+    await q`ALTER TABLE contractor_applications ADD COLUMN IF NOT EXISTS vehicle_description TEXT`;
+    await q`ALTER TABLE contractor_applications ADD COLUMN IF NOT EXISTS age_confirmed BOOLEAN NOT NULL DEFAULT FALSE`;
+    await q`ALTER TABLE contractor_applications ADD COLUMN IF NOT EXISTS work_authorized BOOLEAN NOT NULL DEFAULT FALSE`;
+    await q`ALTER TABLE contractor_applications ADD COLUMN IF NOT EXISTS independent_contractor_agreed BOOLEAN NOT NULL DEFAULT FALSE`;
+    await q`ALTER TABLE contractor_applications ADD COLUMN IF NOT EXISTS background_check_consented BOOLEAN NOT NULL DEFAULT FALSE`;
+    await q`ALTER TABLE contractor_applications ADD COLUMN IF NOT EXISTS agreements_accepted_at TIMESTAMPTZ`;
+    await q`CREATE UNIQUE INDEX IF NOT EXISTS contractor_applications_org_user_idx ON contractor_applications(org_id, user_id)`;
+    await q`CREATE INDEX IF NOT EXISTS contractor_applications_org_status_idx ON contractor_applications(org_id, status)`;
   })();
-  return schemaInit;
+  return applicationSchemaInit.catch((error) => {
+    applicationSchemaInit = undefined;
+    throw error;
+  });
 }
 
 /* ------------------------------- validation ------------------------------- */
@@ -225,16 +261,42 @@ export async function applyContractorCore(
   const application = applicationSchema.safeParse(data ?? {});
   if (!application.success) return err("invalid_input", "Invalid application details.");
 
-  const account = await signupContractorCore(signup.data, orgId);
+  if (!configured()) return err("database_error", "Applications require database mode.");
+  await ensureApplicationSchema();
+
+  // Recover an applicant account left behind by a previously interrupted
+  // application request. Reuse it only when the submitted password matches,
+  // it belongs to this org as a contractor, and it has no application yet.
+  const q = sql();
+  const existing = await q`SELECT u.id, u.password_hash, m.role, a.id AS application_id
+    FROM users u
+    LEFT JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${orgId}
+    LEFT JOIN contractor_applications a ON a.user_id=u.id AND a.org_id=${orgId}
+    WHERE LOWER(u.email)=${signup.data.email} LIMIT 1`;
+  const prior = existing[0] as Record<string, unknown> | undefined;
+  const recoverableUserId = prior && prior.role === "contractor" && prior.application_id == null
+    && verify(signup.data.password, String(prior.password_hash ?? ""))
+    ? String(prior.id)
+    : null;
+
+  const account = recoverableUserId
+    ? { ok: true as const, userId: recoverableUserId }
+    : await signupContractorCore(signup.data, orgId);
   if (!account.ok) {
     const code = /already registered/i.test(account.error) ? "duplicate" : "database_error";
     return err(code, account.error);
   }
 
-  const result = await submitContractorApplicationCore(
-    { orgId, id: account.userId, role: "contractor" },
-    application.data,
-  );
+  let result: ApplicationResult<ContractorApplicationRow>;
+  try {
+    result = await submitContractorApplicationCore(
+      { orgId, id: account.userId, role: "contractor" },
+      application.data,
+    );
+  } catch (error) {
+    if (!recoverableUserId) await sql()`DELETE FROM users WHERE id = ${account.userId}`.catch(() => {});
+    throw error;
+  }
   if (!result.ok) {
     await sql()`DELETE FROM users WHERE id = ${account.userId}`.catch(() => {});
   }
@@ -270,7 +332,7 @@ async function resolveActor(): Promise<SignupActor | null> {
 export async function getMyApplicationStatusCore(actor: SignupActor): Promise<ApplicationResult<ContractorApplicationRow | null>> {
   if (actor.role !== "contractor") return err("unauthorized", "Contractor access required.");
   if (!configured()) return err("database_error", "Applications require database mode.");
-  await ensure();
+  await ensureApplicationSchema();
   const q = sql();
   const rows = await q`SELECT id, org_id, user_id, status, tools, service_area, phone, experience_years, vehicle_description, age_confirmed, work_authorized, independent_contractor_agreed, background_check_consented, agreements_accepted_at, notes, reviewer_user_id, reviewed_at, created_at, updated_at
     FROM contractor_applications WHERE org_id = ${actor.orgId} AND user_id = ${actor.id} LIMIT 1`;
@@ -283,7 +345,7 @@ export async function submitContractorApplicationCore(actor: SignupActor, data: 
   if (!configured()) return err("database_error", "Applications require database mode.");
   const parsed = applicationSchema.safeParse(data ?? {});
   if (!parsed.success) return err("invalid_input", "Invalid application details.");
-  await ensure();
+  await ensureApplicationSchema();
   const q = sql();
 
   const tools = [...new Set(
@@ -327,7 +389,7 @@ export async function listContractorApplicationsCore(actor: SignupActor): Promis
     return err("unauthorized", "Owner access required.");
   }
   if (!configured()) return err("database_error", "Applications require database mode.");
-  await ensure();
+  await ensureApplicationSchema();
   const q = sql();
   const rows = await q`SELECT a.id, a.org_id, a.user_id, a.status, a.tools, a.service_area, a.phone,
       a.experience_years, a.vehicle_description, a.age_confirmed, a.work_authorized,
@@ -354,7 +416,7 @@ export async function setContractorApplicationStatusCore(actor: SignupActor, dat
   if (!configured()) return err("database_error", "Applications require database mode.");
   const parsed = setStatusSchema.safeParse(data ?? {});
   if (!parsed.success) return err("invalid_input", "Invalid application status.");
-  await ensure();
+  await ensureApplicationSchema();
   const q = sql();
 
   const rows = await q`SELECT id, status FROM contractor_applications WHERE id = ${parsed.data.applicationId} AND org_id = ${actor.orgId} LIMIT 1`;
