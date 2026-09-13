@@ -32,6 +32,7 @@ import {
   pushSetupFailureCopy,
   type NotificationSupportStatus,
 } from "~/lib/push-client";
+import { requestMotionPermission } from "~/lib/native-capabilities";
 
 /**
  * /driver/documents — the contractor's required-paperwork screen (spec §4.5,
@@ -541,6 +542,7 @@ function SheetBridge({
  */
 function NotificationsLocationSheet({ title, onClose, onDone }: { title: string; onClose: () => void; onDone: (msg: string) => void }) {
   const [notifState, setNotifState] = useState<"idle" | "busy" | "done" | "failed">("idle");
+  const [motionState, setMotionState] = useState<"idle" | "busy" | "done" | "failed">("idle");
   const [locState, setLocState] = useState<"idle" | "busy" | "done" | "failed">("idle");
   const [error, setError] = useState("");
   // 2026-08-13 (owner-hit): iPhone/iPad Safari in a normal tab has NO push
@@ -610,13 +612,29 @@ function NotificationsLocationSheet({ title, onClose, onDone }: { title: string;
     setRecheckNote("Still not available — make sure you opened Lightning Dispatch from the Home Screen icon (not Safari), then tap again.");
   };
 
+  const allowMotion = async () => {
+    setError("");
+    setMotionState("busy");
+    try {
+      const granted = await requestMotionPermission();
+      if (!granted) {
+        setMotionState("failed");
+        return setError("Motion & Fitness is required for contractors on iPhone. Turn it on in Settings → Privacy & Security → Motion & Fitness, then try again.");
+      }
+      setMotionState("done");
+    } catch {
+      setMotionState("failed");
+      setError("We couldn't enable Motion & Fitness. Check iPhone Settings and try again.");
+    }
+  };
+
   const submitLocation = async (latitude: number, longitude: number, accuracy: number | null) => {
     if (latitude === 0 && longitude === 0) {
       setLocState("failed");
       return setError("Your location couldn't be read. Allow location for Lightning Dispatch in Settings, then try again.");
     }
     try {
-      const r = await completeNotificationsLocation({ data: { latitude, longitude, accuracy } });
+      const r = await completeNotificationsLocation({ data: { latitude, longitude, accuracy, motionGranted: motionState === "done" } });
       if (!r.ok) {
         setLocState("failed");
         return setError(r.message);
@@ -670,7 +688,7 @@ function NotificationsLocationSheet({ title, onClose, onDone }: { title: string;
     <FormSheetFrame title={`Set up ${title}`} eyebrow="Required before you go online" onClose={onClose}>
       <div className="space-y-4">
         <p className="rounded-xl bg-ink-50 px-3 py-2.5 text-xs leading-relaxed text-ink-600">
-          Two quick steps. When you&apos;re done, this item shows <span className="font-bold text-ink-800">Approved ✓</span> and
+          Three quick steps. When you&apos;re done, this item shows <span className="font-bold text-ink-800">Approved ✓</span> and
           nothing else blocks you from working.
         </p>
 
@@ -749,16 +767,35 @@ function NotificationsLocationSheet({ title, onClose, onDone }: { title: string;
         <div className="rounded-2xl border border-ink-200 bg-ink-50/40 p-3">
           <div className="flex items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2">
+              <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-brand-50 text-brand-600"><RefreshCw className="size-4" aria-hidden="true" /></span>
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-ink-900">2. Motion & Fitness</p>
+                <p className="text-[11px] text-ink-500">Required on iPhone for movement-aware dispatch location</p>
+              </div>
+            </div>
+            {motionState === "done" ? (
+              <CheckCircle2 className="size-5 shrink-0 text-success-600" aria-label="Done" />
+            ) : (
+              <Button size="sm" variant={notifState === "done" ? "primary" : "secondary"} loading={motionState === "busy"} disabled={notifState !== "done"} onClick={() => void allowMotion()}>
+                {motionState === "failed" ? "Try again" : "Enable"}
+              </Button>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-ink-200 bg-ink-50/40 p-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-2">
               <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-brand-50 text-brand-600"><MapPin className="size-4" aria-hidden="true" /></span>
               <div className="min-w-0">
-                <p className="text-sm font-bold text-ink-900">2. Share your location</p>
+                <p className="text-sm font-bold text-ink-900">3. Share your location</p>
                 <p className="text-[11px] text-ink-500">So the dispatcher knows where you are</p>
               </div>
             </div>
             {locState === "done" ? (
               <CheckCircle2 className="size-5 shrink-0 text-success-600" aria-label="Done" />
             ) : (
-              <Button size="sm" variant={notifState === "done" ? "primary" : "secondary"} loading={locState === "busy"} disabled={notifState !== "done"} onClick={shareLocation}>
+              <Button size="sm" variant={motionState === "done" ? "primary" : "secondary"} loading={locState === "busy"} disabled={motionState !== "done"} onClick={shareLocation}>
                 {locState === "failed" ? "Try again" : "Share location"}
               </Button>
             )}
