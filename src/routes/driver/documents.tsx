@@ -983,6 +983,7 @@ function W9FormSheet({ docTypeId, onClose, onSubmitted }: { docTypeId: string; o
               <button type="button" onClick={() => setTaxIdType("ein")} aria-pressed={taxIdType === "ein"} className={`rounded-xl px-3 py-2 text-xs font-bold transition-colors ${taxIdType === "ein" ? "bg-brand-500 text-white" : "bg-ink-100 text-ink-600 hover:bg-ink-200"}`}>EIN</button>
             </div>
             <input
+              type="password"
               className={`${INPUT_CLS} mt-2 font-mono tabular-nums tracking-widest`}
               value={taxId}
               onChange={(e) => setTaxId(e.target.value.replace(/\D/g, "").slice(0, 9))}
