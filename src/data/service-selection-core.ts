@@ -28,9 +28,34 @@ async function readOne(orgId: string, contractorId: string): Promise<ServiceSele
   const rows = await db()`SELECT u.id AS contractor_id,u.name AS contractor_name,COALESCE(array_agg(s.service_type ORDER BY s.service_type) FILTER (WHERE s.service_type IS NOT NULL),'{}') AS selected_services,MAX(s.updated_at) AS updated_at,(array_agg(s.updated_by ORDER BY s.updated_at DESC) FILTER (WHERE s.updated_by IS NOT NULL))[1] AS updated_by FROM users u JOIN organization_memberships m ON m.user_id=u.id AND m.org_id=${orgId} AND (m.role='contractor' OR EXISTS (SELECT 1 FROM users u_identity JOIN towbook_sessions ts ON ts.org_id=${orgId} AND ts.towbook_driver_id=u_identity.towbook_driver_id WHERE u_identity.id=m.user_id AND u_identity.towbook_driver_id IS NOT NULL)) LEFT JOIN contractor_services s ON s.org_id=${orgId} AND s.contractor_id=u.id WHERE u.id=${contractorId} GROUP BY u.id,u.name LIMIT 1`;
   return rows.length ? mapRow(rows[0] as Record<string, unknown>) : null;
 }
+async function seedServicesFromApplication(orgId: string, contractorId: string): Promise<void> {
+  const q = db();
+  const app = await q`SELECT tools FROM contractor_applications WHERE org_id=${orgId} AND user_id=${contractorId} LIMIT 1`;
+  if (!app.length) return;
+  const values = normalize(app[0].tools);
+  if (!values.length) return;
+  const existing = await q`SELECT COUNT(*)::int AS n FROM contractor_services WHERE org_id=${orgId} AND contractor_id=${contractorId}`;
+  if (Number(existing[0]?.n ?? 0) > 0) return;
+  await q.transaction(values.map((service) =>
+    q`INSERT INTO contractor_services(id,org_id,contractor_id,service_type,updated_by)
+      VALUES(gen_random_uuid()::text,${orgId},${contractorId},${service},'seed')
+      ON CONFLICT DO NOTHING`
+  ));
+}
+
 export async function getMyServicesCore(actor: ServiceSelectionActor): Promise<ServiceSelectionResult<{ services: ServiceSelectionRow; options: { key: string; label: string }[] }>> {
   if (!actor || (actor.role !== "contractor" && !actor.driverIdentity?.userRowId)) return err("unauthorized", "Contractor access required.");
-  try { await ensure(); const id = actor.role === "contractor" ? actor.id : actor.driverIdentity!.userRowId; const row = await readOne(actor.orgId, id); return row ? ok({ services: row, options: SERVICE_SELECTION_SERVICE_TYPES.map((key) => ({ key, label: SERVICE_SELECTION_LABELS[key] ?? key })) }) : err("not_found", "Contractor account not found."); } catch (e) { return err("database_error", e instanceof Error ? e.message : "Unable to load services."); }
+  try {
+    await ensure();
+    const id = actor.role === "contractor" ? actor.id : actor.driverIdentity!.userRowId;
+    await seedServicesFromApplication(actor.orgId, id);
+    const row = await readOne(actor.orgId, id);
+    return row
+      ? ok({ services: row, options: SERVICE_SELECTION_SERVICE_TYPES.map((key) => ({ key, label: SERVICE_SELECTION_LABELS[key] ?? key })) })
+      : err("not_found", "Contractor account not found.");
+  } catch (e) {
+    return err("database_error", e instanceof Error ? e.message : "Unable to load services.");
+  }
 }
 export async function setMyServicesCore(actor: ServiceSelectionActor, data: unknown): Promise<ServiceSelectionResult<ServiceSelectionRow>> {
   if (!actor || (actor.role !== "contractor" && !actor.driverIdentity?.userRowId)) return err("unauthorized", "Contractor access required.");
