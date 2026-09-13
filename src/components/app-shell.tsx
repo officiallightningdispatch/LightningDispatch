@@ -113,16 +113,15 @@ const NAV: Record<Portal, PortalNav> = {
       { to: "/driver/profile", label: "Profile", icon: User },
       { to: "/driver/services", label: "Services", icon: Wrench },
     ],
+    // Uber-style contractor mobile navigation: keep the bottom rail focused
+    // on the five places a contractor uses constantly. Everything else lives
+    // behind Menu (/driver/profile), instead of a cramped nine-tab rail.
     mobile: [
       { to: "/driver", label: "Home", icon: Home },
-      { to: "/driver/offers", label: "Offers", icon: Inbox },
-      { to: "/driver/active", label: "Active", icon: Briefcase },
+      { to: "/driver/offers", label: "Discover", icon: Inbox },
       { to: "/driver/earnings", label: "Earnings", icon: DollarSign },
-      { to: "/driver/payout", label: "Payout", icon: Wallet },
-      { to: "/driver/metrics", label: "Metrics", icon: BarChart3 },
-      { to: "/driver/academy", label: "Academy", icon: GraduationCap },
-      { to: "/driver/profile", label: "Profile", icon: User },
-      { to: "/driver/services", label: "Services", icon: Wrench },
+      { to: "/driver/inbox", label: "Inbox", icon: Bell },
+      { to: "/driver/profile", label: "Menu", icon: MoreHorizontal },
     ],
   },
 };
